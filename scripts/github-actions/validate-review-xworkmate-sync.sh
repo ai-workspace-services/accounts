@@ -50,10 +50,18 @@ import os
 payload = json.loads(os.environ["SYNC_JSON"])
 bridge_server_url = (payload.get("BRIDGE_SERVER_URL") or "").strip()
 bridge_auth_token = (payload.get("BRIDGE_AUTH_TOKEN") or "").strip()
+expected_review_token = os.environ.get("BRIDGE_REVIEW_AUTH_TOKEN", "").strip()
+production_token = os.environ.get("BRIDGE_AUTH_TOKEN", "").strip()
 
 if not bridge_server_url:
     raise SystemExit("review xworkmate sync did not return BRIDGE_SERVER_URL")
 
 if not bridge_auth_token:
     raise SystemExit("review xworkmate sync did not return BRIDGE_AUTH_TOKEN")
+
+if expected_review_token and bridge_auth_token != expected_review_token:
+    raise SystemExit("review xworkmate sync did not return the review bridge token")
+
+if production_token and bridge_auth_token == production_token:
+    raise SystemExit("review xworkmate sync returned the production bridge token")
 PY

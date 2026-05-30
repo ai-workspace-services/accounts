@@ -237,6 +237,9 @@ jobs:
         env:
           ACCOUNTS_IMAGE_REF: ${{ steps.deploy_image.outputs.image_ref }}
           ACCOUNTS_PULL_IMAGE: "true"
+          BRIDGE_AUTH_TOKEN: ${{ secrets.BRIDGE_AUTH_TOKEN }}
+          BRIDGE_REVIEW_AUTH_TOKEN: ${{ secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+          BRIDGE_SERVER_URL: https://xworkmate-bridge.svc.plus
         run: |
           set -euo pipefail
 
@@ -275,4 +278,6 @@ jobs:
         env:
           REVIEW_ACCOUNT_EMAIL: review@svc.plus
           REVIEW_ACCOUNT_PASSWORD: ${{ secrets.REVIEW_ACCOUNT_PASSWORD }}
+          BRIDGE_AUTH_TOKEN: ${{ secrets.BRIDGE_AUTH_TOKEN }}
+          BRIDGE_REVIEW_AUTH_TOKEN: ${{ secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
         run: bash ./scripts/github-actions/validate-review-xworkmate-sync.sh https://accounts.svc.plus

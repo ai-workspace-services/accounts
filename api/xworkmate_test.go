@@ -221,6 +221,147 @@ func TestGetXWorkmateProfileSyncReturnsManagedBridgeCredentials(t *testing.T) {
 	}
 }
 
+func TestGetXWorkmateProfileSyncReturnsReviewBridgeTokenForReviewAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("BRIDGE_REVIEW_AUTH_TOKEN", "review-token-value")
+
+	vaultService := newMemoryXWorkmateVaultService()
+	router, _, token := newXWorkmateTestHarnessWithVault(t, &store.User{
+		Name:          "Apple Review",
+		Email:         "review@svc.plus",
+		EmailVerified: true,
+		Role:          store.RoleAdmin,
+		Level:         store.LevelAdmin,
+		Active:        true,
+	}, vaultService)
+
+	profileBody, err := json.Marshal(map[string]any{
+		"profile": map[string]any{
+			"BRIDGE_SERVER_URL": "https://xworkmate-bridge.svc.plus",
+			"secretLocators": []map[string]any{
+				{
+					"id":         "locator-openclaw",
+					"provider":   "vault",
+					"secretPath": "kv/openclaw",
+					"secretKey":  "token",
+					"target":     store.XWorkmateSecretLocatorTargetBridgeAuthToken,
+					"required":   true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal profile: %v", err)
+	}
+	putProfileReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
+	putProfileReq.Header.Set("Content-Type", "application/json")
+	putProfileReq.Header.Set("Authorization", "Bearer "+token)
+	putProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putProfileRec := httptest.NewRecorder()
+	router.ServeHTTP(putProfileRec, putProfileReq)
+	if putProfileRec.Code != http.StatusOK {
+		t.Fatalf("expected profile update success, got %d: %s", putProfileRec.Code, putProfileRec.Body.String())
+	}
+
+	if err := vaultService.WriteSecret(context.Background(), store.XWorkmateSecretLocator{
+		Provider:   "vault",
+		SecretPath: "kv/openclaw",
+		SecretKey:  "token",
+		Target:     store.XWorkmateSecretLocatorTargetBridgeAuthToken,
+	}, "production-token-value"); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected profile sync success, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		BridgeServerURL string `json:"BRIDGE_SERVER_URL"`
+		BridgeAuthToken string `json:"BRIDGE_AUTH_TOKEN"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode profile sync response: %v", err)
+	}
+	if payload.BridgeServerURL != "https://xworkmate-bridge.svc.plus" {
+		t.Fatalf("expected bridge server url, got %#v", payload)
+	}
+	if payload.BridgeAuthToken != "review-token-value" {
+		t.Fatalf("expected review bridge auth token, got %#v", payload)
+	}
+	if payload.BridgeAuthToken == "production-token-value" {
+		t.Fatalf("review account must not receive production bridge token")
+	}
+}
+
+func TestGetXWorkmateProfileSyncRejectsReviewAccountWithoutReviewBridgeToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	vaultService := newMemoryXWorkmateVaultService()
+	router, _, token := newXWorkmateTestHarnessWithVault(t, &store.User{
+		Name:          "Apple Review",
+		Email:         "review@svc.plus",
+		EmailVerified: true,
+		Role:          store.RoleAdmin,
+		Level:         store.LevelAdmin,
+		Active:        true,
+	}, vaultService)
+
+	profileBody, err := json.Marshal(map[string]any{
+		"profile": map[string]any{
+			"BRIDGE_SERVER_URL": "https://xworkmate-bridge.svc.plus",
+			"secretLocators": []map[string]any{
+				{
+					"id":         "locator-openclaw",
+					"provider":   "vault",
+					"secretPath": "kv/openclaw",
+					"secretKey":  "token",
+					"target":     store.XWorkmateSecretLocatorTargetBridgeAuthToken,
+					"required":   true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal profile: %v", err)
+	}
+	putProfileReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
+	putProfileReq.Header.Set("Content-Type", "application/json")
+	putProfileReq.Header.Set("Authorization", "Bearer "+token)
+	putProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putProfileRec := httptest.NewRecorder()
+	router.ServeHTTP(putProfileRec, putProfileReq)
+	if putProfileRec.Code != http.StatusOK {
+		t.Fatalf("expected profile update success, got %d: %s", putProfileRec.Code, putProfileRec.Body.String())
+	}
+
+	if err := vaultService.WriteSecret(context.Background(), store.XWorkmateSecretLocator{
+		Provider:   "vault",
+		SecretPath: "kv/openclaw",
+		SecretKey:  "token",
+		Target:     store.XWorkmateSecretLocatorTargetBridgeAuthToken,
+	}, "production-token-value"); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile/sync", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected profile sync conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "bridge_review_auth_token_unavailable") {
+		t.Fatalf("expected review token error, got %s", rec.Body.String())
+	}
+}
+
 func TestGetXWorkmateProfileSyncConflictsWhenManagedBridgeContractMissing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

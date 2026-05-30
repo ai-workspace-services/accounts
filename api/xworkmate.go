@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -668,11 +669,26 @@ func (h *handler) getXWorkmateProfileSync(c *gin.Context) {
 		respondError(c, http.StatusConflict, "bridge_auth_token_unavailable", "bridge auth token is unavailable")
 		return
 	}
+	if isReviewXWorkmateAccount(user) {
+		reviewToken := strings.TrimSpace(os.Getenv("BRIDGE_REVIEW_AUTH_TOKEN"))
+		if reviewToken == "" {
+			respondError(c, http.StatusConflict, "bridge_review_auth_token_unavailable", "bridge review auth token is unavailable")
+			return
+		}
+		bridgeAuthToken = reviewToken
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"BRIDGE_SERVER_URL": bridgeServerURL,
 		"BRIDGE_AUTH_TOKEN": strings.TrimSpace(bridgeAuthToken),
 	})
+}
+
+func isReviewXWorkmateAccount(user *store.User) bool {
+	if user == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(user.Email), "review@svc.plus")
 }
 
 func (h *handler) updateXWorkmateProfile(c *gin.Context) {

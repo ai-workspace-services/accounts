@@ -56,6 +56,18 @@ spec:
             secretKeyRef:
               name: internal-service-token
               key: latest
+        - name: BRIDGE_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: bridge-auth-token
+              key: latest
+        - name: BRIDGE_REVIEW_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: bridge-review-auth-token
+              key: latest
+        - name: BRIDGE_SERVER_URL
+          value: "https://xworkmate-bridge.svc.plus"
         # --- SMTP Configuration ---
         - name: SMTP_HOST
           value: "smtp.qq.com"
