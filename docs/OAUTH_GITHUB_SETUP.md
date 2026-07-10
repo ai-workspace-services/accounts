@@ -99,7 +99,7 @@ auth:
 
 ### 3.2 密钥清单(源头统一存 Vault)
 
-本次新增、需要入 Vault(建议路径 `kv/accounts-svc-plus`)再同步到 GitHub Actions secrets 的条目:
+本次新增、需要入 Vault(建议路径 `kv/accounts.svc.plus`)再同步到 GitHub Actions secrets 的条目:
 
 | Vault 字段 | 说明 | 生成方式 |
 |---|---|---|
@@ -113,7 +113,39 @@ auth:
 
 既有已在链路上的密钥(应确认 Vault 已有记录,不必新建):`ACCOUNT_PG_PASSWORD`、`BRIDGE_AUTH_TOKEN`、`BRIDGE_REVIEW_AUTH_TOKEN`、`INTERNAL_SERVICE_TOKEN`、`SMTP_USERNAME`/`SMTP_PASSWORD`、`REVIEW_ACCOUNT_PASSWORD`、`SINGLE_NODE_VPS_SSH_PRIVATE_KEY`、`WORKSPACE_REPO_TOKEN`、`GHCR_TOKEN`、`XWORKMATE_VAULT_TOKEN`。
 
-以下 gcloud 命令**仅走 Cloud Run 路线时适用**(当前未启用,跳过):
+### 3.2.1 GitHub Actions 仓库 secrets/vars(部署实际读取处)
+
+pipeline 从 `ai-workspace-services/accounts` 的仓库 secrets 取值(**不是** Vault 直读;Vault 是源头,需人工同步)。新仓库迁移后缺口较大 —— 下表为 pipeline 引用但仓库可能未配的项:
+
+| 仓库 secret | Vault 源 | 必需性 |
+|---|---|---|
+| `SINGLE_NODE_VPS_SSH_PRIVATE_KEY` | `kv/CICD` 同名字段 | 必需(缺失 → SSH prep step 退出 1) |
+| `SSH_KNOWN_HOSTS` | `kv/CICD` | 必需 |
+| `WORKSPACE_REPO_TOKEN` | 能 checkout 私有 playbooks 仓库的 PAT | 必需(playbooks 私有时) |
+| `OAUTH_GITHUB_CLIENT_SECRET` | `kv/accounts.svc.plus` → `GITHUB_CLIENT_SECRET` | 必需 |
+| `AUTH_TOKEN_PUBLIC_TOKEN` | `kv/accounts.svc.plus` | 必需 |
+| `AUTH_TOKEN_REFRESH_SECRET` | `kv/accounts.svc.plus` | 必需 |
+| `AUTH_TOKEN_ACCESS_SECRET` | `kv/accounts.svc.plus` | 必需 |
+| `GHCR_TOKEN` | GHCR PAT | 可选(缺省回退 `github.token`) |
+
+仓库 **variables**(非密钥):`OAUTH_GITHUB_CLIENT_ID`(= `Ov23lioecyD2bjWNQJr0`,已设);可选 `IMAGE_REPO_OWNER`、`GHCR_USERNAME`(缺省取仓库 owner)。
+
+> ⚠️ **CI 侧 secret/var 不能以 `GITHUB_` 开头**(Actions 保留前缀),故用 `OAUTH_GITHUB_*`,由 playbooks role 在 `defaults/main.yml` 映射回容器内的 `GITHUB_CLIENT_*`。
+
+设置命令:
+
+```bash
+gh secret set SINGLE_NODE_VPS_SSH_PRIVATE_KEY -R ai-workspace-services/accounts < /path/to/ssh_key
+gh secret set OAUTH_GITHUB_CLIENT_SECRET     -R ai-workspace-services/accounts   # 交互粘贴
+gh secret set AUTH_TOKEN_PUBLIC_TOKEN        -R ai-workspace-services/accounts
+gh secret set AUTH_TOKEN_REFRESH_SECRET      -R ai-workspace-services/accounts
+gh secret set AUTH_TOKEN_ACCESS_SECRET       -R ai-workspace-services/accounts
+# SSH_KNOWN_HOSTS / WORKSPACE_REPO_TOKEN 同理
+```
+
+### 3.2.2 gcloud/Secret Manager(仅 Cloud Run 路线,当前未启用,跳过)
+
+以下命令仅走 Cloud Run 时适用:
 
 ```bash
 echo -n "<github-client-secret>" | gcloud secrets create github-client-secret --data-file=-

@@ -68,13 +68,13 @@ ssh root@hk-xhttp.svc.plus "cat /etc/agent/account-agent.yaml"
 
 # 确认 controller URL 和 token 配置正确
 # controllerUrl: "https://accounts-svc-plus-266500572462.asia-northeast1.run.app"
-# apiToken: "uTvryFvAbz6M5sRtmTaSTQY6otLZ95hneBsWqXu+35I="
+# apiToken: "<REDACTED_TOKEN>"
 ```
 
 ### 3. 测试 API 端点
 ```bash
 # 测试 /api/agent-server/v1/users 端点
-curl -s -H "Authorization: Bearer uTvryFvAbz6M5sRtmTaSTQY6otLZ95hneBsWqXu+35I=" \
+curl -s -H "Authorization: Bearer ${INTERNAL_SERVICE_TOKEN}" \
   "https://accounts-svc-plus-266500572462.asia-northeast1.run.app/api/agent-server/v1/users"
 
 # 返回: 404 page not found
@@ -354,7 +354,7 @@ async function fetcher(url: string): Promise<VlessNode[]> {
 
 ```bash
 # 测试 agent API 端点
-curl -s -H "Authorization: Bearer uTvryFvAbz6M5sRtmTaSTQY6otLZ95hneBsWqXu+35I=" \
+curl -s -H "Authorization: Bearer ${INTERNAL_SERVICE_TOKEN}" \
   "https://accounts-svc-plus-266500572462.asia-northeast1.run.app/api/agent-server/v1/users"
 
 # 预期结果: JSON 响应包含用户列表
@@ -457,7 +457,7 @@ gcloud run deploy accounts-svc-plus \
 
 ```bash
 # 测试 API 端点
-curl -s -H "Authorization: Bearer uTvryFvAbz6M5sRtmTaSTQY6otLZ95hneBsWqXu+35I=" \
+curl -s -H "Authorization: Bearer ${INTERNAL_SERVICE_TOKEN}" \
   "https://accounts-svc-plus-266500572462.asia-northeast1.run.app/api/agent-server/v1/users"
 
 # 应该返回 JSON 而不是 404
@@ -566,7 +566,7 @@ log:
 agent:
   id: "hk-proxy-server"
   controllerUrl: "https://accounts-svc-plus-266500572462.asia-northeast1.run.app"
-  apiToken: "uTvryFvAbz6M5sRtmTaSTQY6otLZ95hneBsWqXu+35I="
+  apiToken: "<REDACTED_TOKEN>"
   httpTimeout: 15s
   statusInterval: 1m
   syncInterval: 5m
