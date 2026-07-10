@@ -46,9 +46,9 @@ spec:
         - name: DB_PORT
           value: "15432"
         - name: DB_USER
-          value: postgres
+          value: svcplus_vps
         - name: POSTGRES_USER
-          value: postgres
+          value: svcplus_vps
         - name: DB_NAME
           value: account
         - name: INTERNAL_SERVICE_TOKEN
@@ -68,6 +68,29 @@ spec:
               key: latest
         - name: BRIDGE_SERVER_URL
           value: "https://xworkmate-bridge.svc.plus"
+        # --- Auth / OAuth Configuration ---
+        - name: GITHUB_CLIENT_ID
+          value: "Ov23lioecyD2bjWNQJr0"
+        - name: GITHUB_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: github-client-secret
+              key: latest
+        - name: AUTH_TOKEN_PUBLIC_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: auth-token-public
+              key: latest
+        - name: AUTH_TOKEN_REFRESH_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: auth-token-refresh-secret
+              key: latest
+        - name: AUTH_TOKEN_ACCESS_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: auth-token-access-secret
+              key: latest
         # --- SMTP Configuration ---
         - name: SMTP_HOST
           value: "smtp.qq.com"
