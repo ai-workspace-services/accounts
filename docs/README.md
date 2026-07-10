@@ -7,6 +7,7 @@ This `docs/` directory now has a bilingual canonical layer for the current repos
 ## Quick Entry / 快速入口
 
 - Coverage checklist / 覆盖检查矩阵: `docs/DOC_COVERAGE.md`
+- GitHub OAuth setup / GitHub 登录配置: `docs/OAUTH_GITHUB_SETUP.md`
 - English index / 英文入口: `docs/en/README.md`
 - 中文入口 / Chinese index: `docs/zh/README.md`
 

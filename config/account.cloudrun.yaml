@@ -3,6 +3,28 @@ mode: "server-agent"
 log:
   level: info
 
+# NOTE: rendered by entrypoint.sh via envsubst, which does NOT support
+# ${VAR:-default} syntax — use plain ${VAR} only and set values in the
+# Cloud Run service env (deploy/gcp/cloud-run/*-service.yaml).
+auth:
+  enable: true
+  token:
+    publicToken: "${AUTH_TOKEN_PUBLIC_TOKEN}"
+    refreshSecret: "${AUTH_TOKEN_REFRESH_SECRET}"
+    accessSecret: "${AUTH_TOKEN_ACCESS_SECRET}"
+    accessExpiry: "1h"
+    refreshExpiry: "168h"
+  oauth:
+    frontendUrl: "https://console.svc.plus"
+    github:
+      clientId: "${GITHUB_CLIENT_ID}"
+      clientSecret: "${GITHUB_CLIENT_SECRET}"
+      redirectUrl: "https://accounts.svc.plus/api/auth/oauth/callback/github"
+    google:
+      clientId: "${GOOGLE_CLIENT_ID}"
+      clientSecret: "${GOOGLE_CLIENT_SECRET}"
+      redirectUrl: "https://accounts.svc.plus/api/auth/oauth/callback/google"
+
 server:
   addr: ":8080"
   readTimeout: 15s
