@@ -1,2 +1,11 @@
 d0541341127eea68dbe95e3e0e232cfcc48fe49c:dashboard-fresh/docs/LOGIN_API_GUIDE.md:generic-api-key:246
 d0541341127eea68dbe95e3e0e232cfcc48fe49c:dashboard-fresh/docs/LOGIN_API_GUIDE.md:generic-api-key:276
+# Runbook example token, purged from the working tree; still present in Feb history commits.
+700a1db5e32ac37d17887c805af8c38bc17753e1:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:77
+700a1db5e32ac37d17887c805af8c38bc17753e1:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:357
+700a1db5e32ac37d17887c805af8c38bc17753e1:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:457
+ba85a0236b40af6679157a83459460c924a1ef97:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:77
+ba85a0236b40af6679157a83459460c924a1ef97:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:357
+ba85a0236b40af6679157a83459460c924a1ef97:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:460
+# Public GitHub OAuth client_id merged via PR #12 (now sourced from vars.OAUTH_GITHUB_CLIENT_ID).
+df574100a3c34584350a332b57f6bd70cf42d816:.github/workflows/pipeline.yml:generic-api-key:245
