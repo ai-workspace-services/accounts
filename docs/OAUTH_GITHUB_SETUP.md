@@ -119,28 +119,40 @@ pipeline 从 `ai-workspace-services/accounts` 的仓库 secrets 取值(**不是*
 
 | 仓库 secret | Vault 源 | 必需性 |
 |---|---|---|
-| `SINGLE_NODE_VPS_SSH_PRIVATE_KEY` | `kv/CICD` 同名字段 | 必需(缺失 → SSH prep step 退出 1) |
-| `SSH_KNOWN_HOSTS` | `kv/CICD` | 必需 |
-| `WORKSPACE_REPO_TOKEN` | 能 checkout 私有 playbooks 仓库的 PAT | 必需(playbooks 私有时) |
-| `OAUTH_GITHUB_CLIENT_SECRET` | `kv/accounts.svc.plus` → `GITHUB_CLIENT_SECRET` | 必需 |
-| `AUTH_TOKEN_PUBLIC_TOKEN` | `kv/accounts.svc.plus` | 必需 |
-| `AUTH_TOKEN_REFRESH_SECRET` | `kv/accounts.svc.plus` | 必需 |
-| `AUTH_TOKEN_ACCESS_SECRET` | `kv/accounts.svc.plus` | 必需 |
+| `SINGLE_NODE_VPS_SSH_PRIVATE_KEY` | `kv/CICD` 同名字段 | 必需(缺失 → SSH prep step 退出 1)。**已设** ✓ |
+| `OAUTH_GITHUB_CLIENT_SECRET` | `kv/accounts.svc.plus` → `GITHUB_CLIENT_SECRET` | 必需。**已设** ✓ |
+| `AUTH_TOKEN_PUBLIC_TOKEN` | `kv/accounts.svc.plus` 同名 | 必需。**已设** ✓ |
+| `AUTH_TOKEN_REFRESH_SECRET` | `kv/accounts.svc.plus` 同名 | 必需。**已设** ✓ |
+| `AUTH_TOKEN_ACCESS_SECRET` | `kv/accounts.svc.plus` 同名 | 必需。**已设** ✓ |
+| `SSH_KNOWN_HOSTS` | — | 可选:`prepare-ssh.sh` 用 `ssh-keyscan` 兜底,可留空 |
+| `WORKSPACE_REPO_TOKEN` | 能 checkout playbooks 仓库的 PAT | 可选:playbooks 现可经重定向用 `github.token` checkout;私有化后再补 |
 | `GHCR_TOKEN` | GHCR PAT | 可选(缺省回退 `github.token`) |
 
 仓库 **variables**(非密钥):`OAUTH_GITHUB_CLIENT_ID`(= `Ov23lioecyD2bjWNQJr0`,已设);可选 `IMAGE_REPO_OWNER`、`GHCR_USERNAME`(缺省取仓库 owner)。
 
 > ⚠️ **CI 侧 secret/var 不能以 `GITHUB_` 开头**(Actions 保留前缀),故用 `OAUTH_GITHUB_*`,由 playbooks role 在 `defaults/main.yml` 映射回容器内的 `GITHUB_CLIENT_*`。
 
-设置命令:
+#### SSH 部署私钥的实测结论(2026-07-10,避免重复排查)
+
+排查 SSH prep 失败时踩过的坑,记录如下:
+
+- 目标机 `jp-xhttp-contabo.svc.plus` 与 `install.svc.plus` **是同一台 VPS**(都解析到 `46.250.251.132`,容器名 `accounts-managed-prod-contabo`)。
+- 该机 root `authorized_keys` 有 3 把公钥,其中两把可用于 CI:
+  - `SHA256:gzdFOEMwseZMm28xj/OMgAw5DNhAMsZalvswt0yKO1o` — `github-actions@cloud-neutral-toolkit`(ED25519)
+  - `SHA256:OsewibjqqX2/22JWDNUfxxM0GcPae29DbSFJm9v1hGM` — `shenlan@…`(RSA 3072)
+- **Vault `kv/CICD` 里的 `SINGLE_NODE_VPS_SSH_PRIVATE_KEY` / `SSH_PRIVATE_DEPLOY_KEY` / `SSH_PRIVATE_DEPLOY_KEY_B64` / `SSH_PUBLIC_DEPLOY_KEY` 四个字段其实是同一把 —— 那把 `Osewib…` 的 RSA 键,不是 `gzdF…`**。别被"应该用 github-actions 键"误导:`Osewib` RSA 本就在 authorized_keys 里,能正常登录部署。
+- Vault 里存的 PEM **末尾缺换行**,本地 `ssh-keygen -yf` 会报 `invalid format`;CI 的 `.github/scripts/normalize-private-key.py` 会 `rstrip("\n")+"\n"` 自动补,故 CI 无碍。本地核验时先 `{ vault kv get -field=… ; echo; } > tmp` 补换行再 `ssh-keygen -yf tmp`。
+
+设置命令(值直接从 Vault 管道进 secret,不落屏):
 
 ```bash
-gh secret set SINGLE_NODE_VPS_SSH_PRIVATE_KEY -R ai-workspace-services/accounts < /path/to/ssh_key
-gh secret set OAUTH_GITHUB_CLIENT_SECRET     -R ai-workspace-services/accounts   # 交互粘贴
-gh secret set AUTH_TOKEN_PUBLIC_TOKEN        -R ai-workspace-services/accounts
-gh secret set AUTH_TOKEN_REFRESH_SECRET      -R ai-workspace-services/accounts
-gh secret set AUTH_TOKEN_ACCESS_SECRET       -R ai-workspace-services/accounts
-# SSH_KNOWN_HOSTS / WORKSPACE_REPO_TOKEN 同理
+export VAULT_ADDR=https://vault.svc.plus VAULT_TOKEN=<token>
+{ vault kv get -field=SINGLE_NODE_VPS_SSH_PRIVATE_KEY kv/CICD; echo; } \
+  | gh secret set SINGLE_NODE_VPS_SSH_PRIVATE_KEY -R ai-workspace-services/accounts
+vault kv get -field=GITHUB_CLIENT_SECRET      kv/accounts.svc.plus | gh secret set OAUTH_GITHUB_CLIENT_SECRET -R ai-workspace-services/accounts
+vault kv get -field=AUTH_TOKEN_PUBLIC_TOKEN   kv/accounts.svc.plus | gh secret set AUTH_TOKEN_PUBLIC_TOKEN     -R ai-workspace-services/accounts
+vault kv get -field=AUTH_TOKEN_REFRESH_SECRET kv/accounts.svc.plus | gh secret set AUTH_TOKEN_REFRESH_SECRET   -R ai-workspace-services/accounts
+vault kv get -field=AUTH_TOKEN_ACCESS_SECRET  kv/accounts.svc.plus | gh secret set AUTH_TOKEN_ACCESS_SECRET    -R ai-workspace-services/accounts
 ```
 
 ### 3.2.2 gcloud/Secret Manager(仅 Cloud Run 路线,当前未启用,跳过)
