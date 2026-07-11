@@ -253,6 +253,12 @@ jobs:
           AUTH_TOKEN_PUBLIC_TOKEN: ${{ secrets.AUTH_TOKEN_PUBLIC_TOKEN }}
           AUTH_TOKEN_REFRESH_SECRET: ${{ secrets.AUTH_TOKEN_REFRESH_SECRET }}
           AUTH_TOKEN_ACCESS_SECRET: ${{ secrets.AUTH_TOKEN_ACCESS_SECRET }}
+          # Stripe billing (P0). Empty values keep Stripe endpoints disabled.
+          # STRIPE_ALLOWED_PRICE_IDS is a plain var (comma-separated price ids)
+          # until the billing_plans catalog (P1) replaces it.
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          STRIPE_ALLOWED_PRICE_IDS: ${{ vars.STRIPE_ALLOWED_PRICE_IDS }}
         run: |
           set -euo pipefail
 
