@@ -2803,8 +2803,21 @@ func (h *handler) oauthCallback(c *gin.Context) {
 		return
 	}
 
-	var user *store.User
 	ctx := c.Request.Context()
+
+	// Enforce the email blacklist on OAuth too, matching password register/login;
+	// otherwise a blocked address could bypass the ban via GitHub/Google sign-in.
+	blacklisted, err := h.store.IsBlacklisted(ctx, profile.Email)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "blacklist_check_failed", "failed to verify email status")
+		return
+	}
+	if blacklisted {
+		respondError(c, http.StatusForbidden, "email_blacklisted", "this email address is blocked")
+		return
+	}
+
+	var user *store.User
 	existingUser, err := h.store.GetUserByEmail(ctx, profile.Email)
 	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
 		respondError(c, http.StatusInternalServerError, "store_error", "database error")

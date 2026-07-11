@@ -284,6 +284,7 @@ type memoryStore struct {
 	accountPolicySnapshots  map[string]*AccountPolicySnapshot
 	nodeHealthSnapshots     map[string]*NodeHealthSnapshot
 	schedulerDecisions      map[string]*SchedulerDecision
+	blacklistedEmails       map[string]bool
 }
 
 type sessionRecord struct {
@@ -330,6 +331,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		accountPolicySnapshots:  make(map[string]*AccountPolicySnapshot),
 		nodeHealthSnapshots:     make(map[string]*NodeHealthSnapshot),
 		schedulerDecisions:      make(map[string]*SchedulerDecision),
+		blacklistedEmails:       make(map[string]bool),
 	}
 }
 
@@ -892,19 +894,33 @@ func (s *memoryStore) DeleteUser(ctx context.Context, id string) error {
 }
 
 func (s *memoryStore) AddToBlacklist(ctx context.Context, email string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blacklistedEmails[strings.ToLower(email)] = true
 	return nil
 }
 
 func (s *memoryStore) RemoveFromBlacklist(ctx context.Context, email string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.blacklistedEmails, strings.ToLower(email))
 	return nil
 }
 
 func (s *memoryStore) IsBlacklisted(ctx context.Context, email string) (bool, error) {
-	return false, nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.blacklistedEmails[strings.ToLower(email)], nil
 }
 
 func (s *memoryStore) ListBlacklist(ctx context.Context) ([]string, error) {
-	return []string{}, nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	emails := make([]string, 0, len(s.blacklistedEmails))
+	for email := range s.blacklistedEmails {
+		emails = append(emails, email)
+	}
+	return emails, nil
 }
 
 func (s *memoryStore) UpsertAgent(ctx context.Context, agent *Agent) error {

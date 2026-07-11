@@ -545,6 +545,52 @@ func TestOAuthCallbackIssuesOneTimeExchangeCode(t *testing.T) {
 	}
 }
 
+func TestOAuthCallbackRejectsBlacklistedEmail(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	memStore := store.NewMemoryStore()
+	if err := memStore.AddToBlacklist(context.Background(), "blocked@example.com"); err != nil {
+		t.Fatalf("seed blacklist: %v", err)
+	}
+
+	router := gin.New()
+	profile := &auth.OAuthUserProfile{
+		ID:       "oauth-blocked-1",
+		Email:    "blocked@example.com",
+		Name:     "Blocked User",
+		Verified: true,
+	}
+	RegisterRoutes(
+		router,
+		WithStore(memStore),
+		WithOAuthProviders(map[string]auth.OAuthProvider{
+			"github": &stubOAuthProvider{profile: profile},
+		}),
+		WithOAuthFrontendURL("https://console.svc.plus"),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/oauth/callback/github?code=test-oauth-code", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected blacklisted oauth login to be forbidden, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp apiResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error != "email_blacklisted" {
+		t.Fatalf("expected email_blacklisted error, got %#v", resp.Error)
+	}
+
+	// The blocked address must not have been auto-registered.
+	if _, err := memStore.GetUserByEmail(context.Background(), profile.Email); !errors.Is(err, store.ErrUserNotFound) {
+		t.Fatalf("expected blacklisted email to not be registered, got err=%v", err)
+	}
+}
+
 func TestSyncConfigSnapshotReturnsRenderedJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
