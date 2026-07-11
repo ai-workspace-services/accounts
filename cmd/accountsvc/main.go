@@ -1043,6 +1043,15 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		logger.Warn("failed to seed default billing plans", "err", err)
 	}
 
+	if enabled, err := st.EnsureBillingEventQueue(ctx); err != nil {
+		logger.Warn("failed to prepare billing event queue", "err", err)
+	} else if enabled {
+		logger.Info("billing event queue ready", "queue", store.BillingEventQueueName)
+	} else {
+		logger.Warn("pgmq extension unavailable; billing event publishing disabled",
+			"hint", "run CREATE EXTENSION pgmq as superuser (image ships pgmq v1.8.0)")
+	}
+
 	gormSource, err := xrayconfig.NewGormClientSource(gormDB)
 	if err != nil {
 		return err

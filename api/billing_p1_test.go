@@ -22,6 +22,26 @@ import (
 
 const testStripeWebhookSecret = "whsec_test_secret"
 
+// billingEventRecorder is implemented by the memory store, standing in for
+// the PGMQ billing_events queue in unit tests.
+type billingEventRecorder interface {
+	BillingEventsForTest() []store.BillingEvent
+}
+
+func billingEventTypes(t *testing.T, st store.Store) []string {
+	t.Helper()
+	recorder, ok := st.(billingEventRecorder)
+	if !ok {
+		t.Fatalf("store does not record billing events")
+	}
+	events := recorder.BillingEventsForTest()
+	types := make([]string, 0, len(events))
+	for _, event := range events {
+		types = append(types, event.Type)
+	}
+	return types
+}
+
 func signStripePayload(t *testing.T, payload []byte) string {
 	t.Helper()
 	timestamp := fmt.Sprintf("%d", time.Now().Unix())
@@ -163,9 +183,23 @@ func TestStripeSubscriptionCreatedSyncsEntitlementsAndDedups(t *testing.T) {
 	if err := st.UpsertAccountBillingProfile(ctx, profile); err != nil {
 		t.Fatalf("tamper profile: %v", err)
 	}
+	eventsBefore := billingEventTypes(t, st)
+	foundActivated := false
+	for _, typ := range eventsBefore {
+		if typ == "subscription_activated" {
+			foundActivated = true
+		}
+	}
+	if !foundActivated {
+		t.Fatalf("expected subscription_activated billing event, got %v", eventsBefore)
+	}
+
 	rec := postStripeEvent(t, router, payload)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"duplicate":true`) {
 		t.Fatalf("expected duplicate ack, got %d %s", rec.Code, rec.Body.String())
+	}
+	if after := billingEventTypes(t, st); len(after) != len(eventsBefore) {
+		t.Fatalf("replay published extra billing events: before=%v after=%v", eventsBefore, after)
 	}
 	after, err := st.GetAccountBillingProfile(ctx, user.ID)
 	if err != nil {

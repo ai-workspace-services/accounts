@@ -19,6 +19,11 @@
 - **API**:公开 `GET /api/billing/plans`(active only,定价页用);admin `GET/PUT/DELETE /api/auth/admin/billing/plans[/:planId]`(复用 admin.settings.read/write 权限)
 - **测试**:签名 webhook 全链路(created 同步+去重重放防篡改、deleted 降级)、arrears/重置单测、目录校验优先级、公开/管理端点、OAuth trial 权益;`go test ./...` 7 包全过
 
+## 增补(同分支第二提交):PGMQ 事件队列 + Vault 路径
+
+- **PGMQ `billing_events` 队列**(扩展 pgmq v1.8.0,postgresql.svc.plus 运行时镜像内置,线上 accounts 库 available 未安装):accounts 在 entitlement sync 各点位发布紧凑生命周期事件(`subscription_activated/updated`、`invoice_paid`、`payment_failed`、`subscription_deleted`、`trial_provisioned`)。启动时 `EnsureBillingEventQueue`:检测/尝试 `CREATE EXTENSION pgmq` + `pgmq.create('billing_events')`,失败则**优雅降级为 no-op**(日志提示 operator 以 superuser 建扩展)。发布 best-effort,webhook 流程绝不因队列失败而失败;去重重放不重复发布(有测试断言)。消费方(billing-service reconcile/催缴/通知)后续接,accounts 不感知。
+- **Vault 路径规划**:Stripe 密钥归 **`kv/billing-service`**(`STRIPE_SECRET_KEY`、`STRIPE_WEBHOOK_SECRET`),与 accounts 的 OAuth 密钥(kv/accounts.svc.plus)分域;GH secrets 名不变。
+
 ## 设计要点
 
 - 保留既有 profile 的 `base_price_per_byte`(目录暂不管每字节单价,billing-service 默认价适用)

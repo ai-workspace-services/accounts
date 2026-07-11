@@ -589,7 +589,14 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			return err
 		}
 		if userID := strings.TrimSpace(subscription.Metadata["user_id"]); userID != "" {
-			return h.downgradeToFreePlan(ctx, userID)
+			if err := h.downgradeToFreePlan(ctx, userID); err != nil {
+				return err
+			}
+			h.publishBillingEvent(ctx, &store.BillingEvent{
+				Type: "subscription_deleted", UserID: userID,
+				PlanID: strings.TrimSpace(subscription.Metadata["plan_id"]),
+				PriceID: subscriptionPriceID(&subscription), ExternalID: subscription.ID,
+			})
 		}
 		return nil
 	case "invoice.paid", "invoice.payment_failed":
@@ -615,7 +622,15 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if event.Type == "invoice.payment_failed" {
 			// Dunning step 1: mark arrears; time-based escalation to
 			// throttled/suspended is billing-service's job (P1.5).
-			return h.markAccountArrears(ctx, userID)
+			if err := h.markAccountArrears(ctx, userID); err != nil {
+				return err
+			}
+			h.publishBillingEvent(ctx, &store.BillingEvent{
+				Type: "payment_failed", UserID: userID,
+				PlanID: strings.TrimSpace(sub.Metadata["plan_id"]),
+				PriceID: subscriptionPriceID(sub), ExternalID: sub.ID,
+			})
+			return nil
 		}
 		// invoice.paid renews the billing period: re-arm quota and clear
 		// arrears from the plan the subscription is on.
@@ -630,7 +645,14 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
-		return h.resetQuotaForPlan(ctx, userID, plan)
+		if err := h.resetQuotaForPlan(ctx, userID, plan); err != nil {
+			return err
+		}
+		h.publishBillingEvent(ctx, &store.BillingEvent{
+			Type: "invoice_paid", UserID: userID,
+			PlanID: plan.PlanID, PriceID: subscriptionPriceID(sub), ExternalID: sub.ID,
+		})
+		return nil
 	default:
 		return nil
 	}
@@ -678,6 +700,14 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 	if !strings.EqualFold(strings.TrimSpace(plan.Kind), "trial") {
 		h.supersedeActiveTrials(ctx, userID)
 	}
+	eventType := "subscription_updated"
+	if created {
+		eventType = "subscription_activated"
+	}
+	h.publishBillingEvent(ctx, &store.BillingEvent{
+		Type: eventType, UserID: userID,
+		PlanID: plan.PlanID, PriceID: subscriptionPriceID(source), ExternalID: source.ID,
+	})
 	return nil
 }
 

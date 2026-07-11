@@ -165,5 +165,22 @@ func (h *handler) provisionTrialEntitlements(ctx context.Context, userID string)
 	}
 	if err := h.resetQuotaForPlan(ctx, userID, plan); err != nil {
 		slog.Warn("failed to reset trial quota", "err", err, "userID", userID)
+		return
+	}
+	h.publishBillingEvent(ctx, &store.BillingEvent{
+		Type: "trial_provisioned", UserID: userID, PlanID: plan.PlanID,
+	})
+}
+
+// publishBillingEvent enqueues a lifecycle notification on the PGMQ
+// billing_events queue. Best-effort: consumers (billing-service reconcile,
+// dunning, notifications) must tolerate gaps and the webhook flow never
+// fails because the queue is unavailable.
+func (h *handler) publishBillingEvent(ctx context.Context, event *store.BillingEvent) {
+	if event == nil {
+		return
+	}
+	if err := h.store.PublishBillingEvent(ctx, event); err != nil {
+		slog.Warn("failed to publish billing event", "err", err, "type", event.Type, "userID", event.UserID)
 	}
 }

@@ -243,6 +243,11 @@ type Store interface {
 	// reports whether it was already processed (idempotent replay guard).
 	BeginStripeWebhookEvent(ctx context.Context, event *StripeWebhookEvent) (alreadyProcessed bool, err error)
 	FinishStripeWebhookEvent(ctx context.Context, eventID string, procErr error) error
+	// EnsureBillingEventQueue prepares the PGMQ billing_events queue and
+	// reports whether publishing is enabled (extension present). Publishing
+	// is best-effort and silently no-ops when disabled.
+	EnsureBillingEventQueue(ctx context.Context) (bool, error)
+	PublishBillingEvent(ctx context.Context, event *BillingEvent) error
 
 	UpsertNodeHealthSnapshot(ctx context.Context, snapshot *NodeHealthSnapshot) error
 	ListLatestNodeHealthSnapshots(ctx context.Context) ([]NodeHealthSnapshot, error)
@@ -298,6 +303,7 @@ type memoryStore struct {
 	blacklistedEmails       map[string]bool
 	billingPlans            map[string]*BillingPlan
 	stripeWebhookEvents     map[string]*StripeWebhookEvent
+	billingEvents           []BillingEvent
 }
 
 type sessionRecord struct {

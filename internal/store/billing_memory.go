@@ -121,3 +121,31 @@ func (s *memoryStore) FinishStripeWebhookEvent(ctx context.Context, eventID stri
 	event.LastError = ""
 	return nil
 }
+
+func (s *memoryStore) EnsureBillingEventQueue(ctx context.Context) (bool, error) {
+	return true, nil
+}
+
+func (s *memoryStore) PublishBillingEvent(ctx context.Context, event *BillingEvent) error {
+	if event == nil {
+		return nil
+	}
+	if _, err := event.payload(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored := *event
+	s.billingEvents = append(s.billingEvents, stored)
+	return nil
+}
+
+// BillingEventsForTest returns a copy of the published events; the memory
+// store stands in for pgmq in unit tests.
+func (s *memoryStore) BillingEventsForTest() []BillingEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	events := make([]BillingEvent, len(s.billingEvents))
+	copy(events, s.billingEvents)
+	return events
+}

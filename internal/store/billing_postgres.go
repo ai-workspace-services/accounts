@@ -217,3 +217,39 @@ func orEmptyFeatures(m map[string]any) map[string]any {
 	}
 	return m
 }
+
+// EnsureBillingEventQueue prepares the pgmq queue. The extension ships in the
+// postgresql.svc.plus runtime image (pgmq v1.8.0) but may need a one-time
+// CREATE EXTENSION by a superuser; absence downgrades publishing to a no-op.
+func (s *postgresStore) EnsureBillingEventQueue(ctx context.Context) (bool, error) {
+	var installed bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pgmq')`).Scan(&installed); err != nil {
+		return false, err
+	}
+	if !installed {
+		// Best-effort: succeeds when the role has the privilege, otherwise
+		// the operator runs CREATE EXTENSION pgmq once as superuser.
+		if _, err := s.db.ExecContext(ctx, `CREATE EXTENSION IF NOT EXISTS pgmq`); err != nil {
+			s.billingEventsEnabled.Store(false)
+			return false, nil
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `SELECT pgmq.create($1)`, BillingEventQueueName); err != nil {
+		s.billingEventsEnabled.Store(false)
+		return false, err
+	}
+	s.billingEventsEnabled.Store(true)
+	return true, nil
+}
+
+func (s *postgresStore) PublishBillingEvent(ctx context.Context, event *BillingEvent) error {
+	if event == nil || !s.billingEventsEnabled.Load() {
+		return nil
+	}
+	payload, err := event.payload()
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `SELECT pgmq.send($1, $2::jsonb)`, BillingEventQueueName, []byte(payload))
+	return err
+}
