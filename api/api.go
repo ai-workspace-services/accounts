@@ -1538,6 +1538,15 @@ func (h *handler) requireAuthenticatedUser(c *gin.Context) (*store.User, bool) {
 		return nil, false
 	}
 
+	// Suspended accounts may hold a valid session (they can still log in) but
+	// every authenticated feature is locked, matching auth.RequireActiveUser on
+	// the token-middleware groups. This is the single choke point for handlers
+	// that authenticate in-handler (account usage/billing, config sync, etc.).
+	if !user.Active {
+		respondError(c, http.StatusForbidden, "account_suspended", "your account has been suspended")
+		return nil, false
+	}
+
 	return user, true
 }
 

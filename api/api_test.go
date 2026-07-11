@@ -545,6 +545,61 @@ func TestOAuthCallbackIssuesOneTimeExchangeCode(t *testing.T) {
 	}
 }
 
+// A suspended (Active=false) account keeps a valid session — it can still log
+// in — but every authenticated feature must be locked, including the handlers
+// that authenticate in-handler via requireAuthenticatedUser (e.g. account
+// usage/billing), which are not covered by the RequireActiveUser middleware.
+func TestSuspendedUserLockedFromInHandlerAuthRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := &store.User{
+		Name:          "Paused User",
+		Email:         "paused@example.com",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        false,
+	}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create paused user: %v", err)
+	}
+	// CreateUser forces Active=true; suspend the account explicitly.
+	created, err := st.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	created.Active = false
+	if err := st.UpdateUser(ctx, created); err != nil {
+		t.Fatalf("suspend user: %v", err)
+	}
+
+	token := "paused-session-token"
+	if err := st.CreateSession(ctx, token, user.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create paused session: %v", err)
+	}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/account/usage/summary", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected suspended account to be forbidden, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp apiResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error != "account_suspended" {
+		t.Fatalf("expected account_suspended error, got %#v", resp.Error)
+	}
+}
+
 func TestOAuthCallbackRejectsBlacklistedEmail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
