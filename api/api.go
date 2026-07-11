@@ -402,6 +402,11 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.GET("/admin/homepage-video", h.getHomepageVideoSettings)
 	authProtected.PUT("/admin/homepage-video", h.updateHomepageVideoSettings)
 
+	// Billing plan catalog CRUD (billing P1); reuses admin settings permissions.
+	authProtected.GET("/admin/billing/plans", h.adminListBillingPlans)
+	authProtected.PUT("/admin/billing/plans/:planId", h.adminUpsertBillingPlan)
+	authProtected.DELETE("/admin/billing/plans/:planId", h.adminDeleteBillingPlan)
+
 	// Backward-compatible auth-scoped admin routes consumed by the dashboard BFF.
 	authProtected.GET("/admin/users/metrics", h.adminUsersMetrics)
 	authProtected.POST("/admin/users", h.createCustomUser)
@@ -431,6 +436,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup := r.Group("/api/internal")
 
 	r.POST("/api/billing/stripe/webhook", h.stripeWebhook)
+	// Public plan catalog for the pricing page (billing P1).
+	r.GET("/api/billing/plans", h.listPublicBillingPlans)
 	internalGroup.Use(auth.InternalAuthMiddleware())
 	internalGroup.GET("/public-overview", h.internalPublicOverview)
 	internalGroup.GET("/sandbox/guest", h.internalSandboxGuest)
@@ -2856,12 +2863,14 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			Provider:      "trial",
 			PaymentMethod: "trial",
 			Kind:          "trial",
-			PlanID:        "TRIAL-7D",
+			PlanID:        store.BillingPlanTrial7D,
 			ExternalID:    fmt.Sprintf("trial-%s", user.ID),
 			Status:        "active",
 			Meta:          map[string]any{"expiresAt": trialExpiresAt},
 		}
 		h.store.UpsertSubscription(ctx, trial)
+		// Apply catalog entitlements (billing profile + quota) for the trial.
+		h.provisionTrialEntitlements(ctx, user.ID)
 	} else {
 		user = existingUser
 		// Ensure user is verified if they logged in via OAuth

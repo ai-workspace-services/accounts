@@ -13,4 +13,5 @@
 
 | 日期 | 任务 | 状态 | 关联 PR |
 |---|---|---|---|
+| 2026-07-11 | [Stripe 计费 P1(目录/审计/entitlement sync)](2026-07-11-stripe-billing-p1.md) | ⏳ 待合并 | accounts 本 PR;前置 #18 + playbooks #121 |
 | 2026-07-11 | [OAuth 注册登录(GitHub/Google)](2026-07-11-oauth-login.md) | ✅ GitHub+Google 均上线 | accounts #12 #13 #14 #16;playbooks #111 #112 |

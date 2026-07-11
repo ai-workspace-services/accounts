@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -77,6 +79,7 @@ type stripeSubscription struct {
 }
 
 type stripeEvent struct {
+	ID   string `json:"id"`
 	Type string `json:"type"`
 	Data struct {
 		Object json.RawMessage `json:"object"`
@@ -139,6 +142,37 @@ func (c *stripeClient) validPriceID(priceID string) bool {
 	}
 	_, ok := c.allowedPriceID[priceID]
 	return ok
+}
+
+// validCheckoutPrice prefers the billing_plans catalog (billing P1): a price
+// is purchasable when an active plan carries it. The STRIPE_ALLOWED_PRICE_IDS
+// env allowlist remains as a bootstrap fallback while the catalog is empty.
+func (h *handler) validCheckoutPrice(ctx context.Context, priceID string) bool {
+	trimmed := strings.TrimSpace(priceID)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "price_") {
+		return false
+	}
+	plan, err := h.store.GetBillingPlanByPriceID(ctx, trimmed)
+	if err == nil {
+		return plan.Active
+	}
+	if !errors.Is(err, store.ErrBillingPlanNotFound) {
+		slog.Warn("billing plan lookup failed during checkout validation", "err", err, "priceID", trimmed)
+		return false
+	}
+	// Catalog has no entry for this price: only allow via the legacy env
+	// allowlist when no catalog price exists at all (bootstrap mode).
+	plans, err := h.store.ListBillingPlans(ctx, false)
+	if err != nil {
+		slog.Warn("billing plan list failed during checkout validation", "err", err)
+		return false
+	}
+	for _, p := range plans {
+		if strings.TrimSpace(p.StripePriceID) != "" {
+			return false // catalog is authoritative once any active price exists
+		}
+	}
+	return h.stripe.validPriceID(trimmed)
 }
 
 func (c *stripeClient) normalizeMode(mode string) string {
@@ -394,7 +428,7 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 	req.SourcePath = strings.TrimSpace(req.SourcePath)
 	req.Mode = h.stripe.normalizeMode(req.Mode)
 
-	if req.PlanID == "" || req.ProductSlug == "" || !h.stripe.validPriceID(req.StripePriceID) {
+	if req.PlanID == "" || req.ProductSlug == "" || !h.validCheckoutPrice(c.Request.Context(), req.StripePriceID) {
 		respondError(c, http.StatusBadRequest, "invalid_billing_plan", "billing plan is invalid or unavailable")
 		return
 	}
@@ -464,7 +498,33 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 		return
 	}
 
-	if err := h.handleStripeEvent(c.Request.Context(), event); err != nil {
+	// Persist the event before processing: replays of already-processed
+	// events are acknowledged without side effects, and failures leave an
+	// auditable record (billing P1).
+	tracked := strings.TrimSpace(event.ID) != ""
+	if tracked {
+		alreadyProcessed, err := h.store.BeginStripeWebhookEvent(c.Request.Context(), &store.StripeWebhookEvent{
+			EventID:   event.ID,
+			EventType: event.Type,
+			Payload:   json.RawMessage(body),
+		})
+		if err != nil {
+			respondError(c, http.StatusInternalServerError, "stripe_event_persist_failed", "failed to record stripe event")
+			return
+		}
+		if alreadyProcessed {
+			c.JSON(http.StatusOK, gin.H{"received": true, "duplicate": true})
+			return
+		}
+	}
+
+	procErr := h.handleStripeEvent(c.Request.Context(), event)
+	if tracked {
+		if err := h.store.FinishStripeWebhookEvent(c.Request.Context(), event.ID, procErr); err != nil {
+			slog.Warn("failed to finalize stripe webhook event record", "err", err, "eventID", event.ID)
+		}
+	}
+	if procErr != nil {
 		respondError(c, http.StatusBadGateway, "stripe_webhook_failed", "failed to process stripe event")
 		return
 	}
@@ -484,7 +544,10 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			if err != nil {
 				return err
 			}
-			return h.upsertStripeSubscription(ctx, sub, session.Customer)
+			if err := h.upsertStripeSubscription(ctx, sub, session.Customer); err != nil {
+				return err
+			}
+			return h.syncSubscriptionEntitlements(ctx, sub, true)
 		}
 
 		userID := strings.TrimSpace(session.Metadata["user_id"])
@@ -508,12 +571,27 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			}),
 		}
 		return h.store.UpsertSubscription(ctx, sub)
-	case "customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted":
+	case "customer.subscription.created", "customer.subscription.updated":
 		var subscription stripeSubscription
 		if err := json.Unmarshal(event.Data.Object, &subscription); err != nil {
 			return err
 		}
-		return h.upsertStripeSubscription(ctx, &subscription, customerIDFromAny(subscription.Customer))
+		if err := h.upsertStripeSubscription(ctx, &subscription, customerIDFromAny(subscription.Customer)); err != nil {
+			return err
+		}
+		return h.syncSubscriptionEntitlements(ctx, &subscription, event.Type == "customer.subscription.created")
+	case "customer.subscription.deleted":
+		var subscription stripeSubscription
+		if err := json.Unmarshal(event.Data.Object, &subscription); err != nil {
+			return err
+		}
+		if err := h.upsertStripeSubscription(ctx, &subscription, customerIDFromAny(subscription.Customer)); err != nil {
+			return err
+		}
+		if userID := strings.TrimSpace(subscription.Metadata["user_id"]); userID != "" {
+			return h.downgradeToFreePlan(ctx, userID)
+		}
+		return nil
 	case "invoice.paid", "invoice.payment_failed":
 		var invoice stripeInvoice
 		if err := json.Unmarshal(event.Data.Object, &invoice); err != nil {
@@ -527,10 +605,80 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err != nil {
 			return err
 		}
-		return h.upsertStripeSubscription(ctx, sub, customerIDFromAny(invoice.Customer))
+		if err := h.upsertStripeSubscription(ctx, sub, customerIDFromAny(invoice.Customer)); err != nil {
+			return err
+		}
+		userID := strings.TrimSpace(sub.Metadata["user_id"])
+		if userID == "" {
+			return nil
+		}
+		if event.Type == "invoice.payment_failed" {
+			// Dunning step 1: mark arrears; time-based escalation to
+			// throttled/suspended is billing-service's job (P1.5).
+			return h.markAccountArrears(ctx, userID)
+		}
+		// invoice.paid renews the billing period: re-arm quota and clear
+		// arrears from the plan the subscription is on.
+		plan, err := h.resolveBillingPlan(ctx, subscriptionPriceID(sub), sub.Metadata["plan_id"])
+		if err != nil {
+			if errors.Is(err, store.ErrBillingPlanNotFound) {
+				slog.Warn("stripe invoice.paid without matching billing plan", "userID", userID, "priceID", subscriptionPriceID(sub))
+				return nil
+			}
+			return err
+		}
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+			return err
+		}
+		return h.resetQuotaForPlan(ctx, userID, plan)
 	default:
 		return nil
 	}
+}
+
+// subscriptionPriceID extracts the first line-item price id.
+func subscriptionPriceID(source *stripeSubscription) string {
+	if source == nil || len(source.Items.Data) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(source.Items.Data[0].Price.ID)
+}
+
+// syncSubscriptionEntitlements applies catalog entitlements for an active or
+// trialing subscription; freshly created subscriptions also re-arm quota and
+// supersede any live trial.
+func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stripeSubscription, created bool) error {
+	if source == nil {
+		return nil
+	}
+	userID := strings.TrimSpace(source.Metadata["user_id"])
+	if userID == "" {
+		return nil
+	}
+	status := strings.ToLower(strings.TrimSpace(source.Status))
+	if status != "active" && status != "trialing" {
+		return nil
+	}
+	plan, err := h.resolveBillingPlan(ctx, subscriptionPriceID(source), source.Metadata["plan_id"])
+	if err != nil {
+		if errors.Is(err, store.ErrBillingPlanNotFound) {
+			slog.Warn("stripe subscription without matching billing plan", "userID", userID, "priceID", subscriptionPriceID(source))
+			return nil
+		}
+		return err
+	}
+	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+		return err
+	}
+	if created {
+		if err := h.resetQuotaForPlan(ctx, userID, plan); err != nil {
+			return err
+		}
+	}
+	if !strings.EqualFold(strings.TrimSpace(plan.Kind), "trial") {
+		h.supersedeActiveTrials(ctx, userID)
+	}
+	return nil
 }
 
 func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSubscription, customerID string) error {

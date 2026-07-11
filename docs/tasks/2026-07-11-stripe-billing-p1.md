@@ -1,0 +1,34 @@
+# Stripe 计费 P1:套餐目录 + webhook 审计 + entitlement sync
+
+> **Status**: ⏳ 代码完成 + 全量测试通过,待合并部署
+> **Date**: 2026-07-11
+> **Related PRs**: 本 PR(accounts,分支 `feat/stripe-billing-p1`);前置 P0 = accounts [#18](https://github.com/ai-workspace-services/accounts/pull/18) + playbooks [#121](https://github.com/ai-workspace-infra/playbooks/pull/121) [MERGED]
+> **设计文档**: billing-service `docs/stripe-billing-integration-plan.md` §4 P1
+
+## 实现内容
+
+- **`billing_plans` 套餐目录**(数据驱动核心):store 模型/接口 + memory/postgres 实现;`applyBillingSchema` 启动时幂等建表;种子 `TRIAL-7D`(10GiB/7天)+ `FREE`(仅缺席时插入,不覆盖运营修改)
+- **`stripe_webhook_events` 审计/去重**:webhook 先落事件再处理;重放已处理事件 → `{"received":true,"duplicate":true}` 零副作用;失败留 `failed`+`last_error` 可重放
+- **entitlement sync**(`api/entitlements.go`):
+  - `subscription.created/updated`(active/trialing)→ 按目录写 `account_billing_profiles`(package/quota/倍率,`pricing_rule_version=plan:<id>`);created 同时重置 `account_quota_states`;非 trial 计划将存量 trial 订阅标 `superseded`
+  - `invoice.paid` → 重置配额 + 清 arrears(续期)
+  - `invoice.payment_failed` → `arrears=true`(梯度升级归 billing-service P1.5)
+  - `subscription.deleted` → 降级 FREE 档案 + 清零配额
+  - OAuth 首登 trial → 同步应用 TRIAL-7D 目录权益
+- **checkout 校验读目录**:目录有带价 active 计划时目录为准;目录为空时回退 `STRIPE_ALLOWED_PRICE_IDS`(bootstrap 模式)
+- **API**:公开 `GET /api/billing/plans`(active only,定价页用);admin `GET/PUT/DELETE /api/auth/admin/billing/plans[/:planId]`(复用 admin.settings.read/write 权限)
+- **测试**:签名 webhook 全链路(created 同步+去重重放防篡改、deleted 降级)、arrears/重置单测、目录校验优先级、公开/管理端点、OAuth trial 权益;`go test ./...` 7 包全过
+
+## 设计要点
+
+- 保留既有 profile 的 `base_price_per_byte`(目录暂不管每字节单价,billing-service 默认价适用)
+- 事件无 `id` 时(理论不发生)跳过去重照常处理
+- kind 白名单 `trial|subscription|paygo_topup`(paygo 表结构预留,P2+)
+
+## 遗留待办
+
+- [ ] 合并部署(applyBillingSchema 自动建表 + 种子)
+- [ ] 运营在 admin 后台录入首批付费套餐(plan_id ↔ stripe_price_id)
+- [ ] Stripe Dashboard 建 Products/Prices + webhook,secrets 入 Vault/GH(P0 已接线,值未配)
+- [ ] P1.5(billing-service):arrears 14 天 → suspended + listAgentUsers/identities 过滤
+- [ ] P2:7 天低用量退款、升降级 proration、console 定价页接 /api/billing/plans
