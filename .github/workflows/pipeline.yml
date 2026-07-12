@@ -22,6 +22,24 @@ on:
         required: false
         default: ""
         type: string
+      vault_addr:
+        description: >-
+          Fallback Vault address, only used when vault_token is also set
+          (bypasses the github-actions-accounts OIDC role). Leave empty to
+          use https://vault.svc.plus via OIDC.
+        required: false
+        default: ""
+        type: string
+      vault_token:
+        description: >-
+          Fallback Vault token (method=token) for when the OIDC JWT role is
+          broken or unavailable. The value is visible in this run's Inputs
+          summary — GitHub does not mask workflow_dispatch inputs. Prefer
+          fixing the OIDC role over using this repeatedly, and revoke the
+          token after use.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -223,6 +241,44 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "ansible-core==2.18.3"
 
+      # Deploy tokens come from Vault kv/accounts.svc.plus via the repo's OIDC
+      # role (see docs/tasks/2026-07-11-oauth-login.md secret mapping). GitHub
+      # secrets remain as a fallback during the migration window only.
+      - name: Mask Vault Token Fallback Input
+        if: ${{ inputs.vault_token != '' }}
+        run: echo "::add-mask::${{ inputs.vault_token }}"
+
+      - name: Load Vault secrets
+        id: vault
+        uses: hashicorp/vault-action@v2
+        with:
+          url: ${{ inputs.vault_addr != '' && inputs.vault_addr || 'https://vault.svc.plus' }}
+          method: ${{ inputs.vault_token != '' && 'token' || 'jwt' }}
+          token: ${{ inputs.vault_token }}
+          role: github-actions-accounts
+          jwtGithubAudience: vault
+          exportEnv: false
+          ignoreNotFound: true
+          secrets: |
+            kv/data/accounts.svc.plus INTERNAL_SERVICE_TOKEN | INTERNAL_SERVICE_TOKEN ;
+            kv/data/accounts.svc.plus BRIDGE_REVIEW_AUTH_TOKEN | BRIDGE_REVIEW_AUTH_TOKEN
+
+      - name: Validate Deploy Secrets
+        env:
+          BRIDGE_AUTH_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN || secrets.BRIDGE_AUTH_TOKEN }}
+          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN || secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${BRIDGE_AUTH_TOKEN}" ]]; then
+            echo "::error::BRIDGE_AUTH_TOKEN is empty. Ensure kv/accounts.svc.plus INTERNAL_SERVICE_TOKEN is readable via the github-actions-accounts Vault role."
+            exit 1
+          fi
+          if [[ -z "${BRIDGE_REVIEW_AUTH_TOKEN}" ]]; then
+            echo "::error::BRIDGE_REVIEW_AUTH_TOKEN is empty. Ensure kv/accounts.svc.plus BRIDGE_REVIEW_AUTH_TOKEN is readable via the github-actions-accounts Vault role."
+            exit 1
+          fi
+
       - name: Prepare Runner SSH Access
         env:
           SINGLE_NODE_VPS_SSH_PRIVATE_KEY: ${{ secrets.SINGLE_NODE_VPS_SSH_PRIVATE_KEY }}
@@ -237,8 +293,11 @@ jobs:
         env:
           ACCOUNTS_IMAGE_REF: ${{ steps.deploy_image.outputs.image_ref }}
           ACCOUNTS_PULL_IMAGE: "true"
-          BRIDGE_AUTH_TOKEN: ${{ secrets.BRIDGE_AUTH_TOKEN }}
-          BRIDGE_REVIEW_AUTH_TOKEN: ${{ secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+          # Vault kv/accounts.svc.plus is the source of truth; the runbook
+          # maps INTERNAL_SERVICE_TOKEN to the bridge auth token. GitHub
+          # secrets are the migration-window fallback.
+          BRIDGE_AUTH_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN || secrets.BRIDGE_AUTH_TOKEN }}
+          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN || secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
           BRIDGE_SERVER_URL: https://xworkmate-bridge.svc.plus
           # OAUTH_GITHUB_* naming: Actions forbids secrets/vars starting with
           # GITHUB_; the playbook role maps these back to GITHUB_CLIENT_* env.
@@ -297,10 +356,29 @@ jobs:
       - name: Validate Deployed Accounts Service
         run: bash ./scripts/github-actions/validate-deploy.sh "${{ needs.build.outputs.service_image_ref }}" https://accounts.svc.plus
 
+      - name: Mask Vault Token Fallback Input
+        if: ${{ inputs.vault_token != '' }}
+        run: echo "::add-mask::${{ inputs.vault_token }}"
+
+      - name: Load Vault secrets
+        id: vault
+        uses: hashicorp/vault-action@v2
+        with:
+          url: ${{ inputs.vault_addr != '' && inputs.vault_addr || 'https://vault.svc.plus' }}
+          method: ${{ inputs.vault_token != '' && 'token' || 'jwt' }}
+          token: ${{ inputs.vault_token }}
+          role: github-actions-accounts
+          jwtGithubAudience: vault
+          exportEnv: false
+          ignoreNotFound: true
+          secrets: |
+            kv/data/accounts.svc.plus INTERNAL_SERVICE_TOKEN | INTERNAL_SERVICE_TOKEN ;
+            kv/data/accounts.svc.plus BRIDGE_REVIEW_AUTH_TOKEN | BRIDGE_REVIEW_AUTH_TOKEN
+
       - name: Validate Review XWorkmate Sync Contract
         env:
           REVIEW_ACCOUNT_EMAIL: review@svc.plus
           REVIEW_ACCOUNT_PASSWORD: ${{ secrets.REVIEW_ACCOUNT_PASSWORD }}
-          BRIDGE_AUTH_TOKEN: ${{ secrets.BRIDGE_AUTH_TOKEN }}
-          BRIDGE_REVIEW_AUTH_TOKEN: ${{ secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+          BRIDGE_AUTH_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN || secrets.BRIDGE_AUTH_TOKEN }}
+          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN || secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
         run: bash ./scripts/github-actions/validate-review-xworkmate-sync.sh https://accounts.svc.plus

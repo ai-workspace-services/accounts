@@ -15,6 +15,79 @@ Cloud Neutral Toolkit 的账号与身份服务 (Account Service).
 | 最低 | 1 CPU / 1GB RAM | 开发/小规模 |
 | 推荐 | 2 CPU / 2GB RAM | 生产建议 |
 
+### CI/CD 部署前置条件 (Vault JWT Role)
+
+`.github/workflows/pipeline.yml` 的 `deploy` / `validate` job 用
+`hashicorp/vault-action`（`method: jwt`，OIDC，无长期 GitHub secret）读取
+`kv/accounts.svc.plus` 下的部署期 token：
+
+| Vault key (`kv/data/accounts.svc.plus`) | 用途 | 映射到的部署变量 |
+|---|---|---|
+| `INTERNAL_SERVICE_TOKEN` | accounts → xworkmate-bridge 的服务间鉴权 | `BRIDGE_AUTH_TOKEN` |
+| `BRIDGE_REVIEW_AUTH_TOKEN` | Apple 审核只读账号 `review@svc.plus` 专用 bridge token | `BRIDGE_REVIEW_AUTH_TOKEN` |
+
+在 Vault 中必须预先配置好对应的 JWT role，否则 pipeline 在 `Validate Deploy
+Secrets` 步骤会直接 fail。本机需要先装 `vault` CLI，并对目标 Vault 完成
+`vault login`（或设好 `VAULT_ADDR` / `VAULT_TOKEN`）：
+
+```bash
+brew tap hashicorp/tap
+brew install hashicorp/tap/vault
+
+vault policy write github-actions-accounts - <<'EOF'
+path "kv/data/accounts.svc.plus" {
+  capabilities = ["read"]
+}
+path "kv/metadata/accounts.svc.plus" {
+  capabilities = ["read", "list"]
+}
+EOF
+
+vault write auth/jwt/role/github-actions-accounts - <<'EOF'
+{
+  "role_type": "jwt",
+  "user_claim": "repository",
+  "bound_audiences": ["vault"],
+  "bound_claims_type": "glob",
+  "bound_claims": {
+    "repository": "ai-workspace-services/accounts",
+    "sub": "repo:ai-workspace-services/accounts:*"
+  },
+  "token_policies": ["github-actions-accounts"],
+  "token_ttl": "20m",
+  "token_max_ttl": "30m"
+}
+EOF
+```
+
+`workflow_dispatch` 里的 `secrets.BRIDGE_AUTH_TOKEN` /
+`secrets.BRIDGE_REVIEW_AUTH_TOKEN` 仅作为 Vault 读取失败时的 fallback，长期
+应以 Vault 值为准。
+
+**手动触发时的 Vault fallback**：OIDC role（`github-actions-accounts`）失效或
+需要临时排障时，`workflow_dispatch` 提供两个可选 input：
+
+| Input | 作用 |
+|---|---|
+| `vault_addr` | 覆盖默认 `https://vault.svc.plus`；只在 `vault_token` 也填了才生效 |
+| `vault_token` | 提供后 `Load Vault secrets` 改用 `method: token` 直接鉴权，跳过 OIDC role |
+
+⚠️ **`vault_token` 会明文出现在这次 run 的 Inputs 摘要里** —— GitHub 不会像
+对待 repo/org secret 那样自动打码 `workflow_dispatch` 的手动输入，pipeline
+里加的 `::add-mask::` 只能防止它出现在后续步骤日志中，防不住触发页本身的
+回显。因此：
+
+- 只在 OIDC role 确认坏掉、需要临时验证时用，不要作为常规部署方式；
+- 用完后到 Vault 里 revoke 这个 token；
+- 优先修 `github-actions-accounts` role 本身（policy / bound_claims 见上），
+  而不是长期依赖这个 fallback。
+
+`XWORKMATE_VAULT_TOKEN`（accounts 服务运行时读取 `xworkmate/*` 密钥用的
+Vault token，与上面 CI 用的 OIDC 身份是两回事）**不**由这条 pipeline 管理或
+轮换：它只写在部署主机的 `app.env` 里，需要更新时手工改主机文件或走
+Vault UI，`playbooks` 侧的 `XWORKMATE_VAULT_TOKEN` 环境变量留空时会保留主机
+现值，不会被清空。
+
 ## 快速开始 (Quickstart)
 
 ### 一键初始化 (Setup Script)

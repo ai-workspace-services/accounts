@@ -65,6 +65,10 @@
 | SSH 部署私钥 | `kv/CICD:SINGLE_NODE_VPS_SSH_PRIVATE_KEY`(= shenlan RSA `Osewib…`,在目标机 authorized_keys) | secret `SINGLE_NODE_VPS_SSH_PRIVATE_KEY` | — |
 | Google client_id | — | var `OAUTH_GOOGLE_CLIENT_ID` | 待建 |
 | Google secret | `kv/accounts.svc.plus:GOOGLE_CLIENT_SECRET`(待加) | secret `OAUTH_GOOGLE_CLIENT_SECRET` | 待建 |
+| bridge 服务间 token | `kv/accounts.svc.plus:INTERNAL_SERVICE_TOKEN` | — (2026-07-12 改走 `hashicorp/vault-action` OIDC role `github-actions-accounts`,不再落 GH secret) | — |
+| 评审账号 bridge token | `kv/accounts.svc.plus:BRIDGE_REVIEW_AUTH_TOKEN` | — (同上,OIDC role 直读) | — |
+
+- accounts 服务运行时用来读 `xworkmate/*` 的 `XWORKMATE_VAULT_TOKEN` **不**经这条 pipeline 或任何 GH secret 管理,只写在部署主机 `app.env`,需要轮换时手工改主机文件 / Vault UI(见 README「CI/CD 部署前置条件」一节)。2026-07-12 曾尝试让 pipeline 用 GH secret 顺带轮换它,已撤销 — CI 只负责 `INTERNAL_SERVICE_TOKEN` / `BRIDGE_REVIEW_AUTH_TOKEN` 这两个部署期 token。
 
 - SSH 私钥坑:PEM 缺尾换行,本地 `ssh-keygen` 报 invalid format,CI `normalize-private-key.py` 会补。
 - callback URL:GitHub/Google 均指向 accounts 后端 `…/api/auth/oauth/callback/{provider}`。
