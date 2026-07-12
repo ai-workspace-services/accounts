@@ -258,10 +258,43 @@ jobs:
           role: github-actions-accounts
           jwtGithubAudience: vault
           exportEnv: false
+          # exportToken makes the job's Vault client token available as
+          # VAULT_TOKEN for the Mint Runtime Vault Token step below.
+          exportToken: true
           ignoreNotFound: true
           secrets: |
             kv/data/accounts.svc.plus INTERNAL_SERVICE_TOKEN | INTERNAL_SERVICE_TOKEN ;
             kv/data/accounts.svc.plus BRIDGE_REVIEW_AUTH_TOKEN | BRIDGE_REVIEW_AUTH_TOKEN
+
+      # Mint a fresh runtime Vault token for the accounts service on every
+      # deploy. This removes the manually managed XWORKMATE_VAULT_TOKEN: the
+      # short-lived OIDC job token creates an orphan periodic token scoped to
+      # the xworkmate-accounts policy, and the playbook writes it into the
+      # host's app.env. Fails loudly by design — a deploy that cannot rotate
+      # the runtime token would silently recreate the revoked-token outage.
+      # Requires the github-actions-accounts policy to grant sudo on
+      # auth/token/create-orphan (see README "CI/CD 部署前置条件").
+      - name: Mint Runtime Vault Token
+        id: runtime_vault_token
+        env:
+          VAULT_ADDR: ${{ inputs.vault_addr != '' && inputs.vault_addr || 'https://vault.svc.plus' }}
+        run: |
+          set -euo pipefail
+
+          response="$(curl --silent --show-error --fail \
+            --header "X-Vault-Token: ${VAULT_TOKEN}" \
+            --request POST \
+            --data '{"policies":["xworkmate-accounts"],"period":"768h","display_name":"accounts-svc-runtime"}' \
+            "${VAULT_ADDR}/v1/auth/token/create-orphan")"
+
+          token="$(jq -r '.auth.client_token // empty' <<<"${response}")"
+          if [[ -z "${token}" ]]; then
+            echo "::error::Failed to mint runtime Vault token. Ensure the github-actions-accounts policy grants sudo on auth/token/create-orphan and the xworkmate-accounts policy exists."
+            exit 1
+          fi
+
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
 
       - name: Validate Deploy Secrets
         env:
@@ -299,6 +332,10 @@ jobs:
           BRIDGE_AUTH_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN || secrets.BRIDGE_AUTH_TOKEN }}
           BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN || secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
           BRIDGE_SERVER_URL: https://xworkmate-bridge.svc.plus
+          # Freshly minted per deploy (Mint Runtime Vault Token step); the
+          # playbook rewrites the host's app.env XWORKMATE_VAULT_TOKEN with it
+          # so the accounts service never runs on a stale/revoked token.
+          XWORKMATE_VAULT_TOKEN: ${{ steps.runtime_vault_token.outputs.token }}
           # OAUTH_GITHUB_* naming: Actions forbids secrets/vars starting with
           # GITHUB_; the playbook role maps these back to GITHUB_CLIENT_* env.
           # Client ID is public but set as a repo variable to keep the literal

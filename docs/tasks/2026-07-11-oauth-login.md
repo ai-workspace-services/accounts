@@ -68,7 +68,7 @@
 | bridge 服务间 token | `kv/accounts.svc.plus:INTERNAL_SERVICE_TOKEN` | — (2026-07-12 改走 `hashicorp/vault-action` OIDC role `github-actions-accounts`,不再落 GH secret) | — |
 | 评审账号 bridge token | `kv/accounts.svc.plus:BRIDGE_REVIEW_AUTH_TOKEN` | — (同上,OIDC role 直读) | — |
 
-- accounts 服务运行时用来读 `xworkmate/*` 的 `XWORKMATE_VAULT_TOKEN` **不**经这条 pipeline 或任何 GH secret 管理,只写在部署主机 `app.env`,需要轮换时手工改主机文件 / Vault UI(见 README「CI/CD 部署前置条件」一节)。2026-07-12 曾尝试让 pipeline 用 GH secret 顺带轮换它,已撤销 — CI 只负责 `INTERNAL_SERVICE_TOKEN` / `BRIDGE_REVIEW_AUTH_TOKEN` 这两个部署期 token。
+- accounts 服务运行时用来读 `xworkmate/*` 的 `XWORKMATE_VAULT_TOKEN`:2026-07-12 最终方案是 **CI 每次部署自动铸造**(deploy job `Mint Runtime Vault Token` 用 OIDC job token 走 `auth/token/create-orphan` 铸 orphan periodic token,period 768h,policy `xworkmate-accounts`,playbook 写入主机 `app.env`)。不落任何 GH secret,不需手工轮换;部署间隔超 32 天需手动触发一次 deploy 续期。此前"GH secret 轮换"与"纯手工管理"两版方案均已被此方案取代(见 README「CI/CD 部署前置条件」)。
 
 - SSH 私钥坑:PEM 缺尾换行,本地 `ssh-keygen` 报 invalid format,CI `normalize-private-key.py` 会补。
 - callback URL:GitHub/Google 均指向 accounts 后端 `…/api/auth/oauth/callback/{provider}`。

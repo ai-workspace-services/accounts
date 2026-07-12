@@ -34,12 +34,29 @@ Secrets` 步骤会直接 fail。本机需要先装 `vault` CLI，并对目标 Va
 brew tap hashicorp/tap
 brew install hashicorp/tap/vault
 
+# accounts 服务运行时读写 xworkmate/* 密钥用的 policy —— CI 每次部署会以
+# 这个 policy 铸造一个新的 runtime token 写入主机(见下)
+vault policy write xworkmate-accounts - <<'EOF'
+path "kv/data/xworkmate/*" {
+  capabilities = ["create", "read", "update"]
+}
+path "kv/metadata/xworkmate/*" {
+  capabilities = ["read", "list"]
+}
+EOF
+
 vault policy write github-actions-accounts - <<'EOF'
 path "kv/data/accounts.svc.plus" {
   capabilities = ["read"]
 }
 path "kv/metadata/accounts.svc.plus" {
   capabilities = ["read", "list"]
+}
+
+# 允许 CI 为 accounts 服务铸造 orphan runtime token
+# (sudo 同时授权 orphan 创建与跨 policy 赋权)
+path "auth/token/create-orphan" {
+  capabilities = ["create", "update", "sudo"]
 }
 EOF
 
@@ -82,11 +99,19 @@ EOF
 - 优先修 `github-actions-accounts` role 本身（policy / bound_claims 见上），
   而不是长期依赖这个 fallback。
 
-`XWORKMATE_VAULT_TOKEN`（accounts 服务运行时读取 `xworkmate/*` 密钥用的
-Vault token，与上面 CI 用的 OIDC 身份是两回事）**不**由这条 pipeline 管理或
-轮换：它只写在部署主机的 `app.env` 里，需要更新时手工改主机文件或走
-Vault UI，`playbooks` 侧的 `XWORKMATE_VAULT_TOKEN` 环境变量留空时会保留主机
-现值，不会被清空。
+**运行时 token 自动轮换**：`XWORKMATE_VAULT_TOKEN`（accounts 服务运行时读取
+`xworkmate/*` 密钥用的 Vault token）**不需要手工管理**。deploy job 的
+`Mint Runtime Vault Token` 步骤在每次部署时用 OIDC job token 通过
+`auth/token/create-orphan` 铸造一个 orphan periodic token（`period: 768h`，
+policy `xworkmate-accounts`），playbook 将其写入主机 `app.env` 并重建容器。
+注意：
+
+- 铸造失败会**直接 fail 整个 deploy**（防止带着失效 token 静默上线——这正是
+  2026-07-12 review 账号同步事故的根源），所以合并该 pipeline 前必须先在
+  Vault 里执行上面的两个 `vault policy write`；
+- token 有效期 32 天（768h），每次部署都会换新——只要部署间隔不超过 32 天
+  就永远新鲜；若长时间不部署，手动触发一次 `workflow_dispatch` 即可续期；
+- 旧 token 不主动 revoke，到期自然失效。
 
 ## 快速开始 (Quickstart)
 
