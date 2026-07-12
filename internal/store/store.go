@@ -233,6 +233,22 @@ type Store interface {
 	GetAccountBillingProfile(ctx context.Context, accountUUID string) (*AccountBillingProfile, error)
 	UpsertAccountPolicySnapshot(ctx context.Context, snapshot *AccountPolicySnapshot) error
 	GetLatestAccountPolicySnapshot(ctx context.Context, accountUUID string) (*AccountPolicySnapshot, error)
+
+	ListBillingPlans(ctx context.Context, includeInactive bool) ([]BillingPlan, error)
+	GetBillingPlan(ctx context.Context, planID string) (*BillingPlan, error)
+	GetBillingPlanByPriceID(ctx context.Context, stripePriceID string) (*BillingPlan, error)
+	UpsertBillingPlan(ctx context.Context, plan *BillingPlan) error
+	DeleteBillingPlan(ctx context.Context, planID string) error
+	// BeginStripeWebhookEvent records an inbound event before processing and
+	// reports whether it was already processed (idempotent replay guard).
+	BeginStripeWebhookEvent(ctx context.Context, event *StripeWebhookEvent) (alreadyProcessed bool, err error)
+	FinishStripeWebhookEvent(ctx context.Context, eventID string, procErr error) error
+	// EnsureBillingEventQueue prepares the PGMQ billing_events queue and
+	// reports whether publishing is enabled (extension present). Publishing
+	// is best-effort and silently no-ops when disabled.
+	EnsureBillingEventQueue(ctx context.Context) (bool, error)
+	PublishBillingEvent(ctx context.Context, event *BillingEvent) error
+
 	UpsertNodeHealthSnapshot(ctx context.Context, snapshot *NodeHealthSnapshot) error
 	ListLatestNodeHealthSnapshots(ctx context.Context) ([]NodeHealthSnapshot, error)
 	InsertSchedulerDecision(ctx context.Context, decision *SchedulerDecision) error
@@ -285,6 +301,9 @@ type memoryStore struct {
 	nodeHealthSnapshots     map[string]*NodeHealthSnapshot
 	schedulerDecisions      map[string]*SchedulerDecision
 	blacklistedEmails       map[string]bool
+	billingPlans            map[string]*BillingPlan
+	stripeWebhookEvents     map[string]*StripeWebhookEvent
+	billingEvents           []BillingEvent
 }
 
 type sessionRecord struct {
@@ -332,6 +351,8 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		nodeHealthSnapshots:     make(map[string]*NodeHealthSnapshot),
 		schedulerDecisions:      make(map[string]*SchedulerDecision),
 		blacklistedEmails:       make(map[string]bool),
+		billingPlans:            make(map[string]*BillingPlan),
+		stripeWebhookEvents:     make(map[string]*StripeWebhookEvent),
 	}
 }
 
