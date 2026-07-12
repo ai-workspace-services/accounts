@@ -58,6 +58,10 @@ func cloneQuotaState(src *AccountQuotaState) *AccountQuotaState {
 		last := src.LastRatedBucketAt.UTC()
 		copy.LastRatedBucketAt = &last
 	}
+	if src.ArrearsSince != nil {
+		since := src.ArrearsSince.UTC()
+		copy.ArrearsSince = &since
+	}
 	return &copy
 }
 
@@ -271,6 +275,20 @@ func (s *memoryStore) GetAccountQuotaState(ctx context.Context, accountUUID stri
 		return nil, ErrUserNotFound
 	}
 	return cloneQuotaState(record), nil
+}
+
+func (s *memoryStore) ListSuspendedAccountUUIDs(ctx context.Context) (map[string]bool, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	suspended := make(map[string]bool)
+	for accountUUID, record := range s.accountQuotaStates {
+		if record != nil && record.SuspendState == "suspended" {
+			suspended[accountUUID] = true
+		}
+	}
+	return suspended, nil
 }
 
 func (s *memoryStore) UpsertAccountBillingProfile(ctx context.Context, profile *AccountBillingProfile) error {

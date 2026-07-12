@@ -415,6 +415,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.GET("/admin/billing/plans", h.adminListBillingPlans)
 	authProtected.PUT("/admin/billing/plans/:planId", h.adminUpsertBillingPlan)
 	authProtected.DELETE("/admin/billing/plans/:planId", h.adminDeleteBillingPlan)
+	// Manual dunning recovery (billing P1.5): clear arrears + lift suspension.
+	authProtected.POST("/admin/billing/accounts/:accountUUID/clear-arrears", h.adminClearArrears)
 
 	// Backward-compatible auth-scoped admin routes consumed by the dashboard BFF.
 	authProtected.GET("/admin/users/metrics", h.adminUsersMetrics)

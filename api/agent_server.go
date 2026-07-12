@@ -56,6 +56,12 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		return
 	}
 
+	suspended, err := h.store.ListSuspendedAccountUUIDs(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "list_suspended_failed"})
+		return
+	}
+
 	for _, u := range users {
 		if !u.Active {
 			continue
@@ -65,6 +71,8 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		// Sandbox is a special demo identity with a rotating proxy UUID.
 		// Always include it (and rotate on read if needed), so every node/region
 		// can sync a consistent sandbox client for the Guest experience.
+		// It is exempt from the arrears suspension filter below for the same
+		// reason: the Guest experience must not depend on billing state.
 		if email == sandboxUserEmail {
 			sandboxUser := u
 			_ = h.ensureSandboxProxyUUID(c.Request.Context(), &sandboxUser)
@@ -88,6 +96,13 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		// until they complete the email round trip, so they get no xray client
 		// until then. Sandbox is exempt (handled above).
 		if !u.EmailVerified {
+			continue
+		}
+
+		// P1.5: drop accounts suspended for prolonged billing arrears
+		// (suspend_state owned by billing-service's SuspendSyncer). Removing the
+		// client here is what actually severs xray access on the next agent sync.
+		if suspended[strings.TrimSpace(u.ID)] {
 			continue
 		}
 

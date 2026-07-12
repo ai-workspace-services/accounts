@@ -10,7 +10,7 @@ import (
 // postgresql.svc.plus runtime image). Consumers — billing-service reconcile,
 // dunning, notifications — pop from pgmq without accounts knowing them.
 type BillingEvent struct {
-	Type       string    `json:"type"` // subscription_activated | subscription_updated | invoice_paid | payment_failed | subscription_deleted | trial_provisioned
+	Type       string    `json:"type"` // subscription_activated | subscription_updated | invoice_paid | payment_failed | subscription_deleted | trial_provisioned | arrears_cleared
 	UserID     string    `json:"userId"`
 	PlanID     string    `json:"planId,omitempty"`
 	PriceID    string    `json:"priceId,omitempty"`

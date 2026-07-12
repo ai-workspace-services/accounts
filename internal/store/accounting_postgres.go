@@ -299,12 +299,13 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 
 	const query = `
 		INSERT INTO account_quota_states (
-			account_uuid, remaining_included_quota, current_balance, arrears, throttle_state, suspend_state, last_rated_bucket_at, effective_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, effective_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (account_uuid) DO UPDATE SET
 			remaining_included_quota = EXCLUDED.remaining_included_quota,
 			current_balance = EXCLUDED.current_balance,
 			arrears = EXCLUDED.arrears,
+			arrears_since = EXCLUDED.arrears_since,
 			throttle_state = EXCLUDED.throttle_state,
 			suspend_state = EXCLUDED.suspend_state,
 			last_rated_bucket_at = EXCLUDED.last_rated_bucket_at,
@@ -312,6 +313,10 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 			updated_at = now()
 		RETURNING updated_at`
 
+	var arrearsSince interface{}
+	if state.ArrearsSince != nil {
+		arrearsSince = state.ArrearsSince.UTC()
+	}
 	return s.db.QueryRowContext(
 		ctx,
 		query,
@@ -319,6 +324,7 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 		state.RemainingIncludedQuota,
 		state.CurrentBalance,
 		state.Arrears,
+		arrearsSince,
 		strings.TrimSpace(state.ThrottleState),
 		strings.TrimSpace(state.SuspendState),
 		state.LastRatedBucketAt,
@@ -328,15 +334,17 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 
 func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error) {
 	const query = `
-		SELECT account_uuid, remaining_included_quota, current_balance, arrears, throttle_state, suspend_state, last_rated_bucket_at, effective_at, updated_at
+		SELECT account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, effective_at, updated_at
 		FROM account_quota_states
 		WHERE account_uuid = $1`
 	var state AccountQuotaState
+	var arrearsSince sql.NullTime
 	err := s.db.QueryRowContext(ctx, query, strings.TrimSpace(accountUUID)).Scan(
 		&state.AccountUUID,
 		&state.RemainingIncludedQuota,
 		&state.CurrentBalance,
 		&state.Arrears,
+		&arrearsSince,
 		&state.ThrottleState,
 		&state.SuspendState,
 		&state.LastRatedBucketAt,
@@ -349,7 +357,31 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 		}
 		return nil, err
 	}
+	if arrearsSince.Valid {
+		value := arrearsSince.Time
+		state.ArrearsSince = &value
+	}
 	return &state, nil
+}
+
+// ListSuspendedAccountUUIDs returns the set of accounts currently
+// suspend_state='suspended', for agent/xray sync filtering.
+func (s *postgresStore) ListSuspendedAccountUUIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT account_uuid FROM account_quota_states WHERE suspend_state = 'suspended'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	suspended := make(map[string]bool)
+	for rows.Next() {
+		var accountUUID string
+		if err := rows.Scan(&accountUUID); err != nil {
+			return nil, err
+		}
+		suspended[accountUUID] = true
+	}
+	return suspended, rows.Err()
 }
 
 func (s *postgresStore) UpsertAccountBillingProfile(ctx context.Context, profile *AccountBillingProfile) error {
