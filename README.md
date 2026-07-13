@@ -18,7 +18,7 @@ Cloud Neutral Toolkit 的账号与身份服务 (Account Service).
 ### CI/CD 部署前置条件 (Vault JWT Role)
 
 `.github/workflows/pipeline.yml` 的 `deploy` / `validate` job 用
-`hashicorp/vault-action`（`method: jwt`，OIDC，无长期 GitHub secret）读取
+`hashicorp/vault-action@v4`（`method: jwt`，OIDC，无长期 GitHub secret）读取
 `kv/accounts.svc.plus` 下的部署期 token：
 
 | Vault key (`kv/data/accounts.svc.plus`) | 用途 | 映射到的部署变量 |
@@ -26,9 +26,10 @@ Cloud Neutral Toolkit 的账号与身份服务 (Account Service).
 | `INTERNAL_SERVICE_TOKEN` | accounts → xworkmate-bridge 的服务间鉴权 | `BRIDGE_AUTH_TOKEN` |
 | `BRIDGE_REVIEW_AUTH_TOKEN` | Apple 审核只读账号 `review@svc.plus` 专用 bridge token | `BRIDGE_REVIEW_AUTH_TOKEN` |
 
-在 Vault 中必须预先配置好对应的 JWT role，否则 pipeline 在 `Validate Deploy
-Secrets` 步骤会直接 fail。本机需要先装 `vault` CLI，并对目标 Vault 完成
-`vault login`（或设好 `VAULT_ADDR` / `VAULT_TOKEN`）：
+在 Vault 中必须预先配置好对应的 JWT role，否则 pipeline 会自动退回到
+`secrets.BRIDGE_AUTH_TOKEN` / `secrets.BRIDGE_REVIEW_AUTH_TOKEN` 作为临时
+fallback。本机需要先装 `vault` CLI，并对目标 Vault 完成 `vault login`
+（或设好 `VAULT_ADDR` / `VAULT_TOKEN`）：
 
 ```bash
 brew tap hashicorp/tap
@@ -86,7 +87,7 @@ EOF
 ```
 
 `workflow_dispatch` 里的 `secrets.BRIDGE_AUTH_TOKEN` /
-`secrets.BRIDGE_REVIEW_AUTH_TOKEN` 仅作为 Vault 读取失败时的 fallback，长期
+`secrets.BRIDGE_REVIEW_AUTH_TOKEN` 仍然是 Vault 读取失败时的 fallback，长期
 应以 Vault 值为准。
 
 **手动触发时的 Vault fallback**：OIDC role（`github-actions-accounts`）失效或
@@ -114,9 +115,10 @@ EOF
 policy `xworkmate-accounts`），playbook 将其写入主机 `app.env` 并重建容器。
 注意：
 
-- 铸造失败会**直接 fail 整个 deploy**（防止带着失效 token 静默上线——这正是
-  2026-07-12 review 账号同步事故的根源），所以合并该 pipeline 前必须先在
-  Vault 里执行上面的两个 `vault policy write`；
+- 当 Vault 认证可用但 `auth/token/create-orphan` 铸造失败时，deploy 仍会
+  fail（防止带着失效 token 静默上线——这正是 2026-07-12 review 账号同步
+  事故的根源）；如果 Vault 认证本身不可用，workflow 会退回到 GitHub secrets
+  并跳过这一步，部署继续进行；
 - token 有效期 32 天（768h），每次部署都会换新——只要部署间隔不超过 32 天
   就永远新鲜；若长时间不部署，手动触发一次 `workflow_dispatch` 即可续期；
 - 旧 token 不主动 revoke，到期自然失效。
