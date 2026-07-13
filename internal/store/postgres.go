@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -99,7 +98,6 @@ func (c schemaCapabilities) supportsMFA() bool {
 type postgresStore struct {
 	db                      *sql.DB
 	allowSuperAdminCounting bool
-	billingEventsEnabled    atomic.Bool
 
 	capsMu     sync.RWMutex
 	caps       schemaCapabilities

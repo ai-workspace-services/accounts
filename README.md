@@ -18,7 +18,7 @@ Cloud Neutral Toolkit 的账号与身份服务 (Account Service).
 ### CI/CD 部署前置条件 (Vault JWT Role)
 
 `.github/workflows/pipeline.yml` 的 `deploy` / `validate` job 用
-`hashicorp/vault-action`（`method: jwt`，OIDC，无长期 GitHub secret）读取
+`hashicorp/vault-action@v4`（`method: jwt`，OIDC，无长期 GitHub secret）读取
 `kv/accounts.svc.plus` 下的部署期 token：
 
 | Vault key (`kv/data/accounts.svc.plus`) | 用途 | 映射到的部署变量 |
@@ -26,9 +26,10 @@ Cloud Neutral Toolkit 的账号与身份服务 (Account Service).
 | `INTERNAL_SERVICE_TOKEN` | accounts → xworkmate-bridge 的服务间鉴权 | `BRIDGE_AUTH_TOKEN` |
 | `BRIDGE_REVIEW_AUTH_TOKEN` | Apple 审核只读账号 `review@svc.plus` 专用 bridge token | `BRIDGE_REVIEW_AUTH_TOKEN` |
 
-在 Vault 中必须预先配置好对应的 JWT role，否则 pipeline 在 `Validate Deploy
-Secrets` 步骤会直接 fail。本机需要先装 `vault` CLI，并对目标 Vault 完成
-`vault login`（或设好 `VAULT_ADDR` / `VAULT_TOKEN`）：
+在 Vault 中必须预先配置好对应的 JWT role，否则 pipeline 会自动退回到
+`secrets.BRIDGE_AUTH_TOKEN` / `secrets.BRIDGE_REVIEW_AUTH_TOKEN` 作为临时
+fallback。本机需要先装 `vault` CLI，并对目标 Vault 完成 `vault login`
+（或设好 `VAULT_ADDR` / `VAULT_TOKEN`）：
 
 ```bash
 brew tap hashicorp/tap
@@ -50,6 +51,14 @@ path "kv/data/accounts.svc.plus" {
   capabilities = ["read"]
 }
 path "kv/metadata/accounts.svc.plus" {
+  capabilities = ["read", "list"]
+}
+
+# Stripe 密钥域(SANDBOX_*/PROD_* 两对,deploy 时按 STRIPE_MODE 选取)
+path "kv/data/billing-service" {
+  capabilities = ["read"]
+}
+path "kv/metadata/billing-service" {
   capabilities = ["read", "list"]
 }
 
@@ -78,7 +87,7 @@ EOF
 ```
 
 `workflow_dispatch` 里的 `secrets.BRIDGE_AUTH_TOKEN` /
-`secrets.BRIDGE_REVIEW_AUTH_TOKEN` 仅作为 Vault 读取失败时的 fallback，长期
+`secrets.BRIDGE_REVIEW_AUTH_TOKEN` 仍然是 Vault 读取失败时的 fallback，长期
 应以 Vault 值为准。
 
 **手动触发时的 Vault fallback**：OIDC role（`github-actions-accounts`）失效或
@@ -106,9 +115,10 @@ EOF
 policy `xworkmate-accounts`），playbook 将其写入主机 `app.env` 并重建容器。
 注意：
 
-- 铸造失败会**直接 fail 整个 deploy**（防止带着失效 token 静默上线——这正是
-  2026-07-12 review 账号同步事故的根源），所以合并该 pipeline 前必须先在
-  Vault 里执行上面的两个 `vault policy write`；
+- 当 Vault 认证可用但 `auth/token/create-orphan` 铸造失败时，deploy 仍会
+  fail（防止带着失效 token 静默上线——这正是 2026-07-12 review 账号同步
+  事故的根源）；如果 Vault 认证本身不可用，workflow 会退回到 GitHub secrets
+  并跳过这一步，部署继续进行；
 - token 有效期 32 天（768h），每次部署都会换新——只要部署间隔不超过 32 天
   就永远新鲜；若长时间不部署，手动触发一次 `workflow_dispatch` 即可续期；
 - 旧 token 不主动 revoke，到期自然失效。
@@ -144,6 +154,85 @@ curl -fsSL "https://raw.githubusercontent.com/cloud-neutral-toolkit/accounts.svc
 cp .env.example .env
 make dev
 ```
+
+### Overlay CLI 闭环
+
+`overlayctl` 是 WireGuard-over-VLESS overlay 的第一版本机 CLI。它复用
+`accounts.svc.plus` 登录态，注册本机 WireGuard device，同步声明式 overlay
+config，并渲染本机 WireGuard/Xray runtime 文件。
+控制面 API 使用独立的 `/api/overlay/*` contract，包括网络列表、设备注册、
+配置下发和配置应用回执。
+字段级 contract 见
+[`docs/overlay-config-contract.md`](docs/overlay-config-contract.md)，后续
+Android/macOS 客户端也应以这份 `schema_version: 1` payload 为边界。
+
+`OVERLAY_TRANSPORT_UUID` 必须和 playbooks
+`xworkmate_bridge_distributed_vpn` 角色从 Vault 读取的共享 `xray_uuid`
+一致。正式部署时 playbooks 会通过
+`POST /api/internal/overlay/nodes/heartbeat` 把这个值写入
+`overlay_nodes.transport_uuid`；`OVERLAY_TRANSPORT_UUID` 只用于本地或
+bootstrap 默认网关。没有配置这个值时，`/api/overlay/config` 会拒绝下发
+配置，避免客户端拿到一个必然无法通过网关 VLESS 握手的 runtime contract。
+
+```bash
+export OVERLAY_TRANSPORT_UUID="$WIREGUARD_OVER_VLESS_XRAY_UUID"
+
+go run ./cmd/overlayctl login \
+  --server https://accounts.svc.plus \
+  --email "$ACCOUNT_EMAIL" \
+  --password "$ACCOUNT_PASSWORD"
+
+go run ./cmd/overlayctl register-device --generate-key
+go run ./cmd/overlayctl sync-config --node-id xworkmate-bridge
+go run ./cmd/overlayctl render
+go run ./cmd/overlayctl preflight
+```
+
+不传 `--node-id` 时，控制面会优先选择 `OVERLAY_GATEWAY_ID`，默认是
+`xworkmate-bridge`；需要验证 CN edge 或其他网关时再显式传对应 node id。
+
+导出或直接合并服务端 playbooks 需要的 client peer：
+
+```bash
+go run ./cmd/overlayctl export-playbooks-client \
+  --attach-to jp-xhttp-contabo.svc.plus \
+  --attach-to cn-xworkmate-bridge.svc.plus \
+  --output /tmp/overlay-client.yml
+go run ./cmd/overlayctl apply-playbooks-client \
+  --attach-to jp-xhttp-contabo.svc.plus \
+  --group-vars /Users/shenlan/workspaces/cloud-neutral-toolkit/playbooks/group_vars/xworkmate_bridge_distributed.yml
+```
+
+生成的 YAML 字段对应
+`playbooks` 中的 `xworkmate_bridge_distributed_vpn_clients`。`attach_to`
+用于限制这个 client peer 挂到哪些网关；不传时会保留 group_vars 里该
+client 已有的 `attach_to`，新 client 则按 playbooks 默认挂到全部网关：
+
+```yaml
+xworkmate_bridge_distributed_vpn_clients:
+  - id: shenlan-macos
+    wg_ip: 172.29.10.10
+    public_key: ...
+    attach_to:
+      - jp-xhttp-contabo.svc.plus
+```
+
+服务端 peer 已部署后，可以在本机拉起或关闭 runtime：
+
+```bash
+sudo -E go run ./cmd/overlayctl up
+sudo -E go run ./cmd/overlayctl status
+go run ./cmd/overlayctl check-connectivity --bearer "$BRIDGE_AUTH_TOKEN"
+go run ./cmd/overlayctl ack-config
+sudo -E go run ./cmd/overlayctl down
+```
+
+`preflight` 会检查本机 `wg`、`wg-quick`、`xray` 是否可用，并执行
+`xray run -test` 验证渲染后的 `xray-overlay.json`。`up` 会先启动本机
+Xray transport，再调用 `wg-quick up`；macOS/Linux 上通常需要 sudo。
+`check-connectivity` 默认 ping Gateway WireGuard IP，并请求
+`http://<gateway-wg-ip>:8787/api/ping`。`ack-config` 会把已应用的 config
+revision 回写到 `accounts.svc.plus`。
 
 ## 提交前同步要求 (Pre-Commit Sync Requirement)
 

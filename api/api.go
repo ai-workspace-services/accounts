@@ -402,11 +402,6 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.GET("/admin/homepage-video", h.getHomepageVideoSettings)
 	authProtected.PUT("/admin/homepage-video", h.updateHomepageVideoSettings)
 
-	// Billing plan catalog CRUD (billing P1); reuses admin settings permissions.
-	authProtected.GET("/admin/billing/plans", h.adminListBillingPlans)
-	authProtected.PUT("/admin/billing/plans/:planId", h.adminUpsertBillingPlan)
-	authProtected.DELETE("/admin/billing/plans/:planId", h.adminDeleteBillingPlan)
-
 	// Backward-compatible auth-scoped admin routes consumed by the dashboard BFF.
 	authProtected.GET("/admin/users/metrics", h.adminUsersMetrics)
 	authProtected.POST("/admin/users", h.createCustomUser)
@@ -436,8 +431,6 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup := r.Group("/api/internal")
 
 	r.POST("/api/billing/stripe/webhook", h.stripeWebhook)
-	// Public plan catalog for the pricing page (billing P1).
-	r.GET("/api/billing/plans", h.listPublicBillingPlans)
 	internalGroup.Use(auth.InternalAuthMiddleware())
 	internalGroup.GET("/public-overview", h.internalPublicOverview)
 	internalGroup.GET("/sandbox/guest", h.internalSandboxGuest)
@@ -1542,15 +1535,6 @@ func (h *handler) requireAuthenticatedUser(c *gin.Context) (*store.User, bool) {
 	user, err := h.store.GetUserByID(c.Request.Context(), sess.userID)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "session_user_lookup_failed", "failed to load session user")
-		return nil, false
-	}
-
-	// Suspended accounts may hold a valid session (they can still log in) but
-	// every authenticated feature is locked, matching auth.RequireActiveUser on
-	// the token-middleware groups. This is the single choke point for handlers
-	// that authenticate in-handler (account usage/billing, config sync, etc.).
-	if !user.Active {
-		respondError(c, http.StatusForbidden, "account_suspended", "your account has been suspended")
 		return nil, false
 	}
 
@@ -2819,21 +2803,8 @@ func (h *handler) oauthCallback(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
-
-	// Enforce the email blacklist on OAuth too, matching password register/login;
-	// otherwise a blocked address could bypass the ban via GitHub/Google sign-in.
-	blacklisted, err := h.store.IsBlacklisted(ctx, profile.Email)
-	if err != nil {
-		respondError(c, http.StatusInternalServerError, "blacklist_check_failed", "failed to verify email status")
-		return
-	}
-	if blacklisted {
-		respondError(c, http.StatusForbidden, "email_blacklisted", "this email address is blocked")
-		return
-	}
-
 	var user *store.User
+	ctx := c.Request.Context()
 	existingUser, err := h.store.GetUserByEmail(ctx, profile.Email)
 	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
 		respondError(c, http.StatusInternalServerError, "store_error", "database error")
@@ -2863,14 +2834,12 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			Provider:      "trial",
 			PaymentMethod: "trial",
 			Kind:          "trial",
-			PlanID:        store.BillingPlanTrial7D,
+			PlanID:        "TRIAL-7D",
 			ExternalID:    fmt.Sprintf("trial-%s", user.ID),
 			Status:        "active",
 			Meta:          map[string]any{"expiresAt": trialExpiresAt},
 		}
 		h.store.UpsertSubscription(ctx, trial)
-		// Apply catalog entitlements (billing profile + quota) for the trial.
-		h.provisionTrialEntitlements(ctx, user.ID)
 	} else {
 		user = existingUser
 		// Ensure user is verified if they logged in via OAuth

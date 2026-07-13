@@ -771,97 +771,6 @@ ON CONFLICT (role_key, permission_key) DO NOTHING`,
 	return nil
 }
 
-// applyBillingSchema provisions the billing catalog and Stripe webhook audit
-// tables (billing P1). Statements are idempotent, mirroring applyRBACSchema.
-func applyBillingSchema(ctx context.Context, db *gorm.DB, driver string) error {
-	if db == nil {
-		return errors.New("database is nil")
-	}
-
-	normalized := strings.ToLower(strings.TrimSpace(driver))
-	if normalized != "postgres" && normalized != "postgresql" && normalized != "pgx" {
-		return nil
-	}
-
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS public.billing_plans (
-  plan_id TEXT PRIMARY KEY,
-  stripe_price_id TEXT UNIQUE,
-  display_name TEXT NOT NULL DEFAULT '',
-  kind TEXT NOT NULL DEFAULT 'subscription',
-  included_quota_bytes BIGINT NOT NULL DEFAULT 0,
-  package_name TEXT NOT NULL DEFAULT 'default',
-  price_multipliers JSONB NOT NULL DEFAULT '{}'::jsonb,
-  features JSONB NOT NULL DEFAULT '{}'::jsonb,
-  trial_days INTEGER NOT NULL DEFAULT 0,
-  active BOOLEAN NOT NULL DEFAULT TRUE,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)`,
-		`CREATE TABLE IF NOT EXISTS public.stripe_webhook_events (
-  event_id TEXT PRIMARY KEY,
-  event_type TEXT NOT NULL DEFAULT '',
-  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  status TEXT NOT NULL DEFAULT 'received',
-  last_error TEXT NOT NULL DEFAULT '',
-  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  processed_at TIMESTAMPTZ
-)`,
-		`CREATE INDEX IF NOT EXISTS stripe_webhook_events_received_at_idx ON public.stripe_webhook_events (received_at DESC)`,
-	}
-
-	for _, statement := range statements {
-		if err := db.WithContext(ctx).Exec(statement).Error; err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// ensureDefaultBillingPlans seeds the well-known catalog rows once; operator
-// edits are never overwritten (insert only when the plan id is absent).
-func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
-	if st == nil {
-		return nil
-	}
-
-	defaults := []store.BillingPlan{
-		{
-			PlanID:             store.BillingPlanTrial7D,
-			DisplayName:        "7-Day Trial",
-			Kind:               "trial",
-			IncludedQuotaBytes: 10 * 1024 * 1024 * 1024, // 10 GiB
-			PackageName:        "trial",
-			TrialDays:          7,
-			Active:             true,
-			SortOrder:          0,
-		},
-		{
-			PlanID:      store.BillingPlanFree,
-			DisplayName: "Free",
-			Kind:        "subscription",
-			PackageName: "default",
-			Active:      true,
-			SortOrder:   10,
-		},
-	}
-
-	for i := range defaults {
-		if _, err := st.GetBillingPlan(ctx, defaults[i].PlanID); err == nil {
-			continue
-		} else if !errors.Is(err, store.ErrBillingPlanNotFound) {
-			return err
-		}
-		if err := st.UpsertBillingPlan(ctx, &defaults[i]); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1033,23 +942,6 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 
 	if err := applyRBACSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
 		return fmt.Errorf("apply rbac schema: %w", err)
-	}
-
-	if err := applyBillingSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
-		return fmt.Errorf("apply billing schema: %w", err)
-	}
-
-	if err := ensureDefaultBillingPlans(ctx, st); err != nil {
-		logger.Warn("failed to seed default billing plans", "err", err)
-	}
-
-	if enabled, err := st.EnsureBillingEventQueue(ctx); err != nil {
-		logger.Warn("failed to prepare billing event queue", "err", err)
-	} else if enabled {
-		logger.Info("billing event queue ready", "queue", store.BillingEventQueueName)
-	} else {
-		logger.Warn("pgmq extension unavailable; billing event publishing disabled",
-			"hint", "run CREATE EXTENSION pgmq as superuser (image ships pgmq v1.8.0)")
 	}
 
 	gormSource, err := xrayconfig.NewGormClientSource(gormDB)

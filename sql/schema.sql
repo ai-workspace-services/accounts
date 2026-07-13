@@ -180,36 +180,6 @@ CREATE TABLE public.subscriptions (
   CONSTRAINT subscriptions_user_external_uk UNIQUE (user_uuid, external_id)
 );
 
--- Billing plan catalog (billing P1): maps Stripe prices to entitlements.
--- Data-driven: price/quota adjustments are catalog edits, never deploys.
-CREATE TABLE public.billing_plans (
-  plan_id TEXT PRIMARY KEY,
-  stripe_price_id TEXT UNIQUE,
-  display_name TEXT NOT NULL DEFAULT '',
-  kind TEXT NOT NULL DEFAULT 'subscription',
-  included_quota_bytes BIGINT NOT NULL DEFAULT 0,
-  package_name TEXT NOT NULL DEFAULT 'default',
-  price_multipliers JSONB NOT NULL DEFAULT '{}'::jsonb,
-  features JSONB NOT NULL DEFAULT '{}'::jsonb,
-  trial_days INTEGER NOT NULL DEFAULT 0,
-  active BOOLEAN NOT NULL DEFAULT TRUE,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Stripe webhook audit/dedup trail (billing P1).
-CREATE TABLE public.stripe_webhook_events (
-  event_id TEXT PRIMARY KEY,
-  event_type TEXT NOT NULL DEFAULT '',
-  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  status TEXT NOT NULL DEFAULT 'received',
-  last_error TEXT NOT NULL DEFAULT '',
-  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  processed_at TIMESTAMPTZ
-);
-CREATE INDEX stripe_webhook_events_received_at_idx ON public.stripe_webhook_events (received_at DESC);
-
 CREATE TABLE public.nodes (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
