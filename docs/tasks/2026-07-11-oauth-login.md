@@ -15,6 +15,7 @@
 - **GitHub 已端到端上线**:`login/github` 返回 307 → GitHub 授权页(client_id/redirect_uri/scope 正确,frontend_url 经 state base64 回填 console.svc.plus);浏览器闭环实测登录成功(用户 haitaopan 拿到 UUID + MFA)。
 - 代码链路本就完整;404 根因是**部署链未注入 OAuth 密钥**,非代码缺陷。
 - Google **代码/部署链已就绪**,只差 Google Cloud 凭证 + Vault/secret + 合并 #16。
+- 2026-07-13 的 CI 403 不是 GitHub OIDC role 本身失效,而是 `github-actions-accounts` policy 说明漏掉了 `kv/data/billing-service` 的 read 权限;workflow 在 #20 之后开始一并读取 Stripe keys,于是 Vault 在 Deploy 步骤直接拒绝。
 
 ## PR 明细
 
@@ -67,6 +68,7 @@
 | Google secret | `kv/accounts.svc.plus:GOOGLE_CLIENT_SECRET`(待加) | secret `OAUTH_GOOGLE_CLIENT_SECRET` | 待建 |
 | bridge 服务间 token | `kv/accounts.svc.plus:INTERNAL_SERVICE_TOKEN` | — (2026-07-12 改走 `hashicorp/vault-action` OIDC role `github-actions-accounts`,不再落 GH secret) | — |
 | 评审账号 bridge token | `kv/accounts.svc.plus:BRIDGE_REVIEW_AUTH_TOKEN` | — (同上,OIDC role 直读) | — |
+| Stripe 密钥 | `kv/billing-service:SANDBOX_*/PROD_*` | `STRIPE_{SECRET_KEY,WEBHOOK_SECRET}` (按 `STRIPE_MODE` 二选一) | — |
 
 - accounts 服务运行时用来读 `xworkmate/*` 的 `XWORKMATE_VAULT_TOKEN`:2026-07-12 最终方案是 **CI 每次部署自动铸造**(deploy job `Mint Runtime Vault Token` 用 OIDC job token 走 `auth/token/create-orphan` 铸 orphan periodic token,period 768h,policy `xworkmate-accounts`,playbook 写入主机 `app.env`)。不落任何 GH secret,不需手工轮换;部署间隔超 32 天需手动触发一次 deploy 续期。此前"GH secret 轮换"与"纯手工管理"两版方案均已被此方案取代(见 README「CI/CD 部署前置条件」)。
 

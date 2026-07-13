@@ -250,7 +250,11 @@ jobs:
 
       - name: Load Vault secrets
         id: vault
-        uses: hashicorp/vault-action@v2
+        # Vault being unreachable must not block shipping a release: the step
+        # may fail and Resolve Deploy Secret Source below falls back to the
+        # GitHub-secret mirrors.
+        continue-on-error: true
+        uses: hashicorp/vault-action@v4
         with:
           url: ${{ inputs.vault_addr != '' && inputs.vault_addr || 'https://vault.svc.plus' }}
           method: ${{ inputs.vault_token != '' && 'token' || 'jwt' }}
@@ -258,9 +262,10 @@ jobs:
           role: github-actions-accounts
           jwtGithubAudience: vault
           exportEnv: false
-          # exportToken makes the job's Vault client token available as
-          # VAULT_TOKEN for the Mint Runtime Vault Token step below.
-          exportToken: true
+          # outputToken exposes the job's Vault client token as
+          # steps.vault.outputs.vault_token for the Mint Runtime Vault Token
+          # step below (output-scoped instead of a job-wide VAULT_TOKEN env).
+          outputToken: true
           ignoreNotFound: true
           secrets: |
             kv/data/accounts.svc.plus INTERNAL_SERVICE_TOKEN | INTERNAL_SERVICE_TOKEN ;
@@ -270,20 +275,57 @@ jobs:
             kv/data/billing-service PROD_STRIPE_SECRET_KEY | PROD_STRIPE_SECRET_KEY ;
             kv/data/billing-service PROD_STRIPE_WEBHOOK_SECRET | PROD_STRIPE_WEBHOOK_SECRET
 
+      # Single decision point for which secret source feeds the deploy: Vault
+      # when the step succeeded and returned both tokens, otherwise the
+      # GitHub-secret mirrors (Stripe keys keep their own per-key fallback in
+      # the playbook env below).
+      - name: Resolve Deploy Secret Source
+        id: deploy_secrets
+        env:
+          VAULT_STATUS: ${{ steps.vault.outcome }}
+          VAULT_INTERNAL_SERVICE_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN }}
+          VAULT_BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN }}
+          FALLBACK_BRIDGE_AUTH_TOKEN: ${{ secrets.BRIDGE_AUTH_TOKEN }}
+          FALLBACK_BRIDGE_REVIEW_AUTH_TOKEN: ${{ secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${VAULT_STATUS}" == "success" && -n "${VAULT_INTERNAL_SERVICE_TOKEN}" && -n "${VAULT_BRIDGE_REVIEW_AUTH_TOKEN}" ]]; then
+            echo "bridge_auth_token=${VAULT_INTERNAL_SERVICE_TOKEN}" >> "$GITHUB_OUTPUT"
+            echo "bridge_review_auth_token=${VAULT_BRIDGE_REVIEW_AUTH_TOKEN}" >> "$GITHUB_OUTPUT"
+            echo "source=vault" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::warning::Vault secrets unavailable (outcome: ${VAULT_STATUS}); falling back to GitHub-secret mirrors."
+          echo "bridge_auth_token=${FALLBACK_BRIDGE_AUTH_TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "bridge_review_auth_token=${FALLBACK_BRIDGE_REVIEW_AUTH_TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "source=github_secret" >> "$GITHUB_OUTPUT"
+
       # Mint a fresh runtime Vault token for the accounts service on every
       # deploy. This removes the manually managed XWORKMATE_VAULT_TOKEN: the
       # short-lived OIDC job token creates an orphan periodic token scoped to
       # the xworkmate-accounts policy, and the playbook writes it into the
-      # host's app.env. Fails loudly by design — a deploy that cannot rotate
-      # the runtime token would silently recreate the revoked-token outage.
+      # host's app.env. When Vault auth itself is unavailable the step warns
+      # and the deploy continues without rotating (the playbook keeps the
+      # host's existing token); when auth works but minting is denied the
+      # deploy still fails loudly — shipping with a silently stale token is
+      # the 2026-07-12 outage class this step exists to prevent.
       # Requires the github-actions-accounts policy to grant sudo on
       # auth/token/create-orphan (see README "CI/CD 部署前置条件").
       - name: Mint Runtime Vault Token
         id: runtime_vault_token
         env:
+          VAULT_TOKEN: ${{ steps.vault.outputs.vault_token }}
           VAULT_ADDR: ${{ inputs.vault_addr != '' && inputs.vault_addr || 'https://vault.svc.plus' }}
         run: |
           set -euo pipefail
+
+          if [[ -z "${VAULT_TOKEN}" ]]; then
+            echo "::warning::Skipping runtime Vault token mint: Vault authentication is unavailable. The host keeps its existing XWORKMATE_VAULT_TOKEN."
+            echo "token=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           response="$(curl --silent --show-error --fail \
             --header "X-Vault-Token: ${VAULT_TOKEN}" \
@@ -302,8 +344,8 @@ jobs:
 
       - name: Validate Deploy Secrets
         env:
-          BRIDGE_AUTH_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN || secrets.BRIDGE_AUTH_TOKEN }}
-          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN || secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+          BRIDGE_AUTH_TOKEN: ${{ steps.deploy_secrets.outputs.bridge_auth_token }}
+          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.deploy_secrets.outputs.bridge_review_auth_token }}
         run: |
           set -euo pipefail
 
@@ -333,8 +375,8 @@ jobs:
           # Vault kv/accounts.svc.plus is the source of truth; the runbook
           # maps INTERNAL_SERVICE_TOKEN to the bridge auth token. GitHub
           # secrets are the migration-window fallback.
-          BRIDGE_AUTH_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN || secrets.BRIDGE_AUTH_TOKEN }}
-          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN || secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+          BRIDGE_AUTH_TOKEN: ${{ steps.deploy_secrets.outputs.bridge_auth_token }}
+          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.deploy_secrets.outputs.bridge_review_auth_token }}
           BRIDGE_SERVER_URL: https://xworkmate-bridge.svc.plus
           # Freshly minted per deploy (Mint Runtime Vault Token step); the
           # playbook rewrites the host's app.env XWORKMATE_VAULT_TOKEN with it
@@ -404,7 +446,10 @@ jobs:
 
       - name: Load Vault secrets
         id: vault
-        uses: hashicorp/vault-action@v2
+        # Same resilience contract as the deploy job: a Vault outage falls
+        # back to the GitHub-secret mirrors instead of skipping validation.
+        continue-on-error: true
+        uses: hashicorp/vault-action@v4
         with:
           url: ${{ inputs.vault_addr != '' && inputs.vault_addr || 'https://vault.svc.plus' }}
           method: ${{ inputs.vault_token != '' && 'token' || 'jwt' }}
@@ -417,10 +462,33 @@ jobs:
             kv/data/accounts.svc.plus INTERNAL_SERVICE_TOKEN | INTERNAL_SERVICE_TOKEN ;
             kv/data/accounts.svc.plus BRIDGE_REVIEW_AUTH_TOKEN | BRIDGE_REVIEW_AUTH_TOKEN
 
+      - name: Resolve Validate Secret Source
+        id: validate_secrets
+        env:
+          VAULT_STATUS: ${{ steps.vault.outcome }}
+          VAULT_INTERNAL_SERVICE_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN }}
+          VAULT_BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN }}
+          FALLBACK_BRIDGE_AUTH_TOKEN: ${{ secrets.BRIDGE_AUTH_TOKEN }}
+          FALLBACK_BRIDGE_REVIEW_AUTH_TOKEN: ${{ secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${VAULT_STATUS}" == "success" && -n "${VAULT_INTERNAL_SERVICE_TOKEN}" && -n "${VAULT_BRIDGE_REVIEW_AUTH_TOKEN}" ]]; then
+            echo "bridge_auth_token=${VAULT_INTERNAL_SERVICE_TOKEN}" >> "$GITHUB_OUTPUT"
+            echo "bridge_review_auth_token=${VAULT_BRIDGE_REVIEW_AUTH_TOKEN}" >> "$GITHUB_OUTPUT"
+            echo "source=vault" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::warning::Vault secrets unavailable (outcome: ${VAULT_STATUS}); falling back to GitHub-secret mirrors."
+          echo "bridge_auth_token=${FALLBACK_BRIDGE_AUTH_TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "bridge_review_auth_token=${FALLBACK_BRIDGE_REVIEW_AUTH_TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "source=github_secret" >> "$GITHUB_OUTPUT"
+
       - name: Validate Review XWorkmate Sync Contract
         env:
           REVIEW_ACCOUNT_EMAIL: review@svc.plus
           REVIEW_ACCOUNT_PASSWORD: ${{ secrets.REVIEW_ACCOUNT_PASSWORD }}
-          BRIDGE_AUTH_TOKEN: ${{ steps.vault.outputs.INTERNAL_SERVICE_TOKEN || secrets.BRIDGE_AUTH_TOKEN }}
-          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.vault.outputs.BRIDGE_REVIEW_AUTH_TOKEN || secrets.BRIDGE_REVIEW_AUTH_TOKEN }}
+          BRIDGE_AUTH_TOKEN: ${{ steps.validate_secrets.outputs.bridge_auth_token }}
+          BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.validate_secrets.outputs.bridge_review_auth_token }}
         run: bash ./scripts/github-actions/validate-review-xworkmate-sync.sh https://accounts.svc.plus
