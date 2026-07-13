@@ -53,6 +53,14 @@ path "kv/metadata/accounts.svc.plus" {
   capabilities = ["read", "list"]
 }
 
+# Stripe 密钥域(SANDBOX_*/PROD_* 两对,deploy 时按 STRIPE_MODE 选取)
+path "kv/data/billing-service" {
+  capabilities = ["read"]
+}
+path "kv/metadata/billing-service" {
+  capabilities = ["read", "list"]
+}
+
 # 允许 CI 为 accounts 服务铸造 orphan runtime token
 # (sudo 同时授权 orphan 创建与跨 policy 赋权)
 path "auth/token/create-orphan" {
