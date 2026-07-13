@@ -264,7 +264,11 @@ jobs:
           ignoreNotFound: true
           secrets: |
             kv/data/accounts.svc.plus INTERNAL_SERVICE_TOKEN | INTERNAL_SERVICE_TOKEN ;
-            kv/data/accounts.svc.plus BRIDGE_REVIEW_AUTH_TOKEN | BRIDGE_REVIEW_AUTH_TOKEN
+            kv/data/accounts.svc.plus BRIDGE_REVIEW_AUTH_TOKEN | BRIDGE_REVIEW_AUTH_TOKEN ;
+            kv/data/billing-service SANDBOX_STRIPE_SECRET_KEY | SANDBOX_STRIPE_SECRET_KEY ;
+            kv/data/billing-service SANDBOX_STRIPE_WEBHOOK_SECRET | SANDBOX_STRIPE_WEBHOOK_SECRET ;
+            kv/data/billing-service PROD_STRIPE_SECRET_KEY | PROD_STRIPE_SECRET_KEY ;
+            kv/data/billing-service PROD_STRIPE_WEBHOOK_SECRET | PROD_STRIPE_WEBHOOK_SECRET
 
       # Mint a fresh runtime Vault token for the accounts service on every
       # deploy. This removes the manually managed XWORKMATE_VAULT_TOKEN: the
@@ -351,13 +355,14 @@ jobs:
           AUTH_TOKEN_ACCESS_SECRET: ${{ secrets.AUTH_TOKEN_ACCESS_SECRET }}
           # Stripe billing (P0). Repo var STRIPE_MODE ('sandbox' | 'prod',
           # default sandbox) switches the whole key pair at once — sk and
-          # whsec must never mix modes. Secrets mirror the Vault field names
-          # under kv/billing-service (SANDBOX_*/PROD_*). Empty values keep
-          # Stripe endpoints disabled. STRIPE_ALLOWED_PRICE_IDS is a plain
-          # var (comma-separated) until the billing_plans catalog (P1)
+          # whsec must never mix modes. Values come from Vault (OIDC, same
+          # kv/billing-service fields SANDBOX_*/PROD_*) with GH secrets as
+          # migration-period fallback. Empty values keep Stripe endpoints
+          # disabled. STRIPE_ALLOWED_PRICE_IDS is a plain var
+          # (comma-separated) until the billing_plans catalog (P1)
           # replaces it; when set it must match the active mode's price ids.
-          STRIPE_SECRET_KEY: ${{ vars.STRIPE_MODE == 'prod' && secrets.PROD_STRIPE_SECRET_KEY || secrets.SANDBOX_STRIPE_SECRET_KEY }}
-          STRIPE_WEBHOOK_SECRET: ${{ vars.STRIPE_MODE == 'prod' && secrets.PROD_STRIPE_WEBHOOK_SECRET || secrets.SANDBOX_STRIPE_WEBHOOK_SECRET }}
+          STRIPE_SECRET_KEY: ${{ vars.STRIPE_MODE == 'prod' && (steps.vault.outputs.PROD_STRIPE_SECRET_KEY || secrets.PROD_STRIPE_SECRET_KEY) || (steps.vault.outputs.SANDBOX_STRIPE_SECRET_KEY || secrets.SANDBOX_STRIPE_SECRET_KEY) }}
+          STRIPE_WEBHOOK_SECRET: ${{ vars.STRIPE_MODE == 'prod' && (steps.vault.outputs.PROD_STRIPE_WEBHOOK_SECRET || secrets.PROD_STRIPE_WEBHOOK_SECRET) || (steps.vault.outputs.SANDBOX_STRIPE_WEBHOOK_SECRET || secrets.SANDBOX_STRIPE_WEBHOOK_SECRET) }}
           STRIPE_ALLOWED_PRICE_IDS: ${{ vars.STRIPE_ALLOWED_PRICE_IDS }}
         run: |
           set -euo pipefail
