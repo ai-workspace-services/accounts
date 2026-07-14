@@ -395,6 +395,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/mfa/totp/verify", h.verifyTOTP)
 	authProtected.POST("/mfa/disable", h.disableMFA)
 
+	authProtected.POST("/password/set", h.setPassword)
 	authProtected.POST("/password/reset", h.requestPasswordReset)
 	authProtected.POST("/password/reset/confirm", h.confirmPasswordReset)
 
@@ -477,6 +478,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	accountGroup.GET("/usage/buckets", h.accountUsageBuckets)
 	accountGroup.GET("/billing/summary", h.accountBillingSummary)
 	accountGroup.GET("/policy", h.accountPolicy)
+	accountGroup.GET("/service-readiness", h.serviceReadiness)
 
 	// Legacy alias kept for backward compatibility.
 	agentGroup := r.Group("/api/agent")
@@ -2674,8 +2676,10 @@ func sanitizeUser(user *store.User, challenge *mfaChallenge) gin.H {
 		"username":           user.Name,
 		"email":              user.Email,
 		"emailVerified":      user.EmailVerified,
+		"passwordSet":        strings.TrimSpace(user.PasswordHash) != "",
 		"mfaEnabled":         user.MFAEnabled,
 		"mfa":                buildMFAState(user, challenge),
+		"serviceReadiness":   computeServiceReadiness(user),
 		"role":               user.Role,
 		"groups":             groups,
 		"permissions":        permissions,
