@@ -1,8 +1,9 @@
 # Stripe 计费 P1:套餐目录 + webhook 审计 + entitlement sync
 
-> **Status**: ⏳ 代码完成 + 全量测试通过,待合并部署
-> **Date**: 2026-07-11
-> **Related PRs**: 本 PR(accounts,分支 `feat/stripe-billing-p1`);前置 P0 = accounts [#18](https://github.com/ai-workspace-services/accounts/pull/18) + playbooks [#121](https://github.com/ai-workspace-infra/playbooks/pull/121) [MERGED]
+> **Status**: ✅ 已合并部署(2026-07-12)
+> **Date**: 2026-07-11(实现)· 2026-07-12(合并)
+> **Related PRs**: accounts [#19](https://github.com/ai-workspace-services/accounts/pull/19) [MERGED];前置 P0 = accounts [#18](https://github.com/ai-workspace-services/accounts/pull/18) + playbooks [#121](https://github.com/ai-workspace-infra/playbooks/pull/121) [MERGED]
+> **最新现状**: 见 [`2026-07-13-stripe-billing-status.md`](2026-07-13-stripe-billing-status.md)(跨仓交接快照)
 > **设计文档**: billing-service `docs/stripe-billing-integration-plan.md` §4 P1
 
 ## 实现内容
