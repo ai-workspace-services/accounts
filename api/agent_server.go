@@ -83,6 +83,14 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 			continue
 		}
 
+		// Full proxy access requires a verified email (which also activates the
+		// trial). OAuth users are Active immediately but stay EmailVerified=false
+		// until they complete the email round trip, so they get no xray client
+		// until then. Sandbox is exempt (handled above).
+		if !u.EmailVerified {
+			continue
+		}
+
 		id := strings.TrimSpace(u.ProxyUUID)
 		if id == "" {
 			id = strings.TrimSpace(u.ID)
