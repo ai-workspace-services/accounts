@@ -253,11 +253,13 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 		t.Fatalf("create sandbox user: %v", err)
 	}
 
-	// normal user (not verified + expired) should still be synced by default.
+	// verified user with an expired proxy UUID should still be synced by
+	// default (UUID expiry must not block sync). Email verification is the
+	// proxy-access gate; a separate test covers exclusion of unverified users.
 	if err := st.CreateUser(ctx, &store.User{
 		Name:          "User",
 		Email:         "user@example.com",
-		EmailVerified: false,
+		EmailVerified: true,
 		Role:          store.RoleUser,
 		Level:         store.LevelUser,
 		Active:        true,
@@ -331,6 +333,83 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 	}
 	if !seenNormal {
 		t.Fatalf("expected normal client in response, got=%v", payload.Clients)
+	}
+}
+
+// TestAgentServerUsers_ExcludesUnverifiedUsers covers the proxy-access gate:
+// an Active but EmailVerified=false user (e.g. a fresh OAuth signup that hasn't
+// completed the email round trip) must not receive an xray client, while a
+// verified user must.
+func TestAgentServerUsers_ExcludesUnverifiedUsers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+
+	if err := st.CreateUser(ctx, &store.User{
+		Name:          "Unverified",
+		Email:         "unverified@example.com",
+		EmailVerified: false,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+	}); err != nil {
+		t.Fatalf("create unverified user: %v", err)
+	}
+	if err := st.CreateUser(ctx, &store.User{
+		Name:          "Verified",
+		Email:         "verified@example.com",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+	}); err != nil {
+		t.Fatalf("create verified user: %v", err)
+	}
+
+	registry, err := agentserver.NewRegistry(agentserver.Config{
+		Credentials: []agentserver.Credential{{
+			ID: "*", Name: "test-agent", Token: "agent-token", Groups: []string{"internal"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new agent registry: %v", err)
+	}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithAgentRegistry(registry), WithEmailVerification(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer agent-token")
+	req.Header.Set("X-Agent-ID", "hk-xhttp.svc.plus")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var payload struct {
+		Clients []struct {
+			Email string `json:"email"`
+		} `json:"clients"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+
+	for _, c := range payload.Clients {
+		if c.Email == "unverified@example.com" {
+			t.Fatalf("unverified user must not receive a proxy client, got=%v", payload.Clients)
+		}
+	}
+	seenVerified := false
+	for _, c := range payload.Clients {
+		if c.Email == "verified@example.com" {
+			seenVerified = true
+		}
+	}
+	if !seenVerified {
+		t.Fatalf("expected verified user client in response, got=%v", payload.Clients)
 	}
 }
 

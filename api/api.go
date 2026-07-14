@@ -641,25 +641,7 @@ func (h *handler) register(c *gin.Context) {
 		h.removeRegistrationVerification(email)
 	}
 
-	trialExpiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
-	trial := &store.Subscription{
-		UserID:        user.ID,
-		Provider:      "trial",
-		PaymentMethod: "trial",
-		Kind:          "trial",
-		PlanID:        "TRIAL-7D",
-		ExternalID:    fmt.Sprintf("trial-%s", user.ID),
-		Status:        "active",
-		Meta: map[string]any{
-			"startsAt":  time.Now().UTC(),
-			"expiresAt": trialExpiresAt,
-			"note":      "new user full-access trial",
-		},
-	}
-
-	if err := h.store.UpsertSubscription(c.Request.Context(), trial); err != nil {
-		slog.Warn("failed to provision onboarding trial", "err", err, "userID", user.ID)
-	}
+	h.provisionOnboardingTrial(c.Request.Context(), user.ID)
 
 	message := "registration successful"
 
@@ -668,6 +650,36 @@ func (h *handler) register(c *gin.Context) {
 		"user":    sanitizeUser(user, nil),
 	}
 	c.JSON(http.StatusCreated, response)
+}
+
+// provisionOnboardingTrial grants the new-user full-access TRIAL-7D subscription
+// and applies its catalog entitlements (billing profile + quota). It is called
+// the first time a user's email becomes verified (password registration, or
+// OAuth users completing the email-verification round trip) — the single point
+// where the 7-day trial is activated. Failures are non-fatal: the account stays
+// usable and the trial can be re-provisioned later.
+func (h *handler) provisionOnboardingTrial(ctx context.Context, userID string) {
+	trialExpiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
+	trial := &store.Subscription{
+		UserID:        userID,
+		Provider:      "trial",
+		PaymentMethod: "trial",
+		Kind:          "trial",
+		PlanID:        store.BillingPlanTrial7D,
+		ExternalID:    fmt.Sprintf("trial-%s", userID),
+		Status:        "active",
+		Meta: map[string]any{
+			"startsAt":  time.Now().UTC(),
+			"expiresAt": trialExpiresAt,
+			"note":      "new user full-access trial",
+		},
+	}
+
+	if err := h.store.UpsertSubscription(ctx, trial); err != nil {
+		slog.Warn("failed to provision onboarding trial", "err", err, "userID", userID)
+	}
+	// Apply catalog entitlements (billing profile + quota) for the trial plan.
+	h.provisionTrialEntitlements(ctx, userID)
 }
 
 func (h *handler) verifyEmail(c *gin.Context) {
@@ -728,6 +740,10 @@ func (h *handler) verifyEmail(c *gin.Context) {
 				respondError(c, http.StatusInternalServerError, "verification_failed", "failed to verify email")
 				return
 			}
+			// First-time verification unlocks full access: activate the 7-day
+			// trial. OAuth users register with EmailVerified=false and no trial;
+			// this round trip (verified inbox) is what grants proxy entitlement.
+			h.provisionOnboardingTrial(c.Request.Context(), user.ID)
 		}
 
 		h.removeEmailVerification(email)
@@ -2841,11 +2857,18 @@ func (h *handler) oauthCallback(c *gin.Context) {
 	}
 
 	if errors.Is(err, store.ErrUserNotFound) {
-		// Auto-register user
+		// Auto-register the OAuth user so they can sign in, but withhold full
+		// access until they complete our own email-verification round trip.
+		// EmailVerified stays false (the provider's verification is necessary
+		// but not sufficient) and no trial is provisioned yet — both happen in
+		// verifyEmail once the user enters the code we mail to this address.
+		// Proxy/VPN access is gated on EmailVerified (see listAgentUsers /
+		// internalNetworkIdentities); the console stays reachable because
+		// RequireActiveUser only checks Active.
 		user = &store.User{
 			Name:          profile.Name,
 			Email:         profile.Email,
-			EmailVerified: true, // Trusted provider, verified above
+			EmailVerified: false,
 			Level:         store.LevelUser,
 			Role:          store.RoleUser,
 			Groups:        []string{"User"},
@@ -2855,31 +2878,12 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			respondError(c, http.StatusInternalServerError, "user_creation_failed", "failed to create user")
 			return
 		}
-
-		// Provision trial
-		trialExpiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
-		trial := &store.Subscription{
-			UserID:        user.ID,
-			Provider:      "trial",
-			PaymentMethod: "trial",
-			Kind:          "trial",
-			PlanID:        store.BillingPlanTrial7D,
-			ExternalID:    fmt.Sprintf("trial-%s", user.ID),
-			Status:        "active",
-			Meta:          map[string]any{"expiresAt": trialExpiresAt},
-		}
-		h.store.UpsertSubscription(ctx, trial)
-		// Apply catalog entitlements (billing profile + quota) for the trial.
-		h.provisionTrialEntitlements(ctx, user.ID)
 	} else {
 		user = existingUser
-		// Ensure user is verified if they logged in via OAuth
-		if !user.EmailVerified {
-			user.EmailVerified = true
-			if err := h.store.UpdateUser(ctx, user); err != nil {
-				slog.Warn("failed to update user verification status during oauth", "err", err, "userID", user.ID)
-			}
-		}
+		// Do NOT auto-verify a returning OAuth user: a prior unverified OAuth
+		// signup must still complete the email round trip, otherwise repeated
+		// OAuth logins would silently bypass the verification gate. Already
+		// verified users keep their status (no downgrade).
 	}
 
 	// Always ensure identity record exists (bind OAuth ID to User Email)
