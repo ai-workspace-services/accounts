@@ -388,7 +388,11 @@ func TestPublicAndAdminBillingPlanEndpoints(t *testing.T) {
 	}
 }
 
-func TestOAuthTrialProvisionsCatalogEntitlements(t *testing.T) {
+// TestOAuthDefersTrialUntilEmailVerified asserts the gated onboarding flow:
+// an OAuth signup alone does NOT grant the trial or its entitlements — the
+// user must complete our own email-verification round trip first, at which
+// point the TRIAL-7D subscription, billing profile and quota are provisioned.
+func TestOAuthDefersTrialUntilEmailVerified(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 
@@ -404,10 +408,12 @@ func TestOAuthTrialProvisionsCatalogEntitlements(t *testing.T) {
 		t.Fatalf("seed trial plan: %v", err)
 	}
 
+	mailer := &testEmailSender{}
 	router := gin.New()
 	RegisterRoutes(
 		router,
 		WithStore(memStore),
+		WithEmailSender(mailer),
 		WithOAuthProviders(map[string]auth.OAuthProvider{
 			"github": &stubOAuthProvider{profile: &auth.OAuthUserProfile{
 				ID:       "oauth-trial-1",
@@ -419,6 +425,7 @@ func TestOAuthTrialProvisionsCatalogEntitlements(t *testing.T) {
 		WithOAuthFrontendURL("https://console.svc.plus"),
 	)
 
+	// Step 1: OAuth callback — creates the user, but withholds the trial.
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/oauth/callback/github?code=test-code", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -430,12 +437,51 @@ func TestOAuthTrialProvisionsCatalogEntitlements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load user: %v", err)
 	}
+	if user.EmailVerified {
+		t.Fatalf("expected OAuth user to start unverified")
+	}
+	if bp, err := memStore.GetAccountBillingProfile(ctx, user.ID); err == nil && bp != nil {
+		t.Fatalf("trial entitlements must not be provisioned before verification, got %+v", bp)
+	}
+
+	// Step 2: send + verify the email code — this activates the trial.
+	sendBody, _ := json.Marshal(map[string]string{"email": "trial-oauth@example.com"})
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/register/send", bytes.NewReader(sendBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("send verification failed: %d %s", rec.Code, rec.Body.String())
+	}
+	msg, ok := mailer.last()
+	if !ok {
+		t.Fatalf("expected verification email")
+	}
+	code := extractVerificationCodeFromMessage(t, msg)
+
+	verifyBody, _ := json.Marshal(map[string]string{"email": "trial-oauth@example.com", "code": code})
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/register/verify", bytes.NewReader(verifyBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("verify failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Step 3: trial entitlements are now in place.
+	verified, err := memStore.GetUserByEmail(ctx, "trial-oauth@example.com")
+	if err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if !verified.EmailVerified {
+		t.Fatalf("expected user to be verified after code entry")
+	}
 	bp, err := memStore.GetAccountBillingProfile(ctx, user.ID)
 	if err != nil || bp.PackageName != "trial" || bp.IncludedQuotaBytes != 10<<30 {
-		t.Fatalf("expected trial entitlements, err=%v profile=%+v", err, bp)
+		t.Fatalf("expected trial entitlements after verification, err=%v profile=%+v", err, bp)
 	}
 	quota, err := memStore.GetAccountQuotaState(ctx, user.ID)
 	if err != nil || quota.RemainingIncludedQuota != 10<<30 {
-		t.Fatalf("expected trial quota, err=%v quota=%+v", err, quota)
+		t.Fatalf("expected trial quota after verification, err=%v quota=%+v", err, quota)
 	}
 }

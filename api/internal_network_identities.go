@@ -31,6 +31,12 @@ func (h *handler) internalNetworkIdentities(c *gin.Context) {
 		if !user.Active {
 			continue
 		}
+		// Mirror the proxy-access gate in listAgentUsers: only verified users
+		// (whose email round trip activated the trial) get a proxy client, so
+		// only they should be attributed. Sandbox is exempt for parity.
+		if !user.EmailVerified && strings.ToLower(strings.TrimSpace(user.Email)) != sandboxUserEmail {
+			continue
+		}
 		uuid := strings.TrimSpace(user.ProxyUUID)
 		if uuid == "" {
 			uuid = strings.TrimSpace(user.ID)
