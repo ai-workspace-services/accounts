@@ -4,14 +4,21 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: ['release/**']
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       target_host:
         description: Ansible host or alias
         required: false
-        default: "jp-xhttp-contabo.svc.plus"
+        default: ""
         type: string
+      deployment_environment:
+        description: Deployment environment
+        required: true
+        default: uat
+        type: choice
+        options: [dev, uat, prod]
       run_apply:
         description: Apply deployment
         required: true
@@ -54,15 +61,14 @@ defaults:
   run:
     shell: bash
 
-env:
-  DEFAULT_TARGET_HOST: jp-xhttp-contabo.svc.plus
-
 jobs:
   prep:
     name: Prep
     runs-on: ubuntu-latest
     outputs:
       target_host: ${{ steps.flags.outputs.target_host }}
+      deployment_environment: ${{ steps.flags.outputs.deployment_environment }}
+      service_url: ${{ steps.flags.outputs.service_url }}
       run_apply: ${{ steps.flags.outputs.run_apply }}
       push_image: ${{ steps.flags.outputs.push_image }}
       push_latest: ${{ steps.flags.outputs.push_latest }}
@@ -76,8 +82,8 @@ jobs:
         id: flags
         env:
           IMAGE_REPO_OWNER: ${{ vars.IMAGE_REPO_OWNER || github.repository_owner }}
-          DEFAULT_TARGET_HOST: ${{ env.DEFAULT_TARGET_HOST }}
           INPUT_TARGET_HOST: ${{ inputs.target_host }}
+          INPUT_DEPLOYMENT_ENVIRONMENT: ${{ inputs.deployment_environment }}
           INPUT_RUN_APPLY: ${{ inputs.run_apply }}
           INPUT_PUSH_IMAGE: ${{ inputs.push_image }}
           INPUT_PUSH_LATEST: ${{ inputs.push_latest }}
@@ -85,6 +91,14 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GITHUB_BEFORE: ${{ github.event.before }}
           GITHUB_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          DEV_TARGET_HOST: ${{ vars.DEV_TARGET_HOST }}
+          UAT_TARGET_HOST: ${{ vars.UAT_TARGET_HOST }}
+          PROD_TARGET_HOST: ${{ vars.PROD_TARGET_HOST }}
+          DEV_SERVICE_URL: ${{ vars.DEV_SERVICE_URL }}
+          UAT_SERVICE_URL: ${{ vars.UAT_SERVICE_URL }}
+          PROD_SERVICE_URL: ${{ vars.PROD_SERVICE_URL }}
         run: bash ./scripts/github-actions/resolve-pipeline-flags.sh >> "$GITHUB_OUTPUT"
 
   build:
@@ -163,6 +177,7 @@ jobs:
       - build
     if: ${{ needs.prep.outputs.push_image == 'true' }}
     runs-on: ubuntu-latest
+    environment: ${{ needs.prep.outputs.deployment_environment }}
     outputs:
       image: ${{ needs.build.outputs.service_image_ref }}
       image_ref: ${{ needs.build.outputs.service_image_ref }}
@@ -418,12 +433,13 @@ jobs:
       - deploy
     if: ${{ always() && needs.deploy.result == 'success' && needs.deploy.outputs.pushed == 'true' && needs.deploy.outputs.run_apply == 'true' }}
     runs-on: ubuntu-latest
+    environment: ${{ needs.prep.outputs.deployment_environment }}
     steps:
       - name: Check Out Repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Validate Deployed Accounts Service
-        run: bash ./scripts/github-actions/validate-deploy.sh "${{ needs.build.outputs.service_image_ref }}" https://accounts.svc.plus
+        run: bash ./scripts/github-actions/validate-deploy.sh "${{ needs.build.outputs.service_image_ref }}" "${{ needs.prep.outputs.service_url }}"
 
       - name: Mask Vault Token Fallback Input
         if: ${{ inputs.vault_token != '' }}
@@ -473,4 +489,4 @@ jobs:
           REVIEW_ACCOUNT_PASSWORD: ${{ secrets.REVIEW_ACCOUNT_PASSWORD }}
           BRIDGE_AUTH_TOKEN: ${{ steps.validate_secrets.outputs.bridge_auth_token }}
           BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.validate_secrets.outputs.bridge_review_auth_token }}
-        run: bash ./scripts/github-actions/validate-review-xworkmate-sync.sh https://accounts.svc.plus
+        run: bash ./scripts/github-actions/validate-review-xworkmate-sync.sh "${{ needs.prep.outputs.service_url }}"

@@ -226,6 +226,31 @@ func newAuthenticatedSyncHarness(t *testing.T, opts ...Option) (*gin.Engine, *st
 	return router, freshUser, token
 }
 
+func TestSessionRejectsBillingSuspendedAccount(t *testing.T) {
+	ctx := context.Background()
+	billingStore := store.NewMemoryStore()
+	billingUser := &store.User{Name: "Billing suspended", Email: "suspended@example.test", EmailVerified: true, Active: true}
+	if err := billingStore.CreateUser(ctx, billingUser); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := billingStore.CreateSession(ctx, "billing-suspended-token", billingUser.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := billingStore.MarkAccountArrears(ctx, billingUser.ID, time.Now().Add(-14*24*time.Hour)); err != nil {
+		t.Fatalf("mark arrears: %v", err)
+	}
+	billingRouter := gin.New()
+	RegisterRoutes(billingRouter, WithStore(billingStore), WithEmailVerification(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
+	req.Header.Set("Authorization", "Bearer billing-suspended-token")
+	rec := httptest.NewRecorder()
+	billingRouter.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected suspended session to be forbidden, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func decodeSyncConfigResponse(t *testing.T, rr *httptest.ResponseRecorder) syncConfigResponse {
 	t.Helper()
 	var resp syncConfigResponse
@@ -741,6 +766,692 @@ func TestSyncConfigAckReturnsReceipt(t *testing.T) {
 	}
 	if got, _ := payload["user_id"].(string); got != user.ID {
 		t.Fatalf("expected user_id %q, got %q", user.ID, got)
+	}
+}
+
+func TestOverlayDeviceRegisterAndConfigContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("OVERLAY_TRANSPORT_UUID", "11111111-1111-1111-1111-111111111111")
+
+	router, _, token := newAuthenticatedSyncHarness(t)
+	registerBody := bytes.NewBufferString(`{
+		"device_id": "Shenlan-MacOS",
+		"name": "Shenlan MacBook",
+		"platform": "darwin",
+		"hostname": "shenlan-mbp",
+		"wireguard_public_key": "jfHsw1HIqRQzGvfsRfdkS7BLThDbBvWMsAlJRp1kdkw="
+	}`)
+
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/overlay/devices/register", registerBody)
+	registerReq.Header.Set("Authorization", "Bearer "+token)
+	registerReq.Header.Set("Content-Type", "application/json")
+	registerRec := httptest.NewRecorder()
+	router.ServeHTTP(registerRec, registerReq)
+	if registerRec.Code != http.StatusOK {
+		t.Fatalf("expected overlay device register success, got %d: %s", registerRec.Code, registerRec.Body.String())
+	}
+
+	var registerPayload map[string]map[string]interface{}
+	if err := json.Unmarshal(registerRec.Body.Bytes(), &registerPayload); err != nil {
+		t.Fatalf("decode register payload: %v", err)
+	}
+	device := registerPayload["device"]
+	if got, _ := device["id"].(string); got != "shenlan-macos" {
+		t.Fatalf("expected sanitized device id, got %q", got)
+	}
+	if got, _ := device["wireguard_address"].(string); !strings.HasSuffix(got, "/32") {
+		t.Fatalf("expected assigned /32 wireguard address, got %q", got)
+	}
+
+	configReq := httptest.NewRequest(http.MethodGet, "/api/overlay/config?device_id=shenlan-macos", nil)
+	configReq.Header.Set("Authorization", "Bearer "+token)
+	configRec := httptest.NewRecorder()
+	router.ServeHTTP(configRec, configReq)
+	if configRec.Code != http.StatusOK {
+		t.Fatalf("expected overlay config success, got %d: %s", configRec.Code, configRec.Body.String())
+	}
+
+	var configPayload map[string]interface{}
+	if err := json.Unmarshal(configRec.Body.Bytes(), &configPayload); err != nil {
+		t.Fatalf("decode config payload: %v", err)
+	}
+	if got, _ := configPayload["schema_version"].(float64); got != 1 {
+		t.Fatalf("expected schema_version=1, got %#v", configPayload["schema_version"])
+	}
+	if got, _ := configPayload["revision"].(string); strings.TrimSpace(got) == "" {
+		t.Fatalf("expected revision to be populated")
+	}
+	if got, _ := configPayload["digest"].(string); strings.TrimSpace(got) == "" {
+		t.Fatalf("expected digest to be populated")
+	}
+
+	wg, ok := configPayload["wireguard"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected wireguard config object, got %#v", configPayload["wireguard"])
+	}
+	if got, _ := wg["peer_endpoint"].(string); got != "127.0.0.1:51830" {
+		t.Fatalf("expected local WireGuard peer endpoint through transport, got %q", got)
+	}
+	if got, _ := wg["peer_public_key"].(string); strings.TrimSpace(got) == "" {
+		t.Fatalf("expected gateway peer public key")
+	}
+
+	transport, ok := configPayload["transport"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected transport config object, got %#v", configPayload["transport"])
+	}
+	if got, _ := transport["server"].(string); got != "xworkmate-bridge.svc.plus" {
+		t.Fatalf("expected default gateway server, got %q", got)
+	}
+	if got, _ := transport["uuid"].(string); strings.TrimSpace(got) == "" {
+		t.Fatalf("expected transport uuid to be populated")
+	}
+	if got, _ := transport["uuid"].(string); got != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("expected transport uuid from gateway config, got %q", got)
+	}
+	if got, _ := transport["packet_encoding"].(string); got != "xudp" {
+		t.Fatalf("expected xudp packet encoding, got %q", got)
+	}
+	if got, _ := transport["flow"].(string); got != "" {
+		t.Fatalf("expected default transport flow to be empty for plain VLESS/TLS, got %q", got)
+	}
+}
+
+func TestOverlayDeviceRegisterAvoidsDerivedAddressCollision(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router, user, token := newAuthenticatedSyncHarness(t)
+	collidingAddress := deriveOverlayDeviceAddress(user.ID, "second-device")
+
+	firstBody := bytes.NewBufferString(`{
+		"device_id": "first-device",
+		"wireguard_public_key": "iYlnFaWiMfMelpiN8ZV2SwCDrLihqtJXvHUsM3BN9zU=",
+		"wireguard_address": "` + collidingAddress + `"
+	}`)
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/overlay/devices/register", firstBody)
+	firstReq.Header.Set("Authorization", "Bearer "+token)
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstRec := httptest.NewRecorder()
+	router.ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("expected first device register success, got %d: %s", firstRec.Code, firstRec.Body.String())
+	}
+
+	secondBody := bytes.NewBufferString(`{
+		"device_id": "second-device",
+		"wireguard_public_key": "I/zCL7gLWrY6FZiLXUs7i/vivU5Xuo8r7EbkNhtv12w="
+	}`)
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/overlay/devices/register", secondBody)
+	secondReq.Header.Set("Authorization", "Bearer "+token)
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondRec := httptest.NewRecorder()
+	router.ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("expected second device register success, got %d: %s", secondRec.Code, secondRec.Body.String())
+	}
+
+	var secondPayload map[string]map[string]interface{}
+	if err := json.Unmarshal(secondRec.Body.Bytes(), &secondPayload); err != nil {
+		t.Fatalf("decode second payload: %v", err)
+	}
+	secondDevice := secondPayload["device"]
+	if got, _ := secondDevice["wireguard_address"].(string); got == collidingAddress {
+		t.Fatalf("expected derived address collision to be avoided, got %q", got)
+	}
+}
+
+func TestOverlayDeviceRegisterRejectsExplicitAddressCollision(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router, _, token := newAuthenticatedSyncHarness(t)
+	for _, body := range []string{
+		`{"device_id":"first-device","wireguard_public_key":"iYlnFaWiMfMelpiN8ZV2SwCDrLihqtJXvHUsM3BN9zU=","wireguard_address":"172.29.10.150/32"}`,
+		`{"device_id":"second-device","wireguard_public_key":"I/zCL7gLWrY6FZiLXUs7i/vivU5Xuo8r7EbkNhtv12w=","wireguard_address":"172.29.10.150"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/overlay/devices/register", bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if strings.Contains(body, "second-device") {
+			if rr.Code != http.StatusConflict {
+				t.Fatalf("expected duplicate address conflict, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "wireguard_address_in_use") {
+				t.Fatalf("expected wireguard address conflict error, got %s", rr.Body.String())
+			}
+			continue
+		}
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected first device register success, got %d: %s", rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestOverlayDeviceRegisterAvoidsCrossAccountAddressCollision(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	userOne := &store.User{
+		Name:          "Overlay One",
+		Email:         "overlay-one@example.com",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+	}
+	userTwo := &store.User{
+		Name:          "Overlay Two",
+		Email:         "overlay-two@example.com",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+	}
+	for _, user := range []*store.User{userOne, userTwo} {
+		if err := st.CreateUser(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.Email, err)
+		}
+	}
+	if err := st.CreateSession(ctx, "token-one", userOne.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create token one: %v", err)
+	}
+	if err := st.CreateSession(ctx, "token-two", userTwo.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create token two: %v", err)
+	}
+
+	collidingAddress := deriveOverlayDeviceAddress(userTwo.ID, "second-device")
+	if err := st.UpsertOverlayDevice(ctx, &store.OverlayDevice{
+		ID:                 "first-device",
+		UserID:             userOne.ID,
+		NetworkID:          "xworkmate-private",
+		Name:               "first-device",
+		WireGuardPublicKey: "iYlnFaWiMfMelpiN8ZV2SwCDrLihqtJXvHUsM3BN9zU=",
+		WireGuardAddress:   collidingAddress,
+	}); err != nil {
+		t.Fatalf("upsert first device: %v", err)
+	}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+	body := bytes.NewBufferString(`{
+		"device_id": "second-device",
+		"wireguard_public_key": "I/zCL7gLWrY6FZiLXUs7i/vivU5Xuo8r7EbkNhtv12w="
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/overlay/devices/register", body)
+	req.Header.Set("Authorization", "Bearer token-two")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected second account register success, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, _ := payload["device"]["wireguard_address"].(string); got == collidingAddress {
+		t.Fatalf("expected cross-account address collision to be avoided, got %q", got)
+	}
+}
+
+func TestOverlayConfigRequiresGatewayTransportUUID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router, _, token := newAuthenticatedSyncHarness(t)
+	registerBody := bytes.NewBufferString(`{
+		"device_id": "missing-uuid-device",
+		"wireguard_public_key": "jfHsw1HIqRQzGvfsRfdkS7BLThDbBvWMsAlJRp1kdkw="
+	}`)
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/overlay/devices/register", registerBody)
+	registerReq.Header.Set("Authorization", "Bearer "+token)
+	registerReq.Header.Set("Content-Type", "application/json")
+	registerRec := httptest.NewRecorder()
+	router.ServeHTTP(registerRec, registerReq)
+	if registerRec.Code != http.StatusOK {
+		t.Fatalf("expected overlay device register success, got %d: %s", registerRec.Code, registerRec.Body.String())
+	}
+
+	configReq := httptest.NewRequest(http.MethodGet, "/api/overlay/config?device_id=missing-uuid-device", nil)
+	configReq.Header.Set("Authorization", "Bearer "+token)
+	configRec := httptest.NewRecorder()
+	router.ServeHTTP(configRec, configReq)
+	if configRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected missing transport uuid to reject config, got %d: %s", configRec.Code, configRec.Body.String())
+	}
+	if !strings.Contains(configRec.Body.String(), "overlay_transport_uuid_missing") {
+		t.Fatalf("expected missing transport uuid error, got %s", configRec.Body.String())
+	}
+}
+
+func TestInternalOverlayNodeHeartbeatPersistsGatewayTransportUUID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-token")
+
+	st := store.NewMemoryStore()
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+
+	body := bytes.NewBufferString(`{
+		"node_id": "xworkmate-bridge",
+		"network_id": "xworkmate-private",
+		"name": "XWorkmate Bridge",
+		"role": "gateway",
+		"region": "jp",
+		"wireguard_public_key": "1staGq8lmHFRFRFNj2QOFx/MPxb/1fFV4tawC6xSi1Q=",
+		"wireguard_address": "172.29.10.1/32",
+		"endpoint_host": "xworkmate-bridge.svc.plus",
+		"endpoint_port": 2443,
+		"transport_type": "vless-tls",
+		"transport_security": "tls",
+		"transport_uuid": "11111111-1111-1111-1111-111111111111"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/nodes/heartbeat", body)
+	req.Header.Set("X-Service-Token", "internal-token")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected overlay node heartbeat success, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	nodes, err := st.ListOverlayNodes(context.Background(), "xworkmate-private")
+	if err != nil {
+		t.Fatalf("list overlay nodes: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected one overlay node, got %#v", nodes)
+	}
+	node := nodes[0]
+	if node.TransportUUID != "11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("expected transport uuid to persist, got %q", node.TransportUUID)
+	}
+	if node.WireGuardAddress != "172.29.10.1" {
+		t.Fatalf("expected gateway wireguard address to be normalized, got %q", node.WireGuardAddress)
+	}
+	if node.EndpointHost != "xworkmate-bridge.svc.plus" || node.EndpointPort != 2443 {
+		t.Fatalf("unexpected endpoint: %#v", node)
+	}
+}
+
+func TestInternalOverlayNodeHeartbeatRequiresTransportUUID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-token")
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(store.NewMemoryStore()), WithEmailVerification(false))
+
+	body := bytes.NewBufferString(`{
+		"node_id": "xworkmate-bridge",
+		"wireguard_public_key": "1staGq8lmHFRFRFNj2QOFx/MPxb/1fFV4tawC6xSi1Q=",
+		"wireguard_address": "172.29.10.1",
+		"endpoint_host": "xworkmate-bridge.svc.plus"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/nodes/heartbeat", body)
+	req.Header.Set("X-Service-Token", "internal-token")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected transport uuid validation error, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "transport_uuid_required") {
+		t.Fatalf("expected transport uuid error, got %s", rr.Body.String())
+	}
+}
+
+func TestInternalOverlayNodeHeartbeatRejectsInvalidTransportUUID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-token")
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(store.NewMemoryStore()), WithEmailVerification(false))
+
+	body := bytes.NewBufferString(`{
+		"node_id": "xworkmate-bridge",
+		"wireguard_public_key": "1staGq8lmHFRFRFNj2QOFx/MPxb/1fFV4tawC6xSi1Q=",
+		"wireguard_address": "172.29.10.1",
+		"endpoint_host": "xworkmate-bridge.svc.plus",
+		"transport_uuid": "not-a-uuid"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/nodes/heartbeat", body)
+	req.Header.Set("X-Service-Token", "internal-token")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid transport uuid error, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_transport_uuid") {
+		t.Fatalf("expected invalid transport uuid error, got %s", rr.Body.String())
+	}
+}
+
+func TestInternalOverlayNodeHeartbeatRejectsInvalidTransportContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-token")
+
+	tests := []struct {
+		name      string
+		fragment  string
+		wantError string
+	}{
+		{
+			name:      "invalid endpoint port",
+			fragment:  `"endpoint_port": 70000,`,
+			wantError: "invalid_endpoint_port",
+		},
+		{
+			name:      "unsupported transport type",
+			fragment:  `"endpoint_port": 2443, "transport_type": "vless-reality",`,
+			wantError: "unsupported_transport_type",
+		},
+		{
+			name:      "unsupported transport security",
+			fragment:  `"endpoint_port": 2443, "transport_security": "reality",`,
+			wantError: "unsupported_transport_security",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := gin.New()
+			RegisterRoutes(router, WithStore(store.NewMemoryStore()), WithEmailVerification(false))
+
+			body := bytes.NewBufferString(`{
+				"node_id": "xworkmate-bridge",
+				"wireguard_public_key": "1staGq8lmHFRFRFNj2QOFx/MPxb/1fFV4tawC6xSi1Q=",
+				"wireguard_address": "172.29.10.1",
+				"endpoint_host": "xworkmate-bridge.svc.plus",
+				` + tt.fragment + `
+				"transport_uuid": "11111111-1111-1111-1111-111111111111"
+			}`)
+			req := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/nodes/heartbeat", body)
+			req.Header.Set("X-Service-Token", "internal-token")
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected transport contract validation error, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantError) {
+				t.Fatalf("expected %s error, got %s", tt.wantError, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestOverlayConfigRejectsInvalidGatewayTransportContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name      string
+		mutate    func(*store.OverlayNode)
+		wantError string
+	}{
+		{
+			name: "invalid endpoint port",
+			mutate: func(node *store.OverlayNode) {
+				node.EndpointPort = 70000
+			},
+			wantError: "overlay_endpoint_port_invalid",
+		},
+		{
+			name: "unsupported transport type",
+			mutate: func(node *store.OverlayNode) {
+				node.TransportType = "vless-reality"
+			},
+			wantError: "overlay_transport_type_unsupported",
+		},
+		{
+			name: "unsupported transport security",
+			mutate: func(node *store.OverlayNode) {
+				node.TransportSecurity = "reality"
+			},
+			wantError: "overlay_transport_security_unsupported",
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := store.NewMemoryStore()
+			user := &store.User{
+				Name:          "Overlay User",
+				Email:         "overlay-invalid-contract@example.com",
+				EmailVerified: true,
+				Role:          store.RoleUser,
+				Level:         store.LevelUser,
+				Active:        true,
+			}
+			if err := st.CreateUser(ctx, user); err != nil {
+				t.Fatalf("create user: %v", err)
+			}
+			token := "overlay-invalid-contract-session-" + strconv.Itoa(i)
+			if err := st.CreateSession(ctx, token, user.ID, time.Now().Add(time.Hour)); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			if err := st.UpsertOverlayDevice(ctx, &store.OverlayDevice{
+				ID:                 "invalid-contract-device",
+				UserID:             user.ID,
+				NetworkID:          "xworkmate-private",
+				Name:               "invalid-contract-device",
+				WireGuardPublicKey: "jfHsw1HIqRQzGvfsRfdkS7BLThDbBvWMsAlJRp1kdkw=",
+				WireGuardAddress:   "172.29.10.123/32",
+			}); err != nil {
+				t.Fatalf("upsert device: %v", err)
+			}
+			node := store.OverlayNode{
+				ID:                 "xworkmate-bridge",
+				NetworkID:          "xworkmate-private",
+				Name:               "Primary Bridge",
+				WireGuardPublicKey: "1staGq8lmHFRFRFNj2QOFx/MPxb/1fFV4tawC6xSi1Q=",
+				WireGuardAddress:   "172.29.10.1",
+				EndpointHost:       "xworkmate-bridge.svc.plus",
+				EndpointPort:       2443,
+				TransportType:      "vless-tls",
+				TransportSecurity:  "tls",
+				TransportUUID:      "11111111-1111-1111-1111-111111111111",
+				Healthy:            true,
+			}
+			tt.mutate(&node)
+			if err := st.UpsertOverlayNode(ctx, &node); err != nil {
+				t.Fatalf("upsert node: %v", err)
+			}
+
+			router := gin.New()
+			RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+			req := httptest.NewRequest(http.MethodGet, "/api/overlay/config?device_id=invalid-contract-device", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("expected invalid gateway contract rejection, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantError) {
+				t.Fatalf("expected %s error, got %s", tt.wantError, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestOverlayConfigPrefersDefaultGatewayNode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := &store.User{
+		Name:          "Overlay User",
+		Email:         "overlay-node@example.com",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+	}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	token := "overlay-node-session"
+	if err := st.CreateSession(ctx, token, user.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := st.UpsertOverlayDevice(ctx, &store.OverlayDevice{
+		ID:                 "node-select-device",
+		UserID:             user.ID,
+		NetworkID:          "xworkmate-private",
+		Name:               "node-select-device",
+		WireGuardPublicKey: "jfHsw1HIqRQzGvfsRfdkS7BLThDbBvWMsAlJRp1kdkw=",
+		WireGuardAddress:   "172.29.10.123/32",
+	}); err != nil {
+		t.Fatalf("upsert device: %v", err)
+	}
+	for _, node := range []store.OverlayNode{
+		{
+			ID:                 "cn-xworkmate-bridge",
+			NetworkID:          "xworkmate-private",
+			Name:               "CN Bridge",
+			WireGuardPublicKey: "iYlnFaWiMfMelpiN8ZV2SwCDrLihqtJXvHUsM3BN9zU=",
+			WireGuardAddress:   "172.29.10.2",
+			EndpointHost:       "cn-xworkmate-bridge.svc.plus",
+			EndpointPort:       2443,
+			TransportType:      "vless-tls",
+			TransportSecurity:  "tls",
+			TransportUUID:      "22222222-2222-2222-2222-222222222222",
+			Healthy:            true,
+		},
+		{
+			ID:                 "xworkmate-bridge",
+			NetworkID:          "xworkmate-private",
+			Name:               "Primary Bridge",
+			WireGuardPublicKey: "1staGq8lmHFRFRFNj2QOFx/MPxb/1fFV4tawC6xSi1Q=",
+			WireGuardAddress:   "172.29.10.1",
+			EndpointHost:       "xworkmate-bridge.svc.plus",
+			EndpointPort:       2443,
+			TransportType:      "vless-tls",
+			TransportSecurity:  "tls",
+			TransportUUID:      "11111111-1111-1111-1111-111111111111",
+			Healthy:            true,
+		},
+	} {
+		node := node
+		if err := st.UpsertOverlayNode(ctx, &node); err != nil {
+			t.Fatalf("upsert node %s: %v", node.ID, err)
+		}
+	}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+	req := httptest.NewRequest(http.MethodGet, "/api/overlay/config?device_id=node-select-device", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected overlay config success, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	transport := payload["transport"].(map[string]interface{})
+	if got, _ := transport["server"].(string); got != "xworkmate-bridge.svc.plus" {
+		t.Fatalf("expected default primary gateway, got %q", got)
+	}
+	wg := payload["wireguard"].(map[string]interface{})
+	if got, _ := wg["gateway_wireguard_ip"].(string); got != "172.29.10.1" {
+		t.Fatalf("expected primary gateway WireGuard IP, got %q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/overlay/config?device_id=node-select-device&node_id=cn-xworkmate-bridge", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected explicit node config success, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode explicit config: %v", err)
+	}
+	transport = payload["transport"].(map[string]interface{})
+	if got, _ := transport["server"].(string); got != "cn-xworkmate-bridge.svc.plus" {
+		t.Fatalf("expected explicit CN gateway, got %q", got)
+	}
+}
+
+func TestOverlayNetworksReturnsDefaultNetwork(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router, _, token := newAuthenticatedSyncHarness(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/overlay/networks", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected overlay networks success, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var payload struct {
+		Networks []struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"display_name"`
+			CIDR        string `json:"cidr"`
+		} `json:"networks"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode networks payload: %v", err)
+	}
+	if len(payload.Networks) != 1 {
+		t.Fatalf("expected one network, got %#v", payload.Networks)
+	}
+	if got := payload.Networks[0].ID; got != "xworkmate-private" {
+		t.Fatalf("expected default network id, got %q", got)
+	}
+	if got := payload.Networks[0].CIDR; got != "172.29.10.0/24" {
+		t.Fatalf("expected default cidr, got %q", got)
+	}
+}
+
+func TestOverlayConfigAckPersistsReceipt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router, _, token := newAuthenticatedSyncHarness(t)
+	registerBody := bytes.NewBufferString(`{"device_id":"linux-dev","wireguard_public_key":"jfHsw1HIqRQzGvfsRfdkS7BLThDbBvWMsAlJRp1kdkw="}`)
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/overlay/devices/register", registerBody)
+	registerReq.Header.Set("Authorization", "Bearer "+token)
+	registerReq.Header.Set("Content-Type", "application/json")
+	registerRec := httptest.NewRecorder()
+	router.ServeHTTP(registerRec, registerReq)
+	if registerRec.Code != http.StatusOK {
+		t.Fatalf("expected register success, got %d: %s", registerRec.Code, registerRec.Body.String())
+	}
+
+	ackBody := bytes.NewBufferString(`{
+		"device_id": "linux-dev",
+		"network_id": "xworkmate-private",
+		"revision": "123",
+		"digest": "abc",
+		"applied_at": "2026-06-01T00:00:00Z"
+	}`)
+	ackReq := httptest.NewRequest(http.MethodPost, "/api/overlay/config/ack", ackBody)
+	ackReq.Header.Set("Authorization", "Bearer "+token)
+	ackReq.Header.Set("Content-Type", "application/json")
+	ackRec := httptest.NewRecorder()
+	router.ServeHTTP(ackRec, ackReq)
+	if ackRec.Code != http.StatusOK {
+		t.Fatalf("expected ack success, got %d: %s", ackRec.Code, ackRec.Body.String())
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(ackRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode ack payload: %v", err)
+	}
+	if acked, _ := payload["acked"].(bool); !acked {
+		t.Fatalf("expected acked=true, got %#v", payload["acked"])
+	}
+	if got, _ := payload["revision"].(string); got != "123" {
+		t.Fatalf("expected revision 123, got %q", got)
 	}
 }
 

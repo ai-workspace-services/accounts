@@ -299,12 +299,13 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 
 	const query = `
 		INSERT INTO account_quota_states (
-			account_uuid, remaining_included_quota, current_balance, arrears, throttle_state, suspend_state, last_rated_bucket_at, effective_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, effective_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (account_uuid) DO UPDATE SET
 			remaining_included_quota = EXCLUDED.remaining_included_quota,
 			current_balance = EXCLUDED.current_balance,
 			arrears = EXCLUDED.arrears,
+			arrears_since = EXCLUDED.arrears_since,
 			throttle_state = EXCLUDED.throttle_state,
 			suspend_state = EXCLUDED.suspend_state,
 			last_rated_bucket_at = EXCLUDED.last_rated_bucket_at,
@@ -319,6 +320,7 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 		state.RemainingIncludedQuota,
 		state.CurrentBalance,
 		state.Arrears,
+		state.ArrearsSince,
 		strings.TrimSpace(state.ThrottleState),
 		strings.TrimSpace(state.SuspendState),
 		state.LastRatedBucketAt,
@@ -328,7 +330,7 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 
 func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error) {
 	const query = `
-		SELECT account_uuid, remaining_included_quota, current_balance, arrears, throttle_state, suspend_state, last_rated_bucket_at, effective_at, updated_at
+		SELECT account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, effective_at, updated_at
 		FROM account_quota_states
 		WHERE account_uuid = $1`
 	var state AccountQuotaState
@@ -337,6 +339,7 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 		&state.RemainingIncludedQuota,
 		&state.CurrentBalance,
 		&state.Arrears,
+		&state.ArrearsSince,
 		&state.ThrottleState,
 		&state.SuspendState,
 		&state.LastRatedBucketAt,
@@ -350,6 +353,34 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 		return nil, err
 	}
 	return &state, nil
+}
+
+func (s *postgresStore) MarkAccountArrears(ctx context.Context, accountUUID string, occurredAt time.Time) error {
+	const query = `INSERT INTO account_quota_states (account_uuid, arrears, arrears_since, throttle_state, suspend_state, effective_at)
+		VALUES ($1, true, $2, 'normal', 'active', $2)
+		ON CONFLICT (account_uuid) DO UPDATE SET arrears = true, arrears_since = COALESCE(account_quota_states.arrears_since, EXCLUDED.arrears_since), updated_at = now()`
+	_, err := s.db.ExecContext(ctx, query, strings.TrimSpace(accountUUID), occurredAt.UTC())
+	return err
+}
+
+func (s *postgresStore) ClearAccountArrears(ctx context.Context, accountUUID string) error {
+	const query = `UPDATE account_quota_states SET arrears = false, arrears_since = NULL, throttle_state = 'normal', suspend_state = 'active', updated_at = now() WHERE account_uuid = $1`
+	_, err := s.db.ExecContext(ctx, query, strings.TrimSpace(accountUUID))
+	return err
+}
+
+func (s *postgresStore) IsAccountSuspended(ctx context.Context, accountUUID string, now time.Time) (bool, error) {
+	const promote = `UPDATE account_quota_states SET suspend_state = 'suspended', updated_at = now()
+		WHERE account_uuid = $1 AND arrears = true AND arrears_since <= $2 AND suspend_state <> 'suspended'`
+	if _, err := s.db.ExecContext(ctx, promote, strings.TrimSpace(accountUUID), now.UTC().Add(-14*24*time.Hour)); err != nil {
+		return false, err
+	}
+	var suspended bool
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(suspend_state = 'suspended', false) FROM account_quota_states WHERE account_uuid = $1`, strings.TrimSpace(accountUUID)).Scan(&suspended)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return suspended, err
 }
 
 func (s *postgresStore) UpsertAccountBillingProfile(ctx context.Context, profile *AccountBillingProfile) error {

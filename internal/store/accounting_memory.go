@@ -58,6 +58,10 @@ func cloneQuotaState(src *AccountQuotaState) *AccountQuotaState {
 		last := src.LastRatedBucketAt.UTC()
 		copy.LastRatedBucketAt = &last
 	}
+	if src.ArrearsSince != nil {
+		arrearsSince := src.ArrearsSince.UTC()
+		copy.ArrearsSince = &arrearsSince
+	}
 	return &copy
 }
 
@@ -271,6 +275,63 @@ func (s *memoryStore) GetAccountQuotaState(ctx context.Context, accountUUID stri
 		return nil, ErrUserNotFound
 	}
 	return cloneQuotaState(record), nil
+}
+
+func (s *memoryStore) MarkAccountArrears(ctx context.Context, accountUUID string, occurredAt time.Time) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := strings.TrimSpace(accountUUID)
+	if id == "" {
+		return ErrUserNotFound
+	}
+	state := s.accountQuotaStates[id]
+	if state == nil {
+		state = &AccountQuotaState{AccountUUID: id, ThrottleState: "normal", SuspendState: "active", EffectiveAt: occurredAt.UTC()}
+		s.accountQuotaStates[id] = state
+	}
+	if state.ArrearsSince == nil {
+		at := occurredAt.UTC()
+		state.ArrearsSince = &at
+	}
+	state.Arrears = true
+	state.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (s *memoryStore) ClearAccountArrears(ctx context.Context, accountUUID string) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.accountQuotaStates[strings.TrimSpace(accountUUID)]
+	if !ok {
+		return nil
+	}
+	state.Arrears = false
+	state.ArrearsSince = nil
+	state.ThrottleState = "normal"
+	state.SuspendState = "active"
+	state.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (s *memoryStore) IsAccountSuspended(ctx context.Context, accountUUID string, now time.Time) (bool, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.accountQuotaStates[strings.TrimSpace(accountUUID)]
+	if !ok {
+		return false, nil
+	}
+	if state.SuspendState == "suspended" {
+		return true, nil
+	}
+	if state.Arrears && state.ArrearsSince != nil && !now.UTC().Before(state.ArrearsSince.Add(14*24*time.Hour)) {
+		state.SuspendState = "suspended"
+		state.UpdatedAt = now.UTC()
+		return true, nil
+	}
+	return false, nil
 }
 
 func (s *memoryStore) UpsertAccountBillingProfile(ctx context.Context, profile *AccountBillingProfile) error {

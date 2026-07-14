@@ -69,6 +69,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	suspendState := "active"
 	throttleState := "normal"
 	arrears := false
+	var arrearsSince *time.Time
 	var billingProfile *store.AccountBillingProfile
 	if quota, err := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); err == nil && quota != nil {
 		currentBalance = quota.CurrentBalance
@@ -76,6 +77,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		suspendState = quota.SuspendState
 		throttleState = quota.ThrottleState
 		arrears = quota.Arrears
+		arrearsSince = quota.ArrearsSince
 	}
 	if profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID); err == nil && profile != nil {
 		billingProfile = profile
@@ -100,6 +102,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		"suspendState":           suspendState,
 		"throttleState":          throttleState,
 		"arrears":                arrears,
+		"arrearsSince":           arrearsSince,
 		"lastBucketAt":           lastBucketAt,
 		"syncDelaySeconds":       syncDelaySeconds,
 		"billingProfile":         billingProfile,

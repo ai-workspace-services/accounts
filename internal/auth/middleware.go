@@ -36,6 +36,17 @@ func RequireActiveUser(s store.Store) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		suspended, err := s.IsAccountSuspended(c.Request.Context(), userID, time.Now().UTC())
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "billing_state_unavailable"})
+			c.Abort()
+			return
+		}
+		if suspended {
+			c.JSON(http.StatusForbidden, gin.H{"error": "account_suspended", "message": "your account has been suspended"})
+			c.Abort()
+			return
+		}
 
 		c.Next()
 	}

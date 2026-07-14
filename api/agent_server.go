@@ -60,6 +60,14 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		if !u.Active {
 			continue
 		}
+		suspended, err := h.store.IsAccountSuspended(c.Request.Context(), u.ID, time.Now().UTC())
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "billing_state_unavailable"})
+			return
+		}
+		if suspended {
+			continue
+		}
 		email := strings.ToLower(strings.TrimSpace(u.Email))
 
 		// Sandbox is a special demo identity with a rotating proxy UUID.

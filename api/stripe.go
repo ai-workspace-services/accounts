@@ -527,7 +527,20 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err != nil {
 			return err
 		}
-		return h.upsertStripeSubscription(ctx, sub, customerIDFromAny(invoice.Customer))
+		if err := h.upsertStripeSubscription(ctx, sub, customerIDFromAny(invoice.Customer)); err != nil {
+			return err
+		}
+		userID := strings.TrimSpace(sub.Metadata["user_id"])
+		if userID == "" {
+			return nil
+		}
+		if event.Type == "invoice.paid" {
+			return h.store.ClearAccountArrears(ctx, userID)
+		}
+		// Keep the first failure timestamp: retries must not postpone the
+		// 14-day grace period. Suspension is promoted atomically when an
+		// authenticated or agent-sync read next observes the overdue state.
+		return h.store.MarkAccountArrears(ctx, userID, time.Now().UTC())
 	default:
 		return nil
 	}

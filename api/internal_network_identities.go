@@ -31,6 +31,14 @@ func (h *handler) internalNetworkIdentities(c *gin.Context) {
 		if !user.Active {
 			continue
 		}
+		suspended, err := h.store.IsAccountSuspended(c.Request.Context(), user.ID, time.Now().UTC())
+		if err != nil {
+			respondError(c, http.StatusServiceUnavailable, "billing_state_unavailable", "failed to load billing suspension state")
+			return
+		}
+		if suspended {
+			continue
+		}
 		uuid := strings.TrimSpace(user.ProxyUUID)
 		if uuid == "" {
 			uuid = strings.TrimSpace(user.ID)

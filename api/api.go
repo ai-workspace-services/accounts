@@ -437,6 +437,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup.GET("/network/identities", h.internalNetworkIdentities)
 	internalGroup.GET("/policy/:accountUUID", h.internalAccountPolicy)
 	internalGroup.POST("/nodes/heartbeat", h.internalNodeHeartbeat)
+	internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
 
 	// Public /api routes for admin/management (expected by frontend at /api/admin/...)
 	apiGroup := r.Group("/api")
@@ -445,6 +446,13 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		apiGroup.Use(auth.RequireActiveUser(h.store))
 	}
 	registerAdminRoutes(apiGroup, h)
+
+	overlayGroup := r.Group("/api/overlay")
+	if h.tokenService != nil {
+		overlayGroup.Use(h.tokenService.AuthMiddleware())
+		overlayGroup.Use(auth.RequireActiveUser(h.store))
+	}
+	h.registerOverlayRoutes(overlayGroup)
 
 	// Canonical user-facing agent routes.
 	// These endpoints use session-based auth in handler logic and intentionally
@@ -1124,6 +1132,9 @@ func (h *handler) login(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "authentication_failed", "failed to authenticate user")
 		return
 	}
+	if h.rejectIfBillingSuspended(c, user.ID) {
+		return
+	}
 
 	// Sandbox user is not allowed to login by password/totp.
 	// Root can only assume into sandbox via the admin assume endpoint.
@@ -1404,6 +1415,9 @@ func (h *handler) exchangeToken(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "session_user_lookup_failed", "failed to load session user")
 		return
 	}
+	if h.rejectIfBillingSuspended(c, user.ID) {
+		return
+	}
 
 	expiresIn := int64(time.Until(sess.expiresAt).Seconds())
 	if expiresIn < 0 {
@@ -1460,6 +1474,9 @@ func (h *handler) session(c *gin.Context) {
 	user, err := h.store.GetUserByID(c.Request.Context(), sess.userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load session user"})
+		return
+	}
+	if h.rejectIfBillingSuspended(c, user.ID) {
 		return
 	}
 
@@ -1537,8 +1554,24 @@ func (h *handler) requireAuthenticatedUser(c *gin.Context) (*store.User, bool) {
 		respondError(c, http.StatusInternalServerError, "session_user_lookup_failed", "failed to load session user")
 		return nil, false
 	}
+	if h.rejectIfBillingSuspended(c, user.ID) {
+		return nil, false
+	}
 
 	return user, true
+}
+
+func (h *handler) rejectIfBillingSuspended(c *gin.Context, userID string) bool {
+	suspended, err := h.store.IsAccountSuspended(c.Request.Context(), userID, time.Now().UTC())
+	if err != nil {
+		respondError(c, http.StatusServiceUnavailable, "billing_state_unavailable", "failed to load billing suspension state")
+		return true
+	}
+	if suspended {
+		respondError(c, http.StatusForbidden, "account_suspended", "your account has been suspended")
+		return true
+	}
+	return false
 }
 
 func (h *handler) createSession(userID string) (string, time.Time, error) {
