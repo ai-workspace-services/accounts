@@ -185,12 +185,20 @@ type AgentCredential struct {
 }
 
 // Load reads the configuration file at the provided path. When path is empty,
-// it defaults to account/config/account.yaml. If the file does not exist an
-// empty configuration is returned.
+// it uses the APP_ENV environment variable (default: dev) to load
+// config/account-{APP_ENV}.yaml.
 func Load(path string) (*Config, error) {
 	p := path
 	if p == "" {
-		p = filepath.Join("account", "config", "account.yaml")
+		appEnv := strings.TrimSpace(os.Getenv("APP_ENV"))
+		if appEnv == "" {
+			appEnv = "dev"
+		}
+		// Try to find the file in the current directory or the 'config' subdirectory
+		p = filepath.Join("config", "account-"+appEnv+".yaml")
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			p = "account-" + appEnv + ".yaml"
+		}
 	}
 
 	b, err := os.ReadFile(p)
