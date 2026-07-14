@@ -4,13 +4,24 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    # main -> UAT (continuous). release/** branches and release tags -> PROD.
+    # A tag push matches only the tags filter, so tags are prod-only.
+    branches: [main, "release/**"]
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      target_host:
-        description: Ansible host or alias
+      deploy_env:
+        description: Target environment (uat or prod)
         required: false
-        default: "jp-xhttp-contabo.svc.plus"
+        default: "uat"
+        type: choice
+        options:
+          - uat
+          - prod
+      target_host:
+        description: Ansible host or alias (overrides the env-resolved host)
+        required: false
+        default: ""
         type: string
       run_apply:
         description: Apply deployment
@@ -55,7 +66,12 @@ defaults:
     shell: bash
 
 env:
+  # Prod host defaults to the historical single host; override with the
+  # PROD_TARGET_HOST repo variable. UAT_TARGET_HOST must be set for main -> uat
+  # deploys (the flags script fails loudly if a uat deploy has no host).
   DEFAULT_TARGET_HOST: jp-xhttp-contabo.svc.plus
+  PROD_TARGET_HOST: ${{ vars.PROD_TARGET_HOST || 'jp-xhttp-contabo.svc.plus' }}
+  UAT_TARGET_HOST: ${{ vars.UAT_TARGET_HOST }}
 
 jobs:
   prep:
@@ -63,6 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       target_host: ${{ steps.flags.outputs.target_host }}
+      deploy_env: ${{ steps.flags.outputs.deploy_env }}
       run_apply: ${{ steps.flags.outputs.run_apply }}
       push_image: ${{ steps.flags.outputs.push_image }}
       push_latest: ${{ steps.flags.outputs.push_latest }}
@@ -77,6 +94,9 @@ jobs:
         env:
           IMAGE_REPO_OWNER: ${{ vars.IMAGE_REPO_OWNER || github.repository_owner }}
           DEFAULT_TARGET_HOST: ${{ env.DEFAULT_TARGET_HOST }}
+          PROD_TARGET_HOST: ${{ env.PROD_TARGET_HOST }}
+          UAT_TARGET_HOST: ${{ env.UAT_TARGET_HOST }}
+          INPUT_DEPLOY_ENV: ${{ inputs.deploy_env }}
           INPUT_TARGET_HOST: ${{ inputs.target_host }}
           INPUT_RUN_APPLY: ${{ inputs.run_apply }}
           INPUT_PUSH_IMAGE: ${{ inputs.push_image }}
@@ -163,6 +183,10 @@ jobs:
       - build
     if: ${{ needs.prep.outputs.push_image == 'true' }}
     runs-on: ubuntu-latest
+    # Binds the run to the GitHub Environment named by deploy_env (uat|prod).
+    # Add required-reviewer / branch protection rules to the "prod" environment
+    # to gate release deploys; "uat" stays continuous.
+    environment: ${{ needs.prep.outputs.deploy_env }}
     outputs:
       image: ${{ needs.build.outputs.service_image_ref }}
       image_ref: ${{ needs.build.outputs.service_image_ref }}
@@ -395,16 +419,15 @@ jobs:
           AUTH_TOKEN_PUBLIC_TOKEN: ${{ secrets.AUTH_TOKEN_PUBLIC_TOKEN }}
           AUTH_TOKEN_REFRESH_SECRET: ${{ secrets.AUTH_TOKEN_REFRESH_SECRET }}
           AUTH_TOKEN_ACCESS_SECRET: ${{ secrets.AUTH_TOKEN_ACCESS_SECRET }}
-          # Stripe billing (P0). Repo var STRIPE_MODE ('sandbox' | 'prod',
-          # default sandbox) switches the whole key pair at once — sk and
-          # whsec must never mix modes. Values come from Vault (OIDC, same
-          # kv/billing-service fields SANDBOX_*/PROD_*) with GH secrets as
-          # migration-period fallback. Empty values keep Stripe endpoints
-          # disabled. STRIPE_ALLOWED_PRICE_IDS is a plain var
-          # (comma-separated) until the billing_plans catalog (P1)
-          # replaces it; when set it must match the active mode's price ids.
-          STRIPE_SECRET_KEY: ${{ vars.STRIPE_MODE == 'prod' && (steps.vault.outputs.PROD_STRIPE_SECRET_KEY || secrets.PROD_STRIPE_SECRET_KEY) || (steps.vault.outputs.SANDBOX_STRIPE_SECRET_KEY || secrets.SANDBOX_STRIPE_SECRET_KEY) }}
-          STRIPE_WEBHOOK_SECRET: ${{ vars.STRIPE_MODE == 'prod' && (steps.vault.outputs.PROD_STRIPE_WEBHOOK_SECRET || secrets.PROD_STRIPE_WEBHOOK_SECRET) || (steps.vault.outputs.SANDBOX_STRIPE_WEBHOOK_SECRET || secrets.SANDBOX_STRIPE_WEBHOOK_SECRET) }}
+          # Stripe billing. The key pair (sk + whsec, never mixed) follows the
+          # deploy environment: prod -> PROD_*, uat -> SANDBOX_*. The STRIPE_MODE
+          # repo var is an explicit override (force 'sandbox' in prod for a dry
+          # run, or 'prod' in uat). Values come from Vault (OIDC,
+          # kv/billing-service SANDBOX_*/PROD_*) with GH secrets as fallback;
+          # empty values keep Stripe endpoints disabled. STRIPE_ALLOWED_PRICE_IDS
+          # stays a plain var until the billing_plans catalog (P1) replaces it.
+          STRIPE_SECRET_KEY: ${{ ((needs.prep.outputs.deploy_env == 'prod' && vars.STRIPE_MODE != 'sandbox') || vars.STRIPE_MODE == 'prod') && (steps.vault.outputs.PROD_STRIPE_SECRET_KEY || secrets.PROD_STRIPE_SECRET_KEY) || (steps.vault.outputs.SANDBOX_STRIPE_SECRET_KEY || secrets.SANDBOX_STRIPE_SECRET_KEY) }}
+          STRIPE_WEBHOOK_SECRET: ${{ ((needs.prep.outputs.deploy_env == 'prod' && vars.STRIPE_MODE != 'sandbox') || vars.STRIPE_MODE == 'prod') && (steps.vault.outputs.PROD_STRIPE_WEBHOOK_SECRET || secrets.PROD_STRIPE_WEBHOOK_SECRET) || (steps.vault.outputs.SANDBOX_STRIPE_WEBHOOK_SECRET || secrets.SANDBOX_STRIPE_WEBHOOK_SECRET) }}
           STRIPE_ALLOWED_PRICE_IDS: ${{ vars.STRIPE_ALLOWED_PRICE_IDS }}
         run: |
           set -euo pipefail
@@ -429,16 +452,20 @@ jobs:
   validate:
     name: Validate
     needs:
+      - prep
       - build
       - deploy
     if: ${{ always() && needs.deploy.result == 'success' && needs.deploy.outputs.pushed == 'true' && needs.deploy.outputs.run_apply == 'true' }}
     runs-on: ubuntu-latest
+    env:
+      # Probe the environment that was actually deployed, not always prod.
+      PUBLIC_URL: ${{ needs.prep.outputs.deploy_env == 'prod' && (vars.PROD_PUBLIC_URL || 'https://accounts.svc.plus') || vars.UAT_PUBLIC_URL }}
     steps:
       - name: Check Out Repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Validate Deployed Accounts Service
-        run: bash ./scripts/github-actions/validate-deploy.sh "${{ needs.build.outputs.service_image_ref }}" https://accounts.svc.plus
+        run: bash ./scripts/github-actions/validate-deploy.sh "${{ needs.build.outputs.service_image_ref }}" "${PUBLIC_URL}"
 
       - name: Mask Vault Token Fallback Input
         if: ${{ inputs.vault_token != '' }}
@@ -491,4 +518,4 @@ jobs:
           REVIEW_ACCOUNT_PASSWORD: ${{ secrets.REVIEW_ACCOUNT_PASSWORD }}
           BRIDGE_AUTH_TOKEN: ${{ steps.validate_secrets.outputs.bridge_auth_token }}
           BRIDGE_REVIEW_AUTH_TOKEN: ${{ steps.validate_secrets.outputs.bridge_review_auth_token }}
-        run: bash ./scripts/github-actions/validate-review-xworkmate-sync.sh https://accounts.svc.plus
+        run: bash ./scripts/github-actions/validate-review-xworkmate-sync.sh "${PUBLIC_URL}"
