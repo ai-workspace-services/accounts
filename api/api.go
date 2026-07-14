@@ -342,6 +342,15 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authGroup.POST("/register/verify", h.verifyEmail)
 	authGroup.POST("/register/send", h.sendEmailVerification)
 
+	// Public password recovery (forgot password): no session required, since a
+	// locked-out user cannot authenticate. requestPasswordReset is
+	// enumeration-safe (always 202) and confirmPasswordReset is reset-token
+	// based. Login still enforces MFA afterwards, so an email reset cannot
+	// bypass MFA on a protected account. The authenticated aliases under
+	// /password/reset remain for the logged-in "change password" case.
+	authGroup.POST("/password/forgot", h.requestPasswordReset)
+	authGroup.POST("/password/forgot/confirm", h.confirmPasswordReset)
+
 	authGroup.POST("/login", h.login)
 	authGroup.POST("/mfa/verify", h.verifyMFALogin)
 

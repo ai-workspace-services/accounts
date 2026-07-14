@@ -13,6 +13,7 @@
 
 | 日期 | 任务 | 状态 | 关联 PR |
 |---|---|---|---|
+| 2026-07-14 | [用户自助:找回密码 · MFA 恢复码 · 自助注销](2026-07-14-self-service-recovery-and-deletion.md) | 🟢 找回密码本 PR;恢复码/注销待实现(决策已锁) | accounts 本 PR |
 | 2026-07-13 | [**Stripe 计费打通 —— 进度与现状(交接快照)**](2026-07-13-stripe-billing-status.md) | 🧭 P0✅上线 P1✅合并 P1.5🟡待合并 P2/P3⬜ | 见文内总表 |
 | 2026-07-11 | [Stripe 计费 P1(目录/审计/entitlement sync)](2026-07-11-stripe-billing-p1.md) | ✅ 已合并部署 | accounts [#19](https://github.com/ai-workspace-services/accounts/pull/19);前置 #18 + playbooks #121 |
 | 2026-07-11 | [OAuth 注册登录(GitHub/Google)](2026-07-11-oauth-login.md) | ✅ GitHub+Google 均上线 | accounts #12 #13 #14 #16;playbooks #111 #112 |
