@@ -11,6 +11,9 @@ CREATE SCHEMA IF NOT EXISTS public AUTHORIZATION CURRENT_USER;
 -- superuser privileges that would be needed to drop the entire schema.
 DROP TABLE IF EXISTS public.sessions CASCADE;
 DROP TABLE IF EXISTS public.identities CASCADE;
+DROP TABLE IF EXISTS public.overlay_config_acks CASCADE;
+DROP TABLE IF EXISTS public.overlay_devices CASCADE;
+DROP TABLE IF EXISTS public.overlay_nodes CASCADE;
 DROP TABLE IF EXISTS public.users CASCADE;
 DROP TABLE IF EXISTS public.admin_settings CASCADE;
 DROP TABLE IF EXISTS public.subscriptions CASCADE;
@@ -126,6 +129,59 @@ CREATE TABLE public.agents (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE public.overlay_devices (
+  id TEXT NOT NULL,
+  user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
+  network_id TEXT NOT NULL DEFAULT 'xworkmate-private',
+  name TEXT NOT NULL DEFAULT '',
+  platform TEXT NOT NULL DEFAULT '',
+  hostname TEXT NOT NULL DEFAULT '',
+  wireguard_public_key TEXT NOT NULL,
+  wireguard_address TEXT NOT NULL,
+  last_seen_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_uuid, id)
+);
+
+CREATE TABLE public.overlay_nodes (
+  id TEXT PRIMARY KEY,
+  network_id TEXT NOT NULL DEFAULT 'xworkmate-private',
+  name TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT 'gateway',
+  region TEXT NOT NULL DEFAULT '',
+  wireguard_public_key TEXT NOT NULL,
+  wireguard_address TEXT NOT NULL,
+  endpoint_host TEXT NOT NULL,
+  endpoint_port INTEGER NOT NULL DEFAULT 2443,
+  transport_type TEXT NOT NULL DEFAULT 'vless-tls',
+  transport_security TEXT NOT NULL DEFAULT 'tls',
+  transport_path TEXT NOT NULL DEFAULT '',
+  transport_mode TEXT NOT NULL DEFAULT '',
+  transport_uuid TEXT NOT NULL DEFAULT '',
+  healthy BOOLEAN NOT NULL DEFAULT FALSE,
+  last_heartbeat TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE public.overlay_config_acks (
+  user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,
+  network_id TEXT NOT NULL DEFAULT 'xworkmate-private',
+  revision TEXT NOT NULL,
+  digest TEXT NOT NULL DEFAULT '',
+  applied_at TIMESTAMPTZ NOT NULL,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_uuid, device_id),
+  FOREIGN KEY (user_uuid, device_id) REFERENCES public.overlay_devices(user_uuid, id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_overlay_devices_network ON public.overlay_devices(network_id);
+CREATE UNIQUE INDEX idx_overlay_devices_network_address
+  ON public.overlay_devices(network_id, wireguard_address);
+CREATE INDEX idx_overlay_nodes_network ON public.overlay_nodes(network_id);
 
 CREATE TABLE public.admin_settings (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -46,12 +46,16 @@ CREATE TABLE IF NOT EXISTS public.account_quota_states (
   remaining_included_quota BIGINT NOT NULL DEFAULT 0,
   current_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
   arrears BOOLEAN NOT NULL DEFAULT false,
+  arrears_since TIMESTAMPTZ NULL,
   throttle_state TEXT NOT NULL DEFAULT 'normal',
   suspend_state TEXT NOT NULL DEFAULT 'active',
   last_rated_bucket_at TIMESTAMPTZ NULL,
   effective_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.account_quota_states
+  ADD COLUMN IF NOT EXISTS arrears_since TIMESTAMPTZ NULL;
 
 CREATE TABLE IF NOT EXISTS public.account_billing_profiles (
   account_uuid UUID PRIMARY KEY REFERENCES public.users(uuid) ON DELETE CASCADE,

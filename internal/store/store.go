@@ -73,6 +73,56 @@ type Agent struct {
 	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
+// OverlayDevice is a user-owned WireGuard device registered through the
+// resilient overlay control plane.
+type OverlayDevice struct {
+	ID                 string     `json:"id"`
+	UserID             string     `json:"userId"`
+	NetworkID          string     `json:"networkId"`
+	Name               string     `json:"name"`
+	Platform           string     `json:"platform"`
+	Hostname           string     `json:"hostname"`
+	WireGuardPublicKey string     `json:"wireguardPublicKey"`
+	WireGuardAddress   string     `json:"wireguardAddress"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	LastSeenAt         *time.Time `json:"lastSeenAt,omitempty"`
+}
+
+// OverlayNode is a gateway/relay/exit-node that can terminate the
+// WireGuard-over-VLESS data path for overlay clients.
+type OverlayNode struct {
+	ID                 string     `json:"id"`
+	NetworkID          string     `json:"networkId"`
+	Name               string     `json:"name"`
+	Role               string     `json:"role"`
+	Region             string     `json:"region"`
+	WireGuardPublicKey string     `json:"wireguardPublicKey"`
+	WireGuardAddress   string     `json:"wireguardAddress"`
+	EndpointHost       string     `json:"endpointHost"`
+	EndpointPort       int        `json:"endpointPort"`
+	TransportType      string     `json:"transportType"`
+	TransportSecurity  string     `json:"transportSecurity"`
+	TransportPath      string     `json:"transportPath"`
+	TransportMode      string     `json:"transportMode"`
+	TransportUUID      string     `json:"transportUuid"`
+	Healthy            bool       `json:"healthy"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	LastHeartbeat      *time.Time `json:"lastHeartbeat,omitempty"`
+}
+
+// OverlayConfigAck records the latest config revision applied by a device.
+type OverlayConfigAck struct {
+	DeviceID   string    `json:"deviceId"`
+	UserID     string    `json:"userId"`
+	NetworkID  string    `json:"networkId"`
+	Revision   string    `json:"revision"`
+	Digest     string    `json:"digest"`
+	AppliedAt  time.Time `json:"appliedAt"`
+	ReceivedAt time.Time `json:"receivedAt"`
+}
+
 const (
 	RatingStatusPending = "pending"
 	RatingStatusRated   = "rated"
@@ -223,6 +273,14 @@ type Store interface {
 	DeleteAgent(ctx context.Context, id string) error
 	DeleteStaleAgents(ctx context.Context, staleThreshold time.Duration) (int, error)
 
+	UpsertOverlayDevice(ctx context.Context, device *OverlayDevice) error
+	GetOverlayDevice(ctx context.Context, userID, deviceID string) (*OverlayDevice, error)
+	ListOverlayDevicesByUser(ctx context.Context, userID string) ([]OverlayDevice, error)
+	ListOverlayDevicesByNetwork(ctx context.Context, networkID string) ([]OverlayDevice, error)
+	UpsertOverlayNode(ctx context.Context, node *OverlayNode) error
+	ListOverlayNodes(ctx context.Context, networkID string) ([]OverlayNode, error)
+	UpsertOverlayConfigAck(ctx context.Context, ack *OverlayConfigAck) error
+
 	UpsertTrafficStatCheckpoint(ctx context.Context, checkpoint *TrafficStatCheckpoint) error
 	GetTrafficStatCheckpoint(ctx context.Context, nodeID, accountUUID string) (*TrafficStatCheckpoint, error)
 	ListTrafficStatCheckpoints(ctx context.Context) ([]TrafficStatCheckpoint, error)
@@ -295,6 +353,9 @@ type memoryStore struct {
 	subscriptions           map[string]map[string]*Subscription
 	identities              map[string]*Identity
 	agents                  map[string]*Agent
+	overlayDevices          map[string]*OverlayDevice
+	overlayNodes            map[string]*OverlayNode
+	overlayConfigAcks       map[string]*OverlayConfigAck
 	sessions                map[string]*sessionRecord
 	tenants                 map[string]*Tenant
 	tenantDomains           map[string]*TenantDomain
@@ -345,6 +406,9 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		subscriptions:           make(map[string]map[string]*Subscription),
 		identities:              make(map[string]*Identity),
 		agents:                  make(map[string]*Agent),
+		overlayDevices:          make(map[string]*OverlayDevice),
+		overlayNodes:            make(map[string]*OverlayNode),
+		overlayConfigAcks:       make(map[string]*OverlayConfigAck),
 		sessions:                make(map[string]*sessionRecord),
 		tenants:                 make(map[string]*Tenant),
 		tenantDomains:           make(map[string]*TenantDomain),
