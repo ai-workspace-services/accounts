@@ -13,8 +13,11 @@
 
 | 日期 | 任务 | 状态 | 关联 PR |
 |---|---|---|---|
-| 2026-07-14 | [用户自助:找回密码 · MFA 恢复码 · 自助注销](2026-07-14-self-service-recovery-and-deletion.md) | 🟢 找回密码本 PR;恢复码/注销待实现(决策已锁) | accounts 本 PR |
-| 2026-07-14 | [OAuth 登录后邮箱验证门禁 + trial 激活](2026-07-14-oauth-email-verify-gate.md) | ⏳ 代码完成待合并(需 console 配套) | accounts 本 PR |
-| 2026-07-13 | [**Stripe 计费打通 —— 进度与现状(交接快照)**](2026-07-13-stripe-billing-status.md) | 🧭 P0✅上线 P1✅合并 P1.5🟡待合并 P2/P3⬜ | 见文内总表 |
-| 2026-07-11 | [Stripe 计费 P1(目录/审计/entitlement sync)](2026-07-11-stripe-billing-p1.md) | ✅ 已合并部署 | accounts [#19](https://github.com/ai-workspace-services/accounts/pull/19);前置 #18 + playbooks #121 |
+| 2026-07-14 | [用户自助:找回密码 · MFA 恢复码 · 自助注销](2026-07-14-self-service-recovery-and-deletion.md) | 🟢 找回密码已合并;恢复码/注销待实现(决策已锁) | accounts [#26](https://github.com/ai-workspace-services/accounts/pull/26) [MERGED] |
+| 2026-07-14 | [高级服务就绪度门禁(邮箱+密码+MFA)+ 渐进引导](2026-07-14-advanced-service-readiness-gate.md) | ✅ 已合并;console 配套待做 | accounts [#25](https://github.com/ai-workspace-services/accounts/pull/25) [MERGED] |
+| 2026-07-14 | [OAuth 登录后邮箱验证门禁 + trial 激活](2026-07-14-oauth-email-verify-gate.md) | ✅ 已合并;console 配套待做 | accounts [#24](https://github.com/ai-workspace-services/accounts/pull/24) [MERGED] |
+| 2026-07-14 | [CI 环境路由:main→uat,release/tag→prod](2026-07-14-ci-uat-prod-env-routing.md) | ✅ 已合并;需设 UAT_TARGET_HOST 才能实际部署 uat | accounts [#27](https://github.com/ai-workspace-services/accounts/pull/27) [MERGED] |
+| 2026-07-13 | [**Stripe 计费打通 —— 进度与现状(交接快照)**](2026-07-13-stripe-billing-status.md) | 🧭 P0✅上线 P1✅合并 P1.5🟡待合并 P2/P3⬜(已过期,见 2026-07-16 更新版) | accounts [#23](https://github.com/ai-workspace-services/accounts/pull/23) [MERGED] |
+| 2026-07-12 | [Stripe 计费 P1.5(欠费 suspend 断流 + 清欠恢复)](2026-07-12-stripe-billing-p15.md) | ⏳ 待合并(本 PR) | accounts 本 PR;billing-service `feat/stripe-billing-p1.5` |
+| 2026-07-11 | [Stripe 计费 P1(目录/审计/entitlement sync)](2026-07-11-stripe-billing-p1.md) | ✅ 已合并部署 | accounts [#19](https://github.com/ai-workspace-services/accounts/pull/19) [MERGED];前置 #18 + playbooks #121 |
 | 2026-07-11 | [OAuth 注册登录(GitHub/Google)](2026-07-11-oauth-login.md) | ✅ GitHub+Google 均上线 | accounts #12 #13 #14 #16;playbooks #111 #112 |

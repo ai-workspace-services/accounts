@@ -81,6 +81,7 @@ func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *st
 	}
 	state.RemainingIncludedQuota = plan.IncludedQuotaBytes
 	state.Arrears = false
+	state.ArrearsSince = nil
 	state.ThrottleState = "normal"
 	state.SuspendState = "active"
 	state.EffectiveAt = now
@@ -88,19 +89,26 @@ func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *st
 }
 
 // markAccountArrears flags a payment failure. Escalation to throttled and
-// suspended is time-based and owned by billing-service (P1.5).
+// suspended is time-based and owned by billing-service (P1.5), which reads
+// ArrearsSince to measure how long the current episode has run; repeated
+// failures within the same episode must not push that clock forward.
 func (h *handler) markAccountArrears(ctx context.Context, userID string) error {
 	if strings.TrimSpace(userID) == "" {
 		return nil
 	}
+	now := time.Now().UTC()
 	state := &store.AccountQuotaState{
 		AccountUUID:   userID,
 		ThrottleState: "normal",
 		SuspendState:  "active",
-		EffectiveAt:   time.Now().UTC(),
+		ArrearsSince:  &now,
+		EffectiveAt:   now,
 	}
 	if existing, err := h.store.GetAccountQuotaState(ctx, userID); err == nil && existing != nil {
 		state = existing
+		if state.ArrearsSince == nil {
+			state.ArrearsSince = &now
+		}
 	}
 	state.Arrears = true
 	return h.store.UpsertAccountQuotaState(ctx, state)

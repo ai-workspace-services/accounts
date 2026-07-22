@@ -809,6 +809,22 @@ func applyBillingSchema(ctx context.Context, db *gorm.DB, driver string) error {
   processed_at TIMESTAMPTZ
 )`,
 		`CREATE INDEX IF NOT EXISTS stripe_webhook_events_received_at_idx ON public.stripe_webhook_events (received_at DESC)`,
+		// P1.5: arrears episode start, read by billing-service's SuspendSyncer
+		// to escalate prolonged arrears to suspend_state='suspended'. The
+		// CREATE mirrors sql/20260401_accounting_control_plane.sql so a fresh
+		// database won't fail the ALTER before that migration has run.
+		`CREATE TABLE IF NOT EXISTS public.account_quota_states (
+  account_uuid UUID PRIMARY KEY REFERENCES public.users(uuid) ON DELETE CASCADE,
+  remaining_included_quota BIGINT NOT NULL DEFAULT 0,
+  current_balance DOUBLE PRECISION NOT NULL DEFAULT 0,
+  arrears BOOLEAN NOT NULL DEFAULT false,
+  throttle_state TEXT NOT NULL DEFAULT 'normal',
+  suspend_state TEXT NOT NULL DEFAULT 'active',
+  last_rated_bucket_at TIMESTAMPTZ NULL,
+  effective_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS arrears_since TIMESTAMPTZ NULL`,
 	}
 
 	for _, statement := range statements {

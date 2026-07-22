@@ -124,11 +124,15 @@ type AccountQuotaState struct {
 	RemainingIncludedQuota int64
 	CurrentBalance         float64
 	Arrears                bool
-	ThrottleState          string
-	SuspendState           string
-	LastRatedBucketAt      *time.Time
-	EffectiveAt            time.Time
-	UpdatedAt              time.Time
+	// ArrearsSince marks when Arrears last flipped false->true; cleared back
+	// to nil whenever Arrears clears. billing-service's SuspendSyncer reads
+	// this to decide when a prolonged arrears episode should suspend access.
+	ArrearsSince      *time.Time
+	ThrottleState     string
+	SuspendState      string
+	LastRatedBucketAt *time.Time
+	EffectiveAt       time.Time
+	UpdatedAt         time.Time
 }
 
 type AccountBillingProfile struct {
@@ -229,6 +233,10 @@ type Store interface {
 	ListBillingLedgerByAccount(ctx context.Context, accountUUID string, limit int) ([]BillingLedgerEntry, error)
 	UpsertAccountQuotaState(ctx context.Context, state *AccountQuotaState) error
 	GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error)
+	// ListSuspendedAccountUUIDs returns the set of accounts currently
+	// suspend_state='suspended', so agent/xray sync endpoints can drop them
+	// in one batched lookup instead of a per-user quota-state query.
+	ListSuspendedAccountUUIDs(ctx context.Context) (map[string]bool, error)
 	UpsertAccountBillingProfile(ctx context.Context, profile *AccountBillingProfile) error
 	GetAccountBillingProfile(ctx context.Context, accountUUID string) (*AccountBillingProfile, error)
 	UpsertAccountPolicySnapshot(ctx context.Context, snapshot *AccountPolicySnapshot) error
