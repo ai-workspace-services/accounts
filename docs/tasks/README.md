@@ -13,6 +13,7 @@
 
 | 日期 | 任务 | 状态 | 关联 PR |
 |---|---|---|---|
+| 2026-07-14 | [Overlay 控制面(设备/节点注册、配置下发、ack)+ accounting 更新](2026-07-14-overlay-control-plane.md) | 🟢 已合并(重接到 main,原分支建在已废弃 PR#21 提交上) | accounts #29(名义)→ 实际经重接 PR 落地 |
 | 2026-07-14 | [用户自助:找回密码 · MFA 恢复码 · 自助注销](2026-07-14-self-service-recovery-and-deletion.md) | 🟢 找回密码已合并;恢复码/注销待实现(决策已锁) | accounts [#26](https://github.com/ai-workspace-services/accounts/pull/26) [MERGED] |
 | 2026-07-14 | [高级服务就绪度门禁(邮箱+密码+MFA)+ 渐进引导](2026-07-14-advanced-service-readiness-gate.md) | ✅ 已合并(经本次恢复 PR;原 #25 误合进已脱钩分支,代码从未进入 main,见文件内说明) | accounts #25(名义)→ 实际经恢复 PR 落地;console 配套待做 |
 | 2026-07-14 | [OAuth 登录后邮箱验证门禁 + trial 激活](2026-07-14-oauth-email-verify-gate.md) | ✅ 已合并;console 配套待做 | accounts [#24](https://github.com/ai-workspace-services/accounts/pull/24) [MERGED] |

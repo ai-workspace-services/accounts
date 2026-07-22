@@ -36,6 +36,15 @@ func RequireActiveUser(s store.Store) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		// Billing arrears suspension (distinct from the Active flag above):
+		// promoted by billing-service's SuspendSyncer after a 14-day grace
+		// period (P1.5). A missing quota state means the account has never
+		// been rated and cannot be suspended.
+		if quota, err := s.GetAccountQuotaState(c.Request.Context(), userID); err == nil && quota != nil && quota.SuspendState == "suspended" {
+			c.JSON(http.StatusForbidden, gin.H{"error": "account_suspended", "message": "your account has been suspended"})
+			c.Abort()
+			return
+		}
 
 		c.Next()
 	}

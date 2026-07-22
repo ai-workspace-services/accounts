@@ -62,9 +62,9 @@ spec:
         - name: DB_PORT
           value: '15432'
         - name: DB_USER
-          value: postgres
+          value: svcplus_vps
         - name: POSTGRES_USER
-          value: postgres
+          value: svcplus_vps
         - name: DB_NAME
           value: account
         - name: INTERNAL_SERVICE_TOKEN
