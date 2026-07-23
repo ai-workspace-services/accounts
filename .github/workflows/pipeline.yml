@@ -148,8 +148,10 @@ jobs:
         with:
           images: ${{ steps.service_image.outputs.repo }}
           tags: |
-            type=sha,format=long
+            type=ref,event=tag
+            type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/release/') }}
             type=raw,value=latest,enable=${{ needs.prep.outputs.push_latest == 'true' || github.ref == 'refs/heads/main' }}
+            type=sha,format=long
 
       - name: Resolve Service Image Ref
         id: service_ref
