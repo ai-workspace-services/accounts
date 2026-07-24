@@ -43,7 +43,7 @@ SUPERADMIN_USERNAME ?= Admin
 SUPERADMIN_PASSWORD ?= ChangeMe
 SUPERADMIN_EMAIL    ?= admin@svc.plus
 
-export PATH := /usr/local/go/bin:$(PATH)
+export PATH := $(shell go env GOPATH)/bin:/usr/local/go/bin:$(PATH)
 export APP_NAME MAIN_FILE PORT OS \
 	DB_NAME DB_USER DB_PASS DB_HOST DB_PORT DB_URL \
 	REPLICATION_MODE DB_ADMIN_USER DB_ADMIN_PASS \
