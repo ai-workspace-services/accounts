@@ -8,5 +8,5 @@ if command -v air >/dev/null; then
   exit 0
 fi
 
-echo "❌ 未检测到 air (热重载工具)，请先安装: https://github.com/cosmtrek/air"
+echo "❌ 未检测到 air (热重载工具)，请先安装: go install github.com/air-verse/air@latest"
 exit 0
