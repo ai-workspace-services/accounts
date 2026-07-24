@@ -10,10 +10,6 @@ IMAGE_TAG=""
 BASE_IMAGE_REGISTRY="ghcr.io"
 BASE_IMAGE_ORG="${IMAGE_REPO_OWNER:-${GITHUB_REPOSITORY_OWNER:-}}"
 DOCKERHUB_NAMESPACE="${DOCKERHUB_NAMESPACE:-cloudneutral}"
-DEFAULT_TARGET_HOST="${DEFAULT_TARGET_HOST:?DEFAULT_TARGET_HOST is required}"
-PROD_TARGET_HOST="${PROD_TARGET_HOST:-${DEFAULT_TARGET_HOST}}"
-UAT_TARGET_HOST="${UAT_TARGET_HOST:-}"
-RUN_APPLY=true
 
 # Resolve the deploy environment from the git ref:
 #   refs/tags/v*        -> prod   (release tags)
@@ -35,21 +31,11 @@ resolve_deploy_env() {
 
 DEPLOY_ENV="$(resolve_deploy_env)"
 
-# Map env -> host. prod falls back to the historical host; uat must be
-# configured (UAT_TARGET_HOST) so main can never silently deploy to prod.
-if [[ "${DEPLOY_ENV}" == "prod" ]]; then
-  TARGET_HOST="${PROD_TARGET_HOST}"
-else
-  TARGET_HOST="${UAT_TARGET_HOST}"
-fi
-
 if [[ -d deploy/base-images ]] && find deploy/base-images -type f | grep -q .; then
   BASE_IMAGES_EXISTS=true
 fi
 
 if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-  TARGET_HOST="${INPUT_TARGET_HOST:-${TARGET_HOST}}"
-  [[ "${INPUT_RUN_APPLY:-true}" == "true" ]] && RUN_APPLY=true || RUN_APPLY=false
   [[ "${INPUT_PUSH_IMAGE:-true}" == "true" ]] && PUSH_IMAGE=true || PUSH_IMAGE=false
   [[ "${INPUT_PUSH_LATEST:-false}" == "true" ]] && PUSH_LATEST=true || PUSH_LATEST=false
   [[ "${INPUT_RUN_BASE_IMAGES:-false}" == "true" ]] && RUN_BASE_IMAGES=true || RUN_BASE_IMAGES=false
@@ -93,19 +79,6 @@ else
   fi
 fi
 
-# A real deploy (image pushed + apply) must have a resolved host. This trips
-# when main -> uat runs without UAT_TARGET_HOST configured, and fails loudly
-# instead of silently doing nothing or defaulting to the prod host.
-if [[ "${PUSH_IMAGE}" == "true" && "${RUN_APPLY}" == "true" && -z "${TARGET_HOST}" ]]; then
-  echo "resolve-pipeline-flags: no target host for deploy env '${DEPLOY_ENV}'." >&2
-  if [[ "${DEPLOY_ENV}" == "uat" ]]; then
-    echo "Set the UAT_TARGET_HOST repository variable (main deploys to uat)." >&2
-  else
-    echo "Set the PROD_TARGET_HOST repository variable." >&2
-  fi
-  exit 1
-fi
-
 cat <<EOF
 base_images_exists=${BASE_IMAGES_EXISTS}
 run_base_images=${RUN_BASE_IMAGES}
@@ -113,9 +86,7 @@ push_base_images=${PUSH_BASE_IMAGES}
 base_image_registry=${BASE_IMAGE_REGISTRY}
 base_image_org=${BASE_IMAGE_ORG}
 dockerhub_namespace=${DOCKERHUB_NAMESPACE}
-target_host=${TARGET_HOST}
 deploy_env=${DEPLOY_ENV}
-run_apply=${RUN_APPLY}
 image_tag=${IMAGE_TAG}
 push_image=${PUSH_IMAGE}
 push_latest=${PUSH_LATEST}
