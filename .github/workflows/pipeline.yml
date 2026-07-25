@@ -114,6 +114,7 @@ jobs:
           method: ${{ inputs.vault_token != '' && 'token' || 'jwt' }}
           token: ${{ inputs.vault_token }}
           role: github-actions-accounts-${{ needs.prep.outputs.deploy_env }}
+          jwtGithubAudience: vault
           exportEnv: false
           secrets: |
             kv/data/github-actions GHCR_TOKEN | GHCR_TOKEN ;
