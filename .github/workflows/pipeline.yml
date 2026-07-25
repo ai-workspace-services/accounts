@@ -23,24 +23,6 @@ on:
         required: false
         default: ""
         type: string
-      vault_addr:
-        description: >-
-          Fallback Vault address, only used when vault_token is also set
-          (bypasses the github-actions-accounts OIDC role). Leave empty to
-          use https://vault.svc.plus via OIDC.
-        required: false
-        default: ""
-        type: string
-      vault_token:
-        description: >-
-          Fallback Vault token (method=token) for when the OIDC JWT role is
-          broken or unavailable. The value is visible in this run's Inputs
-          summary — GitHub does not mask workflow_dispatch inputs. Prefer
-          fixing the OIDC role over using this repeatedly, and revoke the
-          token after use.
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
@@ -110,14 +92,16 @@ jobs:
         if: needs.prep.outputs.push_image == 'true'
         uses: hashicorp/vault-action@v4
         with:
-          url: ${{ inputs.vault_addr != '' && inputs.vault_addr || 'https://vault.svc.plus' }}
-          method: ${{ inputs.vault_token != '' && 'token' || 'jwt' }}
-          token: ${{ inputs.vault_token }}
+          url: https://vault.svc.plus
+          method: jwt
           role: github-actions-accounts-${{ needs.prep.outputs.deploy_env }}
           jwtGithubAudience: vault
           exportEnv: false
+          # GHCR 推送凭据在 kv/data/CICD(第 ① 层公共服务 secret, 三个环境
+          # role 共读)。kv/data/github-actions 这个路径不存在, 返回 403 ——
+          # 而 403 与"role 没建"、"绑定不匹配"完全同形, 日志里看不出区别。
           secrets: |
-            kv/data/github-actions GHCR_TOKEN | GHCR_TOKEN ;
+            kv/data/CICD GHCR_TOKEN | GHCR_TOKEN ;
 
       - name: Log In To GHCR
         if: needs.prep.outputs.push_image == 'true'
