@@ -105,13 +105,26 @@ jobs:
       - name: Set Up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
+      - name: Load Vault Secrets
+        id: vault
+        if: needs.prep.outputs.push_image == 'true'
+        uses: hashicorp/vault-action@v4
+        with:
+          url: ${{ inputs.vault_addr != '' && inputs.vault_addr || 'https://vault.svc.plus' }}
+          method: ${{ inputs.vault_token != '' && 'token' || 'jwt' }}
+          token: ${{ inputs.vault_token }}
+          role: github-actions-accounts-${{ needs.prep.outputs.deploy_env }}
+          exportEnv: false
+          secrets: |
+            kv/data/github-actions GHCR_TOKEN | GHCR_TOKEN ;
+
       - name: Log In To GHCR
         if: needs.prep.outputs.push_image == 'true'
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           registry: ghcr.io
           username: ${{ vars.GHCR_USERNAME || github.repository_owner }}
-          password: ${{ secrets.GHCR_TOKEN || github.token }}
+          password: ${{ steps.vault.outputs.GHCR_TOKEN || github.token }}
 
       - name: Resolve Service Image Repository
         id: service_image
