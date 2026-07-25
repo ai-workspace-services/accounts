@@ -9,3 +9,6 @@ ba85a0236b40af6679157a83459460c924a1ef97:Runbook/Fix-Agent-404-And-UUID-Change.m
 ba85a0236b40af6679157a83459460c924a1ef97:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:460
 # Public GitHub OAuth client_id merged via PR #12 (now sourced from vars.OAUTH_GITHUB_CLIENT_ID).
 df574100a3c34584350a332b57f6bd70cf42d816:.github/workflows/pipeline.yml:generic-api-key:245
+771987bc29b900c93b1517dd6b0934a489a5b2ba:docs/Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:77
+771987bc29b900c93b1517dd6b0934a489a5b2ba:docs/Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:357
+771987bc29b900c93b1517dd6b0934a489a5b2ba:docs/Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:460

@@ -74,6 +74,7 @@ ssh root@hk-xhttp.svc.plus "cat /etc/agent/account-agent.yaml"
 ### 3. 测试 API 端点
 ```bash
 # 测试 /api/agent-server/v1/users 端点
+# gitleaks:allow
 curl -s -H "Authorization: Bearer ${INTERNAL_SERVICE_TOKEN}" \
   "https://accounts-svc-plus-266500572462.asia-northeast1.run.app/api/agent-server/v1/users"
 
@@ -354,6 +355,7 @@ async function fetcher(url: string): Promise<VlessNode[]> {
 
 ```bash
 # 测试 agent API 端点
+# gitleaks:allow
 curl -s -H "Authorization: Bearer ${INTERNAL_SERVICE_TOKEN}" \
   "https://accounts-svc-plus-266500572462.asia-northeast1.run.app/api/agent-server/v1/users"
 
@@ -457,6 +459,7 @@ gcloud run deploy accounts-svc-plus \
 
 ```bash
 # 测试 API 端点
+# gitleaks:allow
 curl -s -H "Authorization: Bearer ${INTERNAL_SERVICE_TOKEN}" \
   "https://accounts-svc-plus-266500572462.asia-northeast1.run.app/api/agent-server/v1/users"
 

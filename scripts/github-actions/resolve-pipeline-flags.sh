@@ -22,6 +22,10 @@ resolve_deploy_env() {
     printf '%s' "${INPUT_DEPLOY_ENV:-uat}"
     return
   fi
+  if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+    printf 'sit'
+    return
+  fi
   case "${GITHUB_REF:-}" in
     refs/tags/v*)        printf 'prod' ;;
     refs/heads/release/*) printf 'prod' ;;
