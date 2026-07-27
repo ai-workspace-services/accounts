@@ -11,11 +11,12 @@ on:
   workflow_dispatch:
     inputs:
       deploy_env:
-        description: Target environment (uat or prod)
+        description: Target environment (sit, uat or prod)
         required: false
         default: "uat"
         type: choice
         options:
+          - sit
           - uat
           - prod
       internal_service_token:
