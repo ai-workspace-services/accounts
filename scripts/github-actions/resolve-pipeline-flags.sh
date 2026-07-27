@@ -18,18 +18,30 @@ DOCKERHUB_NAMESPACE="${DOCKERHUB_NAMESPACE:-cloudneutral}"
 # workflow_dispatch uses INPUT_DEPLOY_ENV (default uat). Pull requests do not
 # deploy (push_image=false below), so their env is informational only.
 resolve_deploy_env() {
-  if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-    printf '%s' "${INPUT_DEPLOY_ENV:-uat}"
-    return
-  fi
   if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
     printf 'sit'
     return
   fi
   case "${GITHUB_REF:-}" in
-    refs/tags/v*)        printf 'prod' ;;
-    refs/heads/release/*) printf 'prod' ;;
-    *)                   printf 'uat' ;;
+    refs/tags/v*|refs/heads/release/*)
+      if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_DEPLOY_ENV:-}" ]]; then
+        printf '%s' "${INPUT_DEPLOY_ENV}"
+      else
+        printf 'prod'
+      fi
+      ;;
+    refs/heads/main)
+      if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_DEPLOY_ENV:-}" ]]; then
+        printf '%s' "${INPUT_DEPLOY_ENV}"
+      else
+        printf 'uat'
+      fi
+      ;;
+    *)
+      # Vault OIDC roles for uat and prod require main or release/* refs.
+      # Custom or feature branches must use sit to satisfy Vault claim validation.
+      printf 'sit'
+      ;;
   esac
 }
 
