@@ -7,7 +7,10 @@ on:
     # main -> UAT (continuous). release/** branches and release tags -> PROD.
     # A tag push matches only the tags filter, so tags are prod-only.
     branches: [main, "release/**"]
-    tags: ["v*"]
+    tags:
+      - "v*"
+      - "uat-*"
+      - "snapshot-*"
   workflow_dispatch:
     inputs:
       deploy_env:
