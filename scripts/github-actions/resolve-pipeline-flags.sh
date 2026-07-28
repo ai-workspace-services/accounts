@@ -12,12 +12,20 @@ BASE_IMAGE_ORG="${IMAGE_REPO_OWNER:-${GITHUB_REPOSITORY_OWNER:-}}"
 DOCKERHUB_NAMESPACE="${DOCKERHUB_NAMESPACE:-cloudneutral}"
 
 # Resolve the deploy environment from the git ref:
-#   refs/tags/v*        -> prod   (release tags)
-#   refs/heads/release/* -> prod  (release branches)
-#   refs/heads/main     -> uat    (continuous)
-#   refs/heads/daily-build-* -> input environment (snapshot dispatch)
+#   refs/tags/v*         -> prod   (release tags)
+#   refs/heads/release/* -> prod   (release branches)
+#   refs/heads/main      -> uat    (continuous)
+#   refs/tags/prod-*     -> prod   (env-prefixed operational tags)
+#   refs/tags/sit-*      -> sit
+#   refs/tags/uat-*      -> uat
+#   *daily-build-*       -> uat    (cross-repo daily snapshot)
 # workflow_dispatch uses INPUT_DEPLOY_ENV (default uat). Pull requests do not
 # deploy (push_image=false below), so their env is informational only.
+#
+# The env prefix must be matched explicitly: the daily snapshot tags repos as
+# uat-daily-build-*, which does NOT match a bare daily-build-* pattern and
+# would otherwise fall through to the sit catch-all below. Vault then rejects
+# the OIDC claim because the sit role's ref binding does not cover the tag.
 resolve_deploy_env() {
   # A manual tag build is intentionally dispatched with an explicit target.
   # Do not downgrade an immutable snapshot tag to sit just because it is not v*.
@@ -31,10 +39,13 @@ resolve_deploy_env() {
     return
   fi
   case "${GITHUB_REF:-}" in
-    refs/tags/v*|refs/heads/release/*)
+    refs/tags/v*|refs/heads/release/*|refs/tags/prod-*)
       printf 'prod'
       ;;
-    refs/tags/daily-build-*|refs/heads/daily-build-*|refs/heads/main)
+    refs/tags/sit-*)
+      printf 'sit'
+      ;;
+    refs/tags/uat-*|*daily-build-*|refs/heads/main)
       if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_DEPLOY_ENV:-}" ]]; then
         printf '%s' "${INPUT_DEPLOY_ENV}"
       else

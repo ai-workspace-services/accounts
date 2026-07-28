@@ -6,8 +6,13 @@ on:
   push:
     # main -> UAT (continuous). release/** branches and release tags -> PROD.
     # A tag push matches only the tags filter, so tags are prod-only.
+    #
+    # Operational tags carry an environment prefix (sit-rebuild-*,
+    # prod-release-v*, uat-platform-rebuild-*, uat-daily-build-*), so these
+    # globs are deliberately unanchored — a bare daily-build-* misses the
+    # uat-daily-build-* tags the cross-repo daily snapshot actually creates.
     branches: [main, "release/**"]
-    tags: ["v*", "daily-build-*"]
+    tags: ["v*", "*-rebuild-*", "*-release-*", "*daily-build-*"]
   workflow_dispatch:
     inputs:
       deploy_env:
@@ -156,7 +161,7 @@ jobs:
   release:
     name: Publish release manifest and assets
     needs: build
-    if: ${{ startsWith(github.ref, 'refs/tags/daily-build-') && needs.build.result == 'success' }}
+    if: ${{ contains(github.ref, '/tags/') && contains(github.ref, 'daily-build-') && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
