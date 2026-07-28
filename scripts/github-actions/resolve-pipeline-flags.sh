@@ -19,19 +19,22 @@ DOCKERHUB_NAMESPACE="${DOCKERHUB_NAMESPACE:-cloudneutral}"
 # workflow_dispatch uses INPUT_DEPLOY_ENV (default uat). Pull requests do not
 # deploy (push_image=false below), so their env is informational only.
 resolve_deploy_env() {
+  # A manual tag build is intentionally dispatched with an explicit target.
+  # Do not downgrade an immutable snapshot tag to sit just because it is not v*.
+  if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_DEPLOY_ENV:-}" ]]; then
+    printf '%s' "${INPUT_DEPLOY_ENV}"
+    return
+  fi
+
   if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
     printf 'sit'
     return
   fi
   case "${GITHUB_REF:-}" in
     refs/tags/v*|refs/heads/release/*)
-      if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_DEPLOY_ENV:-}" ]]; then
-        printf '%s' "${INPUT_DEPLOY_ENV}"
-      else
-        printf 'prod'
-      fi
+      printf 'prod'
       ;;
-    refs/heads/main|refs/heads/daily-build-*)
+    refs/tags/daily-build-*|refs/heads/daily-build-*|refs/heads/main)
       if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_DEPLOY_ENV:-}" ]]; then
         printf '%s' "${INPUT_DEPLOY_ENV}"
       else
