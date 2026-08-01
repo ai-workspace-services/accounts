@@ -50,12 +50,21 @@ CREATE TABLE IF NOT EXISTS public.account_quota_states (
   throttle_state TEXT NOT NULL DEFAULT 'normal',
   suspend_state TEXT NOT NULL DEFAULT 'active',
   last_rated_bucket_at TIMESTAMPTZ NULL,
+  -- Billing period bounds for the current quota grant (see
+  -- 20260801_quota_period_bounds.sql); written by entitlement sync.
+  period_start TIMESTAMPTZ NULL,
+  period_end TIMESTAMPTZ NULL,
   effective_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE public.account_quota_states
   ADD COLUMN IF NOT EXISTS arrears_since TIMESTAMPTZ NULL;
+
+ALTER TABLE public.account_quota_states
+  ADD COLUMN IF NOT EXISTS period_start TIMESTAMPTZ NULL;
+ALTER TABLE public.account_quota_states
+  ADD COLUMN IF NOT EXISTS period_end TIMESTAMPTZ NULL;
 
 CREATE TABLE IF NOT EXISTS public.account_billing_profiles (
   account_uuid UUID PRIMARY KEY REFERENCES public.users(uuid) ON DELETE CASCADE,

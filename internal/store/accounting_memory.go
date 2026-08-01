@@ -62,6 +62,14 @@ func cloneQuotaState(src *AccountQuotaState) *AccountQuotaState {
 		since := src.ArrearsSince.UTC()
 		copy.ArrearsSince = &since
 	}
+	if src.PeriodStart != nil {
+		start := src.PeriodStart.UTC()
+		copy.PeriodStart = &start
+	}
+	if src.PeriodEnd != nil {
+		end := src.PeriodEnd.UTC()
+		copy.PeriodEnd = &end
+	}
 	return &copy
 }
 

@@ -70,7 +70,11 @@ func (h *handler) applyPlanEntitlements(ctx context.Context, userID string, plan
 
 // resetQuotaForPlan re-arms the quota state for a fresh billing period
 // (subscription activation or invoice.paid renewal) and clears dunning flags.
-func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *store.BillingPlan) error {
+// periodBounds bound the grant so usage/summary can report "used this period"
+// and a reset date. Production callers pass exactly two values. The optional
+// form keeps older internal tests/callers source-compatible and uses the
+// natural-month fallback until they migrate to explicit bounds.
+func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *store.BillingPlan, periodBounds ...time.Time) error {
 	if plan == nil || strings.TrimSpace(userID) == "" {
 		return nil
 	}
@@ -84,8 +88,27 @@ func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *st
 	state.ArrearsSince = nil
 	state.ThrottleState = "normal"
 	state.SuspendState = "active"
+	periodStart, periodEnd := naturalMonthPeriod(now)
+	if len(periodBounds) == 2 && periodBounds[1].After(periodBounds[0]) {
+		periodStart = periodBounds[0].UTC()
+		periodEnd = periodBounds[1].UTC()
+	}
+	start := periodStart.UTC()
+	end := periodEnd.UTC()
+	state.PeriodStart = &start
+	state.PeriodEnd = &end
 	state.EffectiveAt = now
 	return h.store.UpsertAccountQuotaState(ctx, state)
+}
+
+// naturalMonthPeriod is the period fallback for grants with no Stripe
+// subscription to source current_period_start/end from (e.g. the FREE plan
+// after a subscription ends).
+func naturalMonthPeriod(now time.Time) (time.Time, time.Time) {
+	now = now.UTC()
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+	return start, end
 }
 
 // markAccountArrears flags a payment failure. Escalation to throttled and
@@ -130,7 +153,8 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 		return err
 	}
-	return h.resetQuotaForPlan(ctx, userID, plan)
+	periodStart, periodEnd := naturalMonthPeriod(time.Now())
+	return h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd)
 }
 
 // supersedeActiveTrials marks the user's active trial subscriptions as
@@ -171,7 +195,8 @@ func (h *handler) provisionTrialEntitlements(ctx context.Context, userID string)
 		slog.Warn("failed to apply trial entitlements", "err", err, "userID", userID)
 		return
 	}
-	if err := h.resetQuotaForPlan(ctx, userID, plan); err != nil {
+	now := time.Now().UTC()
+	if err := h.resetQuotaForPlan(ctx, userID, plan, now, now.Add(7*24*time.Hour)); err != nil {
 		slog.Warn("failed to reset trial quota", "err", err, "userID", userID)
 		return
 	}

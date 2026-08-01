@@ -299,8 +299,8 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 
 	const query = `
 		INSERT INTO account_quota_states (
-			account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, effective_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, period_start, period_end, effective_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (account_uuid) DO UPDATE SET
 			remaining_included_quota = EXCLUDED.remaining_included_quota,
 			current_balance = EXCLUDED.current_balance,
@@ -309,6 +309,8 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 			throttle_state = EXCLUDED.throttle_state,
 			suspend_state = EXCLUDED.suspend_state,
 			last_rated_bucket_at = EXCLUDED.last_rated_bucket_at,
+			period_start = EXCLUDED.period_start,
+			period_end = EXCLUDED.period_end,
 			effective_at = EXCLUDED.effective_at,
 			updated_at = now()
 		RETURNING updated_at`
@@ -316,6 +318,13 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 	var arrearsSince interface{}
 	if state.ArrearsSince != nil {
 		arrearsSince = state.ArrearsSince.UTC()
+	}
+	var periodStart, periodEnd interface{}
+	if state.PeriodStart != nil {
+		periodStart = state.PeriodStart.UTC()
+	}
+	if state.PeriodEnd != nil {
+		periodEnd = state.PeriodEnd.UTC()
 	}
 	return s.db.QueryRowContext(
 		ctx,
@@ -328,17 +337,19 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 		strings.TrimSpace(state.ThrottleState),
 		strings.TrimSpace(state.SuspendState),
 		state.LastRatedBucketAt,
+		periodStart,
+		periodEnd,
 		state.EffectiveAt.UTC(),
 	).Scan(&state.UpdatedAt)
 }
 
 func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error) {
 	const query = `
-		SELECT account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, effective_at, updated_at
+		SELECT account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, period_start, period_end, effective_at, updated_at
 		FROM account_quota_states
 		WHERE account_uuid = $1`
 	var state AccountQuotaState
-	var arrearsSince sql.NullTime
+	var arrearsSince, periodStart, periodEnd sql.NullTime
 	err := s.db.QueryRowContext(ctx, query, strings.TrimSpace(accountUUID)).Scan(
 		&state.AccountUUID,
 		&state.RemainingIncludedQuota,
@@ -348,6 +359,8 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 		&state.ThrottleState,
 		&state.SuspendState,
 		&state.LastRatedBucketAt,
+		&periodStart,
+		&periodEnd,
 		&state.EffectiveAt,
 		&state.UpdatedAt,
 	)
@@ -360,6 +373,14 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 	if arrearsSince.Valid {
 		value := arrearsSince.Time
 		state.ArrearsSince = &value
+	}
+	if periodStart.Valid {
+		value := periodStart.Time
+		state.PeriodStart = &value
+	}
+	if periodEnd.Valid {
+		value := periodEnd.Time
+		state.PeriodEnd = &value
 	}
 	return &state, nil
 }

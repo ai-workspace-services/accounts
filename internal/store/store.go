@@ -181,8 +181,13 @@ type AccountQuotaState struct {
 	ThrottleState     string
 	SuspendState      string
 	LastRatedBucketAt *time.Time
-	EffectiveAt       time.Time
-	UpdatedAt         time.Time
+	// PeriodStart/PeriodEnd bound the current quota grant (the billing
+	// period RemainingIncludedQuota was reset for). Written by entitlement
+	// sync on grant/reset; nil until the first reset writes them.
+	PeriodStart *time.Time
+	PeriodEnd   *time.Time
+	EffectiveAt time.Time
+	UpdatedAt   time.Time
 }
 
 type AccountBillingProfile struct {
