@@ -163,6 +163,14 @@ func TestStripeSubscriptionCreatedSyncsEntitlementsAndDedups(t *testing.T) {
 	if quota.RemainingIncludedQuota != 100<<30 || quota.Arrears || quota.SuspendState != "active" {
 		t.Fatalf("unexpected quota state: %+v", quota)
 	}
+	expectedStart := time.Unix(1750000000, 0).UTC()
+	expectedEnd := time.Unix(1752600000, 0).UTC()
+	if quota.PeriodStart == nil || !quota.PeriodStart.Equal(expectedStart) {
+		t.Fatalf("expected quota period start %v, got %v", expectedStart, quota.PeriodStart)
+	}
+	if quota.PeriodEnd == nil || !quota.PeriodEnd.Equal(expectedEnd) {
+		t.Fatalf("expected quota period end %v, got %v", expectedEnd, quota.PeriodEnd)
+	}
 
 	subs, err := st.ListSubscriptionsByUser(ctx, user.ID)
 	if err != nil {
@@ -207,6 +215,41 @@ func TestStripeSubscriptionCreatedSyncsEntitlementsAndDedups(t *testing.T) {
 	}
 	if after.PackageName != "tampered" {
 		t.Fatalf("replayed event mutated state: %+v", after)
+	}
+}
+
+func TestSubscriptionPeriodFallsBackForInvalidStripeBounds(t *testing.T) {
+	now := time.Now().UTC()
+	start, end := naturalMonthPeriod(now)
+	gotStart, gotEnd := subscriptionPeriod(&stripeSubscription{
+		CurrentPeriodStart: 200,
+		CurrentPeriodEnd:   100,
+	})
+	if !gotStart.Equal(start) || !gotEnd.Equal(end) {
+		t.Fatalf("expected natural month fallback %v..%v, got %v..%v", start, end, gotStart, gotEnd)
+	}
+}
+
+func TestResetQuotaForPlanStoresExplicitPeriodBounds(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	h := &handler{store: st}
+	start := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	end := start.AddDate(0, 1, 0)
+	plan := &store.BillingPlan{PlanID: "PRO-M", IncludedQuotaBytes: 42, PackageName: "pro"}
+
+	if err := h.resetQuotaForPlan(ctx, "user-1", plan, start, end); err != nil {
+		t.Fatalf("reset quota: %v", err)
+	}
+	quota, err := st.GetAccountQuotaState(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("load quota: %v", err)
+	}
+	if quota.PeriodStart == nil || !quota.PeriodStart.Equal(start.UTC()) {
+		t.Fatalf("unexpected period start: %v", quota.PeriodStart)
+	}
+	if quota.PeriodEnd == nil || !quota.PeriodEnd.Equal(end.UTC()) {
+		t.Fatalf("unexpected period end: %v", quota.PeriodEnd)
 	}
 }
 

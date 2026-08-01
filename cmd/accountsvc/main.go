@@ -825,6 +825,12 @@ func applyBillingSchema(ctx context.Context, db *gorm.DB, driver string) error {
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )`,
 		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS arrears_since TIMESTAMPTZ NULL`,
+		// Billing period bounds for the current quota grant, so usage/summary
+		// can answer "how much used this period" and "when does it reset"
+		// without a source of truth beyond this table. Written by entitlement
+		// sync (Accounts owns quota-grant fields); Billing only consumes.
+		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS period_start TIMESTAMPTZ NULL`,
+		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS period_end TIMESTAMPTZ NULL`,
 	}
 
 	for _, statement := range statements {

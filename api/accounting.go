@@ -66,10 +66,14 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 
 	currentBalance := 0.0
 	remainingQuota := int64(0)
+	includedQuota := int64(0)
+	usedBytes := int64(0)
+	usagePercent := 0.0
 	suspendState := "active"
 	throttleState := "normal"
 	arrears := false
 	var arrearsSince *time.Time
+	var periodStart, periodEnd *time.Time
 	var billingProfile *store.AccountBillingProfile
 	if quota, err := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); err == nil && quota != nil {
 		currentBalance = quota.CurrentBalance
@@ -78,9 +82,19 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		throttleState = quota.ThrottleState
 		arrears = quota.Arrears
 		arrearsSince = quota.ArrearsSince
+		periodStart = quota.PeriodStart
+		periodEnd = quota.PeriodEnd
 	}
 	if profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID); err == nil && profile != nil {
 		billingProfile = profile
+		includedQuota = profile.IncludedQuotaBytes
+		usedBytes = includedQuota - remainingQuota
+		if usedBytes < 0 {
+			usedBytes = 0
+		}
+		if includedQuota > 0 {
+			usagePercent = float64(usedBytes) / float64(includedQuota) * 100
+		}
 	}
 
 	syncDelaySeconds := 0
@@ -99,13 +113,23 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		"sourceOfTruth":          accountingDataSource,
 		"currentBalance":         currentBalance,
 		"remainingIncludedQuota": remainingQuota,
-		"suspendState":           suspendState,
-		"throttleState":          throttleState,
-		"arrears":                arrears,
-		"arrearsSince":           arrearsSince,
-		"lastBucketAt":           lastBucketAt,
-		"syncDelaySeconds":       syncDelaySeconds,
-		"billingProfile":         billingProfile,
+		// New fields only: keep the existing totalBytes and
+		// remainingIncludedQuota contract intact for deployed Portal clients.
+		// The values are account-level aggregates across every node_id that
+		// reports this user's canonical UUID; email remains display/identity
+		// metadata and is never used as a standalone billing key.
+		"includedQuotaBytes": includedQuota,
+		"usedBytes":          usedBytes,
+		"usagePercent":       usagePercent,
+		"periodStart":        periodStart,
+		"periodEnd":          periodEnd,
+		"suspendState":       suspendState,
+		"throttleState":      throttleState,
+		"arrears":            arrears,
+		"arrearsSince":       arrearsSince,
+		"lastBucketAt":       lastBucketAt,
+		"syncDelaySeconds":   syncDelaySeconds,
+		"billingProfile":     billingProfile,
 	})
 }
 

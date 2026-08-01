@@ -594,7 +594,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			}
 			h.publishBillingEvent(ctx, &store.BillingEvent{
 				Type: "subscription_deleted", UserID: userID,
-				PlanID: strings.TrimSpace(subscription.Metadata["plan_id"]),
+				PlanID:  strings.TrimSpace(subscription.Metadata["plan_id"]),
 				PriceID: subscriptionPriceID(&subscription), ExternalID: subscription.ID,
 			})
 		}
@@ -627,7 +627,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			}
 			h.publishBillingEvent(ctx, &store.BillingEvent{
 				Type: "payment_failed", UserID: userID,
-				PlanID: strings.TrimSpace(sub.Metadata["plan_id"]),
+				PlanID:  strings.TrimSpace(sub.Metadata["plan_id"]),
 				PriceID: subscriptionPriceID(sub), ExternalID: sub.ID,
 			})
 			return nil
@@ -645,7 +645,8 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
-		if err := h.resetQuotaForPlan(ctx, userID, plan); err != nil {
+		periodStart, periodEnd := subscriptionPeriod(sub)
+		if err := h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd); err != nil {
 			return err
 		}
 		h.publishBillingEvent(ctx, &store.BillingEvent{
@@ -664,6 +665,17 @@ func subscriptionPriceID(source *stripeSubscription) string {
 		return ""
 	}
 	return strings.TrimSpace(source.Items.Data[0].Price.ID)
+}
+
+// subscriptionPeriod reads the subscription's current billing period so
+// resetQuotaForPlan can record when the grant resets. Falls back to a
+// natural month when Stripe hasn't populated the period (defensive; every
+// real subscription object carries it).
+func subscriptionPeriod(source *stripeSubscription) (time.Time, time.Time) {
+	if source == nil || source.CurrentPeriodStart <= 0 || source.CurrentPeriodEnd <= source.CurrentPeriodStart {
+		return naturalMonthPeriod(time.Now())
+	}
+	return time.Unix(source.CurrentPeriodStart, 0).UTC(), time.Unix(source.CurrentPeriodEnd, 0).UTC()
 }
 
 // syncSubscriptionEntitlements applies catalog entitlements for an active or
@@ -693,7 +705,8 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		return err
 	}
 	if created {
-		if err := h.resetQuotaForPlan(ctx, userID, plan); err != nil {
+		periodStart, periodEnd := subscriptionPeriod(source)
+		if err := h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd); err != nil {
 			return err
 		}
 	}

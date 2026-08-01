@@ -126,7 +126,24 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert bucket: %v", err)
 	}
+	// A second Xray node may report the same user UUID. Accounts must expose
+	// one account-level total while Billing keeps independent node checkpoints.
+	if err := st.UpsertTrafficMinuteBucket(ctx, &store.TrafficMinuteBucket{
+		BucketStart:   bucketStart,
+		NodeID:        "node-b",
+		AccountUUID:   user.ID,
+		Region:        "sg",
+		UplinkBytes:   40,
+		DownlinkBytes: 60,
+		TotalBytes:    100,
+		Multiplier:    1.0,
+		RatingStatus:  store.RatingStatusRated,
+	}); err != nil {
+		t.Fatalf("upsert second-node bucket: %v", err)
+	}
 
+	periodStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	periodEnd := periodStart.AddDate(0, 1, 0)
 	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
 		AccountUUID:            user.ID,
 		RemainingIncludedQuota: 2048,
@@ -134,6 +151,8 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 		Arrears:                false,
 		ThrottleState:          "normal",
 		SuspendState:           "active",
+		PeriodStart:            &periodStart,
+		PeriodEnd:              &periodEnd,
 		EffectiveAt:            time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("upsert quota state: %v", err)
@@ -194,10 +213,15 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	}
 
 	var usagePayload struct {
-		AccountUUID    string `json:"accountUuid"`
-		TotalBytes     int64  `json:"totalBytes"`
-		SourceOfTruth  string `json:"sourceOfTruth"`
-		BillingProfile struct {
+		AccountUUID        string     `json:"accountUuid"`
+		TotalBytes         int64      `json:"totalBytes"`
+		IncludedQuotaBytes int64      `json:"includedQuotaBytes"`
+		UsedBytes          int64      `json:"usedBytes"`
+		UsagePercent       float64    `json:"usagePercent"`
+		PeriodStart        *time.Time `json:"periodStart"`
+		PeriodEnd          *time.Time `json:"periodEnd"`
+		SourceOfTruth      string     `json:"sourceOfTruth"`
+		BillingProfile     struct {
 			PackageName        string  `json:"packageName"`
 			BasePricePerByte   float64 `json:"basePricePerByte"`
 			RegionMultiplier   float64 `json:"regionMultiplier"`
@@ -211,8 +235,14 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	if usagePayload.AccountUUID != user.ID {
 		t.Fatalf("expected account uuid %q, got %q", user.ID, usagePayload.AccountUUID)
 	}
-	if usagePayload.TotalBytes != 384 {
-		t.Fatalf("expected total bytes 384, got %d", usagePayload.TotalBytes)
+	if usagePayload.TotalBytes != 484 {
+		t.Fatalf("expected total bytes across nodes 484, got %d", usagePayload.TotalBytes)
+	}
+	if usagePayload.IncludedQuotaBytes != 4096 || usagePayload.UsedBytes != 2048 || usagePayload.UsagePercent != 50 {
+		t.Fatalf("unexpected quota summary: %+v", usagePayload)
+	}
+	if usagePayload.PeriodStart == nil || !usagePayload.PeriodStart.Equal(periodStart) || usagePayload.PeriodEnd == nil || !usagePayload.PeriodEnd.Equal(periodEnd) {
+		t.Fatalf("unexpected quota period: start=%v end=%v", usagePayload.PeriodStart, usagePayload.PeriodEnd)
 	}
 	if usagePayload.SourceOfTruth != "postgresql" {
 		t.Fatalf("expected source of truth postgresql, got %q", usagePayload.SourceOfTruth)
@@ -248,14 +278,15 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	if bucketsPayload.SourceOfTruth != "postgresql" {
 		t.Fatalf("expected usage buckets source of truth postgresql, got %q", bucketsPayload.SourceOfTruth)
 	}
-	if len(bucketsPayload.Buckets) != 1 {
-		t.Fatalf("expected 1 usage bucket, got %d", len(bucketsPayload.Buckets))
+	if len(bucketsPayload.Buckets) != 2 {
+		t.Fatalf("expected 2 per-node usage buckets, got %d", len(bucketsPayload.Buckets))
 	}
-	if bucketsPayload.Buckets[0].TotalBytes != 384 {
-		t.Fatalf("expected usage bucket total bytes 384, got %d", bucketsPayload.Buckets[0].TotalBytes)
+	byNode := make(map[string]int64, len(bucketsPayload.Buckets))
+	for _, bucket := range bucketsPayload.Buckets {
+		byNode[bucket.NodeID] = bucket.TotalBytes
 	}
-	if bucketsPayload.Buckets[0].NodeID != "node-a" {
-		t.Fatalf("expected usage bucket node node-a, got %q", bucketsPayload.Buckets[0].NodeID)
+	if byNode["node-a"] != 384 || byNode["node-b"] != 100 {
+		t.Fatalf("unexpected per-node usage buckets: %#v", byNode)
 	}
 
 	billingReq := httptest.NewRequest(http.MethodGet, "/api/account/billing/summary", nil)
