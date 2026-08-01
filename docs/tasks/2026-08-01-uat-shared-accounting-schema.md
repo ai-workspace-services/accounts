@@ -1,8 +1,8 @@
 # UAT 共享计费 Schema 初始化补全
 
-> **Status**: 🟡 本地实现与验证完成，尚未推送或部署
+> **Status**: 🟡 PR 已创建，等待评审、合并和 UAT 部署
 > **Date**: 2026-08-01
-> **Related PRs**: 待创建（本任务明确不创建 PR）
+> **Related PRs**: [accounts #46](https://github.com/ai-workspace-services/accounts/pull/46) [OPEN]
 
 ## 目标与范围
 
@@ -14,6 +14,23 @@ PostgreSQL → Accounts → Portal 所需的 control-plane 表和索引。
 
 不拆库、不新增服务、不直接修改 UAT 数据库，也不改 Portal UI、GitOps、
 Vault、运行主机或 `svc.plus` 生产环境。
+
+## 生产可观测性基准（只读参考）
+
+生产 Grafana 的 [Xray dashboard](https://observability.svc.plus/grafana/d/begqoward2epsf/xray-dashboard?orgId=1&from=now-30d&to=now&timezone=browser&var-job=$__all&var-instance=$__all&var-user=$__all)
+展示了本轮 UAT 需要最终对齐的使用量形态：按用户查看下载/上传速率，以及
+下载/上传的 30 天累计流量。它是 Observability 的展示基准，**不是 Billing
+的写入依赖或计费真相来源**。
+
+- Billing/共享 PostgreSQL 的规范聚合键仍为 `account_uuid`；多 Xray 节点和
+  多 inbound 的数据按同一 UUID 汇总。
+- 邮箱仅可作为 Portal 展示或 Grafana 可观测性标签，不能作为计费聚合键：邮箱
+  可修改、可能为空，且不应被复制进账单主键。
+- UAT 通过 minute bucket 同时保留 `uplink_bytes`、`downlink_bytes` 与
+  `total_bytes`，从而能复现上述速率/累计展示，同时以 `total_bytes` 进行订阅
+  配额扣减。
+- Exporter 应向 Billing 和 Observability 扇出；即使 Grafana 暂不可用，Billing
+  也必须能继续落库和聚合。
 
 ## UAT 只读证据
 
