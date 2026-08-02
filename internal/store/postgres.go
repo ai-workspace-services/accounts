@@ -119,6 +119,12 @@ func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 	}
 
 	normalizeUserRoleFields(user)
+	if strings.TrimSpace(user.ID) == "" {
+		user.ID = uuid.NewString()
+	}
+	// proxy_uuid is retained for compatibility with existing schemas, but it is
+	// no longer an independent identity.
+	user.ProxyUUID = user.ID
 
 	var (
 		verifiedAt any
@@ -147,9 +153,9 @@ func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 		return ErrNameExists
 	}
 
-	columns := []string{"username", "password", "email", "email_verified_at"}
-	placeholders := []string{"$1", "$2", "$3", "$4"}
-	args := []any{normalizedName, user.PasswordHash, normalizedEmail, verifiedAt}
+	columns := []string{"uuid", "username", "password", "email", "email_verified_at"}
+	placeholders := []string{"$1", "$2", "$3", "$4", "$5"}
+	args := []any{user.ID, normalizedName, user.PasswordHash, normalizedEmail, verifiedAt}
 
 	idx := len(args) + 1
 
@@ -238,6 +244,7 @@ func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 	}
 
 	user.ID = identifier
+	user.ProxyUUID = identifier
 	user.Name = normalizedName
 	user.Email = normalizedEmail
 	user.CreatedAt = createdAt.UTC()
@@ -391,6 +398,7 @@ func (s *postgresStore) UpdateUser(ctx context.Context, user *User) error {
 	}
 
 	normalizedEmail := strings.ToLower(strings.TrimSpace(user.Email))
+	user.ProxyUUID = user.ID
 
 	caps, err := s.capabilities(ctx)
 	if err != nil {

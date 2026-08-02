@@ -17,7 +17,6 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
@@ -381,7 +380,6 @@ func ensureSandboxUser(ctx context.Context, st store.Store, logger *slog.Logger)
 			Groups:             []string{"User", "Sandbox", "ReadOnly Role"},
 			Permissions:        []string{},
 			Active:             true,
-			ProxyUUID:          uuid.NewString(),
 			ProxyUUIDExpiresAt: &expiresAt,
 		}
 		if err := st.CreateUser(ctx, user); err != nil {
@@ -402,9 +400,7 @@ func ensureSandboxUser(ctx context.Context, st store.Store, logger *slog.Logger)
 			sandboxUser.Groups = append(sandboxUser.Groups, "ReadOnly Role")
 		}
 
-		if sandboxUser.ProxyUUID == "" {
-			sandboxUser.ProxyUUID = uuid.NewString()
-		}
+		sandboxUser.ProxyUUID = strings.TrimSpace(sandboxUser.ID)
 		if sandboxUser.ProxyUUIDExpiresAt == nil {
 			sandboxUser.ProxyUUIDExpiresAt = &expiresAt
 		}
@@ -432,28 +428,28 @@ func startSandboxUUIDRotator(ctx context.Context, st store.Store, logger *slog.L
 				user, err := st.GetUserByEmail(context.Background(), SandboxEmail)
 				if err != nil {
 					if logger != nil {
-						logger.Warn("sandbox uuid rotation skipped: lookup failed", "err", err)
+						logger.Warn("sandbox uuid renewal skipped: lookup failed", "err", err)
 					}
 					continue
 				}
 				if user == nil {
 					if err := ensureSandboxUser(context.Background(), st, logger); err != nil && logger != nil {
-						logger.Warn("sandbox uuid rotation failed to recreate user", "err", err)
+						logger.Warn("sandbox uuid renewal failed to recreate user", "err", err)
 					}
 					continue
 				}
 
 				expiresAt := time.Now().UTC().Add(time.Hour)
-				user.ProxyUUID = uuid.NewString()
+				user.ProxyUUID = strings.TrimSpace(user.ID)
 				user.ProxyUUIDExpiresAt = &expiresAt
 				if err := st.UpdateUser(context.Background(), user); err != nil {
 					if logger != nil {
-						logger.Warn("sandbox uuid rotation failed", "err", err)
+						logger.Warn("sandbox uuid renewal failed", "err", err)
 					}
 					continue
 				}
 				if logger != nil {
-					logger.Info("sandbox uuid rotated", "userID", user.ID, "expiresAt", expiresAt)
+					logger.Info("sandbox proxy access renewed", "userID", user.ID, "expiresAt", expiresAt)
 				}
 			}
 		}
@@ -662,10 +658,28 @@ func applyRBACSchema(ctx context.Context, db *gorm.DB, driver string) error {
   groups JSONB NOT NULL DEFAULT '[]'::jsonb,
   permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
   active BOOLEAN NOT NULL DEFAULT TRUE,
-  proxy_uuid UUID NOT NULL DEFAULT gen_random_uuid(),
+  proxy_uuid UUID NOT NULL,
   proxy_uuid_expires_at TIMESTAMPTZ
 )`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS proxy_uuid UUID NOT NULL DEFAULT gen_random_uuid()`,
+		// proxy_uuid is a compatibility column, not a second identity. Backfill
+		// existing rows before installing the invariant for fresh and upgraded
+		// UAT databases.
+		`UPDATE public.users SET proxy_uuid = uuid WHERE proxy_uuid IS DISTINCT FROM uuid`,
+		`ALTER TABLE public.users ALTER COLUMN proxy_uuid DROP DEFAULT`,
+		`DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'users_proxy_uuid_matches_uuid_ck'
+      AND conrelid = 'public.users'::regclass
+  ) THEN
+    ALTER TABLE public.users
+      ADD CONSTRAINT users_proxy_uuid_matches_uuid_ck
+      CHECK (proxy_uuid = uuid);
+  END IF;
+END
+$$`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS proxy_uuid_expires_at TIMESTAMPTZ`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`,

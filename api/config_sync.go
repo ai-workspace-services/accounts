@@ -76,10 +76,7 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	profiles := []gin.H{}
 	nodes := []gin.H{}
 	if changed {
-		proxyUUID := strings.TrimSpace(user.ProxyUUID)
-		if proxyUUID == "" {
-			proxyUUID = strings.TrimSpace(user.ID)
-		}
+		proxyUUID := strings.TrimSpace(user.ID)
 
 		// Collect node hosts from registered agents + publicURL fallback.
 		registeredHosts, registeredNames := registeredNodeMetadata(h.agentStatusReader)
@@ -221,10 +218,7 @@ func (h *handler) renderUserXrayConfig(user *store.User) (string, string, []stri
 		domain = "accounts.svc.plus"
 	}
 
-	clientID := strings.TrimSpace(user.ProxyUUID)
-	if clientID == "" {
-		clientID = strings.TrimSpace(user.ID)
-	}
+	clientID := strings.TrimSpace(user.ID)
 	clients := []xrayconfig.Client{{
 		ID:    clientID,
 		Email: strings.TrimSpace(user.ID),

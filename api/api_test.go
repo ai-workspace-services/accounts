@@ -270,7 +270,7 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 	ctx := context.Background()
 	st := store.NewMemoryStore()
 
-	// sandbox user (special rotating proxy uuid)
+	// sandbox user (stable account UUID with expiring access metadata)
 	if err := st.CreateUser(ctx, &store.User{
 		Name:          "Sandbox",
 		Email:         "sandbox@svc.plus",
@@ -362,6 +362,14 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 	}
 	if !seenNormal {
 		t.Fatalf("expected normal client in response, got=%v", payload.Clients)
+	}
+	for _, c := range payload.Clients {
+		if c.Email == strings.ToLower(strings.TrimSpace(sandbox.Email)) && c.ID != sandbox.ID {
+			t.Fatalf("expected sandbox client ID %q to equal account UUID %q, got %q", sandbox.ID, sandbox.ID, c.ID)
+		}
+		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) && c.ID != normal.ID {
+			t.Fatalf("expected normal client ID %q to equal account UUID %q, got %q", normal.ID, normal.ID, c.ID)
+		}
 	}
 }
 

@@ -113,7 +113,7 @@ flowchart TB
 | Reset role | `DELETE /api/auth/admin/users/:userId/role` | Reset a user role | `users` | session token + admin/operator |
 | Pause / resume | `/api/auth/admin/users/:userId/pause`, `/api/auth/admin/users/:userId/resume` | Disable / re-enable user | `users` | session token + admin/operator |
 | Delete user | `DELETE /api/auth/admin/users/:userId` | Delete user | `users`, `sessions`, `identities` | session token + admin/operator |
-| Renew proxy UUID | `/api/auth/admin/users/:userId/renew-uuid` | Rotate proxy UUID | `users` | session token + admin/operator |
+| Renew proxy access | `/api/auth/admin/users/:userId/renew-uuid` | Renew expiry metadata; keep `proxy_uuid = users.uuid` | `users` | session token + admin/operator |
 | Tenant bootstrap | `/api/auth/admin/tenants/bootstrap` | Bootstrap tenant records | `tenants`, `tenant_memberships` (migration-backed) | session token + admin/operator |
 | Blacklist | `/api/auth/admin/blacklist`, `/api/auth/admin/blacklist/:email` | Manage blocked email list | `email_blacklist` | session token + admin/operator |
 | Sandbox binding admin | `/api/auth/admin/sandbox/binding`, `/api/auth/admin/sandbox/bind` | Bind sandbox node | `nodes`, `users` | session token + root/admin rules |

@@ -1516,9 +1516,9 @@ func (h *handler) session(c *gin.Context) {
 		return
 	}
 
-	// Sandbox UUID rotates hourly; refresh on session reads so the UI always sees a valid UUID.
+	// Sandbox access metadata renews hourly; keep the UUID stable for Portal/Xray identity.
 	if err := h.ensureSandboxProxyUUID(c.Request.Context(), user); err != nil {
-		slog.Warn("failed to rotate sandbox proxy uuid", "err", err, "userID", user.ID)
+		slog.Warn("failed to renew sandbox proxy access", "err", err, "userID", user.ID)
 	}
 
 	sanitized, err := h.buildSessionUser(c.Request.Context(), h.resolveTenantHost(c), user)
@@ -2686,10 +2686,7 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 
 func sanitizeUser(user *store.User, challenge *mfaChallenge) gin.H {
 	identifier := strings.TrimSpace(user.ID)
-	proxyUUID := strings.TrimSpace(user.ProxyUUID)
-	if proxyUUID == "" {
-		proxyUUID = identifier
-	}
+	proxyUUID := identifier
 	groups := user.Groups
 	if len(groups) == 0 {
 		groups = []string{}

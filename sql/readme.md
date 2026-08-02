@@ -14,6 +14,22 @@
 psql "$DB_URL" -v ON_ERROR_STOP=1 -f sql/20260204_rbac_root_constraints.sql
 ```
 
+## Portal / Xray canonical UUID
+
+`users.uuid` is the canonical account identity. The legacy `proxy_uuid` column
+is retained for compatibility but must always equal `users.uuid`; Xray client
+configuration and Portal QR generation use the canonical account UUID.
+
+For a controlled UAT rollout, apply the idempotent backfill once:
+
+```bash
+psql "$DB_URL" -v ON_ERROR_STOP=1 -f sql/20260803_proxy_uuid_equals_user_uuid.sql
+```
+
+The migration updates existing rows, removes the independent database default,
+and installs `users_proxy_uuid_matches_uuid_ck`. Production must not be changed
+as part of the UAT validation.
+
 ## 方案概览
 
 | 目标 | 推荐方案 | 说明 |
