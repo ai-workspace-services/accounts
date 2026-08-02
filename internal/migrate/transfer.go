@@ -1007,11 +1007,12 @@ func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord) error {
 INSERT INTO users (
         uuid, username, password, email, email_verified_at,
         level, role, groups, permissions, created_at, updated_at,
-        mfa_totp_secret, mfa_enabled, mfa_secret_issued_at, mfa_confirmed_at
+        mfa_totp_secret, mfa_enabled, mfa_secret_issued_at, mfa_confirmed_at,
+        proxy_uuid
 ) VALUES (
         $1, $2, $3, $4, $5,
         $6, $7, $8::jsonb, $9::jsonb, $10, $11,
-        $12, $13, $14, $15
+        $12, $13, $14, $15, $1
 )
 ON CONFLICT (uuid) DO UPDATE SET
         username = EXCLUDED.username,
@@ -1027,7 +1028,8 @@ ON CONFLICT (uuid) DO UPDATE SET
         mfa_totp_secret = EXCLUDED.mfa_totp_secret,
         mfa_enabled = EXCLUDED.mfa_enabled,
         mfa_secret_issued_at = EXCLUDED.mfa_secret_issued_at,
-        mfa_confirmed_at = EXCLUDED.mfa_confirmed_at
+        mfa_confirmed_at = EXCLUDED.mfa_confirmed_at,
+        proxy_uuid = EXCLUDED.proxy_uuid
 `,
 		user.UUID,
 		user.Username,

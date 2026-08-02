@@ -11,7 +11,7 @@ import (
 	"account/internal/store"
 )
 
-// internalSandboxGuest returns the sandbox user's rotating proxy UUID metadata for the
+// internalSandboxGuest returns the sandbox user's proxy access metadata for the
 // Console Guest/Demo experience.
 //
 // Protected by InternalAuthMiddleware via /api/internal.
@@ -36,13 +36,10 @@ func (h *handler) internalSandboxGuest(c *gin.Context) {
 		return
 	}
 
-	proxyUUID := strings.TrimSpace(user.ProxyUUID)
+	proxyUUID := strings.TrimSpace(user.ID)
 	expiresAt := ""
 	if user.ProxyUUIDExpiresAt != nil {
 		expiresAt = user.ProxyUUIDExpiresAt.UTC().Format(time.RFC3339)
-	}
-	if proxyUUID == "" {
-		proxyUUID = strings.TrimSpace(user.ID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

@@ -80,8 +80,8 @@ func (h *handler) createCustomUser(c *gin.Context) {
 		return
 	}
 
-	proxyUUID := strings.TrimSpace(req.UUID)
-	if _, err := uuid.Parse(proxyUUID); err != nil {
+	userUUID := strings.TrimSpace(req.UUID)
+	if _, err := uuid.Parse(userUUID); err != nil {
 		respondError(c, http.StatusBadRequest, "invalid_uuid", "uuid must be a valid UUID")
 		return
 	}
@@ -109,6 +109,7 @@ func (h *handler) createCustomUser(c *gin.Context) {
 	}
 
 	user := &store.User{
+		ID:            userUUID,
 		Name:          email,
 		Email:         email,
 		PasswordHash:  passwordHash,
@@ -117,7 +118,7 @@ func (h *handler) createCustomUser(c *gin.Context) {
 		Role:          store.RoleUser,
 		Groups:        groups,
 		Active:        true,
-		ProxyUUID:     proxyUUID,
+		ProxyUUID:     userUUID,
 	}
 
 	if err := h.store.CreateUser(c.Request.Context(), user); err != nil {
@@ -261,7 +262,9 @@ func (h *handler) renewProxyUUID(c *gin.Context) {
 		user.ProxyUUIDExpiresAt = nil
 	}
 
-	user.ProxyUUID = generateRandomUUID()
+	// Keep the legacy response field, but never rotate the canonical account
+	// identity used by Portal and Xray.
+	user.ProxyUUID = user.ID
 
 	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
 		respondError(c, http.StatusInternalServerError, "update_failed", "failed to renew proxy UUID")

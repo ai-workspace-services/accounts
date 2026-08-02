@@ -474,7 +474,10 @@ func (s *memoryStore) CreateUser(ctx context.Context, user *User) error {
 	stored.Groups = cloneStringSlice(stored.Groups)
 	stored.Permissions = cloneStringSlice(stored.Permissions)
 	stored.Active = true
-	stored.ProxyUUID = uuid.NewString()
+	// The account UUID is the canonical identity used by Portal, Xray and
+	// billing attribution. Keep the legacy proxy_uuid column synchronized with
+	// it so a QR code can never point at a different client identity.
+	stored.ProxyUUID = stored.ID
 	s.byID[userCopy.ID] = &stored
 	if loweredEmail != "" {
 		s.byEmail[loweredEmail] = &stored
@@ -585,7 +588,7 @@ func (s *memoryStore) UpdateUser(ctx context.Context, user *User) error {
 	updated.Groups = cloneStringSlice(user.Groups)
 	updated.Permissions = cloneStringSlice(user.Permissions)
 	updated.Active = user.Active
-	updated.ProxyUUID = user.ProxyUUID
+	updated.ProxyUUID = updated.ID
 	updated.ProxyUUIDExpiresAt = user.ProxyUUIDExpiresAt
 	normalizeUserRoleFields(&updated)
 	if user.CreatedAt.IsZero() {
