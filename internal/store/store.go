@@ -140,68 +140,74 @@ type TrafficStatCheckpoint struct {
 	UpdatedAt         time.Time
 }
 
+// 下面四个结构体是直接被 /api/account/* 序列化出去的响应体, 不只是内部模型。
+// 没有 tag 时 encoding/json 用 Go 字段名原样输出(RatedBytes、CurrentBalance
+// ...), 而这些接口的其余字段都由 gin.H 显式写成小驼峰, 前端也照小驼峰读。
+// 结果是 quotaState / billingProfile / ledger / buckets 里每个字段前端都读成
+// undefined —— ledger 为空时无人察觉, 一旦真有账目, Portal 就在
+// entry.ratedBytes.toLocaleString() 上整页崩掉。
 type TrafficMinuteBucket struct {
-	BucketStart    time.Time
-	NodeID         string
-	AccountUUID    string
-	Region         string
-	LineCode       string
-	UplinkBytes    int64
-	DownlinkBytes  int64
-	TotalBytes     int64
-	Multiplier     float64
-	RatingStatus   string
-	SourceRevision string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	BucketStart    time.Time `json:"bucketStart"`
+	NodeID         string    `json:"nodeId"`
+	AccountUUID    string    `json:"accountUuid"`
+	Region         string    `json:"region"`
+	LineCode       string    `json:"lineCode"`
+	UplinkBytes    int64     `json:"uplinkBytes"`
+	DownlinkBytes  int64     `json:"downlinkBytes"`
+	TotalBytes     int64     `json:"totalBytes"`
+	Multiplier     float64   `json:"multiplier"`
+	RatingStatus   string    `json:"ratingStatus"`
+	SourceRevision string    `json:"sourceRevision"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 type BillingLedgerEntry struct {
-	ID                 string
-	AccountUUID        string
-	BucketStart        time.Time
-	BucketEnd          time.Time
-	EntryType          string
-	RatedBytes         int64
-	AmountDelta        float64
-	BalanceAfter       float64
-	PricingRuleVersion string
-	CreatedAt          time.Time
+	ID                 string    `json:"id"`
+	AccountUUID        string    `json:"accountUuid"`
+	BucketStart        time.Time `json:"bucketStart"`
+	BucketEnd          time.Time `json:"bucketEnd"`
+	EntryType          string    `json:"entryType"`
+	RatedBytes         int64     `json:"ratedBytes"`
+	AmountDelta        float64   `json:"amountDelta"`
+	BalanceAfter       float64   `json:"balanceAfter"`
+	PricingRuleVersion string    `json:"pricingRuleVersion"`
+	CreatedAt          time.Time `json:"createdAt"`
 }
 
 type AccountQuotaState struct {
-	AccountUUID            string
-	RemainingIncludedQuota int64
-	CurrentBalance         float64
-	Arrears                bool
+	AccountUUID            string  `json:"accountUuid"`
+	RemainingIncludedQuota int64   `json:"remainingIncludedQuota"`
+	CurrentBalance         float64 `json:"currentBalance"`
+	Arrears                bool    `json:"arrears"`
 	// ArrearsSince marks when Arrears last flipped false->true; cleared back
 	// to nil whenever Arrears clears. billing-service's SuspendSyncer reads
 	// this to decide when a prolonged arrears episode should suspend access.
-	ArrearsSince      *time.Time
-	ThrottleState     string
-	SuspendState      string
-	LastRatedBucketAt *time.Time
+	ArrearsSince      *time.Time `json:"arrearsSince"`
+	ThrottleState     string     `json:"throttleState"`
+	SuspendState      string     `json:"suspendState"`
+	LastRatedBucketAt *time.Time `json:"lastRatedBucketAt"`
 	// PeriodStart/PeriodEnd bound the current quota grant (the billing
 	// period RemainingIncludedQuota was reset for). Written by entitlement
 	// sync on grant/reset; nil until the first reset writes them.
-	PeriodStart *time.Time
-	PeriodEnd   *time.Time
-	EffectiveAt time.Time
-	UpdatedAt   time.Time
+	PeriodStart *time.Time `json:"periodStart"`
+	PeriodEnd   *time.Time `json:"periodEnd"`
+	EffectiveAt time.Time  `json:"effectiveAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
 }
 
 type AccountBillingProfile struct {
-	AccountUUID        string
-	PackageName        string
-	IncludedQuotaBytes int64
-	BasePricePerByte   float64
-	RegionMultiplier   float64
-	LineMultiplier     float64
-	PeakMultiplier     float64
-	OffPeakMultiplier  float64
-	PricingRuleVersion string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	AccountUUID        string    `json:"accountUuid"`
+	PackageName        string    `json:"packageName"`
+	IncludedQuotaBytes int64     `json:"includedQuotaBytes"`
+	BasePricePerByte   float64   `json:"basePricePerByte"`
+	RegionMultiplier   float64   `json:"regionMultiplier"`
+	LineMultiplier     float64   `json:"lineMultiplier"`
+	PeakMultiplier     float64   `json:"peakMultiplier"`
+	OffPeakMultiplier  float64   `json:"offPeakMultiplier"`
+	PricingRuleVersion string    `json:"pricingRuleVersion"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 type AccountPolicySnapshot struct {
