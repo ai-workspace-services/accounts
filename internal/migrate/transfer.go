@@ -1004,12 +1004,12 @@ func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord, isMerge bool)
 	}
 
 		if isMerge {
-			_, err = tx.ExecContext(ctx, `UPDATE users SET username = username || '-conflict-' || substr(md5(random()::text), 1, 6) WHERE lower(username) = lower($1) AND uuid != $2`, user.Username, user.UUID)
+			_, err = tx.ExecContext(ctx, `UPDATE users SET username = username || '-conflict-' || substr(md5(random()::text), 1, 6), role = CASE WHEN lower(role) = 'root' THEN 'user' ELSE role END WHERE lower(username) = lower($1) AND uuid != $2`, user.Username, user.UUID)
 			if err != nil {
 				return fmt.Errorf("failed to resolve username conflict for user %s: %w", user.UUID, err)
 			}
 			if user.Email != "" {
-				_, err = tx.ExecContext(ctx, `UPDATE users SET email = substr(md5(random()::text), 1, 6) || '-conflict-' || email WHERE lower(email) = lower($1) AND uuid != $2`, user.Email, user.UUID)
+				_, err = tx.ExecContext(ctx, `UPDATE users SET email = substr(md5(random()::text), 1, 6) || '-conflict-' || email, role = CASE WHEN lower(role) = 'root' THEN 'user' ELSE role END WHERE lower(email) = lower($1) AND uuid != $2`, user.Email, user.UUID)
 				if err != nil {
 					return fmt.Errorf("failed to resolve email conflict for user %s: %w", user.UUID, err)
 				}
