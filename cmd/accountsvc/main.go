@@ -728,14 +728,13 @@ $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS users_single_root_role_uk ON public.users ((lower(role))) WHERE lower(role) = 'root'`,
 		`DO $$
 BEGIN
-  IF NOT EXISTS (
+  IF EXISTS (
     SELECT 1
     FROM pg_constraint
     WHERE conname = 'users_root_email_ck'
   ) THEN
     ALTER TABLE public.users
-      ADD CONSTRAINT users_root_email_ck
-      CHECK (lower(role) <> 'root' OR lower(email) = 'admin@svc.plus');
+      DROP CONSTRAINT users_root_email_ck;
   END IF;
 END
 $$`,

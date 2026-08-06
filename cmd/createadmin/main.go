@@ -24,7 +24,7 @@ func main() {
 		dsn             = flag.String("dsn", "", "database connection string")
 		username        = flag.String("username", "", "root username")
 		password        = flag.String("password", "", "root password")
-		email           = flag.String("email", store.RootAdminEmail, "root email (must be admin@svc.plus)")
+		email           = flag.String("email", "", "root email")
 		groups          = flag.String("groups", "", "comma separated list of groups to assign (optional)")
 		permissions     = flag.String("permissions", "", "comma separated list of permissions to assign (optional)")
 		currentPassword = flag.String("current-password", "", "current super administrator password (required when updating)")
