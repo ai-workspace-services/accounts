@@ -51,8 +51,8 @@ func run(driver, dsn, username, password, email, groups, permissions, currentPas
 	if username == "" {
 		return errors.New("username is required")
 	}
-	if !strings.EqualFold(email, store.RootAdminEmail) {
-		return fmt.Errorf("root email must be %q", store.RootAdminEmail)
+	if email == "" {
+		return errors.New("email is required")
 	}
 	if dsn == "" && !strings.EqualFold(driver, "memory") {
 		return errors.New("dsn is required")
@@ -78,7 +78,7 @@ func run(driver, dsn, username, password, email, groups, permissions, currentPas
 	configuredGroups := parseCSV(groups)
 	configuredPermissions := parseCSV(permissions)
 
-	user, err := s.GetUserByEmail(ctx, store.RootAdminEmail)
+	user, err := s.GetUserByEmail(ctx, email)
 	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
 		return err
 	}
@@ -164,7 +164,7 @@ func run(driver, dsn, username, password, email, groups, permissions, currentPas
 	}
 
 	updated := *user
-	updated.Email = store.RootAdminEmail
+	updated.Email = email
 	if password != "" {
 		hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {

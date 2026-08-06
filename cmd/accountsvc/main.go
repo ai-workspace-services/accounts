@@ -465,17 +465,19 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 	var rootUser *store.User
 	for i := range users {
 		user := users[i]
-		if strings.EqualFold(strings.TrimSpace(user.Email), store.RootAdminEmail) {
+		if store.IsRootRole(user.Role) {
 			candidate := user
 			rootUser = &candidate
 			break
 		}
 	}
 
+	defaultRootEmail := "admin@svc.plus"
+
 	if rootUser == nil {
 		bootstrapPassword := strings.TrimSpace(os.Getenv(rootBootstrapPasswordEnv))
 		if bootstrapPassword == "" {
-			return fmt.Errorf("root account %q missing: set %s to bootstrap it", store.RootAdminEmail, rootBootstrapPasswordEnv)
+			return fmt.Errorf("root account missing: set %s to bootstrap it", rootBootstrapPasswordEnv)
 		}
 
 		hashed, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
@@ -485,7 +487,7 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 
 		root := &store.User{
 			Name:          rootUsername,
-			Email:         store.RootAdminEmail,
+			Email:         defaultRootEmail,
 			PasswordHash:  string(hashed),
 			EmailVerified: true,
 			Role:          store.RoleRoot,
@@ -499,7 +501,7 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 		}
 		rootUser = root
 		if logger != nil {
-			logger.Warn("root account bootstrapped from environment variable", "email", store.RootAdminEmail)
+			logger.Warn("root account bootstrapped from environment variable", "email", defaultRootEmail)
 		}
 	}
 
@@ -511,7 +513,7 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 			}
 			rootUser = &updatedRoot
 			if logger != nil {
-				logger.Info("root profile normalized", "email", store.RootAdminEmail, "userID", rootUser.ID)
+				logger.Info("root profile normalized", "email", rootUser.Email, "userID", rootUser.ID)
 			}
 		}
 	}
@@ -551,10 +553,6 @@ func enforceRootProfile(user *store.User) bool {
 	}
 
 	changed := false
-	if !strings.EqualFold(strings.TrimSpace(user.Email), store.RootAdminEmail) {
-		user.Email = store.RootAdminEmail
-		changed = true
-	}
 	if strings.ToLower(strings.TrimSpace(user.Role)) != store.RoleRoot {
 		user.Role = store.RoleRoot
 		changed = true
