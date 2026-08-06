@@ -3107,7 +3107,7 @@ func (h *handler) isReadOnlyAccount(user *store.User) bool {
 	// Standard Sandbox users are always read-only
 	name := strings.TrimSpace(user.Name)
 	if strings.EqualFold(name, "sandbox") ||
-		strings.EqualFold(email, sandboxUserEmail) {
+		strings.EqualFold(user.Email, sandboxUserEmail) {
 		return true
 	}
 
@@ -3126,7 +3126,7 @@ func (h *handler) isRootAccount(user *store.User) bool {
 	if user == nil {
 		return false
 	}
-	return store.IsRootRole(user.Role) && strings.EqualFold(strings.TrimSpace(user.Email), store.RootAdminEmail)
+	return store.IsRootRole(user.Role)
 }
 
 func parseImageVersionInfo(imageRef string) imageVersionInfo {
