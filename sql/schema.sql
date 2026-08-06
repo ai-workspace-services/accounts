@@ -86,9 +86,9 @@ CREATE TABLE public.users (
   active BOOLEAN NOT NULL DEFAULT TRUE,
   proxy_uuid UUID NOT NULL,
   proxy_uuid_expires_at TIMESTAMPTZ,
-  CONSTRAINT users_root_email_ck CHECK (lower(role) <> 'root' OR lower(email) = 'admin@svc.plus'),
   CONSTRAINT users_proxy_uuid_matches_uuid_ck CHECK (proxy_uuid = uuid)
 );
+
 
 CREATE TABLE public.email_blacklist (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),

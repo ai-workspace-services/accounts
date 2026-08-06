@@ -3089,12 +3089,6 @@ func (h *handler) isReadOnlyAccount(user *store.User) bool {
 	if user == nil {
 		return false
 	}
-	// Hardcoded whitelist for admin@svc.plus to bypass read-only checks if they have admin role
-	email := strings.ToLower(strings.TrimSpace(user.Email))
-	if email == "admin@svc.plus" {
-		return false
-	}
-
 	// Root/SuperAdmin is never read-only (unless we want to enforce it for everyone else)
 	if isRootUser(user) {
 		return false

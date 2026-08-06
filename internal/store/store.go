@@ -752,8 +752,7 @@ func (s *memoryStore) CountSuperAdmins(ctx context.Context) (int, error) {
 }
 
 const (
-	// RootAdminEmail is the canonical email for the single root account.
-	RootAdminEmail = "admin@svc.plus"
+
 )
 
 const (
