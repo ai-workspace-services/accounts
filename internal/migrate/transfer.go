@@ -309,7 +309,7 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		}
 
 		if changed && !opts.DryRun {
-			if err := upsertUser(ctx, tx, &mergedUser); err != nil {
+			if err := upsertUser(ctx, tx, &mergedUser, opts.Merge); err != nil {
 				return nil, err
 			}
 		}
@@ -985,7 +985,7 @@ func buildInQuery(format string, uuids []string) (string, []any) {
 	return fmt.Sprintf(format, strings.Join(placeholders, ", ")), args
 }
 
-func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord) error {
+func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord, isMerge bool) error {
 	groupsJSON, err := json.Marshal(user.Groups)
 	if err != nil {
 		return fmt.Errorf("encode groups for user %s: %w", user.UUID, err)
@@ -1003,15 +1003,15 @@ func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord) error {
 		user.EmailVerifiedAt = &ts
 	}
 
-		if opts.Merge {
+		if isMerge {
 			_, err = tx.ExecContext(ctx, `UPDATE users SET username = username || '-conflict-' || substr(md5(random()::text), 1, 6) WHERE lower(username) = lower($1) AND uuid != $2`, user.Username, user.UUID)
 			if err != nil {
-				return nil, fmt.Errorf("failed to resolve username conflict for user %s: %w", user.UUID, err)
+				return fmt.Errorf("failed to resolve username conflict for user %s: %w", user.UUID, err)
 			}
 			if user.Email != "" {
 				_, err = tx.ExecContext(ctx, `UPDATE users SET email = substr(md5(random()::text), 1, 6) || '-conflict-' || email WHERE lower(email) = lower($1) AND uuid != $2`, user.Email, user.UUID)
 				if err != nil {
-					return nil, fmt.Errorf("failed to resolve email conflict for user %s: %w", user.UUID, err)
+					return fmt.Errorf("failed to resolve email conflict for user %s: %w", user.UUID, err)
 				}
 			}
 		}
