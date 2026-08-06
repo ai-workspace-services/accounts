@@ -286,6 +286,12 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 			}
 		}
 
+		if opts.Merge && strings.EqualFold(user.Role, "root") {
+			report.UsersSkipped++
+			logf("skip user %s: root user is environment specific\n", user.UUID)
+			continue
+		}
+
 		existing, hasExisting := existingUsers[user.UUID]
 
 		if opts.Merge && hasExisting && strategy == MergeStrategyTimestamp && existing.UpdatedAt.After(user.UpdatedAt) {
