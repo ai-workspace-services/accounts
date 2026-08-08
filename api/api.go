@@ -424,6 +424,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/admin/users", h.createCustomUser)
 	authProtected.POST("/admin/users/:userId/role", h.updateUserRole)
 	authProtected.DELETE("/admin/users/:userId/role", h.resetUserRole)
+	authProtected.PUT("/admin/users/:userId/groups", h.updateUserGroups)
 	authProtected.POST("/admin/users/:userId/pause", h.pauseUser)
 	authProtected.POST("/admin/users/:userId/resume", h.resumeUser)
 	authProtected.DELETE("/admin/users/:userId", h.deleteUser)
@@ -3043,6 +3044,54 @@ func (h *handler) updateUserRole(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "role updated", "user": sanitizeUser(user, nil)})
+}
+
+// updateUserGroups replaces an existing user's group/segment tags (e.g.
+// operator-defined labels like "segment:subscribed", "segment:beta") for an
+// already-created account. Creation-time group assignment already existed
+// via createCustomUser; this is the missing edit path for accounts that
+// already exist — the management console could display groups per user but
+// had no way to change them after the fact.
+func (h *handler) updateUserGroups(c *gin.Context) {
+	if _, ok := h.requireAdminPermission(c, permissionAdminUsersRoleWrite); !ok {
+		return
+	}
+
+	userId := c.Param("userId")
+	if userId == "" {
+		respondError(c, http.StatusBadRequest, "userId_required", "userId is required")
+		return
+	}
+
+	var req struct {
+		Groups []string `json:"groups"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
+		return
+	}
+
+	user, err := h.store.GetUserByID(c.Request.Context(), userId)
+	if err != nil {
+		if errors.Is(err, store.ErrUserNotFound) {
+			respondError(c, http.StatusNotFound, "user_not_found", "user not found")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "update_failed", "failed to fetch user")
+		return
+	}
+	if h.isRootAccount(user) {
+		respondError(c, http.StatusForbidden, "root_protected", "root account groups cannot be modified")
+		return
+	}
+
+	user.Groups = normalizeGroups(req.Groups)
+	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
+		respondError(c, http.StatusInternalServerError, "update_failed", "failed to update user")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "groups updated", "user": sanitizeUser(user, nil)})
 }
 
 func (h *handler) resetUserRole(c *gin.Context) {
