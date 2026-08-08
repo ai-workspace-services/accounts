@@ -1,0 +1,57 @@
+# 声明式 Stripe 目录 —— 唯一事实源。
+#
+# 这份文件描述"应该有哪些 Product / Price / Webhook"，不含任何密钥。
+# 由 scripts/stripe-sync-catalog.sh 读取，对 Stripe API 做幂等同步:
+# 已存在的对象跳过或更新非价格字段，缺失的对象创建。换 Stripe 账号
+# (例如切到 Stripe US)只需要换 STRIPE_SECRET_KEY 重跑这个脚本，
+# 不需要在 Dashboard 里重新点一遍。
+#
+# 与 docs/roadmap/feature-subscription-billing-operations/01-plan-catalog.md
+# 的四档设计一一对应；改价格/加档位改这里，不要去 Dashboard 手改。
+
+products:
+  - key: pro                        # 稳定标识，跨账号不变；用作 Stripe Product 的自定义 id
+    name: "Pro"
+    description: "订阅套餐：月付 20GB / 年付每月 20GB，超出按量计费"
+    prices:
+      - key: pro-monthly             # 稳定标识，写入 billing_plans.stripe_price_id 前的查找键(lookup_key)
+        plan_id: PRO-MONTHLY         # 对应 billing_plans.plan_id
+        unit_amount: 2000            # 最小货币单位(分)；¥20.00
+        currency: cny
+        recurring_interval: month
+      - key: pro-yearly
+        plan_id: PRO-YEARLY
+        unit_amount: 20000           # ¥200.00
+        currency: cny
+        recurring_interval: year
+
+  - key: payg-topup                  # PAYG 预充值，一次性支付，非订阅
+    name: "余额充值"
+    description: "Pay-As-You-Go 预充值，按面额一次性支付，充值后计入账户余额"
+    prices:
+      # 面额固定套餐（见 01-plan-catalog.md #充值入口）；后续要支持任意
+      # 金额需换用 Stripe Checkout 的 custom amount，这里先覆盖常见面额。
+      - key: payg-topup-50
+        plan_id: PAYG-TOPUP-50
+        unit_amount: 5000            # ¥50.00
+        currency: cny
+      - key: payg-topup-100
+        plan_id: PAYG-TOPUP-100
+        unit_amount: 10000           # ¥100.00
+        currency: cny
+      - key: payg-topup-500
+        plan_id: PAYG-TOPUP-500
+        unit_amount: 50000           # ¥500.00
+        currency: cny
+
+# webhook endpoint 的 url 按环境模板化；脚本用 --env/--domain-base 参数渲染。
+# secret 只在创建时由 Stripe 返回一次，脚本会原样打印，不会写文件或落盘。
+webhook:
+  path: /api/billing/stripe/webhook
+  events:
+    - checkout.session.completed
+    - customer.subscription.created
+    - customer.subscription.updated
+    - customer.subscription.deleted
+    - invoice.paid
+    - invoice.payment_failed
