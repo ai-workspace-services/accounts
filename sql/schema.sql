@@ -281,6 +281,15 @@ CREATE TABLE public.nodes (
   origin_node TEXT NOT NULL DEFAULT 'local'
 );
 
+-- Audit log trail (prevents full-table scans & limits migration log bloat)
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+  uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  action TEXT NOT NULL DEFAULT '',
+  actor_uuid UUID,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- =========================================
 -- Indexes
 -- =========================================
@@ -294,6 +303,8 @@ CREATE INDEX idx_admin_settings_version ON public.admin_settings (version);
 CREATE INDEX idx_subscriptions_user_uuid ON public.subscriptions (user_uuid);
 CREATE INDEX idx_subscriptions_status ON public.subscriptions (status);
 CREATE INDEX idx_nodes_available ON public.nodes (available);
+CREATE INDEX idx_audit_logs_created_at ON public.audit_logs (created_at DESC);
+CREATE INDEX idx_audit_logs_action_created_at ON public.audit_logs (action, created_at DESC);
 
 -- =========================================
 -- Triggers
