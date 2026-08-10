@@ -1,8 +1,8 @@
 # UAT 共享计费 Schema 初始化补全
 
-> **Status**: 🟡 PR 已创建，等待评审、合并和 UAT 部署
+> **Status**: 🟡 已部署 UAT；结构验收通过，真实流量验收待环境解阻
 > **Date**: 2026-08-01
-> **Related PRs**: [accounts #46](https://github.com/ai-workspace-services/accounts/pull/46) [OPEN]
+> **Related PRs**: [accounts #46](https://github.com/ai-workspace-services/accounts/pull/46) [MERGED] · [portal #131](https://github.com/ai-workspace-services/portal/pull/131) [MERGED] · [gitops #130](https://github.com/ai-workspace-infra/gitops/pull/130) [MERGED]
 
 ## 目标与范围
 
@@ -82,7 +82,36 @@ WHERE schemaname = 'public'
 随后以真实 Xray 样本验证 minute bucket / ledger 写入以及 Accounts usage
 summary、Portal 配额卡读取；凭据认证事件与 XHTTP/TCP 双服务配置另行验收。
 
+## 2026-08-01 UAT 部署结果
+
+GitOps #130 已合并，Doco-CD 已成功收敛到以下不可变镜像：
+
+- Accounts：`daily-build-2026.08.01-r2`（共享 schema bootstrap）。
+- Console：`daily-build-2026.08.01-r2`（`/panel/account` 配额与账号面板）。
+- Billing：`daily-build-2026.08.01-r1`（既有 UUID 多 inbound 聚合修复）。
+
+结构验收已通过：八张 control-plane 表和 `period_start` / `period_end` 均存在；
+`console-uat` 和 `accounts-uat` 的 ping 均为 HTTP 200，未登录 usage summary
+正确返回 HTTP 401。
+
+数据面验收尚未通过，当前所有表均为 0 行（checkpoint、minute bucket、ledger、
+node health、source sync）。这不能证明聚合和扣费正确，也不能证明 Portal 在真实
+账号会话下可展示配额。
+
+### 下一次验收的前置条件
+
+1. UAT/Vault 所有者修复 `account_user` 对共享 PostgreSQL 的认证失败；Billing
+   restart 后不应再出现 SQLSTATE `28P01`。
+2. 将 agent-proxy UAT 配置收敛到已约定的单 source / 单 inbound，或明确登记
+   当前 XHTTP + TCP 双服务为多 inbound 测试拓扑；同时修复 Exporter 的 access log
+   路径/用户指标来源。
+3. 使用专门的 UAT 测试账号和已知 UUID 产生可撤销的 VLESS 流量，然后依次确认：
+   checkpoint、minute bucket、ledger、source sync 都有记录；认证后的
+   `/api/account/usage/summary` 返回 period/used/quota 字段；`/panel/account`
+   显示对应月度配额卡。不得使用 `svc.plus` 生产账号或流量进行此验证。
+
 ## 阻塞项
 
 `account_user` 密码认证失败必须由 UAT 环境/Vault 所有者调查和轮换（如需要）。
-本分支不能也不会读取、修改或回显该凭据。
+本分支不能也不会读取、修改或回显该凭据。其次，当前未产生可验证的 UAT 流量，
+需要先建立专用测试样本，不能将生产 Grafana 数据回灌到计费库。

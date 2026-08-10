@@ -68,19 +68,15 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		}
 		email := strings.ToLower(strings.TrimSpace(u.Email))
 
-		// Sandbox is a special demo identity with a rotating proxy UUID.
-		// Always include it (and rotate on read if needed), so every node/region
-		// can sync a consistent sandbox client for the Guest experience.
+		// Sandbox is a special demo identity with expiring access metadata.
+		// Its client ID remains the canonical account UUID across every node.
 		// It is exempt from the arrears suspension filter below for the same
 		// reason: the Guest experience must not depend on billing state.
 		if email == sandboxUserEmail {
 			sandboxUser := u
 			_ = h.ensureSandboxProxyUUID(c.Request.Context(), &sandboxUser)
 
-			id := strings.TrimSpace(sandboxUser.ProxyUUID)
-			if id == "" {
-				id = strings.TrimSpace(sandboxUser.ID)
-			}
+			id := strings.TrimSpace(sandboxUser.ID)
 			if id != "" {
 				clients = append(clients, xrayconfig.Client{
 					ID:    id,
@@ -106,10 +102,7 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 			continue
 		}
 
-		id := strings.TrimSpace(u.ProxyUUID)
-		if id == "" {
-			id = strings.TrimSpace(u.ID)
-		}
+		id := strings.TrimSpace(u.ID)
 		if id == "" {
 			continue
 		}

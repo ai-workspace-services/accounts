@@ -286,6 +286,12 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 			}
 		}
 
+		if opts.Merge && strings.EqualFold(user.Role, "root") {
+			report.UsersSkipped++
+			logf("skip user %s: root user is environment specific\n", user.UUID)
+			continue
+		}
+
 		existing, hasExisting := existingUsers[user.UUID]
 
 		if opts.Merge && hasExisting && strategy == MergeStrategyTimestamp && existing.UpdatedAt.After(user.UpdatedAt) {
@@ -309,7 +315,7 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		}
 
 		if changed && !opts.DryRun {
-			if err := upsertUser(ctx, tx, &mergedUser); err != nil {
+			if err := upsertUser(ctx, tx, &mergedUser, opts.Merge); err != nil {
 				return nil, err
 			}
 		}
@@ -985,7 +991,7 @@ func buildInQuery(format string, uuids []string) (string, []any) {
 	return fmt.Sprintf(format, strings.Join(placeholders, ", ")), args
 }
 
-func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord) error {
+func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord, isMerge bool) error {
 	groupsJSON, err := json.Marshal(user.Groups)
 	if err != nil {
 		return fmt.Errorf("encode groups for user %s: %w", user.UUID, err)
@@ -1003,15 +1009,29 @@ func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord) error {
 		user.EmailVerifiedAt = &ts
 	}
 
-	_, err = tx.ExecContext(ctx, `
+		if isMerge {
+			_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE lower(username) = lower($1) AND uuid != $2`, user.Username, user.UUID)
+			if err != nil {
+				return fmt.Errorf("failed to delete conflicting username for user %s: %w", user.UUID, err)
+			}
+			if user.Email != "" {
+				_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE lower(email) = lower($1) AND uuid != $2`, user.Email, user.UUID)
+				if err != nil {
+					return fmt.Errorf("failed to delete conflicting email for user %s: %w", user.UUID, err)
+				}
+			}
+		}
+
+		_, err = tx.ExecContext(ctx, `
 INSERT INTO users (
         uuid, username, password, email, email_verified_at,
         level, role, groups, permissions, created_at, updated_at,
-        mfa_totp_secret, mfa_enabled, mfa_secret_issued_at, mfa_confirmed_at
+        mfa_totp_secret, mfa_enabled, mfa_secret_issued_at, mfa_confirmed_at,
+        proxy_uuid
 ) VALUES (
         $1, $2, $3, $4, $5,
         $6, $7, $8::jsonb, $9::jsonb, $10, $11,
-        $12, $13, $14, $15
+        $12, $13, $14, $15, $1
 )
 ON CONFLICT (uuid) DO UPDATE SET
         username = EXCLUDED.username,
@@ -1027,7 +1047,8 @@ ON CONFLICT (uuid) DO UPDATE SET
         mfa_totp_secret = EXCLUDED.mfa_totp_secret,
         mfa_enabled = EXCLUDED.mfa_enabled,
         mfa_secret_issued_at = EXCLUDED.mfa_secret_issued_at,
-        mfa_confirmed_at = EXCLUDED.mfa_confirmed_at
+        mfa_confirmed_at = EXCLUDED.mfa_confirmed_at,
+        proxy_uuid = EXCLUDED.proxy_uuid
 `,
 		user.UUID,
 		user.Username,

@@ -57,22 +57,16 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		return
 	}
 
-	proxyUUID := strings.TrimSpace(user.ProxyUUID)
-	if proxyUUID == "" {
-		proxyUUID = user.ID
-	}
+	proxyUUID := strings.TrimSpace(user.ID)
 
 	if user.ProxyUUIDExpiresAt != nil && time.Now().UTC().After(*user.ProxyUUIDExpiresAt) {
-		// Sandbox rotates hourly; never block it on expiry.
+		// Sandbox renews access metadata hourly; never block it on expiry.
 		if strings.EqualFold(strings.TrimSpace(user.Email), sandboxUserEmail) {
 			if err := h.ensureSandboxProxyUUID(c.Request.Context(), user); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "sandbox_uuid_rotation_failed"})
 				return
 			}
-			proxyUUID = strings.TrimSpace(user.ProxyUUID)
-			if proxyUUID == "" {
-				proxyUUID = user.ID
-			}
+			proxyUUID = strings.TrimSpace(user.ID)
 		} else {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":   "proxy_uuid_expired",

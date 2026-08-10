@@ -50,9 +50,9 @@ func (h *handler) adminAssume(c *gin.Context) {
 		return
 	}
 
-	// Rotate sandbox UUID if expired (hourly forced rotation).
+	// Renew sandbox access metadata if expired; the account UUID remains stable.
 	if err := h.ensureSandboxProxyUUID(c.Request.Context(), sandboxUser); err != nil {
-		respondError(c, http.StatusInternalServerError, "sandbox_uuid_rotation_failed", "failed to rotate sandbox uuid")
+		respondError(c, http.StatusInternalServerError, "sandbox_uuid_rotation_failed", "failed to renew sandbox proxy access")
 		return
 	}
 

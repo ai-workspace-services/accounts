@@ -95,10 +95,6 @@ func (h *handler) requireAdminPermission(c *gin.Context, permission string) (*st
 	}
 
 	if store.IsRootRole(user.Role) {
-		if !strings.EqualFold(strings.TrimSpace(user.Email), store.RootAdminEmail) {
-			respondError(c, http.StatusForbidden, "root_email_enforced", "root role is restricted to admin@svc.plus")
-			return nil, false
-		}
 		return user, true
 	}
 	if strings.EqualFold(strings.TrimSpace(user.Role), store.RoleAdmin) {

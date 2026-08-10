@@ -84,10 +84,11 @@ CREATE TABLE public.users (
   email_verified_at TIMESTAMPTZ,
   email_verified BOOLEAN GENERATED ALWAYS AS ((email_verified_at IS NOT NULL)) STORED,
   active BOOLEAN NOT NULL DEFAULT TRUE,
-  proxy_uuid UUID NOT NULL DEFAULT gen_random_uuid(),
+  proxy_uuid UUID NOT NULL,
   proxy_uuid_expires_at TIMESTAMPTZ,
-  CONSTRAINT users_root_email_ck CHECK (lower(role) <> 'root' OR lower(email) = 'admin@svc.plus')
+  CONSTRAINT users_proxy_uuid_matches_uuid_ck CHECK (proxy_uuid = uuid)
 );
+
 
 CREATE TABLE public.email_blacklist (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -281,6 +282,15 @@ CREATE TABLE public.nodes (
   origin_node TEXT NOT NULL DEFAULT 'local'
 );
 
+-- Audit log trail (prevents full-table scans & limits migration log bloat)
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+  uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  action TEXT NOT NULL DEFAULT '',
+  actor_uuid UUID,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- =========================================
 -- Indexes
 -- =========================================
@@ -294,6 +304,8 @@ CREATE INDEX idx_admin_settings_version ON public.admin_settings (version);
 CREATE INDEX idx_subscriptions_user_uuid ON public.subscriptions (user_uuid);
 CREATE INDEX idx_subscriptions_status ON public.subscriptions (status);
 CREATE INDEX idx_nodes_available ON public.nodes (available);
+CREATE INDEX idx_audit_logs_created_at ON public.audit_logs (created_at DESC);
+CREATE INDEX idx_audit_logs_action_created_at ON public.audit_logs (action, created_at DESC);
 
 -- =========================================
 -- Triggers

@@ -418,12 +418,21 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.DELETE("/admin/billing/plans/:planId", h.adminDeleteBillingPlan)
 	// Manual dunning recovery (billing P1.5): clear arrears + lift suspension.
 	authProtected.POST("/admin/billing/accounts/:accountUUID/clear-arrears", h.adminClearArrears)
+	// Operations console (ops P0). Every write here records an audit entry
+	// with a mandatory reason; see api/audit.go.
+	authProtected.GET("/admin/billing/accounts/:accountUUID", h.adminGetBillingAccount)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/plan", h.adminAssignPlan)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/quota", h.adminAdjustQuota)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/balance", h.adminAdjustBalance)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/grant-trial", h.adminGrantTrial)
+	authProtected.GET("/admin/audit", h.adminListAuditLogs)
 
 	// Backward-compatible auth-scoped admin routes consumed by the dashboard BFF.
 	authProtected.GET("/admin/users/metrics", h.adminUsersMetrics)
 	authProtected.POST("/admin/users", h.createCustomUser)
 	authProtected.POST("/admin/users/:userId/role", h.updateUserRole)
 	authProtected.DELETE("/admin/users/:userId/role", h.resetUserRole)
+	authProtected.PUT("/admin/users/:userId/groups", h.updateUserGroups)
 	authProtected.POST("/admin/users/:userId/pause", h.pauseUser)
 	authProtected.POST("/admin/users/:userId/resume", h.resumeUser)
 	authProtected.DELETE("/admin/users/:userId", h.deleteUser)
@@ -1516,9 +1525,9 @@ func (h *handler) session(c *gin.Context) {
 		return
 	}
 
-	// Sandbox UUID rotates hourly; refresh on session reads so the UI always sees a valid UUID.
+	// Sandbox access metadata renews hourly; keep the UUID stable for Portal/Xray identity.
 	if err := h.ensureSandboxProxyUUID(c.Request.Context(), user); err != nil {
-		slog.Warn("failed to rotate sandbox proxy uuid", "err", err, "userID", user.ID)
+		slog.Warn("failed to renew sandbox proxy access", "err", err, "userID", user.ID)
 	}
 
 	sanitized, err := h.buildSessionUser(c.Request.Context(), h.resolveTenantHost(c), user)
@@ -2686,10 +2695,7 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 
 func sanitizeUser(user *store.User, challenge *mfaChallenge) gin.H {
 	identifier := strings.TrimSpace(user.ID)
-	proxyUUID := strings.TrimSpace(user.ProxyUUID)
-	if proxyUUID == "" {
-		proxyUUID = identifier
-	}
+	proxyUUID := identifier
 	groups := user.Groups
 	if len(groups) == 0 {
 		groups = []string{}
@@ -3048,6 +3054,54 @@ func (h *handler) updateUserRole(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "role updated", "user": sanitizeUser(user, nil)})
 }
 
+// updateUserGroups replaces an existing user's group/segment tags (e.g.
+// operator-defined labels like "segment:subscribed", "segment:beta") for an
+// already-created account. Creation-time group assignment already existed
+// via createCustomUser; this is the missing edit path for accounts that
+// already exist — the management console could display groups per user but
+// had no way to change them after the fact.
+func (h *handler) updateUserGroups(c *gin.Context) {
+	if _, ok := h.requireAdminPermission(c, permissionAdminUsersRoleWrite); !ok {
+		return
+	}
+
+	userId := c.Param("userId")
+	if userId == "" {
+		respondError(c, http.StatusBadRequest, "userId_required", "userId is required")
+		return
+	}
+
+	var req struct {
+		Groups []string `json:"groups"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
+		return
+	}
+
+	user, err := h.store.GetUserByID(c.Request.Context(), userId)
+	if err != nil {
+		if errors.Is(err, store.ErrUserNotFound) {
+			respondError(c, http.StatusNotFound, "user_not_found", "user not found")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "update_failed", "failed to fetch user")
+		return
+	}
+	if h.isRootAccount(user) {
+		respondError(c, http.StatusForbidden, "root_protected", "root account groups cannot be modified")
+		return
+	}
+
+	user.Groups = normalizeGroups(req.Groups)
+	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
+		respondError(c, http.StatusInternalServerError, "update_failed", "failed to update user")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "groups updated", "user": sanitizeUser(user, nil)})
+}
+
 func (h *handler) resetUserRole(c *gin.Context) {
 	if _, ok := h.requireAdminPermission(c, permissionAdminUsersRoleWrite); !ok {
 		return
@@ -3092,12 +3146,6 @@ func (h *handler) isReadOnlyAccount(user *store.User) bool {
 	if user == nil {
 		return false
 	}
-	// Hardcoded whitelist for admin@svc.plus to bypass read-only checks if they have admin role
-	email := strings.ToLower(strings.TrimSpace(user.Email))
-	if email == "admin@svc.plus" {
-		return false
-	}
-
 	// Root/SuperAdmin is never read-only (unless we want to enforce it for everyone else)
 	if isRootUser(user) {
 		return false
@@ -3116,7 +3164,7 @@ func (h *handler) isReadOnlyAccount(user *store.User) bool {
 	// Standard Sandbox users are always read-only
 	name := strings.TrimSpace(user.Name)
 	if strings.EqualFold(name, "sandbox") ||
-		strings.EqualFold(email, sandboxUserEmail) {
+		strings.EqualFold(user.Email, sandboxUserEmail) {
 		return true
 	}
 
@@ -3135,7 +3183,7 @@ func (h *handler) isRootAccount(user *store.User) bool {
 	if user == nil {
 		return false
 	}
-	return store.IsRootRole(user.Role) && strings.EqualFold(strings.TrimSpace(user.Email), store.RootAdminEmail)
+	return store.IsRootRole(user.Role)
 }
 
 func parseImageVersionInfo(imageRef string) imageVersionInfo {

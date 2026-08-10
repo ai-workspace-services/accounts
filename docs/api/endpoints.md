@@ -75,7 +75,7 @@
 | `POST` | `/api/auth/admin/users/:userId/pause` | `api/admin_users.go` | admin session | path:`userId` | `200 {"message":"user_paused"}` | session store, `store.Store` |
 | `POST` | `/api/auth/admin/users/:userId/resume` | `api/admin_users.go` | admin session | path:`userId` | `200 {"message":"user_resumed"}` | session store, `store.Store` |
 | `DELETE` | `/api/auth/admin/users/:userId` | `api/admin_users.go` | admin session | path:`userId` | `200 {"message":"user_deleted"}` | session store, `store.Store` |
-| `POST` | `/api/auth/admin/users/:userId/renew-uuid` | `api/admin_users.go` | admin session | path:`userId`; body:`expires_in_days,expires_at` | `200 {"message","proxy_uuid","expires_at"}` | session store, `store.Store` |
+| `POST` | `/api/auth/admin/users/:userId/renew-uuid` | `api/admin_users.go` | admin session | path:`userId`; body:`expires_in_days,expires_at` | `200 {"message","proxy_uuid","expires_at"}`; UUID remains equal to `users.uuid` | session store, `store.Store` |
 | `POST` | `/api/auth/admin/tenants/bootstrap` | `api/xworkmate.go` | root session / Root session | body:`name,adminUserId,adminEmail` | `201 {"tenant":{"id","name","edition","domain"},"member":{"id","email","role"}}` | session store, tenant/store models |
 | `GET` | `/api/auth/admin/blacklist` | `api/admin_users.go` | admin session | 无 / None | `200 {"blacklist":[...]}` | session store, `store.Store` |
 | `POST` | `/api/auth/admin/blacklist` | `api/admin_users.go` | admin session | body blacklist entry | `200 {"message":...}` | session store, `store.Store` |
@@ -106,7 +106,7 @@
 | `POST` | `/api/admin/users/:userId/pause` | `api/admin_users.go` | admin session | path:`userId` | `200 {"message":"user_paused"}` | session store, `store.Store` |
 | `POST` | `/api/admin/users/:userId/resume` | `api/admin_users.go` | admin session | path:`userId` | `200 {"message":"user_resumed"}` | session store, `store.Store` |
 | `DELETE` | `/api/admin/users/:userId` | `api/admin_users.go` | admin session | path:`userId` | `200 {"message":"user_deleted"}` | session store, `store.Store` |
-| `POST` | `/api/admin/users/:userId/renew-uuid` | `api/admin_users.go` | admin session | path:`userId`; body:`expires_in_days,expires_at` | `200 {"message","proxy_uuid","expires_at"}` | session store, `store.Store` |
+| `POST` | `/api/admin/users/:userId/renew-uuid` | `api/admin_users.go` | admin session | path:`userId`; body:`expires_in_days,expires_at` | `200 {"message","proxy_uuid","expires_at"}`; UUID remains equal to `users.uuid` | session store, `store.Store` |
 | `GET` | `/api/admin/blacklist` | `api/admin_users.go` | admin session | 无 / None | `200 {"blacklist":[...]}` | session store, `store.Store` |
 | `POST` | `/api/admin/blacklist` | `api/admin_users.go` | admin session | body blacklist entry | `200 {"message":...}` | session store, `store.Store` |
 | `DELETE` | `/api/admin/blacklist/:email` | `api/admin_users.go` | admin session | path:`email` | `200 {"message":...}` | session store, `store.Store` |

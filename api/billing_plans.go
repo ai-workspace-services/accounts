@@ -26,6 +26,9 @@ type billingPlanPayload struct {
 	TrialDays          int                `json:"trialDays"`
 	Active             bool               `json:"active"`
 	SortOrder          int                `json:"sortOrder"`
+	// Reason is write-only: operators supply it when changing the catalog and
+	// it is stored in the audit trail, never echoed back in listings.
+	Reason string `json:"reason,omitempty"`
 }
 
 func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
@@ -75,7 +78,8 @@ func (h *handler) adminListBillingPlans(c *gin.Context) {
 }
 
 func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite)
+	if !ok {
 		return
 	}
 	planID := strings.TrimSpace(c.Param("planId"))
@@ -121,15 +125,46 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 	if plan.PackageName == "" {
 		plan.PackageName = "default"
 	}
+	// The public pricing page reads this catalog live, so an upsert here is a
+	// price/packaging publish. Capture what it replaced before overwriting.
+	var before map[string]any
+	if existing, err := h.store.GetBillingPlan(c.Request.Context(), planID); err == nil && existing != nil {
+		before = map[string]any{
+			"display_name":         existing.DisplayName,
+			"stripe_price_id":      existing.StripePriceID,
+			"included_quota_bytes": existing.IncludedQuotaBytes,
+			"package_name":         existing.PackageName,
+			"active":               existing.Active,
+			"sort_order":           existing.SortOrder,
+		}
+	}
+
 	if err := h.store.UpsertBillingPlan(c.Request.Context(), plan); err != nil {
 		respondError(c, http.StatusInternalServerError, "billing_plan_save_failed", "failed to save billing plan")
 		return
 	}
+
+	after := map[string]any{
+		"display_name":         plan.DisplayName,
+		"stripe_price_id":      plan.StripePriceID,
+		"included_quota_bytes": plan.IncludedQuotaBytes,
+		"package_name":         plan.PackageName,
+		"active":               plan.Active,
+		"sort_order":           plan.SortOrder,
+	}
+	if err := h.recordAudit(c.Request.Context(), actor.ID, store.AuditActionPlanUpsert,
+		auditDetails(planID, strings.TrimSpace(req.Reason), before, after)); err != nil {
+		respondError(c, http.StatusInternalServerError, "audit_write_failed",
+			"the plan was saved but the audit entry could not be written")
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"plan": billingPlanToPayload(plan)})
 }
 
 func (h *handler) adminDeleteBillingPlan(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite)
+	if !ok {
 		return
 	}
 	planID := strings.TrimSpace(c.Param("planId"))
@@ -137,6 +172,21 @@ func (h *handler) adminDeleteBillingPlan(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "plan_id_required", "plan id is required")
 		return
 	}
+
+	// Snapshot before deleting: existing subscriptions still reference this
+	// plan for renewal and reconciliation, so what it contained has to survive
+	// in the audit trail even though the row does not.
+	var before map[string]any
+	if existing, err := h.store.GetBillingPlan(c.Request.Context(), planID); err == nil && existing != nil {
+		before = map[string]any{
+			"display_name":         existing.DisplayName,
+			"stripe_price_id":      existing.StripePriceID,
+			"included_quota_bytes": existing.IncludedQuotaBytes,
+			"package_name":         existing.PackageName,
+			"active":               existing.Active,
+		}
+	}
+
 	if err := h.store.DeleteBillingPlan(c.Request.Context(), planID); err != nil {
 		if errors.Is(err, store.ErrBillingPlanNotFound) {
 			respondError(c, http.StatusNotFound, "billing_plan_not_found", "billing plan not found")
@@ -145,5 +195,13 @@ func (h *handler) adminDeleteBillingPlan(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "billing_plan_delete_failed", "failed to delete billing plan")
 		return
 	}
+
+	if err := h.recordAudit(c.Request.Context(), actor.ID, store.AuditActionPlanDelete,
+		auditDetails(planID, strings.TrimSpace(c.Query("reason")), before, nil)); err != nil {
+		respondError(c, http.StatusInternalServerError, "audit_write_failed",
+			"the plan was deleted but the audit entry could not be written")
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
 }

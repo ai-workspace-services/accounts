@@ -3,7 +3,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
-SUPERADMIN_EMAIL="admin@svc.plus"
+SUPERADMIN_EMAIL="${SUPERADMIN_EMAIL:-admin@svc.plus}"
 SUPERADMIN_USERNAME="${SUPERADMIN_USERNAME:-Admin}"
 
 if [ -z "${SUPERADMIN_PASSWORD:-}" ] || [ "${SUPERADMIN_PASSWORD}" = "ChangeMe" ]; then
@@ -29,7 +29,7 @@ if psql "${DB_URL}" -Atc "SELECT 1 FROM users WHERE username='${SUPERADMIN_USERN
     --current-password "${SUPERADMIN_CURRENT_PASSWORD}"
   echo "✅ 登录信息（仅本次输出）"
   echo "   网址：https://console.svc.plus/login"
-  echo "   邮箱：admin@svc.plus"
+  echo "   邮箱：${SUPERADMIN_EMAIL}"
   echo "   密码：${SUPERADMIN_PASSWORD}"
   exit 0
 fi
@@ -43,5 +43,5 @@ go run ./cmd/createadmin/main.go \
 
 echo "✅ 登录信息（仅本次输出）"
 echo "   网址：https://console.svc.plus/login"
-echo "   邮箱：admin@svc.plus"
+echo "   邮箱：${SUPERADMIN_EMAIL}"
 echo "   密码：${SUPERADMIN_PASSWORD}"

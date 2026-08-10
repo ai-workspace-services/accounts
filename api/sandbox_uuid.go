@@ -13,7 +13,8 @@ const (
 	sandboxUUIDRotationWindow = time.Hour
 )
 
-// ensureSandboxProxyUUID enforces hourly rotation of the sandbox user's ProxyUUID.
+// ensureSandboxProxyUUID renews sandbox access metadata without rotating the
+// canonical account UUID used by Portal and Xray.
 // It is intentionally strict: only the hard-coded sandbox email is eligible.
 func (h *handler) ensureSandboxProxyUUID(ctx context.Context, user *store.User) error {
 	if h == nil || user == nil {
@@ -25,16 +26,16 @@ func (h *handler) ensureSandboxProxyUUID(ctx context.Context, user *store.User) 
 	}
 
 	now := time.Now().UTC()
-	needsRotation := strings.TrimSpace(user.ProxyUUID) == "" ||
+	needsRenewal := strings.TrimSpace(user.ProxyUUID) != strings.TrimSpace(user.ID) ||
 		user.ProxyUUIDExpiresAt == nil ||
 		!now.Before(*user.ProxyUUIDExpiresAt)
 
-	if !needsRotation {
+	if !needsRenewal {
 		return nil
 	}
 
 	exp := now.Add(sandboxUUIDRotationWindow)
-	user.ProxyUUID = generateRandomUUID()
+	user.ProxyUUID = strings.TrimSpace(user.ID)
 	user.ProxyUUIDExpiresAt = &exp
 	return h.store.UpdateUser(ctx, user)
 }

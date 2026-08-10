@@ -24,7 +24,7 @@ func main() {
 		dsn             = flag.String("dsn", "", "database connection string")
 		username        = flag.String("username", "", "root username")
 		password        = flag.String("password", "", "root password")
-		email           = flag.String("email", store.RootAdminEmail, "root email (must be admin@svc.plus)")
+		email           = flag.String("email", "", "root email")
 		groups          = flag.String("groups", "", "comma separated list of groups to assign (optional)")
 		permissions     = flag.String("permissions", "", "comma separated list of permissions to assign (optional)")
 		currentPassword = flag.String("current-password", "", "current super administrator password (required when updating)")
@@ -51,8 +51,8 @@ func run(driver, dsn, username, password, email, groups, permissions, currentPas
 	if username == "" {
 		return errors.New("username is required")
 	}
-	if !strings.EqualFold(email, store.RootAdminEmail) {
-		return fmt.Errorf("root email must be %q", store.RootAdminEmail)
+	if email == "" {
+		return errors.New("email is required")
 	}
 	if dsn == "" && !strings.EqualFold(driver, "memory") {
 		return errors.New("dsn is required")
@@ -78,7 +78,7 @@ func run(driver, dsn, username, password, email, groups, permissions, currentPas
 	configuredGroups := parseCSV(groups)
 	configuredPermissions := parseCSV(permissions)
 
-	user, err := s.GetUserByEmail(ctx, store.RootAdminEmail)
+	user, err := s.GetUserByEmail(ctx, email)
 	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
 		return err
 	}
@@ -164,7 +164,7 @@ func run(driver, dsn, username, password, email, groups, permissions, currentPas
 	}
 
 	updated := *user
-	updated.Email = store.RootAdminEmail
+	updated.Email = email
 	if password != "" {
 		hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {

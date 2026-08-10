@@ -140,68 +140,111 @@ type TrafficStatCheckpoint struct {
 	UpdatedAt         time.Time
 }
 
+// 下面四个结构体是直接被 /api/account/* 序列化出去的响应体, 不只是内部模型。
+// 没有 tag 时 encoding/json 用 Go 字段名原样输出(RatedBytes、CurrentBalance
+// ...), 而这些接口的其余字段都由 gin.H 显式写成小驼峰, 前端也照小驼峰读。
+// 结果是 quotaState / billingProfile / ledger / buckets 里每个字段前端都读成
+// undefined —— ledger 为空时无人察觉, 一旦真有账目, Portal 就在
+// entry.ratedBytes.toLocaleString() 上整页崩掉。
 type TrafficMinuteBucket struct {
-	BucketStart    time.Time
-	NodeID         string
-	AccountUUID    string
-	Region         string
-	LineCode       string
-	UplinkBytes    int64
-	DownlinkBytes  int64
-	TotalBytes     int64
-	Multiplier     float64
-	RatingStatus   string
-	SourceRevision string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	BucketStart    time.Time `json:"bucketStart"`
+	NodeID         string    `json:"nodeId"`
+	AccountUUID    string    `json:"accountUuid"`
+	Region         string    `json:"region"`
+	LineCode       string    `json:"lineCode"`
+	UplinkBytes    int64     `json:"uplinkBytes"`
+	DownlinkBytes  int64     `json:"downlinkBytes"`
+	TotalBytes     int64     `json:"totalBytes"`
+	Multiplier     float64   `json:"multiplier"`
+	RatingStatus   string    `json:"ratingStatus"`
+	SourceRevision string    `json:"sourceRevision"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 type BillingLedgerEntry struct {
-	ID                 string
-	AccountUUID        string
-	BucketStart        time.Time
-	BucketEnd          time.Time
-	EntryType          string
-	RatedBytes         int64
-	AmountDelta        float64
-	BalanceAfter       float64
-	PricingRuleVersion string
-	CreatedAt          time.Time
+	ID                 string    `json:"id"`
+	AccountUUID        string    `json:"accountUuid"`
+	BucketStart        time.Time `json:"bucketStart"`
+	BucketEnd          time.Time `json:"bucketEnd"`
+	EntryType          string    `json:"entryType"`
+	RatedBytes         int64     `json:"ratedBytes"`
+	AmountDelta        float64   `json:"amountDelta"`
+	BalanceAfter       float64   `json:"balanceAfter"`
+	PricingRuleVersion string    `json:"pricingRuleVersion"`
+	CreatedAt          time.Time `json:"createdAt"`
 }
 
+// AuditLog is one operator-initiated change. Reads are never audited — only
+// writes — so the table stays proportional to operator activity rather than
+// to traffic.
+type AuditLog struct {
+	UUID      string         `json:"uuid"`
+	Action    string         `json:"action"`
+	ActorUUID string         `json:"actorUuid"`
+	Details   map[string]any `json:"details"`
+	CreatedAt time.Time      `json:"createdAt"`
+}
+
+// AuditLogFilter narrows an audit query. ActionPrefix matches on the
+// `<domain>.<object>.<verb>` convention, so "billing." returns every billing
+// change and "billing.balance." only the balance ones.
+type AuditLogFilter struct {
+	ActionPrefix string
+	ActorUUID    string
+	TargetUUID   string
+	Limit        int
+	Offset       int
+}
+
+// Audit action names. Kept as constants so a typo cannot silently create a
+// second, unqueryable action stream.
+const (
+	AuditActionPlanUpsert         = "billing.plan.upsert"
+	AuditActionPlanDelete         = "billing.plan.delete"
+	AuditActionQuotaAdjust        = "billing.quota.adjust"
+	AuditActionBalanceAdjust      = "billing.balance.adjust"
+	AuditActionEntitlementGrant   = "billing.entitlement.grant"
+	AuditActionTrialGrant         = "billing.trial.grant"
+	AuditActionArrearsClear       = "billing.arrears.clear"
+	AuditActionSubscriptionCancel = "billing.subscription.cancel"
+	AuditActionSegmentUpdate      = "account.segment.update"
+	AuditActionRoleUpdate         = "account.role.update"
+)
+
 type AccountQuotaState struct {
-	AccountUUID            string
-	RemainingIncludedQuota int64
-	CurrentBalance         float64
-	Arrears                bool
+	AccountUUID            string  `json:"accountUuid"`
+	RemainingIncludedQuota int64   `json:"remainingIncludedQuota"`
+	CurrentBalance         float64 `json:"currentBalance"`
+	Arrears                bool    `json:"arrears"`
 	// ArrearsSince marks when Arrears last flipped false->true; cleared back
 	// to nil whenever Arrears clears. billing-service's SuspendSyncer reads
 	// this to decide when a prolonged arrears episode should suspend access.
-	ArrearsSince      *time.Time
-	ThrottleState     string
-	SuspendState      string
-	LastRatedBucketAt *time.Time
+	ArrearsSince      *time.Time `json:"arrearsSince"`
+	ThrottleState     string     `json:"throttleState"`
+	SuspendState      string     `json:"suspendState"`
+	LastRatedBucketAt *time.Time `json:"lastRatedBucketAt"`
 	// PeriodStart/PeriodEnd bound the current quota grant (the billing
 	// period RemainingIncludedQuota was reset for). Written by entitlement
 	// sync on grant/reset; nil until the first reset writes them.
-	PeriodStart *time.Time
-	PeriodEnd   *time.Time
-	EffectiveAt time.Time
-	UpdatedAt   time.Time
+	PeriodStart *time.Time `json:"periodStart"`
+	PeriodEnd   *time.Time `json:"periodEnd"`
+	EffectiveAt time.Time  `json:"effectiveAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
 }
 
 type AccountBillingProfile struct {
-	AccountUUID        string
-	PackageName        string
-	IncludedQuotaBytes int64
-	BasePricePerByte   float64
-	RegionMultiplier   float64
-	LineMultiplier     float64
-	PeakMultiplier     float64
-	OffPeakMultiplier  float64
-	PricingRuleVersion string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	AccountUUID        string    `json:"accountUuid"`
+	PackageName        string    `json:"packageName"`
+	IncludedQuotaBytes int64     `json:"includedQuotaBytes"`
+	BasePricePerByte   float64   `json:"basePricePerByte"`
+	RegionMultiplier   float64   `json:"regionMultiplier"`
+	LineMultiplier     float64   `json:"lineMultiplier"`
+	PeakMultiplier     float64   `json:"peakMultiplier"`
+	OffPeakMultiplier  float64   `json:"offPeakMultiplier"`
+	PricingRuleVersion string    `json:"pricingRuleVersion"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 type AccountPolicySnapshot struct {
@@ -320,6 +363,13 @@ type Store interface {
 	EnsureBillingEventQueue(ctx context.Context) (bool, error)
 	PublishBillingEvent(ctx context.Context, event *BillingEvent) error
 
+	// InsertAuditLog records one operator-initiated change. Every admin write
+	// that alters entitlements, quota, balance or pricing must produce one.
+	InsertAuditLog(ctx context.Context, entry *AuditLog) error
+	// ListAuditLogs returns the most recent entries first, optionally
+	// narrowed by action prefix, actor or target account.
+	ListAuditLogs(ctx context.Context, filter AuditLogFilter) ([]AuditLog, error)
+
 	UpsertNodeHealthSnapshot(ctx context.Context, snapshot *NodeHealthSnapshot) error
 	ListLatestNodeHealthSnapshots(ctx context.Context) ([]NodeHealthSnapshot, error)
 	InsertSchedulerDecision(ctx context.Context, decision *SchedulerDecision) error
@@ -369,6 +419,7 @@ type memoryStore struct {
 	trafficStatCheckpoints  map[string]*TrafficStatCheckpoint
 	trafficMinuteBuckets    map[string]*TrafficMinuteBucket
 	billingLedgerEntries    map[string]*BillingLedgerEntry
+	auditLogs               []*AuditLog
 	accountQuotaStates      map[string]*AccountQuotaState
 	accountBillingProfiles  map[string]*AccountBillingProfile
 	accountPolicySnapshots  map[string]*AccountPolicySnapshot
@@ -422,6 +473,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		trafficStatCheckpoints:  make(map[string]*TrafficStatCheckpoint),
 		trafficMinuteBuckets:    make(map[string]*TrafficMinuteBucket),
 		billingLedgerEntries:    make(map[string]*BillingLedgerEntry),
+		auditLogs:               make([]*AuditLog, 0),
 		accountQuotaStates:      make(map[string]*AccountQuotaState),
 		accountBillingProfiles:  make(map[string]*AccountBillingProfile),
 		accountPolicySnapshots:  make(map[string]*AccountPolicySnapshot),
@@ -474,7 +526,10 @@ func (s *memoryStore) CreateUser(ctx context.Context, user *User) error {
 	stored.Groups = cloneStringSlice(stored.Groups)
 	stored.Permissions = cloneStringSlice(stored.Permissions)
 	stored.Active = true
-	stored.ProxyUUID = uuid.NewString()
+	// The account UUID is the canonical identity used by Portal, Xray and
+	// billing attribution. Keep the legacy proxy_uuid column synchronized with
+	// it so a QR code can never point at a different client identity.
+	stored.ProxyUUID = stored.ID
 	s.byID[userCopy.ID] = &stored
 	if loweredEmail != "" {
 		s.byEmail[loweredEmail] = &stored
@@ -585,7 +640,7 @@ func (s *memoryStore) UpdateUser(ctx context.Context, user *User) error {
 	updated.Groups = cloneStringSlice(user.Groups)
 	updated.Permissions = cloneStringSlice(user.Permissions)
 	updated.Active = user.Active
-	updated.ProxyUUID = user.ProxyUUID
+	updated.ProxyUUID = updated.ID
 	updated.ProxyUUIDExpiresAt = user.ProxyUUIDExpiresAt
 	normalizeUserRoleFields(&updated)
 	if user.CreatedAt.IsZero() {
@@ -743,8 +798,7 @@ func (s *memoryStore) CountSuperAdmins(ctx context.Context) (int, error) {
 }
 
 const (
-	// RootAdminEmail is the canonical email for the single root account.
-	RootAdminEmail = "admin@svc.plus"
+
 )
 
 const (
