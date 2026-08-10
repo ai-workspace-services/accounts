@@ -78,7 +78,7 @@ func (h *handler) adminListBillingPlans(c *gin.Context) {
 }
 
 func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
-	actor, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite)
+	actor, ok := h.requireAdminPermission(c, permissionAdminBillingMoneyWrite)
 	if !ok {
 		return
 	}
@@ -163,7 +163,7 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 }
 
 func (h *handler) adminDeleteBillingPlan(c *gin.Context) {
-	actor, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite)
+	actor, ok := h.requireAdminPermission(c, permissionAdminBillingMoneyWrite)
 	if !ok {
 		return
 	}

@@ -278,7 +278,7 @@ func (h *handler) adminAdjustQuota(c *gin.Context) {
 // difference — the failure mode that quietly ruins billing systems. So the
 // ledger row is written first and the balance is derived from it.
 func (h *handler) adminAdjustBalance(c *gin.Context) {
-	actor, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite)
+	actor, ok := h.requireAdminPermission(c, permissionAdminBillingMoneyWrite)
 	if !ok {
 		return
 	}

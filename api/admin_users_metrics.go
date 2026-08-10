@@ -24,6 +24,12 @@ const (
 	permissionAdminUsersRoleWrite = "admin.users.role.write"
 	permissionAdminBlacklistRead  = "admin.blacklist.read"
 	permissionAdminBlacklistWrite = "admin.blacklist.write"
+	// permissionAdminBillingMoneyWrite gates the two operations that move real
+	// money: crediting/debiting an account balance, and publishing the price
+	// catalog the public pricing page reads. Being able to edit the price list
+	// and being able to put money into an account are not the same level of
+	// trust, so they no longer share admin.settings.write.
+	permissionAdminBillingMoneyWrite = "admin.billing.money.write"
 )
 
 var defaultOperatorPermissions = map[string]bool{
@@ -39,6 +45,10 @@ var defaultOperatorPermissions = map[string]bool{
 	permissionAdminUsersRoleWrite: false,
 	permissionAdminBlacklistRead:  true,
 	permissionAdminBlacklistWrite: true,
+	// Denied to operators by default. It can still be granted deliberately
+	// through the permission matrix, but it is not something an operator holds
+	// simply by being an operator.
+	permissionAdminBillingMoneyWrite: false,
 }
 
 func (h *handler) adminUsersMetrics(c *gin.Context) {
