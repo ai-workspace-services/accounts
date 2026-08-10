@@ -418,6 +418,14 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.DELETE("/admin/billing/plans/:planId", h.adminDeleteBillingPlan)
 	// Manual dunning recovery (billing P1.5): clear arrears + lift suspension.
 	authProtected.POST("/admin/billing/accounts/:accountUUID/clear-arrears", h.adminClearArrears)
+	// Operations console (ops P0). Every write here records an audit entry
+	// with a mandatory reason; see api/audit.go.
+	authProtected.GET("/admin/billing/accounts/:accountUUID", h.adminGetBillingAccount)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/plan", h.adminAssignPlan)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/quota", h.adminAdjustQuota)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/balance", h.adminAdjustBalance)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/grant-trial", h.adminGrantTrial)
+	authProtected.GET("/admin/audit", h.adminListAuditLogs)
 
 	// Backward-compatible auth-scoped admin routes consumed by the dashboard BFF.
 	authProtected.GET("/admin/users/metrics", h.adminUsersMetrics)

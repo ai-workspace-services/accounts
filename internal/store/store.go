@@ -175,6 +175,43 @@ type BillingLedgerEntry struct {
 	CreatedAt          time.Time `json:"createdAt"`
 }
 
+// AuditLog is one operator-initiated change. Reads are never audited — only
+// writes — so the table stays proportional to operator activity rather than
+// to traffic.
+type AuditLog struct {
+	UUID      string         `json:"uuid"`
+	Action    string         `json:"action"`
+	ActorUUID string         `json:"actorUuid"`
+	Details   map[string]any `json:"details"`
+	CreatedAt time.Time      `json:"createdAt"`
+}
+
+// AuditLogFilter narrows an audit query. ActionPrefix matches on the
+// `<domain>.<object>.<verb>` convention, so "billing." returns every billing
+// change and "billing.balance." only the balance ones.
+type AuditLogFilter struct {
+	ActionPrefix string
+	ActorUUID    string
+	TargetUUID   string
+	Limit        int
+	Offset       int
+}
+
+// Audit action names. Kept as constants so a typo cannot silently create a
+// second, unqueryable action stream.
+const (
+	AuditActionPlanUpsert         = "billing.plan.upsert"
+	AuditActionPlanDelete         = "billing.plan.delete"
+	AuditActionQuotaAdjust        = "billing.quota.adjust"
+	AuditActionBalanceAdjust      = "billing.balance.adjust"
+	AuditActionEntitlementGrant   = "billing.entitlement.grant"
+	AuditActionTrialGrant         = "billing.trial.grant"
+	AuditActionArrearsClear       = "billing.arrears.clear"
+	AuditActionSubscriptionCancel = "billing.subscription.cancel"
+	AuditActionSegmentUpdate      = "account.segment.update"
+	AuditActionRoleUpdate         = "account.role.update"
+)
+
 type AccountQuotaState struct {
 	AccountUUID            string  `json:"accountUuid"`
 	RemainingIncludedQuota int64   `json:"remainingIncludedQuota"`
@@ -326,6 +363,13 @@ type Store interface {
 	EnsureBillingEventQueue(ctx context.Context) (bool, error)
 	PublishBillingEvent(ctx context.Context, event *BillingEvent) error
 
+	// InsertAuditLog records one operator-initiated change. Every admin write
+	// that alters entitlements, quota, balance or pricing must produce one.
+	InsertAuditLog(ctx context.Context, entry *AuditLog) error
+	// ListAuditLogs returns the most recent entries first, optionally
+	// narrowed by action prefix, actor or target account.
+	ListAuditLogs(ctx context.Context, filter AuditLogFilter) ([]AuditLog, error)
+
 	UpsertNodeHealthSnapshot(ctx context.Context, snapshot *NodeHealthSnapshot) error
 	ListLatestNodeHealthSnapshots(ctx context.Context) ([]NodeHealthSnapshot, error)
 	InsertSchedulerDecision(ctx context.Context, decision *SchedulerDecision) error
@@ -375,6 +419,7 @@ type memoryStore struct {
 	trafficStatCheckpoints  map[string]*TrafficStatCheckpoint
 	trafficMinuteBuckets    map[string]*TrafficMinuteBucket
 	billingLedgerEntries    map[string]*BillingLedgerEntry
+	auditLogs               []*AuditLog
 	accountQuotaStates      map[string]*AccountQuotaState
 	accountBillingProfiles  map[string]*AccountBillingProfile
 	accountPolicySnapshots  map[string]*AccountPolicySnapshot
@@ -428,6 +473,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		trafficStatCheckpoints:  make(map[string]*TrafficStatCheckpoint),
 		trafficMinuteBuckets:    make(map[string]*TrafficMinuteBucket),
 		billingLedgerEntries:    make(map[string]*BillingLedgerEntry),
+		auditLogs:               make([]*AuditLog, 0),
 		accountQuotaStates:      make(map[string]*AccountQuotaState),
 		accountBillingProfiles:  make(map[string]*AccountBillingProfile),
 		accountPolicySnapshots:  make(map[string]*AccountPolicySnapshot),
