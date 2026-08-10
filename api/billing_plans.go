@@ -93,6 +93,10 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid billing plan payload")
 		return
 	}
+	reason, ok := requireReason(c, req.Reason)
+	if !ok {
+		return
+	}
 	kind := strings.ToLower(strings.TrimSpace(req.Kind))
 	switch kind {
 	case "trial", "subscription", "paygo_topup":
@@ -153,7 +157,7 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		"sort_order":           plan.SortOrder,
 	}
 	if err := h.recordAudit(c.Request.Context(), actor.ID, store.AuditActionPlanUpsert,
-		auditDetails(planID, strings.TrimSpace(req.Reason), before, after)); err != nil {
+		auditDetails(planID, reason, before, after)); err != nil {
 		respondError(c, http.StatusInternalServerError, "audit_write_failed",
 			"the plan was saved but the audit entry could not be written")
 		return
@@ -170,6 +174,10 @@ func (h *handler) adminDeleteBillingPlan(c *gin.Context) {
 	planID := strings.TrimSpace(c.Param("planId"))
 	if planID == "" {
 		respondError(c, http.StatusBadRequest, "plan_id_required", "plan id is required")
+		return
+	}
+	reason, ok := requireReason(c, c.Query("reason"))
+	if !ok {
 		return
 	}
 
@@ -197,7 +205,7 @@ func (h *handler) adminDeleteBillingPlan(c *gin.Context) {
 	}
 
 	if err := h.recordAudit(c.Request.Context(), actor.ID, store.AuditActionPlanDelete,
-		auditDetails(planID, strings.TrimSpace(c.Query("reason")), before, nil)); err != nil {
+		auditDetails(planID, reason, before, nil)); err != nil {
 		respondError(c, http.StatusInternalServerError, "audit_write_failed",
 			"the plan was deleted but the audit entry could not be written")
 		return

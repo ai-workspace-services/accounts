@@ -372,7 +372,7 @@ func TestPublicAndAdminBillingPlanEndpoints(t *testing.T) {
 	RegisterRoutes(router, WithStore(st))
 
 	// Admin upsert.
-	body := `{"displayName":"Pro Monthly","kind":"subscription","includedQuotaBytes":1024,"packageName":"pro","stripePriceId":"price_x","active":true,"sortOrder":5}`
+	body := `{"displayName":"Pro Monthly","kind":"subscription","includedQuotaBytes":1024,"packageName":"pro","stripePriceId":"price_x","active":true,"sortOrder":5,"reason":"initial catalog publish"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/auth/admin/billing/plans/pro-m", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+adminToken)
@@ -404,7 +404,7 @@ func TestPublicAndAdminBillingPlanEndpoints(t *testing.T) {
 	}
 
 	// Invalid kind rejected.
-	badReq := httptest.NewRequest(http.MethodPut, "/api/auth/admin/billing/plans/bad", strings.NewReader(`{"kind":"nonsense"}`))
+	badReq := httptest.NewRequest(http.MethodPut, "/api/auth/admin/billing/plans/bad", strings.NewReader(`{"kind":"nonsense","reason":"test invalid kind"}`))
 	badReq.Header.Set("Content-Type", "application/json")
 	badReq.Header.Set("Authorization", "Bearer "+adminToken)
 	badRec := httptest.NewRecorder()
@@ -414,12 +414,30 @@ func TestPublicAndAdminBillingPlanEndpoints(t *testing.T) {
 	}
 
 	// Delete.
-	delReq := httptest.NewRequest(http.MethodDelete, "/api/auth/admin/billing/plans/pro-m", nil)
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/auth/admin/billing/plans/pro-m?reason=retiring%20legacy%20plan", nil)
 	delReq.Header.Set("Authorization", "Bearer "+adminToken)
 	delRec := httptest.NewRecorder()
 	router.ServeHTTP(delRec, delReq)
 	if delRec.Code != http.StatusOK {
 		t.Fatalf("admin delete failed: %d %s", delRec.Code, delRec.Body.String())
+	}
+
+	// Price and packaging writes must carry a reason at the API boundary.
+	missingReasonReq := httptest.NewRequest(http.MethodPut, "/api/auth/admin/billing/plans/no-reason", strings.NewReader(`{"kind":"subscription"}`))
+	missingReasonReq.Header.Set("Content-Type", "application/json")
+	missingReasonReq.Header.Set("Authorization", "Bearer "+adminToken)
+	missingReasonRec := httptest.NewRecorder()
+	router.ServeHTTP(missingReasonRec, missingReasonReq)
+	if missingReasonRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing plan reason rejection, got %d", missingReasonRec.Code)
+	}
+
+	missingDeleteReasonReq := httptest.NewRequest(http.MethodDelete, "/api/auth/admin/billing/plans/no-reason", nil)
+	missingDeleteReasonReq.Header.Set("Authorization", "Bearer "+adminToken)
+	missingDeleteReasonRec := httptest.NewRecorder()
+	router.ServeHTTP(missingDeleteReasonRec, missingDeleteReasonReq)
+	if missingDeleteReasonRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing delete reason rejection, got %d", missingDeleteReasonRec.Code)
 	}
 
 	// Unauthenticated admin access rejected.
