@@ -226,6 +226,12 @@ func (s *memoryStore) InsertBillingLedgerEntry(ctx context.Context, entry *Billi
 	now := time.Now().UTC()
 	if strings.TrimSpace(copy.ID) == "" {
 		copy.ID = uuid.NewString()
+	} else if _, exists := s.billingLedgerEntries[copy.ID]; exists {
+		// billing_ledger.id is a primary key in postgres, so a caller-supplied
+		// duplicate is rejected there. Mirror that here: callers use the id as
+		// an idempotency lock (see creditTopUpBalance), and a memory store that
+		// silently overwrote would let a double-credit bug pass its tests.
+		return ErrDuplicateLedgerEntry
 	}
 	if copy.CreatedAt.IsZero() {
 		copy.CreatedAt = now
