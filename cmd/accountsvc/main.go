@@ -18,6 +18,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -30,6 +31,7 @@ import (
 	"account/internal/auth"
 	"account/internal/mailer"
 	"account/internal/model"
+	"account/internal/observability"
 	"account/internal/service"
 	"account/internal/store"
 	"account/internal/xrayconfig"
@@ -1025,6 +1027,16 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if logger == nil {
 		logger = slog.Default()
 	}
+	shutdownTracing, err := observability.Configure(ctx, "web-saas-accounts")
+	if err != nil {
+		logger.Warn("OTLP tracing disabled", "err", err)
+	} else {
+		defer func() {
+			if err := shutdownTracing(context.Background()); err != nil {
+				logger.Warn("failed to flush OTLP traces", "err", err)
+			}
+		}()
+	}
 
 	storeCfg := store.Config{
 		Driver:       cfg.Store.Driver,
@@ -1036,7 +1048,6 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	// Initialize business store with retries to account for sidecar startup
 	var st store.Store
 	var cleanup func(context.Context) error
-	var err error
 	for i := 0; i < 15; i++ {
 		st, cleanup, err = store.New(ctx, storeCfg)
 		if err == nil {
@@ -1102,6 +1113,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}
 
 	r := gin.New()
+	r.Use(otelgin.Middleware("web-saas-accounts"))
 	corsConfig := buildCORSConfig(logger, cfg.Server, st)
 	if corsConfig.AllowAllOrigins {
 		logger.Info("configured cors", "allowAllOrigins", true)
