@@ -63,4 +63,9 @@ const (
 
 var (
 	ErrBillingPlanNotFound = errors.New("billing plan not found")
+	// ErrDuplicateLedgerEntry is returned when a ledger entry is inserted with
+	// an id that already exists. Callers derive that id deterministically from
+	// a payment reference to make crediting idempotent, so this error means
+	// "already credited" rather than a failure.
+	ErrDuplicateLedgerEntry = errors.New("duplicate ledger entry")
 )

@@ -93,7 +93,12 @@ type stripeCheckoutSession struct {
 	PaymentIntent string            `json:"payment_intent"`
 	Customer      string            `json:"customer"`
 	PaymentStatus string            `json:"payment_status"`
-	Metadata      map[string]string `json:"metadata"`
+	// AmountTotal is in the currency's smallest unit (cents/分), which is how
+	// Stripe reports every amount. It has to be divided by 100 before it means
+	// anything in balance terms.
+	AmountTotal int64             `json:"amount_total"`
+	Currency    string            `json:"currency"`
+	Metadata    map[string]string `json:"metadata"`
 }
 
 type stripeInvoice struct {
@@ -570,7 +575,10 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 				"user_email":   session.Metadata["user_email"],
 			}),
 		}
-		return h.store.UpsertSubscription(ctx, sub)
+		if err := h.store.UpsertSubscription(ctx, sub); err != nil {
+			return err
+		}
+		return h.creditTopUpBalance(ctx, userID, &session)
 	case "customer.subscription.created", "customer.subscription.updated":
 		var subscription stripeSubscription
 		if err := json.Unmarshal(event.Data.Object, &subscription); err != nil {
