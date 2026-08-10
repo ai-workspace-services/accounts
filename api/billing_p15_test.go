@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -164,12 +165,27 @@ func TestAdminClearArrearsRestoresAccess(t *testing.T) {
 	router := gin.New()
 	RegisterRoutes(router, WithStore(st))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/admin/billing/accounts/"+debtor.ID+"/clear-arrears", nil)
+	// Lifting a suspension now requires an operator reason, which is stored in
+	// the audit trail alongside the before/after dunning state.
+	clearBody := bytes.NewReader([]byte(`{"reason":"settled out of band, ticket #7"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/admin/billing/accounts/"+debtor.ID+"/clear-arrears", clearBody)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+adminToken)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("clear arrears failed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	auditEntries, err := st.ListAuditLogs(ctx, store.AuditLogFilter{ActionPrefix: store.AuditActionArrearsClear})
+	if err != nil {
+		t.Fatalf("list audit: %v", err)
+	}
+	if len(auditEntries) != 1 {
+		t.Fatalf("expected one arrears-clear audit entry, got %d", len(auditEntries))
+	}
+	if auditEntries[0].Details["reason"] != "settled out of band, ticket #7" {
+		t.Fatalf("reason not recorded: %v", auditEntries[0].Details)
 	}
 
 	quota, err := st.GetAccountQuotaState(ctx, debtor.ID)
@@ -180,8 +196,11 @@ func TestAdminClearArrearsRestoresAccess(t *testing.T) {
 		t.Fatalf("expected cleared dunning state, got %+v", quota)
 	}
 
-	// Unknown account -> 404.
-	missReq := httptest.NewRequest(http.MethodPost, "/api/auth/admin/billing/accounts/no-such/clear-arrears", nil)
+	// Unknown account -> 404. Still needs a reason: the reason check runs
+	// before the account lookup, so omitting it here would assert 400 instead.
+	missReq := httptest.NewRequest(http.MethodPost, "/api/auth/admin/billing/accounts/no-such/clear-arrears",
+		bytes.NewReader([]byte(`{"reason":"probing an unknown account"}`)))
+	missReq.Header.Set("Content-Type", "application/json")
 	missReq.Header.Set("Authorization", "Bearer "+adminToken)
 	missRec := httptest.NewRecorder()
 	router.ServeHTTP(missRec, missReq)
