@@ -1027,6 +1027,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With(observability.RuntimeLogAttrs("web-saas-accounts")...)
 	shutdownTracing, err := observability.Configure(ctx, "web-saas-accounts")
 	if err != nil {
 		logger.Warn("OTLP tracing disabled", "err", err)
@@ -1125,7 +1126,9 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	r.Use(func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		logger.Info("request", "method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "latency", time.Since(start))
+		attrs := []any{"method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "latency", time.Since(start)}
+		attrs = append(attrs, observability.TraceLogAttrs(c.Request.Context())...)
+		logger.InfoContext(c.Request.Context(), "request", attrs...)
 	})
 
 	var emailSender api.EmailSender
@@ -1699,7 +1702,7 @@ var rootCmd = &cobra.Command{
 			level = slog.LevelError
 		}
 
-		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+		logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 		slog.SetDefault(logger)
 
 		ctx := context.Background()
