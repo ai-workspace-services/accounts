@@ -43,5 +43,8 @@ func (h *handler) ensureSandboxProxyUUID(ctx context.Context, user *store.User) 
 	}
 	user.ProxyUUID = credentialID.String()
 	user.ProxyUUIDExpiresAt = &exp
-	return h.store.UpdateUser(ctx, user)
+	if err := h.store.UpdateUser(ctx, user); err != nil {
+		return err
+	}
+	return h.syncRotatedCredentialUUIDs(ctx, user.ID, user.ProxyUUID)
 }

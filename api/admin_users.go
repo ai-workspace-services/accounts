@@ -269,6 +269,10 @@ func (h *handler) renewProxyUUID(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "update_failed", "failed to renew proxy UUID")
 		return
 	}
+	if err := h.syncRotatedCredentialUUIDs(c.Request.Context(), user.ID, user.ProxyUUID); err != nil {
+		respondError(c, http.StatusInternalServerError, "credential_update_failed", "failed to align tenant bridge credentials")
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "proxy UUID renewed",
