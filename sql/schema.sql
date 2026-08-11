@@ -85,8 +85,7 @@ CREATE TABLE public.users (
   email_verified BOOLEAN GENERATED ALWAYS AS ((email_verified_at IS NOT NULL)) STORED,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   proxy_uuid UUID NOT NULL,
-  proxy_uuid_expires_at TIMESTAMPTZ,
-  CONSTRAINT users_proxy_uuid_matches_uuid_ck CHECK (proxy_uuid = uuid)
+  proxy_uuid_expires_at TIMESTAMPTZ
 );
 
 
@@ -291,12 +290,51 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Multi-tenant bridge credentials. users.uuid remains the permanent account
+-- key; credential_uuid is the rotatable external/Xray identity.
+CREATE TABLE public.tenants (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  edition TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE public.tenant_domains (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  domain TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL,
+  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+  status TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE public.tenant_memberships (
+  tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, user_id)
+);
+CREATE TABLE public.bridge_credentials (
+  credential_uuid UUID PRIMARY KEY,
+  user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  token_hash TEXT,
+  token_prefix TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL DEFAULT 'generated',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ
+);
+
 -- =========================================
 -- Indexes
 -- =========================================
 CREATE UNIQUE INDEX users_username_lower_uk ON public.users (lower(username));
 CREATE UNIQUE INDEX users_email_lower_uk ON public.users (lower(email)) WHERE email IS NOT NULL;
-CREATE UNIQUE INDEX users_single_root_role_uk ON public.users ((lower(role))) WHERE lower(role) = 'root';
 CREATE INDEX idx_identities_user_uuid ON public.identities (user_uuid);
 CREATE INDEX idx_sessions_user_uuid ON public.sessions (user_uuid);
 CREATE UNIQUE INDEX sessions_token_uk ON public.sessions (token);
@@ -306,6 +344,8 @@ CREATE INDEX idx_subscriptions_status ON public.subscriptions (status);
 CREATE INDEX idx_nodes_available ON public.nodes (available);
 CREATE INDEX idx_audit_logs_created_at ON public.audit_logs (created_at DESC);
 CREATE INDEX idx_audit_logs_action_created_at ON public.audit_logs (action, created_at DESC);
+CREATE INDEX bridge_credentials_user_tenant_idx ON public.bridge_credentials (user_uuid, tenant_id, status);
+CREATE UNIQUE INDEX bridge_credentials_active_user_tenant_uk ON public.bridge_credentials (user_uuid, tenant_id) WHERE status = 'active';
 
 -- =========================================
 -- Triggers

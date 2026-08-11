@@ -221,6 +221,7 @@ func newAuthenticatedSyncHarness(t *testing.T, opts ...Option) (*gin.Engine, *st
 	baseOpts := []Option{
 		WithStore(st),
 		WithEmailVerification(false),
+		WithServerPublicURL("https://accounts.test.invalid"),
 	}
 	RegisterRoutes(router, append(baseOpts, opts...)...)
 	return router, freshUser, token

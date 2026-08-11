@@ -242,11 +242,6 @@ func (h *handler) renewProxyUUID(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "user_lookup_failed", "failed to find user")
 		return
 	}
-	if h.isRootAccount(user) {
-		respondError(c, http.StatusForbidden, "root_protected", "root account UUID cannot be renewed")
-		return
-	}
-
 	if req.ExpiresAt != "" {
 		t, err := time.Parse("2006-01-02", req.ExpiresAt)
 		if err != nil {
@@ -262,12 +257,20 @@ func (h *handler) renewProxyUUID(c *gin.Context) {
 		user.ProxyUUIDExpiresAt = nil
 	}
 
-	// Keep the legacy response field, but never rotate the canonical account
-	// identity used by Portal and Xray.
-	user.ProxyUUID = user.ID
+	credentialID, err := uuid.NewV7()
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "uuid_generation_failed", "failed to rotate credential UUID")
+		return
+	}
+	// This rotates the network credential only. users.uuid remains immutable.
+	user.ProxyUUID = credentialID.String()
 
 	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
 		respondError(c, http.StatusInternalServerError, "update_failed", "failed to renew proxy UUID")
+		return
+	}
+	if err := h.syncRotatedCredentialUUIDs(c.Request.Context(), user.ID, user.ProxyUUID); err != nil {
+		respondError(c, http.StatusInternalServerError, "credential_update_failed", "failed to align tenant bridge credentials")
 		return
 	}
 

@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"account/internal/auth"
 	"account/internal/store"
@@ -653,42 +657,114 @@ func (h *handler) getXWorkmateProfileSync(c *gin.Context) {
 		respondError(c, http.StatusConflict, "bridge_server_url_unavailable", "bridge server url is unavailable")
 		return
 	}
-	if h.xworkmateVaultService == nil {
-		respondError(c, http.StatusConflict, "bridge_auth_token_unavailable", "bridge auth token is unavailable")
+	credentialUUID, bridgeAuthToken, err := h.issueBridgeCredential(c.Request.Context(), user.ID, access.Tenant.ID, user.ProxyUUID)
+	if err != nil {
+		respondError(c, http.StatusConflict, "bridge_credential_unavailable", err.Error())
 		return
-	}
-
-	locator, ok := findStoredXWorkmateSecretLocator(profile, store.XWorkmateSecretLocatorTargetBridgeAuthToken)
-	if !ok {
-		respondError(c, http.StatusConflict, "bridge_auth_token_unavailable", "bridge auth token is unavailable")
-		return
-	}
-
-	bridgeAuthToken, err := h.xworkmateVaultService.ReadSecret(c.Request.Context(), locator)
-	if err != nil || strings.TrimSpace(bridgeAuthToken) == "" {
-		respondError(c, http.StatusConflict, "bridge_auth_token_unavailable", "bridge auth token is unavailable")
-		return
-	}
-	if isReviewXWorkmateAccount(user) {
-		reviewToken := strings.TrimSpace(os.Getenv("BRIDGE_REVIEW_AUTH_TOKEN"))
-		if reviewToken == "" {
-			respondError(c, http.StatusConflict, "bridge_review_auth_token_unavailable", "bridge review auth token is unavailable")
-			return
-		}
-		bridgeAuthToken = reviewToken
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"BRIDGE_SERVER_URL": bridgeServerURL,
 		"BRIDGE_AUTH_TOKEN": strings.TrimSpace(bridgeAuthToken),
+		"bridgeCredential":  gin.H{"credentialUuid": credentialUUID, "token": strings.TrimSpace(bridgeAuthToken)},
 	})
 }
 
-func isReviewXWorkmateAccount(user *store.User) bool {
-	if user == nil {
-		return false
+func bridgeCredentialHash(token string) (string, error) {
+	pepper := strings.TrimSpace(os.Getenv("BRIDGE_CREDENTIAL_TOKEN_PEPPER"))
+	if pepper == "" {
+		return "", errors.New("BRIDGE_CREDENTIAL_TOKEN_PEPPER is not configured")
 	}
-	return strings.EqualFold(strings.TrimSpace(user.Email), "review@svc.plus")
+	mac := hmac.New(sha256.New, []byte(pepper))
+	_, _ = mac.Write([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
+func newBridgeCredentialToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return "xwm_" + base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func (h *handler) issueBridgeCredential(ctx context.Context, userID, tenantID, legacyCredentialID string) (string, string, error) {
+	token, err := newBridgeCredentialToken()
+	if err != nil {
+		return "", "", err
+	}
+	credentialID := strings.TrimSpace(legacyCredentialID)
+	if credentialID == "" {
+		id, err := uuid.NewV7()
+		if err != nil {
+			return "", "", err
+		}
+		credentialID = id.String()
+	}
+	if h.db == nil {
+		key := strings.TrimSpace(userID) + "|" + strings.TrimSpace(tenantID)
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.bridgeCredentials == nil {
+			h.bridgeCredentials = make(map[string]memoryBridgeCredential)
+		}
+		if existing, ok := h.bridgeCredentials[key]; ok {
+			credentialID = existing.CredentialUUID
+		}
+		h.bridgeCredentials[key] = memoryBridgeCredential{CredentialUUID: credentialID, Token: token}
+		return credentialID, token, nil
+	}
+	tokenHash, err := bridgeCredentialHash(token)
+	if err != nil {
+		return "", "", err
+	}
+	var activeCredential string
+	err = h.db.WithContext(ctx).Raw(`SELECT credential_uuid::text FROM public.bridge_credentials WHERE user_uuid = ?::uuid AND tenant_id = ? AND status = 'active' LIMIT 1`, userID, tenantID).Scan(&activeCredential).Error
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(activeCredential) == "" {
+		if err := h.db.WithContext(ctx).Exec(`INSERT INTO public.bridge_credentials (credential_uuid, user_uuid, tenant_id, token_hash, token_prefix, source) VALUES (?::uuid, ?::uuid, ?, ?, ?, 'generated')`, credentialID, userID, tenantID, tokenHash, token[:8]).Error; err != nil {
+			return "", "", err
+		}
+		activeCredential = credentialID
+	} else if err := h.db.WithContext(ctx).Exec(`UPDATE public.bridge_credentials SET token_hash = ?, token_prefix = ?, updated_at = now() WHERE credential_uuid = ?::uuid`, tokenHash, token[:8], activeCredential).Error; err != nil {
+		return "", "", err
+	}
+	return activeCredential, token, nil
+}
+
+func (h *handler) introspectBridgeCredential(c *gin.Context) {
+	var request struct {
+		Token string `json:"token"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil || strings.TrimSpace(request.Token) == "" {
+		respondError(c, http.StatusBadRequest, "invalid_request", "token is required")
+		return
+	}
+	if h.db == nil {
+		h.mu.RLock()
+		defer h.mu.RUnlock()
+		for _, credential := range h.bridgeCredentials {
+			if hmac.Equal([]byte(credential.Token), []byte(strings.TrimSpace(request.Token))) {
+				c.JSON(http.StatusOK, gin.H{"active": true})
+				return
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"active": false})
+		return
+	}
+	hash, err := bridgeCredentialHash(request.Token)
+	if err != nil {
+		respondError(c, http.StatusServiceUnavailable, "bridge_credential_unavailable", err.Error())
+		return
+	}
+	var count int64
+	if err := h.db.WithContext(c.Request.Context()).Raw(`SELECT count(*) FROM public.bridge_credentials WHERE token_hash = ? AND status = 'active'`, hash).Scan(&count).Error; err != nil {
+		respondError(c, http.StatusInternalServerError, "credential_lookup_failed", "credential lookup failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"active": count == 1})
 }
 
 func (h *handler) updateXWorkmateProfile(c *gin.Context) {

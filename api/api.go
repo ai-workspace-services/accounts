@@ -94,7 +94,13 @@ type handler struct {
 	agentRegistry             agentRegistry
 	db                        *gorm.DB
 	stripe                    *stripeClient
+	bridgeCredentials         map[string]memoryBridgeCredential
 	taskSessions              tasksession.Store
+}
+
+type memoryBridgeCredential struct {
+	CredentialUUID string
+	Token          string
 }
 
 type agentRegistry interface {
@@ -325,6 +331,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		passwordResets:            make(map[string]passwordReset),
 		oauthExchangeCodes:        make(map[string]oauthExchangeCode),
 		oauthExchangeTTL:          defaultOAuthExchangeCodeTTL,
+		bridgeCredentials:         make(map[string]memoryBridgeCredential),
 	}
 
 	for _, opt := range opts {
@@ -488,6 +495,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup.GET("/public-overview", h.internalPublicOverview)
 	internalGroup.GET("/sandbox/guest", h.internalSandboxGuest)
 	internalGroup.GET("/network/identities", h.internalNetworkIdentities)
+	internalGroup.POST("/bridge/credentials/introspect", h.introspectBridgeCredential)
 	internalGroup.GET("/policy/:accountUUID", h.internalAccountPolicy)
 	internalGroup.POST("/nodes/heartbeat", h.internalNodeHeartbeat)
 	internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)

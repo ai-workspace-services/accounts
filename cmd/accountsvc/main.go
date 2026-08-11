@@ -48,9 +48,6 @@ const (
 	SandboxEmail = "sandbox@svc.plus"
 	// ReviewEmail is the canonical email for the readonly App Review account.
 	ReviewEmail = "review@svc.plus"
-	// SharedXWorkmateBridgeServerURL is the managed bridge endpoint exposed to
-	// tenant-shared xworkmate clients such as the App Review account.
-	SharedXWorkmateBridgeServerURL = "https://xworkmate-bridge.svc.plus"
 )
 
 const (
@@ -68,20 +65,11 @@ var defaultReviewPermissions = []string{
 
 type sharedXWorkmateBootstrapConfig struct {
 	BridgeServerURL string
-	BridgeAuthToken string
 }
 
 func resolveSharedXWorkmateBootstrapConfig() sharedXWorkmateBootstrapConfig {
 	return sharedXWorkmateBootstrapConfig{
-		BridgeServerURL: firstNonEmptyString(
-			os.Getenv("XWORKMATE_BRIDGE_SERVER_URL"),
-			os.Getenv("BRIDGE_SERVER_URL"),
-			SharedXWorkmateBridgeServerURL,
-		),
-		BridgeAuthToken: firstNonEmptyString(
-			os.Getenv("BRIDGE_AUTH_TOKEN"),
-			os.Getenv("INTERNAL_SERVICE_TOKEN"),
-		),
+		BridgeServerURL: strings.TrimSpace(os.Getenv("XWORKMATE_BRIDGE_SERVER_URL")),
 	}
 }
 
@@ -157,14 +145,6 @@ func ensureSharedReviewXWorkmateProfile(
 	if err != nil || parsedBridgeURL.Scheme == "" || parsedBridgeURL.Host == "" {
 		return fmt.Errorf("shared xworkmate bridge server url is invalid: %q", bridgeServerURL)
 	}
-	bridgeAuthToken := strings.TrimSpace(bootstrap.BridgeAuthToken)
-	if bridgeAuthToken == "" {
-		return fmt.Errorf("shared xworkmate bridge auth token is required")
-	}
-	if writeSecret == nil {
-		return fmt.Errorf("xworkmate vault service is required for shared bridge bootstrap")
-	}
-
 	profile, err := st.GetXWorkmateProfile(
 		ctx,
 		store.SharedXWorkmateTenantID,
@@ -181,19 +161,11 @@ func ensureSharedReviewXWorkmateProfile(
 		}
 	}
 
-	locator := managedSharedXWorkmateBridgeLocator()
 	profile.BridgeServerURL = bridgeServerURL
 	profile.BridgeServerOrigin = normalizeBridgeServerOrigin(bridgeServerURL)
-	profile.SecretLocators = upsertXWorkmateSecretLocator(
-		profile.SecretLocators,
-		locator,
-	)
 
 	if err := st.UpsertXWorkmateProfile(ctx, profile); err != nil {
 		return fmt.Errorf("upsert shared xworkmate profile: %w", err)
-	}
-	if err := writeSecret(ctx, locator, bridgeAuthToken); err != nil {
-		return fmt.Errorf("persist shared bridge auth token: %w", err)
 	}
 	if logger != nil {
 		logger.Info(
@@ -403,7 +375,6 @@ func ensureSandboxUser(ctx context.Context, st store.Store, logger *slog.Logger)
 			sandboxUser.Groups = append(sandboxUser.Groups, "ReadOnly Role")
 		}
 
-		sandboxUser.ProxyUUID = strings.TrimSpace(sandboxUser.ID)
 		if sandboxUser.ProxyUUIDExpiresAt == nil {
 			sandboxUser.ProxyUUIDExpiresAt = &expiresAt
 		}
@@ -443,7 +414,6 @@ func startSandboxUUIDRotator(ctx context.Context, st store.Store, logger *slog.L
 				}
 
 				expiresAt := time.Now().UTC().Add(time.Hour)
-				user.ProxyUUID = strings.TrimSpace(user.ID)
 				user.ProxyUUIDExpiresAt = &expiresAt
 				if err := st.UpdateUser(context.Background(), user); err != nil {
 					if logger != nil {
@@ -475,12 +445,14 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 		}
 	}
 
-	defaultRootEmail := "admin@svc.plus"
-
 	if rootUser == nil {
 		bootstrapPassword := strings.TrimSpace(os.Getenv(rootBootstrapPasswordEnv))
 		if bootstrapPassword == "" {
 			return fmt.Errorf("root account missing: set %s to bootstrap it", rootBootstrapPasswordEnv)
+		}
+		bootstrapEmail := strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_BOOTSTRAP_EMAIL")))
+		if bootstrapEmail == "" {
+			return errors.New("root account missing: set ROOT_BOOTSTRAP_EMAIL to bootstrap it")
 		}
 
 		hashed, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
@@ -490,7 +462,7 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 
 		root := &store.User{
 			Name:          rootUsername,
-			Email:         defaultRootEmail,
+			Email:         bootstrapEmail,
 			PasswordHash:  string(hashed),
 			EmailVerified: true,
 			Role:          store.RoleRoot,
@@ -504,7 +476,7 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 		}
 		rootUser = root
 		if logger != nil {
-			logger.Warn("root account bootstrapped from environment variable", "email", defaultRootEmail)
+			logger.Warn("root account bootstrapped from deployment configuration", "email", bootstrapEmail)
 		}
 	}
 
@@ -523,27 +495,15 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 
 	for i := range users {
 		user := users[i]
-		if rootUser != nil && user.ID == rootUser.ID {
+		if !store.IsRootRole(user.Role) {
 			continue
 		}
-		if !store.IsAdminRole(user.Role) {
-			continue
-		}
-
 		updated := user
-		updated.Role = store.RoleOperator
-		updated.Level = store.LevelOperator
-		updated.Permissions = dropPermission(updated.Permissions, "*")
-		updated.Groups = dropGroup(updated.Groups, "Admin")
-		if len(updated.Groups) == 0 {
-			updated.Groups = []string{"Operator"}
+		if !enforceRootProfile(&updated) {
+			continue
 		}
-
 		if err := st.UpdateUser(ctx, &updated); err != nil {
-			return fmt.Errorf("demote legacy root/admin user %q: %w", user.Email, err)
-		}
-		if logger != nil {
-			logger.Warn("demoted legacy root/admin account to operator", "userID", updated.ID, "email", updated.Email)
+			return fmt.Errorf("normalize root user %q: %w", user.Email, err)
 		}
 	}
 
@@ -663,24 +623,8 @@ func applyRBACSchema(ctx context.Context, db *gorm.DB, driver string) error {
   proxy_uuid_expires_at TIMESTAMPTZ
 )`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS proxy_uuid UUID NOT NULL DEFAULT gen_random_uuid()`,
-		// proxy_uuid is a compatibility column, not a second identity. Backfill
-		// existing rows before installing the invariant for fresh and upgraded
-		// UAT databases.
-		`UPDATE public.users SET proxy_uuid = uuid WHERE proxy_uuid IS DISTINCT FROM uuid`,
 		`ALTER TABLE public.users ALTER COLUMN proxy_uuid DROP DEFAULT`,
-		`DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'users_proxy_uuid_matches_uuid_ck'
-      AND conrelid = 'public.users'::regclass
-  ) THEN
-    ALTER TABLE public.users
-      ADD CONSTRAINT users_proxy_uuid_matches_uuid_ck
-      CHECK (proxy_uuid = uuid);
-  END IF;
-END
-$$`,
+		`ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_proxy_uuid_matches_uuid_ck`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS proxy_uuid_expires_at TIMESTAMPTZ`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
@@ -726,7 +670,7 @@ $$`,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (role_key, permission_key)
 )`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS users_single_root_role_uk ON public.users ((lower(role))) WHERE lower(role) = 'root'`,
+		`DROP INDEX IF EXISTS public.users_single_root_role_uk`,
 		`DO $$
 BEGIN
   IF EXISTS (

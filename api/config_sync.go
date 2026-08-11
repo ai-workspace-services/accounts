@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -215,10 +216,10 @@ func (h *handler) renderUserXrayConfig(user *store.User) (string, string, []stri
 
 	domain := extractHostFromPublicURL(h.publicURL)
 	if domain == "" {
-		domain = "accounts.svc.plus"
+		return "", "", nil, errors.New("xray domain is not configured")
 	}
 
-	clientID := strings.TrimSpace(user.ID)
+	clientID := strings.TrimSpace(user.ProxyUUID)
 	clients := []xrayconfig.Client{{
 		ID:    clientID,
 		Email: strings.TrimSpace(user.ID),

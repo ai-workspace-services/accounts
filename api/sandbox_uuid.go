@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"account/internal/store"
 )
 
@@ -14,7 +16,8 @@ const (
 )
 
 // ensureSandboxProxyUUID renews sandbox access metadata without rotating the
-// canonical account UUID used by Portal and Xray.
+// issued network credential used by Xray. The permanent account UUID is
+// never changed here.
 // It is intentionally strict: only the hard-coded sandbox email is eligible.
 func (h *handler) ensureSandboxProxyUUID(ctx context.Context, user *store.User) error {
 	if h == nil || user == nil {
@@ -26,8 +29,7 @@ func (h *handler) ensureSandboxProxyUUID(ctx context.Context, user *store.User) 
 	}
 
 	now := time.Now().UTC()
-	needsRenewal := strings.TrimSpace(user.ProxyUUID) != strings.TrimSpace(user.ID) ||
-		user.ProxyUUIDExpiresAt == nil ||
+	needsRenewal := strings.TrimSpace(user.ProxyUUID) == "" || user.ProxyUUIDExpiresAt == nil ||
 		!now.Before(*user.ProxyUUIDExpiresAt)
 
 	if !needsRenewal {
@@ -35,7 +37,14 @@ func (h *handler) ensureSandboxProxyUUID(ctx context.Context, user *store.User) 
 	}
 
 	exp := now.Add(sandboxUUIDRotationWindow)
-	user.ProxyUUID = strings.TrimSpace(user.ID)
+	credentialID, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+	user.ProxyUUID = credentialID.String()
 	user.ProxyUUIDExpiresAt = &exp
-	return h.store.UpdateUser(ctx, user)
+	if err := h.store.UpdateUser(ctx, user); err != nil {
+		return err
+	}
+	return h.syncRotatedCredentialUUIDs(ctx, user.ID, user.ProxyUUID)
 }

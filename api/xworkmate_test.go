@@ -216,14 +216,13 @@ func TestGetXWorkmateProfileSyncReturnsManagedBridgeCredentials(t *testing.T) {
 	if payload.BridgeServerURL != "wss://openclaw.example.com" {
 		t.Fatalf("expected bridge server url, got %#v", payload)
 	}
-	if payload.BridgeAuthToken != "shared-token-value" {
-		t.Fatalf("expected bridge auth token, got %#v", payload)
+	if payload.BridgeAuthToken == "" || payload.BridgeAuthToken == "shared-token-value" {
+		t.Fatalf("expected a user-scoped bridge credential token, got %#v", payload)
 	}
 }
 
-func TestGetXWorkmateProfileSyncReturnsReviewBridgeTokenForReviewAccount(t *testing.T) {
+func TestGetXWorkmateProfileSyncReturnsUserScopedCredentialForReviewAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("BRIDGE_REVIEW_AUTH_TOKEN", "review-token-value")
 
 	vaultService := newMemoryXWorkmateVaultService()
 	router, _, token := newXWorkmateTestHarnessWithVault(t, &store.User{
@@ -291,15 +290,12 @@ func TestGetXWorkmateProfileSyncReturnsReviewBridgeTokenForReviewAccount(t *test
 	if payload.BridgeServerURL != "https://xworkmate-bridge.svc.plus" {
 		t.Fatalf("expected bridge server url, got %#v", payload)
 	}
-	if payload.BridgeAuthToken != "review-token-value" {
-		t.Fatalf("expected review bridge auth token, got %#v", payload)
-	}
-	if payload.BridgeAuthToken == "production-token-value" {
-		t.Fatalf("review account must not receive production bridge token")
+	if payload.BridgeAuthToken == "" || payload.BridgeAuthToken == "production-token-value" {
+		t.Fatalf("review account must receive its own bridge credential, got %#v", payload)
 	}
 }
 
-func TestGetXWorkmateProfileSyncRejectsReviewAccountWithoutReviewBridgeToken(t *testing.T) {
+func TestGetXWorkmateProfileSyncDoesNotRequireReviewStaticToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	vaultService := newMemoryXWorkmateVaultService()
@@ -354,11 +350,8 @@ func TestGetXWorkmateProfileSyncRejectsReviewAccountWithoutReviewBridgeToken(t *
 	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected profile sync conflict, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "bridge_review_auth_token_unavailable") {
-		t.Fatalf("expected review token error, got %s", rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected profile sync success, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -416,7 +409,7 @@ func TestGetXWorkmateProfileSyncConflictsWhenManagedBridgeContractMissing(t *tes
 		}
 	})
 
-	t.Run("missing bridge auth token", func(t *testing.T) {
+	t.Run("missing legacy bridge auth token still issues user credential", func(t *testing.T) {
 		vaultService := newMemoryXWorkmateVaultService()
 		router, _, token := newXWorkmateTestHarnessWithVault(t, nil, vaultService)
 
@@ -444,8 +437,8 @@ func TestGetXWorkmateProfileSyncConflictsWhenManagedBridgeContractMissing(t *tes
 		req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
-		if rec.Code != http.StatusConflict {
-			t.Fatalf("expected profile sync conflict, got %d: %s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected profile sync success, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
