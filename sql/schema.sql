@@ -183,7 +183,10 @@ CREATE UNIQUE INDEX idx_overlay_devices_network_address
   ON public.overlay_devices(network_id, wireguard_address);
 CREATE INDEX idx_overlay_nodes_network ON public.overlay_nodes(network_id);
 
-CREATE TABLE public.admin_settings (
+-- The account service also creates these tables during startup via GORM.  Keep
+-- the baseline safe when startup races this initializer: the baseline owns the
+-- schema definition, but must not fail just because GORM won the CREATE race.
+CREATE TABLE IF NOT EXISTS public.admin_settings (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   module_key TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -292,14 +295,14 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
 
 -- Multi-tenant bridge credentials. users.uuid remains the permanent account
 -- key; credential_uuid is the rotatable external/Xray identity.
-CREATE TABLE public.tenants (
+CREATE TABLE IF NOT EXISTS public.tenants (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   edition TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE TABLE public.tenant_domains (
+CREATE TABLE IF NOT EXISTS public.tenant_domains (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
   domain TEXT NOT NULL UNIQUE,
@@ -309,7 +312,7 @@ CREATE TABLE public.tenant_domains (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE TABLE public.tenant_memberships (
+CREATE TABLE IF NOT EXISTS public.tenant_memberships (
   tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL,
   role TEXT NOT NULL,
