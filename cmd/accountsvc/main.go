@@ -18,6 +18,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -30,8 +31,10 @@ import (
 	"account/internal/auth"
 	"account/internal/mailer"
 	"account/internal/model"
+	"account/internal/observability"
 	"account/internal/service"
 	"account/internal/store"
+	"account/internal/tasksession"
 	"account/internal/xrayconfig"
 )
 
@@ -969,6 +972,17 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With(observability.RuntimeLogAttrs("web-saas-accounts")...)
+	shutdownTracing, err := observability.Configure(ctx, "web-saas-accounts")
+	if err != nil {
+		logger.Warn("OTLP tracing disabled", "err", err)
+	} else {
+		defer func() {
+			if err := shutdownTracing(context.Background()); err != nil {
+				logger.Warn("failed to flush OTLP traces", "err", err)
+			}
+		}()
+	}
 
 	storeCfg := store.Config{
 		Driver:       cfg.Store.Driver,
@@ -980,7 +994,6 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	// Initialize business store with retries to account for sidecar startup
 	var st store.Store
 	var cleanup func(context.Context) error
-	var err error
 	for i := 0; i < 15; i++ {
 		st, cleanup, err = store.New(ctx, storeCfg)
 		if err == nil {
@@ -1046,6 +1059,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}
 
 	r := gin.New()
+	r.Use(otelgin.Middleware("web-saas-accounts"))
 	corsConfig := buildCORSConfig(logger, cfg.Server, st)
 	if corsConfig.AllowAllOrigins {
 		logger.Info("configured cors", "allowAllOrigins", true)
@@ -1057,7 +1071,9 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	r.Use(func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		logger.Info("request", "method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "latency", time.Since(start))
+		attrs := []any{"method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "latency", time.Since(start)}
+		attrs = append(attrs, observability.TraceLogAttrs(c.Request.Context())...)
+		logger.InfoContext(c.Request.Context(), "request", attrs...)
 	})
 
 	var emailSender api.EmailSender
@@ -1134,6 +1150,27 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 
 	if err := applyBillingSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
 		return fmt.Errorf("apply billing schema: %w", err)
+	}
+
+	// Bridge is the task-session runtime owner. Accounts only provisions and
+	// exposes the durable PostgreSQL control-plane contract. The existing API
+	// adapter is wired to that store in PostgreSQL environments so UAT never
+	// falls back to process-local session state.
+	taskSessionStore := tasksession.Store(tasksession.NewMemoryStore())
+	normalizedStoreDriver := strings.ToLower(strings.TrimSpace(cfg.Store.Driver))
+	if normalizedStoreDriver == "postgres" || normalizedStoreDriver == "postgresql" || normalizedStoreDriver == "pgx" {
+		sqlDB, err := gormDB.DB()
+		if err != nil {
+			return fmt.Errorf("open task session database: %w", err)
+		}
+		if err := tasksession.ApplyPostgresSchema(ctx, sqlDB); err != nil {
+			return fmt.Errorf("apply task session schema: %w", err)
+		}
+		postgresTaskSessions, err := tasksession.NewPostgresStore(sqlDB)
+		if err != nil {
+			return fmt.Errorf("initialize task session store: %w", err)
+		}
+		taskSessionStore = postgresTaskSessions
 	}
 
 	if err := ensureDefaultBillingPlans(ctx, st); err != nil {
@@ -1300,6 +1337,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 
 	options := []api.Option{
 		api.WithStore(st),
+		api.WithTaskSessionStore(taskSessionStore),
 		api.WithSessionTTL(cfg.Session.TTL),
 		api.WithEmailSender(emailSender),
 		api.WithEmailVerification(emailVerificationEnabled),
@@ -1631,7 +1669,7 @@ var rootCmd = &cobra.Command{
 			level = slog.LevelError
 		}
 
-		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+		logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 		slog.SetDefault(logger)
 
 		ctx := context.Background()

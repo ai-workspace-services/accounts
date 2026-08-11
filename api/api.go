@@ -30,6 +30,7 @@ import (
 	"account/internal/auth"
 	"account/internal/service"
 	"account/internal/store"
+	"account/internal/tasksession"
 )
 
 const defaultSessionTTL = 24 * time.Hour
@@ -94,6 +95,7 @@ type handler struct {
 	db                        *gorm.DB
 	stripe                    *stripeClient
 	bridgeCredentials         map[string]memoryBridgeCredential
+	taskSessions              tasksession.Store
 }
 
 type memoryBridgeCredential struct {
@@ -150,6 +152,17 @@ func WithStore(st store.Store) Option {
 	return func(h *handler) {
 		if st != nil {
 			h.store = st
+		}
+	}
+}
+
+// WithTaskSessionStore overrides the lightweight shared-session control plane.
+// Production wiring can provide a Postgres-backed implementation; tests and
+// local development use the in-memory implementation by default.
+func WithTaskSessionStore(st tasksession.Store) Option {
+	return func(h *handler) {
+		if st != nil {
+			h.taskSessions = st
 		}
 	}
 }
@@ -304,6 +317,7 @@ func WithStripeConfig(cfg StripeConfig) Option {
 func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	h := &handler{
 		store:                     store.NewMemoryStore(),
+		taskSessions:              tasksession.NewMemoryStore(),
 		sessionTTL:                defaultSessionTTL,
 		mfaChallenges:             make(map[string]mfaChallenge),
 		mfaChallengeTTL:           defaultMFAChallengeTTL,
@@ -459,6 +473,17 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.GET("/admin/assume/status", h.adminAssumeStatus)
 
 	authProtected.GET("/users", h.listUsers)
+
+	// Shared task-session control plane. This is intentionally outside
+	// /api/auth so Web and Desktop clients can share one stable resource path.
+	taskProtected := r.Group("/api/task-sessions")
+	if h.tokenService != nil {
+		taskProtected.Use(h.tokenService.AuthMiddleware())
+		taskProtected.Use(auth.RequireActiveUser(h.store))
+	}
+	taskProtected.POST("", h.createTaskSession)
+	taskProtected.GET("/:sessionID", h.getTaskSession)
+	taskProtected.POST("/:sessionID/events", h.appendTaskSessionEvent)
 
 	// Internal routes for service-to-service reads.
 	internalGroup := r.Group("/api/internal")

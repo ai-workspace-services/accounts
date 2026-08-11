@@ -21,7 +21,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultAccountServer = "https://accounts.svc.plus"
 const overlayTransportType = "vless-tls"
 const overlayTransportSecurity = "tls"
 
@@ -112,7 +111,7 @@ func newLoginCmd() *cobra.Command {
 	var server, email, password string
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate against accounts.svc.plus and persist a session token",
+		Short: "Authenticate against the configured account service and persist a session token",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			server = normalizeServer(server)
 			if strings.TrimSpace(email) == "" || strings.TrimSpace(password) == "" {
@@ -144,7 +143,7 @@ func newLoginCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&server, "server", defaultAccountServer, "account service base URL")
+	cmd.Flags().StringVar(&server, "server", configuredAccountServer(), "account service base URL (or ACCOUNTS_SERVER_URL)")
 	cmd.Flags().StringVar(&email, "email", "", "account email")
 	cmd.Flags().StringVar(&password, "password", "", "account password")
 	return cmd
@@ -1199,7 +1198,7 @@ func loadState() (stateFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return stateFile{Server: defaultAccountServer}, nil
+			return stateFile{Server: configuredAccountServer()}, nil
 		}
 		return state, err
 	}
@@ -1266,9 +1265,13 @@ func defaultDeviceID() string {
 func normalizeServer(server string) string {
 	server = strings.TrimRight(strings.TrimSpace(server), "/")
 	if server == "" {
-		return defaultAccountServer
+		return configuredAccountServer()
 	}
 	return server
+}
+
+func configuredAccountServer() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("ACCOUNTS_SERVER_URL")), "/")
 }
 
 func firstNonEmpty(values ...string) string {
