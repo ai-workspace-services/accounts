@@ -131,6 +131,8 @@ func respondTaskSessionError(c *gin.Context, err error) {
 		respondError(c, http.StatusConflict, "task_session_exists", err.Error())
 	case errors.Is(err, tasksession.ErrPayloadTooLarge):
 		respondError(c, http.StatusRequestEntityTooLarge, "task_session_payload_too_large", err.Error())
+	case errors.Is(err, tasksession.ErrArtifactPayload), errors.Is(err, tasksession.ErrInvalidInput):
+		respondError(c, http.StatusBadRequest, "invalid_task_session_payload", err.Error())
 	default:
 		respondError(c, http.StatusInternalServerError, "task_session_unavailable", err.Error())
 	}

@@ -2,6 +2,7 @@ package tasksession
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -33,6 +34,19 @@ func TestMemoryStoreCreatesPersonalNamespaceAndKeepsSessionsScoped(t *testing.T)
 
 	if _, err := store.GetSession(context.Background(), "account-2", personal.ID, session.ID); err == nil {
 		t.Fatal("expected account isolation error")
+	}
+}
+
+func TestMemoryStoreCapsNamespaceConcurrencyAtMVPMaximum(t *testing.T) {
+	store := NewMemoryStore()
+	namespace, err := store.CreateNamespace(context.Background(), CreateNamespaceInput{
+		ID: "ns-capped", AccountID: "account-1", Slug: "capped", MaxActiveRuns: 99,
+	})
+	if err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if namespace.MaxActiveRuns != defaultNamespaceMaxActive {
+		t.Fatalf("expected namespace cap %d, got %d", defaultNamespaceMaxActive, namespace.MaxActiveRuns)
 	}
 }
 
@@ -128,5 +142,71 @@ func TestMemoryStoreClaimIsFairAcrossNamespacesAndRespectsLimits(t *testing.T) {
 	}
 	if _, err := store.ClaimNext(context.Background(), ClaimInput{AccountID: "account-1", WorkerID: "bridge-1", Now: time.Unix(10, 0), MaxGlobalActive: 2, LeaseTTL: time.Minute}); err != ErrNoEligibleTask {
 		t.Fatalf("expected global limit, got %v", err)
+	}
+}
+
+func TestMemoryStoreAppendMessageIsIdempotentAcrossEventAndTaskRun(t *testing.T) {
+	store := NewMemoryStore()
+	ns, err := store.CreateNamespace(context.Background(), CreateNamespaceInput{
+		ID: "ns-1", AccountID: "account-1", Slug: "work",
+	})
+	if err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := store.CreateSession(context.Background(), CreateSessionInput{
+		ID: "session-1", AccountID: "account-1", NamespaceID: ns.ID,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	command := AppendMessageInput{
+		AccountID: "account-1", SessionID: "session-1", ActorID: "account-1",
+		ClientRequestID: "request-1", Text: "shared message", TaskRunID: "run-1",
+		CreatedAt: time.Unix(10, 0),
+	}
+	first, err := store.AppendMessage(context.Background(), command)
+	if err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	command.TaskRunID = "run-must-not-be-created"
+	second, err := store.AppendMessage(context.Background(), command)
+	if err != nil {
+		t.Fatalf("append duplicate message: %v", err)
+	}
+	if first.Message.Seq != 1 || first.Queued.Seq != 2 || first.TaskRun.ID != "run-1" {
+		t.Fatalf("unexpected first command result: %+v", first)
+	}
+	if second.TaskRun.ID != first.TaskRun.ID || second.LastEventSeq != 2 || second.SnapshotVer != 2 {
+		t.Fatalf("duplicate command created new state: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestMemoryStoreReplaysOrderedEventsAfterCursor(t *testing.T) {
+	store := NewMemoryStore()
+	ns, err := store.CreateNamespace(context.Background(), CreateNamespaceInput{
+		ID: "ns-replay", AccountID: "account-1", Slug: "replay",
+	})
+	if err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := store.CreateSession(context.Background(), CreateSessionInput{
+		ID: "session-replay", AccountID: "account-1", NamespaceID: ns.ID,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := store.AppendMessage(context.Background(), AppendMessageInput{
+		AccountID: "account-1", SessionID: "session-replay", ClientRequestID: "request-1",
+		Text: "hello", TaskRunID: "run-replay", CreatedAt: time.Unix(10, 0),
+	}); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	events, err := store.ListEvents(context.Background(), "account-1", "session-replay", 1, 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || events[0].Seq != 2 || events[0].Type != EventRunQueued {
+		t.Fatalf("unexpected replay: %+v", events)
+	}
+	if _, err := store.ListEvents(context.Background(), "account-2", "session-replay", 0, 100); !errors.Is(err, ErrAccountMismatch) {
+		t.Fatalf("expected account isolation, got %v", err)
 	}
 }

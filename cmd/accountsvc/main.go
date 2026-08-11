@@ -34,6 +34,7 @@ import (
 	"account/internal/observability"
 	"account/internal/service"
 	"account/internal/store"
+	"account/internal/tasksession"
 	"account/internal/xrayconfig"
 )
 
@@ -1207,6 +1208,27 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		return fmt.Errorf("apply billing schema: %w", err)
 	}
 
+	// Bridge is the task-session runtime owner. Accounts only provisions and
+	// exposes the durable PostgreSQL control-plane contract. The existing API
+	// adapter is wired to that store in PostgreSQL environments so UAT never
+	// falls back to process-local session state.
+	taskSessionStore := tasksession.Store(tasksession.NewMemoryStore())
+	normalizedStoreDriver := strings.ToLower(strings.TrimSpace(cfg.Store.Driver))
+	if normalizedStoreDriver == "postgres" || normalizedStoreDriver == "postgresql" || normalizedStoreDriver == "pgx" {
+		sqlDB, err := gormDB.DB()
+		if err != nil {
+			return fmt.Errorf("open task session database: %w", err)
+		}
+		if err := tasksession.ApplyPostgresSchema(ctx, sqlDB); err != nil {
+			return fmt.Errorf("apply task session schema: %w", err)
+		}
+		postgresTaskSessions, err := tasksession.NewPostgresStore(sqlDB)
+		if err != nil {
+			return fmt.Errorf("initialize task session store: %w", err)
+		}
+		taskSessionStore = postgresTaskSessions
+	}
+
 	if err := ensureDefaultBillingPlans(ctx, st); err != nil {
 		logger.Warn("failed to seed default billing plans", "err", err)
 	}
@@ -1371,6 +1393,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 
 	options := []api.Option{
 		api.WithStore(st),
+		api.WithTaskSessionStore(taskSessionStore),
 		api.WithSessionTTL(cfg.Session.TTL),
 		api.WithEmailSender(emailSender),
 		api.WithEmailVerification(emailVerificationEnabled),

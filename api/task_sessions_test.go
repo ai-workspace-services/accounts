@@ -110,3 +110,24 @@ func TestTaskSessionEventAppendIsIdempotent(t *testing.T) {
 		t.Fatalf("expected idempotent seq 1, got %d/%d", firstEvent.Seq, secondEvent.Seq)
 	}
 }
+
+func TestTaskSessionEventRejectsArtifactBytes(t *testing.T) {
+	router, _, token := newTaskSessionHarness(t)
+	create := httptest.NewRequest(http.MethodPost, "/api/task-sessions", bytes.NewBufferString(`{"title":"events"}`))
+	create.Header.Set("Authorization", "Bearer "+token)
+	createdResponse := httptest.NewRecorder()
+	router.ServeHTTP(createdResponse, create)
+	var created taskSessionResponse
+	if err := json.Unmarshal(createdResponse.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/task-sessions/"+created.SessionID+"/events",
+		bytes.NewBufferString(`{"type":"run.completed","clientRequestId":"client-artifact","payload":{"artifactBytes":"AAECAw=="}}`))
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+	}
+}
