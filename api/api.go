@@ -2648,6 +2648,10 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
 		return
 	}
+	if !user.MFAEnabled {
+		respondError(c, http.StatusForbidden, "mfa_required", "multi-factor authentication is required before changing a subscription")
+		return
+	}
 
 	var req subscriptionCancelRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

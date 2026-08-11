@@ -87,12 +87,12 @@ type stripeEvent struct {
 }
 
 type stripeCheckoutSession struct {
-	ID            string            `json:"id"`
-	Mode          string            `json:"mode"`
-	Subscription  string            `json:"subscription"`
-	PaymentIntent string            `json:"payment_intent"`
-	Customer      string            `json:"customer"`
-	PaymentStatus string            `json:"payment_status"`
+	ID            string `json:"id"`
+	Mode          string `json:"mode"`
+	Subscription  string `json:"subscription"`
+	PaymentIntent string `json:"payment_intent"`
+	Customer      string `json:"customer"`
+	PaymentStatus string `json:"payment_status"`
 	// AmountTotal is in the currency's smallest unit (cents/分), which is how
 	// Stripe reports every amount. It has to be divided by 100 before it means
 	// anything in balance terms.
@@ -417,6 +417,10 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
 		return
 	}
+	if !user.MFAEnabled {
+		respondError(c, http.StatusForbidden, "mfa_required", "multi-factor authentication is required before starting a payment")
+		return
+	}
 	if h.stripe == nil || !h.stripe.enabled() {
 		respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
 		return
@@ -450,6 +454,10 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 func (h *handler) stripePortal(c *gin.Context) {
 	user, ok := h.requireAuthenticatedUser(c)
 	if !ok {
+		return
+	}
+	if !user.MFAEnabled {
+		respondError(c, http.StatusForbidden, "mfa_required", "multi-factor authentication is required before managing billing")
 		return
 	}
 	if h.stripe == nil || !h.stripe.enabled() {
