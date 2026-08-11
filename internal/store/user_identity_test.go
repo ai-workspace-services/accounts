@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestCreateUserUsesCanonicalAccountUUIDForProxyUUID(t *testing.T) {
+func TestCreateUserPreservesSuppliedNetworkCredential(t *testing.T) {
 	user := &User{
 		Name:      "Canonical User",
 		Email:     "canonical@example.com",
@@ -18,12 +18,12 @@ func TestCreateUserUsesCanonicalAccountUUIDForProxyUUID(t *testing.T) {
 	if user.ID == "" {
 		t.Fatal("expected account UUID")
 	}
-	if user.ProxyUUID != user.ID {
-		t.Fatalf("expected proxy UUID %q to equal account UUID %q", user.ProxyUUID, user.ID)
+	if user.ProxyUUID != "legacy-proxy-uuid" {
+		t.Fatalf("expected existing proxy credential to remain unchanged, got %q", user.ProxyUUID)
 	}
 }
 
-func TestUpdateUserRepairsProxyUUIDDrift(t *testing.T) {
+func TestUpdateUserPreservesRotatedNetworkCredential(t *testing.T) {
 	st := NewMemoryStore()
 	user := &User{Name: "Repair User", Email: "repair@example.com"}
 	if err := st.CreateUser(context.Background(), user); err != nil {
@@ -39,7 +39,7 @@ func TestUpdateUserRepairsProxyUUIDDrift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
-	if stored.ProxyUUID != stored.ID {
-		t.Fatalf("expected repaired proxy UUID %q to equal account UUID %q", stored.ProxyUUID, stored.ID)
+	if stored.ProxyUUID != "legacy-proxy-uuid" {
+		t.Fatalf("expected rotated proxy credential to remain unchanged, got %q", stored.ProxyUUID)
 	}
 }

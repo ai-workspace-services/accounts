@@ -122,9 +122,15 @@ func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 	if strings.TrimSpace(user.ID) == "" {
 		user.ID = uuid.NewString()
 	}
-	// proxy_uuid is retained for compatibility with existing schemas, but it is
-	// no longer an independent identity.
-	user.ProxyUUID = user.ID
+	// proxy_uuid is the legacy network credential. Existing values are preserved
+	// and new values use UUIDv7; it must never be derived from users.uuid.
+	if strings.TrimSpace(user.ProxyUUID) == "" {
+		credentialID, err := uuid.NewV7()
+		if err != nil {
+			return fmt.Errorf("generate proxy credential uuid: %w", err)
+		}
+		user.ProxyUUID = credentialID.String()
+	}
 
 	var (
 		verifiedAt any
@@ -244,7 +250,6 @@ func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 	}
 
 	user.ID = identifier
-	user.ProxyUUID = identifier
 	user.Name = normalizedName
 	user.Email = normalizedEmail
 	user.CreatedAt = createdAt.UTC()
@@ -398,7 +403,13 @@ func (s *postgresStore) UpdateUser(ctx context.Context, user *User) error {
 	}
 
 	normalizedEmail := strings.ToLower(strings.TrimSpace(user.Email))
-	user.ProxyUUID = user.ID
+	if strings.TrimSpace(user.ProxyUUID) == "" {
+		credentialID, err := uuid.NewV7()
+		if err != nil {
+			return fmt.Errorf("generate proxy credential uuid: %w", err)
+		}
+		user.ProxyUUID = credentialID.String()
+	}
 
 	caps, err := s.capabilities(ctx)
 	if err != nil {

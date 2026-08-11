@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	defaultMigrationDir = "account/sql/migrations"
-	defaultSchemaFile   = "account/sql/schema.sql"
+	defaultMigrationDir = "sql/migrations"
+	defaultSchemaFile   = "sql/schema.sql"
 )
 
 func main() {
@@ -47,6 +47,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newVersionCmd(&migrationDir))
 	cmd.AddCommand(newExportCmd())
 	cmd.AddCommand(newImportCmd())
+	cmd.AddCommand(newImportXrayCredentialsCmd())
 
 	return cmd
 }

@@ -38,8 +38,8 @@ func TestEnsureSandboxProxyUUIDRenewsExpiryWithoutChangingIdentity(t *testing.T)
 	if err != nil {
 		t.Fatalf("reload sandbox user: %v", err)
 	}
-	if updated.ProxyUUID != originalID {
-		t.Fatalf("expected sandbox proxy UUID %q, got %q", originalID, updated.ProxyUUID)
+	if updated.ProxyUUID == originalID || updated.ProxyUUID == "legacy-proxy-uuid" {
+		t.Fatalf("expected sandbox network credential to rotate, got %q", updated.ProxyUUID)
 	}
 	if updated.ProxyUUIDExpiresAt == nil || !updated.ProxyUUIDExpiresAt.After(time.Now().UTC()) {
 		t.Fatalf("expected sandbox access expiry to be renewed, got %v", updated.ProxyUUIDExpiresAt)
