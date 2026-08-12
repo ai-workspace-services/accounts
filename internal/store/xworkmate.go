@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -240,9 +241,38 @@ func IsSharedTenantHost(host string) bool {
 	switch normalized {
 	case "svc.plus", "www.svc.plus", "console.svc.plus", "localhost", "127.0.0.1", "[::1]":
 		return true
-	default:
-		return false
 	}
+	for _, configured := range ConfiguredSharedTenantDomains() {
+		if normalized == configured {
+			return true
+		}
+	}
+	return false
+}
+
+// ConfiguredSharedTenantDomains returns the deployment-provided shared tenant
+// host list. TARGET_DOMAIN_BASE is rendered into this variable by the
+// web-saas playbook; keeping the list in configuration avoids coupling tenant
+// resolution to a particular public domain.
+func ConfiguredSharedTenantDomains() []string {
+	raw := os.Getenv("XWORKMATE_SHARED_TENANT_DOMAINS")
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	domains := make([]string, 0)
+	for _, value := range strings.Split(raw, ",") {
+		domain := NormalizeHostname(value)
+		if domain == "" {
+			continue
+		}
+		if _, ok := seen[domain]; ok {
+			continue
+		}
+		seen[domain] = struct{}{}
+		domains = append(domains, domain)
+	}
+	return domains
 }
 
 func GenerateRandomTenantDomain() (string, error) {

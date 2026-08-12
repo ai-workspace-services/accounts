@@ -15,6 +15,24 @@ func TestNormalizeHostname(t *testing.T) {
 	}
 }
 
+func TestIsSharedTenantHostUsesDeploymentConfiguredDomains(t *testing.T) {
+	t.Setenv("XWORKMATE_SHARED_TENANT_DOMAINS", "onwalk.net, console-uat.onwalk.net, onwalk.net")
+
+	if !IsSharedTenantHost("https://onwalk.net") {
+		t.Fatal("expected configured target domain to resolve to the shared tenant")
+	}
+	if !IsSharedTenantHost("console-uat.onwalk.net") {
+		t.Fatal("expected configured environment alias to resolve to the shared tenant")
+	}
+	if IsSharedTenantHost("private.example.net") {
+		t.Fatal("unexpectedly treated an unconfigured private host as shared")
+	}
+	got := ConfiguredSharedTenantDomains()
+	if len(got) != 2 || got[0] != "onwalk.net" || got[1] != "console-uat.onwalk.net" {
+		t.Fatalf("unexpected configured domains: %#v", got)
+	}
+}
+
 func TestGenerateRandomTenantDomain(t *testing.T) {
 	t.Parallel()
 
