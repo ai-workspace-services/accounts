@@ -125,21 +125,23 @@ func upsertXWorkmateSecretLocator(
 	return next
 }
 
-func ensureSharedReviewXWorkmateProfile(
+// ensureSharedXWorkmateProfile seeds the tenant-scoped Bridge endpoint once per
+// Accounts runtime. Bridge credentials are deliberately not migrated here:
+// /xworkmate/profile/sync rotates and returns an individual credential only to
+// the authenticated user, so no user token is ever written to startup logs,
+// deployment state, or a shared profile.
+func ensureSharedXWorkmateProfile(
 	ctx context.Context,
 	st store.Store,
-	reviewCfg config.ReviewAccount,
 	bootstrap sharedXWorkmateBootstrapConfig,
-	writeSecret func(context.Context, store.XWorkmateSecretLocator, string) error,
 	logger *slog.Logger,
 ) error {
-	if !reviewCfg.Enabled {
-		return nil
-	}
-
 	bridgeServerURL := strings.TrimSpace(bootstrap.BridgeServerURL)
 	if bridgeServerURL == "" {
-		return fmt.Errorf("shared xworkmate bridge server url is required")
+		// A deployment without a managed Bridge stays usable for other Account
+		// functions. Profile sync will fail closed with the explicit
+		// bridge_server_url_unavailable contract until an operator configures it.
+		return nil
 	}
 	parsedBridgeURL, err := url.Parse(bridgeServerURL)
 	if err != nil || parsedBridgeURL.Scheme == "" || parsedBridgeURL.Host == "" {
@@ -1329,24 +1331,13 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if err != nil {
 		return err
 	}
-	if err := ensureSharedReviewXWorkmateProfile(
+	if err := ensureSharedXWorkmateProfile(
 		ctx,
 		st,
-		cfg.ReviewAccount,
 		resolveSharedXWorkmateBootstrapConfig(),
-		func(
-			ctx context.Context,
-			locator store.XWorkmateSecretLocator,
-			value string,
-		) error {
-			if xworkmateVaultService == nil {
-				return errors.New("xworkmate vault service is unavailable")
-			}
-			return xworkmateVaultService.WriteSecret(ctx, locator, value)
-		},
 		logger,
 	); err != nil {
-		logger.Warn("failed to ensure shared review xworkmate profile", "err", err)
+		logger.Warn("failed to ensure shared xworkmate profile", "err", err)
 	}
 
 	options := []api.Option{
