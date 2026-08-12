@@ -1057,6 +1057,20 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}); err != nil {
 		return fmt.Errorf("ensure shared xworkmate tenant domain: %w", err)
 	}
+	for _, domain := range store.ConfiguredSharedTenantDomains() {
+		if domain == store.SharedXWorkmateDomain {
+			continue
+		}
+		if err := st.EnsureTenantDomain(ctx, &store.TenantDomain{
+			TenantID:  store.SharedXWorkmateTenantID,
+			Domain:    domain,
+			Kind:      store.TenantDomainKindCustom,
+			IsPrimary: false,
+			Status:    store.TenantDomainStatusVerified,
+		}); err != nil {
+			return fmt.Errorf("ensure configured shared xworkmate tenant domain %q: %w", domain, err)
+		}
+	}
 
 	r := gin.New()
 	r.Use(otelgin.Middleware("web-saas-accounts"))
