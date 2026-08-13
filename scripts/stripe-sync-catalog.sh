@@ -28,6 +28,8 @@ STRIPE_API_BASE="${STRIPE_API_BASE:-https://api.stripe.com/v1}"
 DRY_RUN=false
 ENV_NAME=""
 DOMAIN_BASE=""
+WRITE_CATALOG=false
+ACCOUNTS_API_BASE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +37,8 @@ while [[ $# -gt 0 ]]; do
     --domain-base) DOMAIN_BASE="$2"; shift 2 ;;
     --catalog) CATALOG_FILE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --write-catalog) WRITE_CATALOG=true; shift ;;
+    --accounts-api-base) ACCOUNTS_API_BASE="$2"; shift 2 ;;
     *) echo "::error::unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -43,6 +47,21 @@ done
 [[ -n "${ENV_NAME}" ]] || { echo "::error::--env is required (e.g. uat, prod)" >&2; exit 1; }
 [[ -n "${DOMAIN_BASE}" ]] || { echo "::error::--domain-base is required (e.g. onwalk.net, svc.plus)" >&2; exit 1; }
 [[ -f "${CATALOG_FILE}" ]] || { echo "::error::catalog file not found: ${CATALOG_FILE}" >&2; exit 1; }
+
+# --write-catalog closes the last manual step: without it the operator copies
+# the printed price ids into the admin API by hand, which is the one part of
+# "switch Stripe account" that stayed a Dashboard-era ritual.
+if [[ "${WRITE_CATALOG}" == true ]]; then
+  : "${ACCOUNTS_ADMIN_TOKEN:?ACCOUNTS_ADMIN_TOKEN is required with --write-catalog (an admin session bearer token)}"
+  if [[ -z "${ACCOUNTS_API_BASE}" ]]; then
+    # Same host convention as the webhook url below: prod carries no env prefix.
+    if [[ "${ENV_NAME}" == "prod" ]]; then
+      ACCOUNTS_API_BASE="https://accounts.${DOMAIN_BASE}"
+    else
+      ACCOUNTS_API_BASE="https://accounts-${ENV_NAME}.${DOMAIN_BASE}"
+    fi
+  fi
+fi
 
 command -v jq >/dev/null || { echo "::error::jq is required" >&2; exit 1; }
 python3 -c "import yaml" 2>/dev/null || { echo "::error::python3 + pyyaml is required (pip install pyyaml)" >&2; exit 1; }
@@ -194,6 +213,80 @@ for row in "${price_summary[@]}"; do
   pid="${row#*|}"
   printf '  %-16s -> %s\n' "${plan_id}" "${pid}"
 done
+
+if [[ "${WRITE_CATALOG}" != true ]]; then
+  echo
+  echo "Feed these into billing_plans via the admin API (see"
+  echo "docs/roadmap/feature-subscription-billing-operations/05-stripe-catalog-automation.md),"
+  echo "or re-run with --write-catalog to have this script do it."
+  exit 0
+fi
+
+# --- Write the catalog -----------------------------------------------------
+# The admin upsert replaces the whole row, so every field has to come from the
+# yaml — writing only the price id would blank out display_name and quota.
+# reason= is required by accounts and lands in audit_logs, so a catalog sync is
+# as traceable as a hand edit in the ops console.
 echo
-echo "Feed these into billing_plans via the admin API (see"
-echo "docs/roadmap/feature-subscription-billing-operations/05-stripe-catalog-automation.md)."
+echo "== writing billing_plans via ${ACCOUNTS_API_BASE} =="
+write_failures=0
+for row in "${price_summary[@]}"; do
+  plan_id="${row%%|*}"
+  pid="${row#*|}"
+
+  plan_payload="$(jq -c \
+    --arg planId "${plan_id}" \
+    --arg stripePriceId "${pid}" \
+    --arg reason "stripe-sync-catalog.sh --env ${ENV_NAME}" \
+    '
+      [.products[].prices[] | select(.plan_id == $planId)] | first as $p
+      | if $p == null then empty else
+        {
+          planId: $planId,
+          stripePriceId: $stripePriceId,
+          displayName: ($p.plan.display_name // $planId),
+          kind: ($p.plan.kind // "subscription"),
+          includedQuotaBytes: ($p.plan.included_quota_bytes // 0),
+          packageName: ($p.plan.package_name // "default"),
+          priceAmount: ($p.unit_amount // 0),
+          priceCurrency: ($p.currency // "" | ascii_upcase),
+          priceUnit: ($p.plan.price_unit // ""),
+          sortOrder: ($p.plan.sort_order // 0),
+          active: true,
+          reason: $reason
+        }
+        end
+    ' <<<"${catalog_json}")"
+
+  if [[ -z "${plan_payload}" ]]; then
+    echo "  ${plan_id}: ::warning::no plan block in the catalog, skipped"
+    continue
+  fi
+
+  if [[ "${DRY_RUN}" == true ]]; then
+    echo "  ${plan_id}: DRY-RUN would PUT ${plan_payload}"
+    continue
+  fi
+
+  http_code="$(curl -sS -o /tmp/stripe-sync-plan.$$ -w '%{http_code}' \
+    -X PUT "${ACCOUNTS_API_BASE}/api/auth/admin/billing/plans/${plan_id}" \
+    -H "Authorization: Bearer ${ACCOUNTS_ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "${plan_payload}")"
+
+  if [[ "${http_code}" == "200" ]]; then
+    echo "  ${plan_id}: ok"
+  else
+    echo "  ${plan_id}: ::error::HTTP ${http_code} $(cat /tmp/stripe-sync-plan.$$)" >&2
+    write_failures=$((write_failures + 1))
+  fi
+  rm -f "/tmp/stripe-sync-plan.$$"
+done
+
+if (( write_failures > 0 )); then
+  echo "::error::${write_failures} plan(s) failed to write; billing_plans is now partially synced" >&2
+  exit 1
+fi
+
+echo
+echo "Catalog synced. Switching Stripe accounts is: swap STRIPE_SECRET_KEY, re-run this script."

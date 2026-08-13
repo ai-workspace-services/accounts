@@ -19,11 +19,25 @@ products:
         unit_amount: 2000            # 最小货币单位(分)；¥20.00
         currency: cny
         recurring_interval: month
+        plan:                        # 写回 billing_plans 的字段(见 --write-catalog)
+          display_name: "Pro 订阅（月付）"
+          kind: subscription
+          included_quota_bytes: 21474836480   # 20 GiB
+          package_name: pro
+          price_unit: month
+          sort_order: 20
       - key: pro-yearly
         plan_id: PRO-YEARLY
         unit_amount: 20000           # ¥200.00
         currency: cny
         recurring_interval: year
+        plan:
+          display_name: "Pro 订阅（年付）"
+          kind: subscription
+          included_quota_bytes: 21474836480   # 每自然月 20 GiB，共 12 期
+          package_name: pro
+          price_unit: year
+          sort_order: 30
 
   - key: payg-topup                  # PAYG 预充值，一次性支付，非订阅
     name: "余额充值"
@@ -35,14 +49,35 @@ products:
         plan_id: PAYG-TOPUP-50
         unit_amount: 5000            # ¥50.00
         currency: cny
+        plan:
+          display_name: "余额充值 ¥50"
+          kind: paygo_topup
+          included_quota_bytes: 0    # 充值不发配额，只加余额
+          package_name: payg
+          price_unit: once
+          sort_order: 40
       - key: payg-topup-100
         plan_id: PAYG-TOPUP-100
         unit_amount: 10000           # ¥100.00
         currency: cny
+        plan:
+          display_name: "余额充值 ¥100"
+          kind: paygo_topup
+          included_quota_bytes: 0
+          package_name: payg
+          price_unit: once
+          sort_order: 41
       - key: payg-topup-500
         plan_id: PAYG-TOPUP-500
         unit_amount: 50000           # ¥500.00
         currency: cny
+        plan:
+          display_name: "余额充值 ¥500"
+          kind: paygo_topup
+          included_quota_bytes: 0
+          package_name: payg
+          price_unit: once
+          sort_order: 42
 
 # webhook endpoint 的 url 按环境模板化；脚本用 --env/--domain-base 参数渲染。
 # secret 只在创建时由 Stripe 返回一次，脚本会原样打印，不会写文件或落盘。
