@@ -2951,19 +2951,23 @@ func (h *handler) oauthCallback(c *gin.Context) {
 		return
 	}
 
+	// The provider already told us this address is verified — unverified
+	// profiles were rejected above — so we accept that as our verification
+	// rather than mailing a second code to an inbox the provider just proved
+	// the user controls. This is a deliberate funnel decision: a GitHub or
+	// Google signup lands in the console with the trial already active.
+	//
+	// It does grant proxy/VPN access at signup, since listAgentUsers and
+	// internalNetworkIdentities gate on EmailVerified. That is the intended
+	// trade: the abuse ceiling is one trial per provider-verified address,
+	// and the trial is bounded by the catalog's quota and expiry.
+	grantOnboardingTrial := false
+
 	if errors.Is(err, store.ErrUserNotFound) {
-		// Auto-register the OAuth user so they can sign in, but withhold full
-		// access until they complete our own email-verification round trip.
-		// EmailVerified stays false (the provider's verification is necessary
-		// but not sufficient) and no trial is provisioned yet — both happen in
-		// verifyEmail once the user enters the code we mail to this address.
-		// Proxy/VPN access is gated on EmailVerified (see listAgentUsers /
-		// internalNetworkIdentities); the console stays reachable because
-		// RequireActiveUser only checks Active.
 		user = &store.User{
 			Name:          profile.Name,
 			Email:         profile.Email,
-			EmailVerified: false,
+			EmailVerified: true,
 			Level:         store.LevelUser,
 			Role:          store.RoleUser,
 			Groups:        []string{"User"},
@@ -2973,12 +2977,27 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			respondError(c, http.StatusInternalServerError, "user_creation_failed", "failed to create user")
 			return
 		}
+		grantOnboardingTrial = true
 	} else {
 		user = existingUser
-		// Do NOT auto-verify a returning OAuth user: a prior unverified OAuth
-		// signup must still complete the email round trip, otherwise repeated
-		// OAuth logins would silently bypass the verification gate. Already
-		// verified users keep their status (no downgrade).
+		// Users who signed up through OAuth before this policy are still
+		// sitting unverified with no entitlements; the same provider proof
+		// clears them now. Already-verified users are untouched.
+		if !user.EmailVerified {
+			user.EmailVerified = true
+			if err := h.store.UpdateUser(ctx, user); err != nil {
+				respondError(c, http.StatusInternalServerError, "user_update_failed", "failed to verify user")
+				return
+			}
+			grantOnboardingTrial = true
+		}
+	}
+
+	// Only on the false -> true transition. provisionTrialEntitlements re-arms
+	// the quota window, so calling it on every OAuth login would hand the same
+	// account a fresh 7 days each time it signed in.
+	if grantOnboardingTrial {
+		h.provisionOnboardingTrial(ctx, user.ID)
 	}
 
 	// Always ensure identity record exists (bind OAuth ID to User Email)

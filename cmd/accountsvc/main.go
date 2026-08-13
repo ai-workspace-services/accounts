@@ -951,6 +951,11 @@ func billingSchemaStatements() []string {
 
 // ensureDefaultBillingPlans seeds the well-known catalog rows once; operator
 // edits are never overwritten (insert only when the plan id is absent).
+//
+// Because it is insert-only, changing a default here only affects databases
+// that have never been seeded. An environment already carrying the old row
+// keeps it, and must be corrected through the admin API so the change lands in
+// audit_logs — see roadmap/feature-subscription-billing-operations/12.
 func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 	if st == nil {
 		return nil
@@ -961,7 +966,7 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 			PlanID:             store.BillingPlanTrial7D,
 			DisplayName:        "7-Day Trial",
 			Kind:               "trial",
-			IncludedQuotaBytes: 10 * 1024 * 1024 * 1024, // 10 GiB
+			IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, // 5 GiB
 			PackageName:        "trial",
 			TrialDays:          7,
 			Active:             true,
