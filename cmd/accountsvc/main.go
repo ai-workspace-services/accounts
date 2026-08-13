@@ -878,6 +878,9 @@ func billingSchemaStatements() []string {
   kind TEXT NOT NULL DEFAULT 'subscription',
   included_quota_bytes BIGINT NOT NULL DEFAULT 0,
   package_name TEXT NOT NULL DEFAULT 'default',
+  price_amount BIGINT NOT NULL DEFAULT 0,
+  price_currency TEXT NOT NULL DEFAULT '',
+  price_unit TEXT NOT NULL DEFAULT '',
   price_multipliers JSONB NOT NULL DEFAULT '{}'::jsonb,
   features JSONB NOT NULL DEFAULT '{}'::jsonb,
   trial_days INTEGER NOT NULL DEFAULT 0,
@@ -886,6 +889,12 @@ func billingSchemaStatements() []string {
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )`,
+		// List price for the storefront. Stripe stays the authority on what is
+		// charged; these columns are what /prices and the user center display
+		// and what the ops console records in audit_logs when a price changes.
+		`ALTER TABLE public.billing_plans ADD COLUMN IF NOT EXISTS price_amount BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE public.billing_plans ADD COLUMN IF NOT EXISTS price_currency TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE public.billing_plans ADD COLUMN IF NOT EXISTS price_unit TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS public.stripe_webhook_events (
   event_id TEXT PRIMARY KEY,
   event_type TEXT NOT NULL DEFAULT '',

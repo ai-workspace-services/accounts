@@ -23,6 +23,9 @@ func scanBillingPlan(scanner interface{ Scan(dest ...any) error }) (*BillingPlan
 		&plan.Kind,
 		&plan.IncludedQuotaBytes,
 		&plan.PackageName,
+		&plan.PriceAmount,
+		&plan.PriceCurrency,
+		&plan.PriceUnit,
 		&multipliersJSON,
 		&featuresJSON,
 		&plan.TrialDays,
@@ -43,7 +46,7 @@ func scanBillingPlan(scanner interface{ Scan(dest ...any) error }) (*BillingPlan
 	return &plan, nil
 }
 
-const billingPlanColumns = `plan_id, stripe_price_id, display_name, kind, included_quota_bytes, package_name, price_multipliers, features, trial_days, active, sort_order, created_at, updated_at`
+const billingPlanColumns = `plan_id, stripe_price_id, display_name, kind, included_quota_bytes, package_name, price_amount, price_currency, price_unit, price_multipliers, features, trial_days, active, sort_order, created_at, updated_at`
 
 func (s *postgresStore) ListBillingPlans(ctx context.Context, includeInactive bool) ([]BillingPlan, error) {
 	query := `SELECT ` + billingPlanColumns + ` FROM billing_plans`
@@ -110,14 +113,17 @@ func (s *postgresStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan
 
 	const query = `
 		INSERT INTO billing_plans (
-			plan_id, stripe_price_id, display_name, kind, included_quota_bytes, package_name, price_multipliers, features, trial_days, active, sort_order
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			plan_id, stripe_price_id, display_name, kind, included_quota_bytes, package_name, price_amount, price_currency, price_unit, price_multipliers, features, trial_days, active, sort_order
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (plan_id) DO UPDATE SET
 			stripe_price_id = EXCLUDED.stripe_price_id,
 			display_name = EXCLUDED.display_name,
 			kind = EXCLUDED.kind,
 			included_quota_bytes = EXCLUDED.included_quota_bytes,
 			package_name = EXCLUDED.package_name,
+			price_amount = EXCLUDED.price_amount,
+			price_currency = EXCLUDED.price_currency,
+			price_unit = EXCLUDED.price_unit,
 			price_multipliers = EXCLUDED.price_multipliers,
 			features = EXCLUDED.features,
 			trial_days = EXCLUDED.trial_days,
@@ -135,6 +141,9 @@ func (s *postgresStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan
 		strings.TrimSpace(plan.Kind),
 		plan.IncludedQuotaBytes,
 		strings.TrimSpace(plan.PackageName),
+		plan.PriceAmount,
+		strings.ToUpper(strings.TrimSpace(plan.PriceCurrency)),
+		strings.TrimSpace(plan.PriceUnit),
 		multipliersJSON,
 		featuresJSON,
 		plan.TrialDays,

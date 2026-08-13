@@ -16,6 +16,13 @@ type BillingPlan struct {
 	Kind               string // trial | subscription | paygo_topup
 	IncludedQuotaBytes int64
 	PackageName        string
+	// PriceAmount is the list price in the currency's minor unit (cents, 分).
+	// Stripe remains the authority on what is actually charged; this is what
+	// the storefront displays and what the ops console audits when the price
+	// changes. Zero means "no list price published".
+	PriceAmount   int64
+	PriceCurrency string // ISO 4217, e.g. CNY / USD
+	PriceUnit     string // month | year | once | GB
 	PriceMultipliers   map[string]float64 // region/line/peak/offpeak, default 1.0
 	Features           map[string]any
 	TrialDays          int
