@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -405,7 +406,7 @@ func defaultOverlayNode(networkID string) store.OverlayNode {
 		Region:             envOrDefault("OVERLAY_GATEWAY_REGION", "jp"),
 		WireGuardPublicKey: envOrDefault("OVERLAY_GATEWAY_WG_PUBLIC_KEY", "1staGq8lmHFRFRFNj2QOFx/MPxb/1fFV4tawC6xSi1Q="),
 		WireGuardAddress:   normalizeOverlayHostAddress(envOrDefault("OVERLAY_GATEWAY_WG_ADDRESS", defaultOverlayCIDRPrefix+".1")),
-		EndpointHost:       envOrDefault("OVERLAY_GATEWAY_HOST", "xworkmate-bridge.svc.plus"),
+		EndpointHost:       configuredOverlayGatewayHost(),
 		EndpointPort:       envIntOrDefault("OVERLAY_GATEWAY_PORT", defaultOverlayTransportPort),
 		TransportType:      envOrDefault("OVERLAY_TRANSPORT_TYPE", overlayTransportType),
 		TransportSecurity:  envOrDefault("OVERLAY_TRANSPORT_SECURITY", overlayTransportSecurity),
@@ -414,6 +415,21 @@ func defaultOverlayNode(networkID string) store.OverlayNode {
 		TransportUUID:      strings.TrimSpace(os.Getenv("OVERLAY_TRANSPORT_UUID")),
 		Healthy:            true,
 	}
+}
+
+// configuredOverlayGatewayHost keeps the overlay endpoint aligned with the
+// managed Bridge profile. An explicit host still wins for a private overlay,
+// but an omitted configuration never routes a client to a source deployment.
+func configuredOverlayGatewayHost() string {
+	if host := strings.TrimSpace(os.Getenv("OVERLAY_GATEWAY_HOST")); host != "" {
+		return host
+	}
+	bridgeURL := strings.TrimSpace(os.Getenv("XWORKMATE_BRIDGE_SERVER_URL"))
+	parsed, err := url.Parse(bridgeURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
 }
 
 func overlayDevicePayload(device *store.OverlayDevice) gin.H {

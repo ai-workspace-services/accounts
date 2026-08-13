@@ -59,6 +59,10 @@ var xworkmateForbiddenTokenFields = map[string]struct{}{
 }
 
 func (h *handler) ensureSharedXWorkmateTenant(ctx context.Context) error {
+	sharedDomain := store.SharedTenantDomain()
+	if sharedDomain == "" {
+		return errors.New("XWORKMATE_SHARED_TENANT_DOMAIN is required")
+	}
 	tenant := &store.Tenant{
 		ID:      store.SharedXWorkmateTenantID,
 		Name:    store.SharedXWorkmateTenantName,
@@ -70,7 +74,7 @@ func (h *handler) ensureSharedXWorkmateTenant(ctx context.Context) error {
 
 	return h.store.EnsureTenantDomain(ctx, &store.TenantDomain{
 		TenantID:  tenant.ID,
-		Domain:    store.SharedXWorkmateDomain,
+		Domain:    sharedDomain,
 		Kind:      store.TenantDomainKindGenerated,
 		IsPrimary: true,
 		Status:    store.TenantDomainStatusVerified,
@@ -86,7 +90,7 @@ func (h *handler) resolveTenantHost(c *gin.Context) string {
 	if candidate := store.NormalizeHostname(c.Request.Host); candidate != "" {
 		return candidate
 	}
-	return store.SharedXWorkmateDomain
+	return ""
 }
 
 func (h *handler) resolveFrontendURL(c *gin.Context) string {
@@ -209,10 +213,7 @@ func (h *handler) resolveXWorkmateAccess(ctx context.Context, host string, user 
 		return nil, err
 	}
 
-	access := &xworkmateAccessContext{
-		Tenant: tenant,
-		Domain: store.SharedXWorkmateDomain,
-	}
+	access := &xworkmateAccessContext{Tenant: tenant, Domain: store.SharedTenantDomain()}
 	if domain != nil && strings.TrimSpace(domain.Domain) != "" {
 		access.Domain = domain.Domain
 	}

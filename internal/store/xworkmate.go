@@ -39,9 +39,10 @@ const (
 	XWorkmateSecretLocatorTargetAIGatewayAccessToken = "ai_gateway.access_token"
 	XWorkmateSecretLocatorTargetOllamaCloudAPIKey    = "ollama_cloud.api_key"
 
+	// This stable identifier preserves the existing shared tenant row during
+	// environment-domain migration; it is an opaque ID, not a public domain.
 	SharedXWorkmateTenantID   = "svc-plus-xworkmate"
-	SharedXWorkmateTenantName = "svc.plus XWorkmate"
-	SharedXWorkmateDomain     = "svc.plus"
+	SharedXWorkmateTenantName = "Shared XWorkmate"
 )
 
 var (
@@ -236,11 +237,7 @@ func NormalizeHostname(value string) string {
 func IsSharedTenantHost(host string) bool {
 	normalized := NormalizeHostname(host)
 	if normalized == "" {
-		return true
-	}
-	switch normalized {
-	case "svc.plus", "www.svc.plus", "console.svc.plus", "localhost", "127.0.0.1", "[::1]":
-		return true
+		return false
 	}
 	for _, configured := range ConfiguredSharedTenantDomains() {
 		if normalized == configured {
@@ -250,37 +247,54 @@ func IsSharedTenantHost(host string) bool {
 	return false
 }
 
+// SharedTenantDomain returns the primary shared tenant domain chosen by the
+// deployment. There is intentionally no source-zone fallback: a deployment
+// without this configuration must fail closed instead of sharing another
+// environment's tenant.
+func SharedTenantDomain() string {
+	if domain := NormalizeHostname(os.Getenv("XWORKMATE_SHARED_TENANT_DOMAIN")); domain != "" {
+		return domain
+	}
+	domains := ConfiguredSharedTenantDomains()
+	if len(domains) == 0 {
+		return ""
+	}
+	return domains[0]
+}
+
 // ConfiguredSharedTenantDomains returns the deployment-provided shared tenant
 // host list. TARGET_DOMAIN_BASE is rendered into this variable by the
 // web-saas playbook; keeping the list in configuration avoids coupling tenant
 // resolution to a particular public domain.
 func ConfiguredSharedTenantDomains() []string {
-	raw := os.Getenv("XWORKMATE_SHARED_TENANT_DOMAINS")
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
 	seen := make(map[string]struct{})
 	domains := make([]string, 0)
-	for _, value := range strings.Split(raw, ",") {
-		domain := NormalizeHostname(value)
-		if domain == "" {
-			continue
+	for _, raw := range []string{os.Getenv("XWORKMATE_SHARED_TENANT_DOMAIN"), os.Getenv("XWORKMATE_SHARED_TENANT_DOMAINS")} {
+		for _, value := range strings.Split(raw, ",") {
+			domain := NormalizeHostname(value)
+			if domain == "" {
+				continue
+			}
+			if _, ok := seen[domain]; ok {
+				continue
+			}
+			seen[domain] = struct{}{}
+			domains = append(domains, domain)
 		}
-		if _, ok := seen[domain]; ok {
-			continue
-		}
-		seen[domain] = struct{}{}
-		domains = append(domains, domain)
 	}
 	return domains
 }
 
 func GenerateRandomTenantDomain() (string, error) {
+	baseDomain := SharedTenantDomain()
+	if baseDomain == "" {
+		return "", errors.New("XWORKMATE_SHARED_TENANT_DOMAIN is required to generate a tenant domain")
+	}
 	buffer := make([]byte, 4)
 	if _, err := rand.Read(buffer); err != nil {
 		return "", fmt.Errorf("generate tenant domain: %w", err)
 	}
-	return fmt.Sprintf("xw-%s.svc.plus", hex.EncodeToString(buffer)), nil
+	return fmt.Sprintf("xw-%s.%s", hex.EncodeToString(buffer), baseDomain), nil
 }
 
 func NormalizeTenant(tenant *Tenant) {

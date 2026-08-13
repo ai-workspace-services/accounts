@@ -84,6 +84,13 @@ func (s *memoryStore) EnsureTenantDomain(ctx context.Context, domain *TenantDoma
 		domain.UpdatedAt = existing.UpdatedAt
 		return nil
 	}
+	if domain.IsPrimary {
+		for _, existingDomain := range s.tenantDomains {
+			if existingDomain.TenantID == domain.TenantID && existingDomain.Domain != domain.Domain {
+				existingDomain.IsPrimary = false
+			}
+		}
+	}
 
 	stored := &TenantDomain{
 		ID:        domain.ID,
@@ -154,7 +161,7 @@ func (s *memoryStore) ResolveTenantByHost(ctx context.Context, host string) (*Te
 			return nil, nil, ErrTenantNotFound
 		}
 		var domain *TenantDomain
-		if storedDomain, ok := s.tenantDomains[SharedXWorkmateDomain]; ok {
+		if storedDomain, ok := s.tenantDomains[SharedTenantDomain()]; ok {
 			domainCopy := *storedDomain
 			domain = &domainCopy
 		}

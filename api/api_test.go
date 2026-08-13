@@ -965,6 +965,7 @@ func TestSyncConfigAckReturnsReceipt(t *testing.T) {
 func TestOverlayDeviceRegisterAndConfigContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("OVERLAY_TRANSPORT_UUID", "11111111-1111-1111-1111-111111111111")
+	t.Setenv("XWORKMATE_BRIDGE_SERVER_URL", "https://bridge-uat.onwalk.net")
 
 	router, _, token := newAuthenticatedSyncHarness(t)
 	registerBody := bytes.NewBufferString(`{
@@ -1033,8 +1034,8 @@ func TestOverlayDeviceRegisterAndConfigContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected transport config object, got %#v", configPayload["transport"])
 	}
-	if got, _ := transport["server"].(string); got != "xworkmate-bridge.svc.plus" {
-		t.Fatalf("expected default gateway server, got %q", got)
+	if got, _ := transport["server"].(string); got != "bridge-uat.onwalk.net" {
+		t.Fatalf("expected managed gateway server, got %q", got)
 	}
 	if got, _ := transport["uuid"].(string); strings.TrimSpace(got) == "" {
 		t.Fatalf("expected transport uuid to be populated")
