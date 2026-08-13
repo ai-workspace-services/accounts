@@ -34,18 +34,19 @@ func TestIsSharedTenantHostUsesDeploymentConfiguredDomains(t *testing.T) {
 }
 
 func TestGenerateRandomTenantDomain(t *testing.T) {
-	t.Parallel()
+	t.Setenv("XWORKMATE_SHARED_TENANT_DOMAIN", "onwalk.net")
 
 	got, err := GenerateRandomTenantDomain()
 	if err != nil {
 		t.Fatalf("expected domain generation to succeed: %v", err)
 	}
-	if !strings.HasPrefix(got, "xw-") || !strings.HasSuffix(got, ".svc.plus") {
-		t.Fatalf("expected generated svc.plus tenant domain, got %q", got)
+	if !strings.HasPrefix(got, "xw-") || !strings.HasSuffix(got, ".onwalk.net") {
+		t.Fatalf("expected generated deployment tenant domain, got %q", got)
 	}
 }
 
 func TestMemoryStoreResolveTenantAndProfile(t *testing.T) {
+	t.Setenv("XWORKMATE_SHARED_TENANT_DOMAIN", "shared.test.invalid")
 	ctx := context.Background()
 	st := NewMemoryStore()
 
@@ -58,7 +59,7 @@ func TestMemoryStoreResolveTenantAndProfile(t *testing.T) {
 	}
 	if err := st.EnsureTenantDomain(ctx, &TenantDomain{
 		TenantID:  SharedXWorkmateTenantID,
-		Domain:    SharedXWorkmateDomain,
+		Domain:    SharedTenantDomain(),
 		Kind:      TenantDomainKindGenerated,
 		IsPrimary: true,
 		Status:    TenantDomainStatusVerified,
@@ -66,14 +67,14 @@ func TestMemoryStoreResolveTenantAndProfile(t *testing.T) {
 		t.Fatalf("ensure shared domain: %v", err)
 	}
 
-	tenant, domain, err := st.ResolveTenantByHost(ctx, "console.svc.plus")
+	tenant, domain, err := st.ResolveTenantByHost(ctx, SharedTenantDomain())
 	if err != nil {
 		t.Fatalf("resolve shared tenant: %v", err)
 	}
 	if tenant.ID != SharedXWorkmateTenantID {
 		t.Fatalf("expected shared tenant id, got %q", tenant.ID)
 	}
-	if domain == nil || domain.Domain != SharedXWorkmateDomain {
+	if domain == nil || domain.Domain != SharedTenantDomain() {
 		t.Fatalf("expected shared primary domain, got %#v", domain)
 	}
 

@@ -73,6 +73,13 @@ func resolveSharedXWorkmateBootstrapConfig() sharedXWorkmateBootstrapConfig {
 	}
 }
 
+// resolveSharedXWorkmateDomain makes the shared tenant a deployment concern.
+// An omitted variable must not recreate the legacy svc.plus tenant in a new
+// environment.
+func resolveSharedXWorkmateDomain() string {
+	return store.SharedTenantDomain()
+}
+
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		trimmed := strings.TrimSpace(value)
@@ -447,16 +454,16 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 		}
 	}
 
+	bootstrapEmail := strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_BOOTSTRAP_EMAIL")))
+	if bootstrapEmail == "" {
+		return errors.New("ROOT_BOOTSTRAP_EMAIL is required for the deployment root account")
+	}
+
 	if rootUser == nil {
 		bootstrapPassword := strings.TrimSpace(os.Getenv(rootBootstrapPasswordEnv))
 		if bootstrapPassword == "" {
 			return fmt.Errorf("root account missing: set %s to bootstrap it", rootBootstrapPasswordEnv)
 		}
-		bootstrapEmail := strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_BOOTSTRAP_EMAIL")))
-		if bootstrapEmail == "" {
-			return errors.New("root account missing: set ROOT_BOOTSTRAP_EMAIL to bootstrap it")
-		}
-
 		hashed, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
 		if err != nil {
 			return fmt.Errorf("hash root bootstrap password: %w", err)
@@ -484,7 +491,11 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 
 	if rootUser != nil {
 		updatedRoot := *rootUser
-		if enforceRootProfile(&updatedRoot) {
+		rootEmailChanged := !strings.EqualFold(strings.TrimSpace(updatedRoot.Email), bootstrapEmail)
+		if rootEmailChanged {
+			updatedRoot.Email = bootstrapEmail
+		}
+		if rootEmailChanged || enforceRootProfile(&updatedRoot) {
 			if err := st.UpdateUser(ctx, &updatedRoot); err != nil {
 				return fmt.Errorf("enforce root profile: %w", err)
 			}
@@ -501,8 +512,15 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 			continue
 		}
 		updated := user
-		if !enforceRootProfile(&updated) {
+		emailChanged := !strings.EqualFold(strings.TrimSpace(updated.Email), bootstrapEmail)
+		if emailChanged {
+			updated.Email = bootstrapEmail
+		}
+		if !emailChanged && !enforceRootProfile(&updated) {
 			continue
+		}
+		if emailChanged {
+			_ = enforceRootProfile(&updated)
 		}
 		if err := st.UpdateUser(ctx, &updated); err != nil {
 			return fmt.Errorf("normalize root user %q: %w", user.Email, err)
@@ -1050,9 +1068,13 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}); err != nil {
 		return fmt.Errorf("ensure shared xworkmate tenant: %w", err)
 	}
+	sharedTenantDomain := resolveSharedXWorkmateDomain()
+	if sharedTenantDomain == "" {
+		return errors.New("XWORKMATE_SHARED_TENANT_DOMAIN is required for the shared XWorkmate tenant")
+	}
 	if err := st.EnsureTenantDomain(ctx, &store.TenantDomain{
 		TenantID:  store.SharedXWorkmateTenantID,
-		Domain:    store.SharedXWorkmateDomain,
+		Domain:    sharedTenantDomain,
 		Kind:      store.TenantDomainKindGenerated,
 		IsPrimary: true,
 		Status:    store.TenantDomainStatusVerified,
@@ -1060,7 +1082,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		return fmt.Errorf("ensure shared xworkmate tenant domain: %w", err)
 	}
 	for _, domain := range store.ConfiguredSharedTenantDomains() {
-		if domain == store.SharedXWorkmateDomain {
+		if domain == sharedTenantDomain {
 			continue
 		}
 		if err := st.EnsureTenantDomain(ctx, &store.TenantDomain{
