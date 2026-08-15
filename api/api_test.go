@@ -346,6 +346,10 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
+	sandbox, err = st.GetUserByEmail(ctx, sandboxUserEmail)
+	if err != nil {
+		t.Fatalf("reload sandbox user: %v", err)
+	}
 
 	seenSandbox := false
 	seenNormal := false
@@ -353,8 +357,14 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 		if c.Email == strings.ToLower(strings.TrimSpace(sandbox.Email)) && strings.TrimSpace(c.ID) != "" {
 			seenSandbox = true
 		}
-		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) && strings.TrimSpace(c.ID) != "" {
-			seenNormal = true
+		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) {
+			if c.ID != normal.ProxyUUID {
+				t.Fatalf("expected normal client to use proxy UUID %q, got %q", normal.ProxyUUID, c.ID)
+			}
+			if c.ID == normal.ID {
+				t.Fatalf("normal client must not use internal identity UUID %q", normal.ID)
+			}
+			seenNormal = strings.TrimSpace(c.ID) != ""
 		}
 	}
 
@@ -365,11 +375,11 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 		t.Fatalf("expected normal client in response, got=%v", payload.Clients)
 	}
 	for _, c := range payload.Clients {
-		if c.Email == strings.ToLower(strings.TrimSpace(sandbox.Email)) && c.ID != sandbox.ID {
-			t.Fatalf("expected sandbox client ID %q to equal account UUID %q, got %q", sandbox.ID, sandbox.ID, c.ID)
+		if c.Email == strings.ToLower(strings.TrimSpace(sandbox.Email)) && c.ID != sandbox.ProxyUUID {
+			t.Fatalf("expected sandbox client ID %q to use proxy UUID, got %q", sandbox.ProxyUUID, c.ID)
 		}
-		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) && c.ID != normal.ID {
-			t.Fatalf("expected normal client ID %q to equal account UUID %q, got %q", normal.ID, normal.ID, c.ID)
+		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) && c.ID != normal.ProxyUUID {
+			t.Fatalf("expected normal client ID %q to use proxy UUID, got %q", normal.ProxyUUID, c.ID)
 		}
 	}
 }

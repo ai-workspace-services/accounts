@@ -76,7 +76,7 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 			sandboxUser := u
 			_ = h.ensureSandboxProxyUUID(c.Request.Context(), &sandboxUser)
 
-			id := strings.TrimSpace(sandboxUser.ID)
+			id := strings.TrimSpace(sandboxUser.ProxyUUID)
 			if id != "" {
 				clients = append(clients, xrayconfig.Client{
 					ID:    id,
@@ -102,7 +102,7 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 			continue
 		}
 
-		id := strings.TrimSpace(u.ID)
+		id := strings.TrimSpace(u.ProxyUUID)
 		if id == "" {
 			continue
 		}

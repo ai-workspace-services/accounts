@@ -2732,7 +2732,7 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 
 func sanitizeUser(user *store.User, challenge *mfaChallenge) gin.H {
 	identifier := strings.TrimSpace(user.ID)
-	proxyUUID := identifier
+	proxyUUID := strings.TrimSpace(user.ProxyUUID)
 	groups := user.Groups
 	if len(groups) == 0 {
 		groups = []string{}

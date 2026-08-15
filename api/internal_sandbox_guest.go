@@ -36,10 +36,17 @@ func (h *handler) internalSandboxGuest(c *gin.Context) {
 		return
 	}
 
-	proxyUUID := strings.TrimSpace(user.ID)
+	proxyUUID := strings.TrimSpace(user.ProxyUUID)
 	expiresAt := ""
 	if user.ProxyUUIDExpiresAt != nil {
 		expiresAt = user.ProxyUUIDExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if proxyUUID == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "proxy_uuid_unavailable",
+			"message": "proxy UUID is not provisioned for the sandbox account",
+		})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
