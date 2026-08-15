@@ -252,13 +252,14 @@ func newExportCmd() *cobra.Command {
 
 func newImportCmd() *cobra.Command {
 	var (
-		dsn            string
-		file           string
-		timeout        time.Duration
-		merge          bool
-		mergeStrategy  string
-		dryRun         bool
-		mergeAllowlist []string
+		dsn                 string
+		file                string
+		timeout             time.Duration
+		merge               bool
+		mergeStrategy       string
+		dryRun              bool
+		regenerateUserUUIDs bool
+		mergeAllowlist      []string
 	)
 
 	timeout = 5 * time.Minute
@@ -317,11 +318,12 @@ func newImportCmd() *cobra.Command {
 			defer cancel()
 
 			report, err := importer.Import(ctx, dsn, &dump, migrate.ImportOptions{
-				Merge:         merge,
-				MergeStrategy: migrate.MergeStrategy(mergeStrategy),
-				DryRun:        dryRun,
-				Allowlist:     allowlist,
-				LogWriter:     cmd.ErrOrStderr(),
+				Merge:               merge,
+				MergeStrategy:       migrate.MergeStrategy(mergeStrategy),
+				DryRun:              dryRun,
+				RegenerateUserUUIDs: regenerateUserUUIDs,
+				Allowlist:           allowlist,
+				LogWriter:           cmd.ErrOrStderr(),
 			})
 			if err != nil {
 				return err
@@ -347,6 +349,7 @@ func newImportCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&merge, "merge", false, "Enable additive merge behaviour")
 	cmd.Flags().StringVar(&mergeStrategy, "merge-strategy", "", "Merge strategy (replace, append, timestamp)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview the import without applying changes")
+	cmd.Flags().BoolVar(&regenerateUserUUIDs, "regenerate-user-uuids", false, "Assign new target identity UUIDs while preserving proxy UUIDs")
 	cmd.Flags().StringSliceVar(&mergeAllowlist, "merge-allowlist", nil, "User UUIDs allowed to merge (comma-separated or repeated)")
 
 	return cmd

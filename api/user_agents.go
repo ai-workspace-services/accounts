@@ -58,6 +58,13 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 	}
 
 	proxyUUID := strings.TrimSpace(user.ProxyUUID)
+	if proxyUUID == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "proxy_uuid_unavailable",
+			"message": "proxy UUID is not provisioned for this account",
+		})
+		return
+	}
 
 	if user.ProxyUUIDExpiresAt != nil && time.Now().UTC().After(*user.ProxyUUIDExpiresAt) {
 		// Sandbox renews access metadata hourly; never block it on expiry.
@@ -67,6 +74,13 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 				return
 			}
 			proxyUUID = strings.TrimSpace(user.ProxyUUID)
+			if proxyUUID == "" {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error":   "proxy_uuid_unavailable",
+					"message": "proxy UUID is not provisioned for this account",
+				})
+				return
+			}
 		} else {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":   "proxy_uuid_expired",
