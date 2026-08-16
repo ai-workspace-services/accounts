@@ -40,6 +40,13 @@ func (s *postgresStore) EnsureTenantDomain(ctx context.Context, domain *TenantDo
 	if domain.ID == "" {
 		domain.ID = uuid.NewString()
 	}
+	if domain.IsPrimary {
+		if _, err := s.db.ExecContext(ctx, `UPDATE tenant_domains
+SET is_primary = FALSE, updated_at = now()
+WHERE tenant_id = $1 AND domain <> $2 AND is_primary = TRUE`, domain.TenantID, domain.Domain); err != nil {
+			return err
+		}
+	}
 
 	query := `INSERT INTO tenant_domains (id, tenant_id, domain, kind, is_primary, status, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, now(), now())

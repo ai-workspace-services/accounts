@@ -57,7 +57,14 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		return
 	}
 
-	proxyUUID := strings.TrimSpace(user.ID)
+	proxyUUID := strings.TrimSpace(user.ProxyUUID)
+	if proxyUUID == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "proxy_uuid_unavailable",
+			"message": "proxy UUID is not provisioned for this account",
+		})
+		return
+	}
 
 	if user.ProxyUUIDExpiresAt != nil && time.Now().UTC().After(*user.ProxyUUIDExpiresAt) {
 		// Sandbox renews access metadata hourly; never block it on expiry.
@@ -66,7 +73,14 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "sandbox_uuid_rotation_failed"})
 				return
 			}
-			proxyUUID = strings.TrimSpace(user.ID)
+			proxyUUID = strings.TrimSpace(user.ProxyUUID)
+			if proxyUUID == "" {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error":   "proxy_uuid_unavailable",
+					"message": "proxy UUID is not provisioned for this account",
+				})
+				return
+			}
 		} else {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":   "proxy_uuid_expired",
@@ -147,7 +161,8 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 			host = normalizeHost(c.Request.Host)
 		}
 		if host == "" {
-			host = "accounts.svc.plus"
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "proxy_endpoint_unavailable"})
+			return
 		}
 
 		nodeName := nodeNameForHost(host)
@@ -286,11 +301,6 @@ func parseProxyNodeHosts(publicURL string, extraHosts []string) []string {
 
 	if len(hosts) == 0 {
 		appendHost(publicURL)
-	}
-
-	// Last resort fallback
-	if len(hosts) == 0 {
-		appendHost("accounts.svc.plus")
 	}
 
 	return hosts

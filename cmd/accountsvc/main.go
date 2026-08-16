@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -30,8 +32,10 @@ import (
 	"account/internal/auth"
 	"account/internal/mailer"
 	"account/internal/model"
+	"account/internal/observability"
 	"account/internal/service"
 	"account/internal/store"
+	"account/internal/tasksession"
 	"account/internal/xrayconfig"
 )
 
@@ -45,9 +49,6 @@ const (
 	SandboxEmail = "sandbox@svc.plus"
 	// ReviewEmail is the canonical email for the readonly App Review account.
 	ReviewEmail = "review@svc.plus"
-	// SharedXWorkmateBridgeServerURL is the managed bridge endpoint exposed to
-	// tenant-shared xworkmate clients such as the App Review account.
-	SharedXWorkmateBridgeServerURL = "https://xworkmate-bridge.svc.plus"
 )
 
 const (
@@ -65,21 +66,19 @@ var defaultReviewPermissions = []string{
 
 type sharedXWorkmateBootstrapConfig struct {
 	BridgeServerURL string
-	BridgeAuthToken string
 }
 
 func resolveSharedXWorkmateBootstrapConfig() sharedXWorkmateBootstrapConfig {
 	return sharedXWorkmateBootstrapConfig{
-		BridgeServerURL: firstNonEmptyString(
-			os.Getenv("XWORKMATE_BRIDGE_SERVER_URL"),
-			os.Getenv("BRIDGE_SERVER_URL"),
-			SharedXWorkmateBridgeServerURL,
-		),
-		BridgeAuthToken: firstNonEmptyString(
-			os.Getenv("BRIDGE_AUTH_TOKEN"),
-			os.Getenv("INTERNAL_SERVICE_TOKEN"),
-		),
+		BridgeServerURL: strings.TrimSpace(os.Getenv("XWORKMATE_BRIDGE_SERVER_URL")),
 	}
+}
+
+// resolveSharedXWorkmateDomain makes the shared tenant a deployment concern.
+// An omitted variable must not recreate the legacy svc.plus tenant in a new
+// environment.
+func resolveSharedXWorkmateDomain() string {
+	return store.SharedTenantDomain()
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -134,34 +133,28 @@ func upsertXWorkmateSecretLocator(
 	return next
 }
 
-func ensureSharedReviewXWorkmateProfile(
+// ensureSharedXWorkmateProfile seeds the tenant-scoped Bridge endpoint once per
+// Accounts runtime. Bridge credentials are deliberately not migrated here:
+// /xworkmate/profile/sync rotates and returns an individual credential only to
+// the authenticated user, so no user token is ever written to startup logs,
+// deployment state, or a shared profile.
+func ensureSharedXWorkmateProfile(
 	ctx context.Context,
 	st store.Store,
-	reviewCfg config.ReviewAccount,
 	bootstrap sharedXWorkmateBootstrapConfig,
-	writeSecret func(context.Context, store.XWorkmateSecretLocator, string) error,
 	logger *slog.Logger,
 ) error {
-	if !reviewCfg.Enabled {
-		return nil
-	}
-
 	bridgeServerURL := strings.TrimSpace(bootstrap.BridgeServerURL)
 	if bridgeServerURL == "" {
-		return fmt.Errorf("shared xworkmate bridge server url is required")
+		// A deployment without a managed Bridge stays usable for other Account
+		// functions. Profile sync will fail closed with the explicit
+		// bridge_server_url_unavailable contract until an operator configures it.
+		return nil
 	}
 	parsedBridgeURL, err := url.Parse(bridgeServerURL)
 	if err != nil || parsedBridgeURL.Scheme == "" || parsedBridgeURL.Host == "" {
 		return fmt.Errorf("shared xworkmate bridge server url is invalid: %q", bridgeServerURL)
 	}
-	bridgeAuthToken := strings.TrimSpace(bootstrap.BridgeAuthToken)
-	if bridgeAuthToken == "" {
-		return fmt.Errorf("shared xworkmate bridge auth token is required")
-	}
-	if writeSecret == nil {
-		return fmt.Errorf("xworkmate vault service is required for shared bridge bootstrap")
-	}
-
 	profile, err := st.GetXWorkmateProfile(
 		ctx,
 		store.SharedXWorkmateTenantID,
@@ -178,19 +171,11 @@ func ensureSharedReviewXWorkmateProfile(
 		}
 	}
 
-	locator := managedSharedXWorkmateBridgeLocator()
 	profile.BridgeServerURL = bridgeServerURL
 	profile.BridgeServerOrigin = normalizeBridgeServerOrigin(bridgeServerURL)
-	profile.SecretLocators = upsertXWorkmateSecretLocator(
-		profile.SecretLocators,
-		locator,
-	)
 
 	if err := st.UpsertXWorkmateProfile(ctx, profile); err != nil {
 		return fmt.Errorf("upsert shared xworkmate profile: %w", err)
-	}
-	if err := writeSecret(ctx, locator, bridgeAuthToken); err != nil {
-		return fmt.Errorf("persist shared bridge auth token: %w", err)
 	}
 	if logger != nil {
 		logger.Info(
@@ -400,7 +385,6 @@ func ensureSandboxUser(ctx context.Context, st store.Store, logger *slog.Logger)
 			sandboxUser.Groups = append(sandboxUser.Groups, "ReadOnly Role")
 		}
 
-		sandboxUser.ProxyUUID = strings.TrimSpace(sandboxUser.ID)
 		if sandboxUser.ProxyUUIDExpiresAt == nil {
 			sandboxUser.ProxyUUIDExpiresAt = &expiresAt
 		}
@@ -440,7 +424,6 @@ func startSandboxUUIDRotator(ctx context.Context, st store.Store, logger *slog.L
 				}
 
 				expiresAt := time.Now().UTC().Add(time.Hour)
-				user.ProxyUUID = strings.TrimSpace(user.ID)
 				user.ProxyUUIDExpiresAt = &expiresAt
 				if err := st.UpdateUser(context.Background(), user); err != nil {
 					if logger != nil {
@@ -472,14 +455,16 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 		}
 	}
 
-	defaultRootEmail := "admin@svc.plus"
+	bootstrapEmail := strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_BOOTSTRAP_EMAIL")))
+	if bootstrapEmail == "" {
+		return errors.New("ROOT_BOOTSTRAP_EMAIL is required for the deployment root account")
+	}
 
 	if rootUser == nil {
 		bootstrapPassword := strings.TrimSpace(os.Getenv(rootBootstrapPasswordEnv))
 		if bootstrapPassword == "" {
 			return fmt.Errorf("root account missing: set %s to bootstrap it", rootBootstrapPasswordEnv)
 		}
-
 		hashed, err := bcrypt.GenerateFromPassword([]byte(bootstrapPassword), bcrypt.DefaultCost)
 		if err != nil {
 			return fmt.Errorf("hash root bootstrap password: %w", err)
@@ -487,7 +472,7 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 
 		root := &store.User{
 			Name:          rootUsername,
-			Email:         defaultRootEmail,
+			Email:         bootstrapEmail,
 			PasswordHash:  string(hashed),
 			EmailVerified: true,
 			Role:          store.RoleRoot,
@@ -501,13 +486,17 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 		}
 		rootUser = root
 		if logger != nil {
-			logger.Warn("root account bootstrapped from environment variable", "email", defaultRootEmail)
+			logger.Warn("root account bootstrapped from deployment configuration", "email", bootstrapEmail)
 		}
 	}
 
 	if rootUser != nil {
 		updatedRoot := *rootUser
-		if enforceRootProfile(&updatedRoot) {
+		rootEmailChanged := !strings.EqualFold(strings.TrimSpace(updatedRoot.Email), bootstrapEmail)
+		if rootEmailChanged {
+			updatedRoot.Email = bootstrapEmail
+		}
+		if rootEmailChanged || enforceRootProfile(&updatedRoot) {
 			if err := st.UpdateUser(ctx, &updatedRoot); err != nil {
 				return fmt.Errorf("enforce root profile: %w", err)
 			}
@@ -520,27 +509,22 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 
 	for i := range users {
 		user := users[i]
-		if rootUser != nil && user.ID == rootUser.ID {
+		if !store.IsRootRole(user.Role) {
 			continue
 		}
-		if !store.IsAdminRole(user.Role) {
-			continue
-		}
-
 		updated := user
-		updated.Role = store.RoleOperator
-		updated.Level = store.LevelOperator
-		updated.Permissions = dropPermission(updated.Permissions, "*")
-		updated.Groups = dropGroup(updated.Groups, "Admin")
-		if len(updated.Groups) == 0 {
-			updated.Groups = []string{"Operator"}
+		emailChanged := !strings.EqualFold(strings.TrimSpace(updated.Email), bootstrapEmail)
+		if emailChanged {
+			updated.Email = bootstrapEmail
 		}
-
+		if !emailChanged && !enforceRootProfile(&updated) {
+			continue
+		}
+		if emailChanged {
+			_ = enforceRootProfile(&updated)
+		}
 		if err := st.UpdateUser(ctx, &updated); err != nil {
-			return fmt.Errorf("demote legacy root/admin user %q: %w", user.Email, err)
-		}
-		if logger != nil {
-			logger.Warn("demoted legacy root/admin account to operator", "userID", updated.ID, "email", updated.Email)
+			return fmt.Errorf("normalize root user %q: %w", user.Email, err)
 		}
 	}
 
@@ -660,24 +644,8 @@ func applyRBACSchema(ctx context.Context, db *gorm.DB, driver string) error {
   proxy_uuid_expires_at TIMESTAMPTZ
 )`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS proxy_uuid UUID NOT NULL DEFAULT gen_random_uuid()`,
-		// proxy_uuid is a compatibility column, not a second identity. Backfill
-		// existing rows before installing the invariant for fresh and upgraded
-		// UAT databases.
-		`UPDATE public.users SET proxy_uuid = uuid WHERE proxy_uuid IS DISTINCT FROM uuid`,
 		`ALTER TABLE public.users ALTER COLUMN proxy_uuid DROP DEFAULT`,
-		`DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'users_proxy_uuid_matches_uuid_ck'
-      AND conrelid = 'public.users'::regclass
-  ) THEN
-    ALTER TABLE public.users
-      ADD CONSTRAINT users_proxy_uuid_matches_uuid_ck
-      CHECK (proxy_uuid = uuid);
-  END IF;
-END
-$$`,
+		`ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_proxy_uuid_matches_uuid_ck`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS proxy_uuid_expires_at TIMESTAMPTZ`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
@@ -723,7 +691,7 @@ $$`,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (role_key, permission_key)
 )`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS users_single_root_role_uk ON public.users ((lower(role))) WHERE lower(role) = 'root'`,
+		`DROP INDEX IF EXISTS public.users_single_root_role_uk`,
 		`DO $$
 BEGIN
   IF EXISTS (
@@ -929,6 +897,9 @@ func billingSchemaStatements() []string {
   kind TEXT NOT NULL DEFAULT 'subscription',
   included_quota_bytes BIGINT NOT NULL DEFAULT 0,
   package_name TEXT NOT NULL DEFAULT 'default',
+  price_amount BIGINT NOT NULL DEFAULT 0,
+  price_currency TEXT NOT NULL DEFAULT '',
+  price_unit TEXT NOT NULL DEFAULT '',
   price_multipliers JSONB NOT NULL DEFAULT '{}'::jsonb,
   features JSONB NOT NULL DEFAULT '{}'::jsonb,
   trial_days INTEGER NOT NULL DEFAULT 0,
@@ -937,6 +908,12 @@ func billingSchemaStatements() []string {
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )`,
+		// List price for the storefront. Stripe stays the authority on what is
+		// charged; these columns are what /prices and the user center display
+		// and what the ops console records in audit_logs when a price changes.
+		`ALTER TABLE public.billing_plans ADD COLUMN IF NOT EXISTS price_amount BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE public.billing_plans ADD COLUMN IF NOT EXISTS price_currency TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE public.billing_plans ADD COLUMN IF NOT EXISTS price_unit TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS public.stripe_webhook_events (
   event_id TEXT PRIMARY KEY,
   event_type TEXT NOT NULL DEFAULT '',
@@ -975,6 +952,11 @@ func billingSchemaStatements() []string {
 
 // ensureDefaultBillingPlans seeds the well-known catalog rows once; operator
 // edits are never overwritten (insert only when the plan id is absent).
+//
+// Because it is insert-only, changing a default here only affects databases
+// that have never been seeded. An environment already carrying the old row
+// keeps it, and must be corrected through the admin API so the change lands in
+// audit_logs — see roadmap/feature-subscription-billing-operations/12.
 func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 	if st == nil {
 		return nil
@@ -985,7 +967,7 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 			PlanID:             store.BillingPlanTrial7D,
 			DisplayName:        "7-Day Trial",
 			Kind:               "trial",
-			IncludedQuotaBytes: 10 * 1024 * 1024 * 1024, // 10 GiB
+			IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, // 5 GiB
 			PackageName:        "trial",
 			TrialDays:          7,
 			Active:             true,
@@ -1025,6 +1007,17 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if logger == nil {
 		logger = slog.Default()
 	}
+	logger = logger.With(observability.RuntimeLogAttrs("web-saas-accounts")...)
+	shutdownTracing, err := observability.Configure(ctx, "web-saas-accounts")
+	if err != nil {
+		logger.Warn("OTLP tracing disabled", "err", err)
+	} else {
+		defer func() {
+			if err := shutdownTracing(context.Background()); err != nil {
+				logger.Warn("failed to flush OTLP traces", "err", err)
+			}
+		}()
+	}
 
 	storeCfg := store.Config{
 		Driver:       cfg.Store.Driver,
@@ -1036,9 +1029,10 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	// Initialize business store with retries to account for sidecar startup
 	var st store.Store
 	var cleanup func(context.Context) error
-	var err error
 	for i := 0; i < 15; i++ {
-		st, cleanup, err = store.New(ctx, storeCfg)
+		attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		st, cleanup, err = store.New(attemptCtx, storeCfg)
+		cancel()
 		if err == nil {
 			break
 		}
@@ -1046,7 +1040,13 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			return err
 		}
 		slog.Warn("retrying business store connection...", "attempt", i+1, "err", err)
-		time.Sleep(2 * time.Second)
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("business store connection failed after sidecar wait: %w", err)
@@ -1091,17 +1091,36 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}); err != nil {
 		return fmt.Errorf("ensure shared xworkmate tenant: %w", err)
 	}
+	sharedTenantDomain := resolveSharedXWorkmateDomain()
+	if sharedTenantDomain == "" {
+		return errors.New("XWORKMATE_SHARED_TENANT_DOMAIN is required for the shared XWorkmate tenant")
+	}
 	if err := st.EnsureTenantDomain(ctx, &store.TenantDomain{
 		TenantID:  store.SharedXWorkmateTenantID,
-		Domain:    store.SharedXWorkmateDomain,
+		Domain:    sharedTenantDomain,
 		Kind:      store.TenantDomainKindGenerated,
 		IsPrimary: true,
 		Status:    store.TenantDomainStatusVerified,
 	}); err != nil {
 		return fmt.Errorf("ensure shared xworkmate tenant domain: %w", err)
 	}
+	for _, domain := range store.ConfiguredSharedTenantDomains() {
+		if domain == sharedTenantDomain {
+			continue
+		}
+		if err := st.EnsureTenantDomain(ctx, &store.TenantDomain{
+			TenantID:  store.SharedXWorkmateTenantID,
+			Domain:    domain,
+			Kind:      store.TenantDomainKindCustom,
+			IsPrimary: false,
+			Status:    store.TenantDomainStatusVerified,
+		}); err != nil {
+			return fmt.Errorf("ensure configured shared xworkmate tenant domain %q: %w", domain, err)
+		}
+	}
 
 	r := gin.New()
+	r.Use(otelgin.Middleware("web-saas-accounts"))
 	corsConfig := buildCORSConfig(logger, cfg.Server, st)
 	if corsConfig.AllowAllOrigins {
 		logger.Info("configured cors", "allowAllOrigins", true)
@@ -1113,7 +1132,9 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	r.Use(func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		logger.Info("request", "method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "latency", time.Since(start))
+		attrs := []any{"method", c.Request.Method, "path", c.FullPath(), "status", c.Writer.Status(), "latency", time.Since(start)}
+		attrs = append(attrs, observability.TraceLogAttrs(c.Request.Context())...)
+		logger.InfoContext(c.Request.Context(), "request", attrs...)
 	})
 
 	var emailSender api.EmailSender
@@ -1190,6 +1211,27 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 
 	if err := applyBillingSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
 		return fmt.Errorf("apply billing schema: %w", err)
+	}
+
+	// Bridge is the task-session runtime owner. Accounts only provisions and
+	// exposes the durable PostgreSQL control-plane contract. The existing API
+	// adapter is wired to that store in PostgreSQL environments so UAT never
+	// falls back to process-local session state.
+	taskSessionStore := tasksession.Store(tasksession.NewMemoryStore())
+	normalizedStoreDriver := strings.ToLower(strings.TrimSpace(cfg.Store.Driver))
+	if normalizedStoreDriver == "postgres" || normalizedStoreDriver == "postgresql" || normalizedStoreDriver == "pgx" {
+		sqlDB, err := gormDB.DB()
+		if err != nil {
+			return fmt.Errorf("open task session database: %w", err)
+		}
+		if err := tasksession.ApplyPostgresSchema(ctx, sqlDB); err != nil {
+			return fmt.Errorf("apply task session schema: %w", err)
+		}
+		postgresTaskSessions, err := tasksession.NewPostgresStore(sqlDB)
+		if err != nil {
+			return fmt.Errorf("initialize task session store: %w", err)
+		}
+		taskSessionStore = postgresTaskSessions
 	}
 
 	if err := ensureDefaultBillingPlans(ctx, st); err != nil {
@@ -1334,28 +1376,18 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if err != nil {
 		return err
 	}
-	if err := ensureSharedReviewXWorkmateProfile(
+	if err := ensureSharedXWorkmateProfile(
 		ctx,
 		st,
-		cfg.ReviewAccount,
 		resolveSharedXWorkmateBootstrapConfig(),
-		func(
-			ctx context.Context,
-			locator store.XWorkmateSecretLocator,
-			value string,
-		) error {
-			if xworkmateVaultService == nil {
-				return errors.New("xworkmate vault service is unavailable")
-			}
-			return xworkmateVaultService.WriteSecret(ctx, locator, value)
-		},
 		logger,
 	); err != nil {
-		logger.Warn("failed to ensure shared review xworkmate profile", "err", err)
+		logger.Warn("failed to ensure shared xworkmate profile", "err", err)
 	}
 
 	options := []api.Option{
 		api.WithStore(st),
+		api.WithTaskSessionStore(taskSessionStore),
 		api.WithSessionTTL(cfg.Session.TTL),
 		api.WithEmailSender(emailSender),
 		api.WithEmailVerification(emailVerificationEnabled),
@@ -1413,6 +1445,19 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	options = append(options, api.WithOAuthProviders(oauthProviders))
 	options = append(options, api.WithAgentRegistry(agentRegistry))
 	options = append(options, api.WithGormDB(gormDB))
+	if sqlDB, dbErr := gormDB.DB(); dbErr != nil {
+		return fmt.Errorf("open admin settings sql db: %w", dbErr)
+	} else {
+		businessDB, _ := st.(interface{ Ping(context.Context) error })
+		options = append(options, api.WithDBHealth(func(probeCtx context.Context) error {
+			if businessDB != nil {
+				if err := businessDB.Ping(probeCtx); err != nil {
+					return err
+				}
+			}
+			return sqlDB.PingContext(probeCtx)
+		}))
+	}
 
 	// Pre-load sandbox bindings from database into the registry
 	if agentRegistry != nil {
@@ -1687,7 +1732,7 @@ var rootCmd = &cobra.Command{
 			level = slog.LevelError
 		}
 
-		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+		logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 		slog.SetDefault(logger)
 
 		ctx := context.Background()
@@ -1712,10 +1757,13 @@ var rootCmd = &cobra.Command{
 func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) error, error) {
 	driver := strings.ToLower(strings.TrimSpace(cfg.Driver))
 	var (
-		db  *gorm.DB
-		err error
+		db    *gorm.DB
+		sqlDB *sql.DB
+		err   error
 	)
 	for i := 0; i < 15; i++ {
+		db = nil
+		sqlDB = nil
 		switch driver {
 		case "", "memory":
 			db, err = gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
@@ -1729,7 +1777,18 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		}
 
 		if err == nil {
+			sqlDB, err = db.DB()
+		}
+		if err == nil {
+			probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			err = sqlDB.PingContext(probeCtx)
+			cancel()
+		}
+		if err == nil {
 			break
+		}
+		if sqlDB != nil {
+			_ = sqlDB.Close()
 		}
 		if driver == "" || driver == "memory" {
 			return nil, nil, err
@@ -1753,10 +1812,6 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		return nil, nil, err
 	}
 
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, nil, err
-	}
 	if cfg.MaxOpenConns > 0 {
 		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
 	}

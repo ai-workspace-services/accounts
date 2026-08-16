@@ -38,6 +38,7 @@ func newXWorkmateTestHarnessForUser(t *testing.T, user *store.User) (*gin.Engine
 
 func newXWorkmateTestHarnessWithVault(t *testing.T, user *store.User, vaultService xworkmateVaultService) (*gin.Engine, *store.User, string) {
 	t.Helper()
+	t.Setenv("XWORKMATE_SHARED_TENANT_DOMAIN", "shared.test.invalid")
 
 	ctx := context.Background()
 	st := store.NewMemoryStore()
@@ -181,7 +182,7 @@ func TestGetXWorkmateProfileSyncReturnsManagedBridgeCredentials(t *testing.T) {
 	putProfileReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
 	putProfileReq.Header.Set("Content-Type", "application/json")
 	putProfileReq.Header.Set("Authorization", "Bearer "+token)
-	putProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putProfileReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	putProfileRec := httptest.NewRecorder()
 	router.ServeHTTP(putProfileRec, putProfileReq)
 	if putProfileRec.Code != http.StatusOK {
@@ -199,7 +200,7 @@ func TestGetXWorkmateProfileSyncReturnsManagedBridgeCredentials(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile/sync", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -216,14 +217,13 @@ func TestGetXWorkmateProfileSyncReturnsManagedBridgeCredentials(t *testing.T) {
 	if payload.BridgeServerURL != "wss://openclaw.example.com" {
 		t.Fatalf("expected bridge server url, got %#v", payload)
 	}
-	if payload.BridgeAuthToken != "shared-token-value" {
-		t.Fatalf("expected bridge auth token, got %#v", payload)
+	if payload.BridgeAuthToken == "" || payload.BridgeAuthToken == "shared-token-value" {
+		t.Fatalf("expected a user-scoped bridge credential token, got %#v", payload)
 	}
 }
 
-func TestGetXWorkmateProfileSyncReturnsReviewBridgeTokenForReviewAccount(t *testing.T) {
+func TestGetXWorkmateProfileSyncReturnsUserScopedCredentialForReviewAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("BRIDGE_REVIEW_AUTH_TOKEN", "review-token-value")
 
 	vaultService := newMemoryXWorkmateVaultService()
 	router, _, token := newXWorkmateTestHarnessWithVault(t, &store.User{
@@ -256,7 +256,7 @@ func TestGetXWorkmateProfileSyncReturnsReviewBridgeTokenForReviewAccount(t *test
 	putProfileReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
 	putProfileReq.Header.Set("Content-Type", "application/json")
 	putProfileReq.Header.Set("Authorization", "Bearer "+token)
-	putProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putProfileReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	putProfileRec := httptest.NewRecorder()
 	router.ServeHTTP(putProfileRec, putProfileReq)
 	if putProfileRec.Code != http.StatusOK {
@@ -274,7 +274,7 @@ func TestGetXWorkmateProfileSyncReturnsReviewBridgeTokenForReviewAccount(t *test
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile/sync", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -291,15 +291,12 @@ func TestGetXWorkmateProfileSyncReturnsReviewBridgeTokenForReviewAccount(t *test
 	if payload.BridgeServerURL != "https://xworkmate-bridge.svc.plus" {
 		t.Fatalf("expected bridge server url, got %#v", payload)
 	}
-	if payload.BridgeAuthToken != "review-token-value" {
-		t.Fatalf("expected review bridge auth token, got %#v", payload)
-	}
-	if payload.BridgeAuthToken == "production-token-value" {
-		t.Fatalf("review account must not receive production bridge token")
+	if payload.BridgeAuthToken == "" || payload.BridgeAuthToken == "production-token-value" {
+		t.Fatalf("review account must receive its own bridge credential, got %#v", payload)
 	}
 }
 
-func TestGetXWorkmateProfileSyncRejectsReviewAccountWithoutReviewBridgeToken(t *testing.T) {
+func TestGetXWorkmateProfileSyncDoesNotRequireReviewStaticToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	vaultService := newMemoryXWorkmateVaultService()
@@ -333,7 +330,7 @@ func TestGetXWorkmateProfileSyncRejectsReviewAccountWithoutReviewBridgeToken(t *
 	putProfileReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
 	putProfileReq.Header.Set("Content-Type", "application/json")
 	putProfileReq.Header.Set("Authorization", "Bearer "+token)
-	putProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putProfileReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	putProfileRec := httptest.NewRecorder()
 	router.ServeHTTP(putProfileRec, putProfileReq)
 	if putProfileRec.Code != http.StatusOK {
@@ -351,14 +348,11 @@ func TestGetXWorkmateProfileSyncRejectsReviewAccountWithoutReviewBridgeToken(t *
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile/sync", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected profile sync conflict, got %d: %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "bridge_review_auth_token_unavailable") {
-		t.Fatalf("expected review token error, got %s", rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected profile sync success, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -390,7 +384,7 @@ func TestGetXWorkmateProfileSyncConflictsWhenManagedBridgeContractMissing(t *tes
 		putReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
 		putReq.Header.Set("Content-Type", "application/json")
 		putReq.Header.Set("Authorization", "Bearer "+token)
-		putReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+		putReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 		putRec := httptest.NewRecorder()
 		router.ServeHTTP(putRec, putReq)
 		if putRec.Code != http.StatusOK {
@@ -408,7 +402,7 @@ func TestGetXWorkmateProfileSyncConflictsWhenManagedBridgeContractMissing(t *tes
 
 		req := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile/sync", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+		req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 		if rec.Code != http.StatusConflict {
@@ -416,7 +410,7 @@ func TestGetXWorkmateProfileSyncConflictsWhenManagedBridgeContractMissing(t *tes
 		}
 	})
 
-	t.Run("missing bridge auth token", func(t *testing.T) {
+	t.Run("missing legacy bridge auth token still issues user credential", func(t *testing.T) {
 		vaultService := newMemoryXWorkmateVaultService()
 		router, _, token := newXWorkmateTestHarnessWithVault(t, nil, vaultService)
 
@@ -432,7 +426,7 @@ func TestGetXWorkmateProfileSyncConflictsWhenManagedBridgeContractMissing(t *tes
 		putReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
 		putReq.Header.Set("Content-Type", "application/json")
 		putReq.Header.Set("Authorization", "Bearer "+token)
-		putReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+		putReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 		putRec := httptest.NewRecorder()
 		router.ServeHTTP(putRec, putReq)
 		if putRec.Code != http.StatusOK {
@@ -441,11 +435,11 @@ func TestGetXWorkmateProfileSyncConflictsWhenManagedBridgeContractMissing(t *tes
 
 		req := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile/sync", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+		req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
-		if rec.Code != http.StatusConflict {
-			t.Fatalf("expected profile sync conflict, got %d: %s", rec.Code, rec.Body.String())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected profile sync success, got %d: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
@@ -462,7 +456,7 @@ func TestXWorkmateBridgeBootstrapRoutesRemoved(t *testing.T) {
 	}
 	for _, req := range requests {
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+		req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
@@ -477,7 +471,7 @@ func TestGetXWorkmateProfileSyncRequiresSession(t *testing.T) {
 
 	router, _, _ := newXWorkmateTestHarness(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile/sync", nil)
-	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -522,7 +516,7 @@ func TestUpdateAndGetXWorkmateProfileRoundTripsSecretLocators(t *testing.T) {
 	putReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(body))
 	putReq.Header.Set("Content-Type", "application/json")
 	putReq.Header.Set("Authorization", "Bearer "+token)
-	putReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	putRec := httptest.NewRecorder()
 	router.ServeHTTP(putRec, putReq)
 	if putRec.Code != http.StatusOK {
@@ -531,7 +525,7 @@ func TestUpdateAndGetXWorkmateProfileRoundTripsSecretLocators(t *testing.T) {
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile", nil)
 	getReq.Header.Set("Authorization", "Bearer "+token)
-	getReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	getReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	getRec := httptest.NewRecorder()
 	router.ServeHTTP(getRec, getReq)
 	if getRec.Code != http.StatusOK {
@@ -614,7 +608,7 @@ func TestUpdateXWorkmateProfileSynthesizesSecretLocatorsFromLegacyFields(t *test
 	putReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(body))
 	putReq.Header.Set("Content-Type", "application/json")
 	putReq.Header.Set("Authorization", "Bearer "+token)
-	putReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	putRec := httptest.NewRecorder()
 	router.ServeHTTP(putRec, putReq)
 	if putRec.Code != http.StatusOK {
@@ -623,7 +617,7 @@ func TestUpdateXWorkmateProfileSynthesizesSecretLocatorsFromLegacyFields(t *test
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile", nil)
 	getReq.Header.Set("Authorization", "Bearer "+token)
-	getReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	getReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	getRec := httptest.NewRecorder()
 	router.ServeHTTP(getRec, getReq)
 	if getRec.Code != http.StatusOK {
@@ -690,7 +684,7 @@ func TestGetXWorkmateProfileFallsBackWhenVaultStatusReadFails(t *testing.T) {
 	putReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(body))
 	putReq.Header.Set("Content-Type", "application/json")
 	putReq.Header.Set("Authorization", "Bearer "+token)
-	putReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	putRec := httptest.NewRecorder()
 	router.ServeHTTP(putRec, putReq)
 	if putRec.Code != http.StatusOK {
@@ -699,7 +693,7 @@ func TestGetXWorkmateProfileFallsBackWhenVaultStatusReadFails(t *testing.T) {
 
 	getReq := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile", nil)
 	getReq.Header.Set("Authorization", "Bearer "+token)
-	getReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	getReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	getRec := httptest.NewRecorder()
 	router.ServeHTTP(getRec, getReq)
 	if getRec.Code != http.StatusOK {
@@ -788,7 +782,7 @@ func TestUpdateXWorkmateProfileRejectsNestedRawTokenFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -827,7 +821,7 @@ func TestXWorkmateSecretsWriteReadDeleteAndKeepLocatorMetadata(t *testing.T) {
 	putProfileReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
 	putProfileReq.Header.Set("Content-Type", "application/json")
 	putProfileReq.Header.Set("Authorization", "Bearer "+token)
-	putProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putProfileReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	putProfileRec := httptest.NewRecorder()
 	router.ServeHTTP(putProfileRec, putProfileReq)
 	if putProfileRec.Code != http.StatusOK {
@@ -847,7 +841,7 @@ func TestXWorkmateSecretsWriteReadDeleteAndKeepLocatorMetadata(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/secrets/"+target, bytes.NewReader(secretBody))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+		req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -860,7 +854,7 @@ func TestXWorkmateSecretsWriteReadDeleteAndKeepLocatorMetadata(t *testing.T) {
 
 	getSecretsReq := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/secrets", nil)
 	getSecretsReq.Header.Set("Authorization", "Bearer "+token)
-	getSecretsReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	getSecretsReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	getSecretsRec := httptest.NewRecorder()
 	router.ServeHTTP(getSecretsRec, getSecretsReq)
 	if getSecretsRec.Code != http.StatusOK {
@@ -872,7 +866,7 @@ func TestXWorkmateSecretsWriteReadDeleteAndKeepLocatorMetadata(t *testing.T) {
 
 	getProfileReq := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile", nil)
 	getProfileReq.Header.Set("Authorization", "Bearer "+token)
-	getProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	getProfileReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	getProfileRec := httptest.NewRecorder()
 	router.ServeHTTP(getProfileRec, getProfileReq)
 	if getProfileRec.Code != http.StatusOK {
@@ -908,7 +902,7 @@ func TestXWorkmateSecretsWriteReadDeleteAndKeepLocatorMetadata(t *testing.T) {
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/auth/xworkmate/secrets/"+store.XWorkmateSecretLocatorTargetBridgeAuthToken, nil)
 	deleteReq.Header.Set("Authorization", "Bearer "+token)
-	deleteReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	deleteReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	deleteRec := httptest.NewRecorder()
 	router.ServeHTTP(deleteRec, deleteReq)
 	if deleteRec.Code != http.StatusOK {
@@ -917,7 +911,7 @@ func TestXWorkmateSecretsWriteReadDeleteAndKeepLocatorMetadata(t *testing.T) {
 
 	getProfileAfterDeleteReq := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile", nil)
 	getProfileAfterDeleteReq.Header.Set("Authorization", "Bearer "+token)
-	getProfileAfterDeleteReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	getProfileAfterDeleteReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	getProfileAfterDeleteRec := httptest.NewRecorder()
 	router.ServeHTTP(getProfileAfterDeleteRec, getProfileAfterDeleteReq)
 	if getProfileAfterDeleteRec.Code != http.StatusOK {
@@ -970,7 +964,7 @@ func TestXWorkmateSharedSecretsRequireAdminMembershipForWrites(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/secrets/"+store.XWorkmateSecretLocatorTargetBridgeAuthToken, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 

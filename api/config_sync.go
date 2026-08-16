@@ -3,6 +3,8 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -34,6 +36,10 @@ func (h *handler) syncConfig(c *gin.Context) {
 func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	user, ok := h.requireAuthenticatedUser(c)
 	if !ok {
+		return
+	}
+	if strings.TrimSpace(user.ProxyUUID) == "" {
+		respondError(c, http.StatusServiceUnavailable, "proxy_uuid_unavailable", "proxy UUID is not provisioned for this account")
 		return
 	}
 
@@ -76,7 +82,7 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	profiles := []gin.H{}
 	nodes := []gin.H{}
 	if changed {
-		proxyUUID := strings.TrimSpace(user.ID)
+		proxyUUID := strings.TrimSpace(user.ProxyUUID)
 
 		// Collect node hosts from registered agents + publicURL fallback.
 		registeredHosts, registeredNames := registeredNodeMetadata(h.agentStatusReader)
@@ -215,10 +221,13 @@ func (h *handler) renderUserXrayConfig(user *store.User) (string, string, []stri
 
 	domain := extractHostFromPublicURL(h.publicURL)
 	if domain == "" {
-		domain = "accounts.svc.plus"
+		return "", "", nil, errors.New("xray domain is not configured")
 	}
 
-	clientID := strings.TrimSpace(user.ID)
+	clientID := strings.TrimSpace(user.ProxyUUID)
+	if clientID == "" {
+		return "", "", nil, fmt.Errorf("proxy UUID is not provisioned for account %q", strings.TrimSpace(user.ID))
+	}
 	clients := []xrayconfig.Client{{
 		ID:    clientID,
 		Email: strings.TrimSpace(user.ID),

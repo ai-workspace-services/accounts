@@ -66,8 +66,6 @@ spec:
             secretKeyRef:
               name: bridge-review-auth-token
               key: latest
-        - name: BRIDGE_SERVER_URL
-          value: "https://xworkmate-bridge.svc.plus"
         # --- Auth / OAuth Configuration ---
         - name: GITHUB_CLIENT_ID
           value: "Ov23lioecyD2bjWNQJr0"

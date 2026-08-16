@@ -30,6 +30,7 @@ import (
 	"account/internal/auth"
 	"account/internal/service"
 	"account/internal/store"
+	"account/internal/tasksession"
 )
 
 const defaultSessionTTL = 24 * time.Hour
@@ -92,7 +93,15 @@ type handler struct {
 	xrayConfigRenderer        func(*store.User) (string, string, []string, error)
 	agentRegistry             agentRegistry
 	db                        *gorm.DB
+	dbHealth                  func(context.Context) error
 	stripe                    *stripeClient
+	bridgeCredentials         map[string]memoryBridgeCredential
+	taskSessions              tasksession.Store
+}
+
+type memoryBridgeCredential struct {
+	CredentialUUID string
+	Token          string
 }
 
 type agentRegistry interface {
@@ -144,6 +153,17 @@ func WithStore(st store.Store) Option {
 	return func(h *handler) {
 		if st != nil {
 			h.store = st
+		}
+	}
+}
+
+// WithTaskSessionStore overrides the lightweight shared-session control plane.
+// Production wiring can provide a Postgres-backed implementation; tests and
+// local development use the in-memory implementation by default.
+func WithTaskSessionStore(st tasksession.Store) Option {
+	return func(h *handler) {
+		if st != nil {
+			h.taskSessions = st
 		}
 	}
 }
@@ -287,6 +307,16 @@ func WithGormDB(db *gorm.DB) Option {
 	}
 }
 
+// WithDBHealth configures the readiness probe for the single active database.
+// It deliberately accepts one probe rather than a list of endpoints: account
+// writes must always go to one configured primary, never to an in-process
+// failover or dual-write set.
+func WithDBHealth(probe func(context.Context) error) Option {
+	return func(h *handler) {
+		h.dbHealth = probe
+	}
+}
+
 // WithStripeConfig configures Stripe billing integration.
 func WithStripeConfig(cfg StripeConfig) Option {
 	return func(h *handler) {
@@ -298,6 +328,7 @@ func WithStripeConfig(cfg StripeConfig) Option {
 func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	h := &handler{
 		store:                     store.NewMemoryStore(),
+		taskSessions:              tasksession.NewMemoryStore(),
 		sessionTTL:                defaultSessionTTL,
 		mfaChallenges:             make(map[string]mfaChallenge),
 		mfaChallengeTTL:           defaultMFAChallengeTTL,
@@ -311,6 +342,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		passwordResets:            make(map[string]passwordReset),
 		oauthExchangeCodes:        make(map[string]oauthExchangeCode),
 		oauthExchangeTTL:          defaultOAuthExchangeCodeTTL,
+		bridgeCredentials:         make(map[string]memoryBridgeCredential),
 	}
 
 	for _, opt := range opts {
@@ -323,6 +355,29 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	r.GET("/readyz", func(c *gin.Context) {
+		if h.dbHealth == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":   "not_ready",
+				"database": "not_configured",
+			})
+			return
+		}
+		probeCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		if err := h.dbHealth(probeCtx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":   "not_ready",
+				"database": "unavailable",
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":   "ready",
+			"database": "ok",
+		})
 	})
 
 	r.GET("/api/ping", func(c *gin.Context) {
@@ -453,6 +508,17 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	authProtected.GET("/users", h.listUsers)
 
+	// Shared task-session control plane. This is intentionally outside
+	// /api/auth so Web and Desktop clients can share one stable resource path.
+	taskProtected := r.Group("/api/task-sessions")
+	if h.tokenService != nil {
+		taskProtected.Use(h.tokenService.AuthMiddleware())
+		taskProtected.Use(auth.RequireActiveUser(h.store))
+	}
+	taskProtected.POST("", h.createTaskSession)
+	taskProtected.GET("/:sessionID", h.getTaskSession)
+	taskProtected.POST("/:sessionID/events", h.appendTaskSessionEvent)
+
 	// Internal routes for service-to-service reads.
 	internalGroup := r.Group("/api/internal")
 
@@ -463,6 +529,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup.GET("/public-overview", h.internalPublicOverview)
 	internalGroup.GET("/sandbox/guest", h.internalSandboxGuest)
 	internalGroup.GET("/network/identities", h.internalNetworkIdentities)
+	internalGroup.POST("/bridge/credentials/introspect", h.introspectBridgeCredential)
 	internalGroup.GET("/policy/:accountUUID", h.internalAccountPolicy)
 	internalGroup.POST("/nodes/heartbeat", h.internalNodeHeartbeat)
 	internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
@@ -2699,7 +2766,7 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 
 func sanitizeUser(user *store.User, challenge *mfaChallenge) gin.H {
 	identifier := strings.TrimSpace(user.ID)
-	proxyUUID := identifier
+	proxyUUID := strings.TrimSpace(user.ProxyUUID)
 	groups := user.Groups
 	if len(groups) == 0 {
 		groups = []string{}
@@ -2918,19 +2985,23 @@ func (h *handler) oauthCallback(c *gin.Context) {
 		return
 	}
 
+	// The provider already told us this address is verified — unverified
+	// profiles were rejected above — so we accept that as our verification
+	// rather than mailing a second code to an inbox the provider just proved
+	// the user controls. This is a deliberate funnel decision: a GitHub or
+	// Google signup lands in the console with the trial already active.
+	//
+	// It does grant proxy/VPN access at signup, since listAgentUsers and
+	// internalNetworkIdentities gate on EmailVerified. That is the intended
+	// trade: the abuse ceiling is one trial per provider-verified address,
+	// and the trial is bounded by the catalog's quota and expiry.
+	grantOnboardingTrial := false
+
 	if errors.Is(err, store.ErrUserNotFound) {
-		// Auto-register the OAuth user so they can sign in, but withhold full
-		// access until they complete our own email-verification round trip.
-		// EmailVerified stays false (the provider's verification is necessary
-		// but not sufficient) and no trial is provisioned yet — both happen in
-		// verifyEmail once the user enters the code we mail to this address.
-		// Proxy/VPN access is gated on EmailVerified (see listAgentUsers /
-		// internalNetworkIdentities); the console stays reachable because
-		// RequireActiveUser only checks Active.
 		user = &store.User{
 			Name:          profile.Name,
 			Email:         profile.Email,
-			EmailVerified: false,
+			EmailVerified: true,
 			Level:         store.LevelUser,
 			Role:          store.RoleUser,
 			Groups:        []string{"User"},
@@ -2940,12 +3011,27 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			respondError(c, http.StatusInternalServerError, "user_creation_failed", "failed to create user")
 			return
 		}
+		grantOnboardingTrial = true
 	} else {
 		user = existingUser
-		// Do NOT auto-verify a returning OAuth user: a prior unverified OAuth
-		// signup must still complete the email round trip, otherwise repeated
-		// OAuth logins would silently bypass the verification gate. Already
-		// verified users keep their status (no downgrade).
+		// Users who signed up through OAuth before this policy are still
+		// sitting unverified with no entitlements; the same provider proof
+		// clears them now. Already-verified users are untouched.
+		if !user.EmailVerified {
+			user.EmailVerified = true
+			if err := h.store.UpdateUser(ctx, user); err != nil {
+				respondError(c, http.StatusInternalServerError, "user_update_failed", "failed to verify user")
+				return
+			}
+			grantOnboardingTrial = true
+		}
+	}
+
+	// Only on the false -> true transition. provisionTrialEntitlements re-arms
+	// the quota window, so calling it on every OAuth login would hand the same
+	// account a fresh 7 days each time it signed in.
+	if grantOnboardingTrial {
+		h.provisionOnboardingTrial(ctx, user.ID)
 	}
 
 	// Always ensure identity record exists (bind OAuth ID to User Email)

@@ -2,7 +2,6 @@ package tasksession
 
 import (
 	"context"
-	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ const (
 	defaultNamespaceMaxActive = 2
 	defaultGlobalMaxActive    = 5
 	maxEventPayloadBytes      = 16 * 1024
+	maxSnapshotBytes          = 128 * 1024
 )
 
 // Store is the small control-plane contract shared by the API and scheduler.
@@ -26,9 +26,242 @@ type Store interface {
 	CreateSession(context.Context, CreateSessionInput) (Session, error)
 	GetSession(context.Context, string, string, string) (Session, error)
 	AppendEvent(context.Context, AppendEventInput) (Event, error)
+	AppendMessage(context.Context, AppendMessageInput) (MessageCommandResult, error)
 	GetSnapshot(context.Context, string, string) (Snapshot, error)
+	ListEvents(context.Context, string, string, int64, int) ([]Event, error)
 	EnqueueTaskRun(context.Context, EnqueueTaskRunInput) (TaskRun, error)
 	ClaimNext(context.Context, ClaimInput) (TaskRun, error)
+	RecordTaskRunEvent(context.Context, TaskRunEventInput) (TaskRunEventResult, error)
+}
+
+func (s *MemoryStore) ListEvents(_ context.Context, accountID, sessionID string, afterSeq int64, limit int) ([]Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[strings.TrimSpace(sessionID)]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if session.AccountID != strings.TrimSpace(accountID) {
+		return nil, ErrAccountMismatch
+	}
+	if afterSeq < 0 {
+		afterSeq = 0
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	result := make([]Event, 0, limit)
+	for _, event := range s.events[session.ID] {
+		if event.Seq <= afterSeq {
+			continue
+		}
+		result = append(result, cloneEvent(event))
+		if len(result) == limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+func (s *MemoryStore) AppendMessage(_ context.Context, input AppendMessageInput) (MessageCommandResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	input.AccountID = strings.TrimSpace(input.AccountID)
+	input.SessionID = strings.TrimSpace(input.SessionID)
+	input.ActorID = strings.TrimSpace(input.ActorID)
+	input.ClientRequestID = strings.TrimSpace(input.ClientRequestID)
+	input.Text = strings.TrimSpace(input.Text)
+	if input.AccountID == "" || input.SessionID == "" || input.ClientRequestID == "" || input.Text == "" {
+		return MessageCommandResult{}, ErrInvalidInput
+	}
+	session, ok := s.sessions[input.SessionID]
+	if !ok {
+		return MessageCommandResult{}, ErrNotFound
+	}
+	if session.AccountID != input.AccountID {
+		return MessageCommandResult{}, ErrAccountMismatch
+	}
+	requestKey := input.SessionID + "\x00" + input.ClientRequestID
+	if existing, ok := s.eventByRequest[requestKey]; ok {
+		runID, _ := existing.Payload["taskRunId"].(string)
+		run, exists := s.taskRuns[runID]
+		if !exists {
+			return MessageCommandResult{}, ErrNotFound
+		}
+		queuedEvents := s.events[input.SessionID]
+		for _, queued := range queuedEvents {
+			if queued.Seq == existing.Seq+1 && queued.Type == EventRunQueued {
+				return MessageCommandResult{
+					Message: existing, Queued: cloneEvent(queued), TaskRun: cloneTaskRun(run),
+					SnapshotVer: session.SnapshotVer, LastEventSeq: session.LastEventSeq,
+				}, nil
+			}
+		}
+		return MessageCommandResult{}, ErrNotFound
+	}
+	if input.CreatedAt.IsZero() {
+		input.CreatedAt = time.Now().UTC()
+	}
+	if input.NotBefore.IsZero() {
+		input.NotBefore = input.CreatedAt
+	}
+	input.TaskRunID = strings.TrimSpace(input.TaskRunID)
+	if input.TaskRunID == "" {
+		input.TaskRunID = uuid.NewString()
+	}
+	if _, exists := s.taskRuns[input.TaskRunID]; exists {
+		return MessageCommandResult{}, ErrAlreadyExists
+	}
+	messagePayload, err := messageEventPayload(input.Text, input.TaskRunID)
+	if err != nil {
+		return MessageCommandResult{}, err
+	}
+	queuedPayload := runQueuedEventPayload(input.TaskRunID)
+	for _, payload := range []map[string]any{messagePayload, queuedPayload} {
+		if _, err := marshalEventPayload(payload); err != nil {
+			return MessageCommandResult{}, err
+		}
+	}
+
+	message := Event{
+		SessionID: input.SessionID, Seq: session.LastEventSeq + 1, Type: EventMessageCreated,
+		Payload: messagePayload, ActorID: input.ActorID, ClientRequestID: input.ClientRequestID,
+		CreatedAt: input.CreatedAt,
+	}
+	run := TaskRun{
+		ID: input.TaskRunID, AccountID: input.AccountID, NamespaceID: session.NamespaceID,
+		SessionID: input.SessionID, ClientRequestID: input.ClientRequestID, State: TaskRunQueued,
+		Priority: input.Priority, NotBefore: input.NotBefore, CreatedAt: input.CreatedAt, UpdatedAt: input.CreatedAt,
+	}
+	queued := Event{
+		SessionID: input.SessionID, Seq: message.Seq + 1, Type: EventRunQueued,
+		Payload: queuedPayload, ActorID: input.ActorID, CreatedAt: input.CreatedAt,
+	}
+	s.events[input.SessionID] = append(s.events[input.SessionID], message, queued)
+	s.eventByRequest[requestKey] = message
+	s.taskRuns[run.ID] = run
+	session.LastEventSeq = queued.Seq
+	session.SnapshotVer += 2
+	session.Context["lastMessage"] = input.Text
+	session.UpdatedAt = input.CreatedAt
+	s.sessions[session.ID] = session
+	return MessageCommandResult{
+		Message: cloneEvent(message), Queued: cloneEvent(queued), TaskRun: cloneTaskRun(run),
+		SnapshotVer: session.SnapshotVer, LastEventSeq: session.LastEventSeq,
+	}, nil
+}
+
+func (s *MemoryStore) RecordTaskRunEvent(_ context.Context, input TaskRunEventInput) (TaskRunEventResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	input.AccountID = strings.TrimSpace(input.AccountID)
+	input.TaskRunID = strings.TrimSpace(input.TaskRunID)
+	input.ClientRequestID = strings.TrimSpace(input.ClientRequestID)
+	input.LeaseToken = strings.TrimSpace(input.LeaseToken)
+	input.Type = strings.TrimSpace(input.Type)
+	if input.AccountID == "" || input.TaskRunID == "" || input.ClientRequestID == "" || input.LeaseToken == "" {
+		return TaskRunEventResult{}, ErrInvalidInput
+	}
+	run, ok := s.taskRuns[input.TaskRunID]
+	if !ok || run.AccountID != input.AccountID {
+		return TaskRunEventResult{}, ErrNotFound
+	}
+	session, ok := s.sessions[run.SessionID]
+	if !ok {
+		return TaskRunEventResult{}, ErrNotFound
+	}
+	requestKey := run.SessionID + "\x00" + input.ClientRequestID
+	if input.CreatedAt.IsZero() {
+		input.CreatedAt = time.Now().UTC()
+	}
+	if run.Fence != input.Fence || run.LeaseToken != input.LeaseToken || !run.LeaseExpires.After(input.CreatedAt) {
+		return TaskRunEventResult{}, ErrLeaseConflict
+	}
+	if existing, ok := s.eventByRequest[requestKey]; ok {
+		return TaskRunEventResult{
+			Event: cloneEvent(existing), TaskRun: cloneTaskRun(run),
+			SnapshotVer: session.SnapshotVer, LastEventSeq: session.LastEventSeq,
+		}, nil
+	}
+	if run.State != TaskRunRunning {
+		return TaskRunEventResult{}, ErrLeaseConflict
+	}
+	nextState, _, err := stateForRunEvent(input.Type, run.State)
+	if err != nil {
+		return TaskRunEventResult{}, err
+	}
+	payload := taskRunEventPayload(input.Payload, run.ID, input.Fence, nextState)
+	if _, err := marshalEventPayload(payload); err != nil {
+		return TaskRunEventResult{}, err
+	}
+	event := Event{
+		SessionID: run.SessionID, Seq: session.LastEventSeq + 1, Type: input.Type,
+		Payload: payload, ActorID: strings.TrimSpace(input.ActorID), ClientRequestID: input.ClientRequestID,
+		CreatedAt: input.CreatedAt,
+	}
+	run.State = nextState
+	if bridgeRef := strings.TrimSpace(input.BridgeRef); bridgeRef != "" {
+		run.BridgeRef = bridgeRef
+	}
+	run.UpdatedAt = input.CreatedAt
+	s.events[run.SessionID] = append(s.events[run.SessionID], event)
+	s.eventByRequest[requestKey] = event
+	s.taskRuns[run.ID] = run
+	session.LastEventSeq = event.Seq
+	session.SnapshotVer++
+	session.Context["lastRunState"] = nextState
+	session.UpdatedAt = input.CreatedAt
+	s.sessions[session.ID] = session
+	return TaskRunEventResult{
+		Event: cloneEvent(event), TaskRun: cloneTaskRun(run),
+		SnapshotVer: session.SnapshotVer, LastEventSeq: session.LastEventSeq,
+	}, nil
+}
+
+func stateForRunEvent(eventType, currentState string) (string, bool, error) {
+	switch strings.TrimSpace(eventType) {
+	case EventRunRunning, EventRunProgressed, EventAssistantMessageCreated:
+		return currentState, false, nil
+	case EventRunCompleted:
+		return TaskRunComplete, true, nil
+	case EventRunFailed:
+		return TaskRunFailed, true, nil
+	case EventRunCancelled:
+		return TaskRunCanceled, true, nil
+	default:
+		return "", false, ErrInvalidInput
+	}
+}
+
+func taskRunEventPayload(input map[string]any, taskRunID string, fence int64, state string) map[string]any {
+	payload := cloneMap(input)
+	payload["schemaVersion"] = 1
+	payload["taskRunId"] = strings.TrimSpace(taskRunID)
+	payload["fence"] = fence
+	payload["state"] = state
+	return payload
+}
+
+func messageEventPayload(text, taskRunID string) (map[string]any, error) {
+	text = strings.TrimSpace(text)
+	taskRunID = strings.TrimSpace(taskRunID)
+	if text == "" || taskRunID == "" {
+		return nil, ErrInvalidInput
+	}
+	return map[string]any{
+		"schemaVersion": 1,
+		"text":          text,
+		"taskRunId":     taskRunID,
+	}, nil
+}
+
+func runQueuedEventPayload(taskRunID string) map[string]any {
+	return map[string]any{
+		"schemaVersion": 1,
+		"taskRunId":     strings.TrimSpace(taskRunID),
+		"state":         TaskRunQueued,
+	}
 }
 
 type MemoryStore struct {
@@ -100,7 +333,7 @@ func (s *MemoryStore) createNamespaceLocked(input CreateNamespaceInput) (Namespa
 	if _, exists := bySlug[input.Slug]; exists {
 		return Namespace{}, ErrAlreadyExists
 	}
-	if input.MaxActiveRuns <= 0 {
+	if input.MaxActiveRuns <= 0 || input.MaxActiveRuns > defaultNamespaceMaxActive {
 		input.MaxActiveRuns = defaultNamespaceMaxActive
 	}
 	if input.CreatedAt.IsZero() {
@@ -178,12 +411,8 @@ func (s *MemoryStore) AppendEvent(_ context.Context, input AppendEventInput) (Ev
 			return cloneEvent(event), nil
 		}
 	}
-	payload, err := json.Marshal(input.Payload)
-	if err != nil {
+	if _, err := marshalEventPayload(input.Payload); err != nil {
 		return Event{}, err
-	}
-	if len(payload) > maxEventPayloadBytes {
-		return Event{}, ErrPayloadTooLarge
 	}
 	if input.CreatedAt.IsZero() {
 		input.CreatedAt = time.Now().UTC()
@@ -253,14 +482,16 @@ func (s *MemoryStore) EnqueueTaskRun(_ context.Context, input EnqueueTaskRunInpu
 		input.NotBefore = input.CreatedAt
 	}
 	run := TaskRun{
-		ID:          input.ID,
-		AccountID:   input.AccountID,
-		NamespaceID: input.NamespaceID,
-		SessionID:   input.SessionID,
-		State:       TaskRunQueued,
-		Priority:    input.Priority,
-		NotBefore:   input.NotBefore,
-		CreatedAt:   input.CreatedAt,
+		ID:              input.ID,
+		AccountID:       input.AccountID,
+		NamespaceID:     input.NamespaceID,
+		SessionID:       input.SessionID,
+		ClientRequestID: input.ClientRequestID,
+		State:           TaskRunQueued,
+		Priority:        input.Priority,
+		NotBefore:       input.NotBefore,
+		CreatedAt:       input.CreatedAt,
+		UpdatedAt:       input.CreatedAt,
 	}
 	s.taskRuns[run.ID] = run
 	return cloneTaskRun(run), nil
@@ -272,7 +503,7 @@ func (s *MemoryStore) ClaimNext(_ context.Context, input ClaimInput) (TaskRun, e
 	if input.Now.IsZero() {
 		input.Now = time.Now().UTC()
 	}
-	if input.MaxGlobalActive <= 0 {
+	if input.MaxGlobalActive <= 0 || input.MaxGlobalActive > defaultGlobalMaxActive {
 		input.MaxGlobalActive = defaultGlobalMaxActive
 	}
 	if input.LeaseTTL <= 0 {
@@ -311,6 +542,7 @@ func (s *MemoryStore) ClaimNext(_ context.Context, input ClaimInput) (TaskRun, e
 		candidate.LeaseToken = uuid.NewString()
 		candidate.LeaseExpires = input.Now.Add(input.LeaseTTL)
 		candidate.Fence++
+		candidate.UpdatedAt = input.Now
 		s.taskRuns[candidate.ID] = candidate
 		s.lastClaimNamespace[input.AccountID] = namespaceID
 		return cloneTaskRun(candidate), nil

@@ -54,7 +54,7 @@ func (h *handler) internalNetworkIdentities(c *gin.Context) {
 		if suspended[strings.TrimSpace(user.ID)] && !isSandbox {
 			continue
 		}
-		uuid := strings.TrimSpace(user.ID)
+		uuid := strings.TrimSpace(user.ProxyUUID)
 		if uuid == "" {
 			continue
 		}

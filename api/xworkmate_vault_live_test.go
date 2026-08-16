@@ -56,7 +56,7 @@ func TestXWorkmateVaultLiveIntegration(t *testing.T) {
 	putProfileReq := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/profile", bytes.NewReader(profileBody))
 	putProfileReq.Header.Set("Content-Type", "application/json")
 	putProfileReq.Header.Set("Authorization", "Bearer "+token)
-	putProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	putProfileReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	putProfileRec := httptest.NewRecorder()
 	router.ServeHTTP(putProfileRec, putProfileReq)
 	if putProfileRec.Code != http.StatusOK {
@@ -78,7 +78,7 @@ func TestXWorkmateVaultLiveIntegration(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, "/api/auth/xworkmate/secrets/"+target, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+		req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -91,7 +91,7 @@ func TestXWorkmateVaultLiveIntegration(t *testing.T) {
 
 	getSecretsReq := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/secrets", nil)
 	getSecretsReq.Header.Set("Authorization", "Bearer "+token)
-	getSecretsReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	getSecretsReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	getSecretsRec := httptest.NewRecorder()
 	router.ServeHTTP(getSecretsRec, getSecretsReq)
 	if getSecretsRec.Code != http.StatusOK {
@@ -118,7 +118,7 @@ func TestXWorkmateVaultLiveIntegration(t *testing.T) {
 	for _, target := range targets {
 		req := httptest.NewRequest(http.MethodDelete, "/api/auth/xworkmate/secrets/"+target, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+		req.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -128,7 +128,7 @@ func TestXWorkmateVaultLiveIntegration(t *testing.T) {
 
 	getProfileReq := httptest.NewRequest(http.MethodGet, "/api/auth/xworkmate/profile", nil)
 	getProfileReq.Header.Set("Authorization", "Bearer "+token)
-	getProfileReq.Header.Set("X-Forwarded-Host", store.SharedXWorkmateDomain)
+	getProfileReq.Header.Set("X-Forwarded-Host", "shared.test.invalid")
 	getProfileRec := httptest.NewRecorder()
 	router.ServeHTTP(getProfileRec, getProfileReq)
 	if getProfileRec.Code != http.StatusOK {

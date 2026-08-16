@@ -13,22 +13,25 @@ import (
 
 // User represents an account within the account service domain.
 type User struct {
-	ID                 string
-	Name               string
-	Email              string
-	Level              int
-	Role               string
-	Groups             []string
-	Permissions        []string
-	EmailVerified      bool
-	PasswordHash       string
-	MFATOTPSecret      string
-	MFAEnabled         bool
-	MFASecretIssuedAt  time.Time
-	MFAConfirmedAt     time.Time
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	Active             bool
+	ID                string
+	Name              string
+	Email             string
+	Level             int
+	Role              string
+	Groups            []string
+	Permissions       []string
+	EmailVerified     bool
+	PasswordHash      string
+	MFATOTPSecret     string
+	MFAEnabled        bool
+	MFASecretIssuedAt time.Time
+	MFAConfirmedAt    time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	Active            bool
+	// ProxyUUID is the legacy Xray client identifier. During the credential
+	// migration it is copied verbatim into bridge_credentials.credential_uuid;
+	// users.ID is never used as a network credential.
 	ProxyUUID          string
 	ProxyUUIDExpiresAt *time.Time
 }
@@ -526,10 +529,13 @@ func (s *memoryStore) CreateUser(ctx context.Context, user *User) error {
 	stored.Groups = cloneStringSlice(stored.Groups)
 	stored.Permissions = cloneStringSlice(stored.Permissions)
 	stored.Active = true
-	// The account UUID is the canonical identity used by Portal, Xray and
-	// billing attribution. Keep the legacy proxy_uuid column synchronized with
-	// it so a QR code can never point at a different client identity.
-	stored.ProxyUUID = stored.ID
+	if strings.TrimSpace(stored.ProxyUUID) == "" {
+		credentialID, err := uuid.NewV7()
+		if err != nil {
+			return err
+		}
+		stored.ProxyUUID = credentialID.String()
+	}
 	s.byID[userCopy.ID] = &stored
 	if loweredEmail != "" {
 		s.byEmail[loweredEmail] = &stored
@@ -640,7 +646,14 @@ func (s *memoryStore) UpdateUser(ctx context.Context, user *User) error {
 	updated.Groups = cloneStringSlice(user.Groups)
 	updated.Permissions = cloneStringSlice(user.Permissions)
 	updated.Active = user.Active
-	updated.ProxyUUID = updated.ID
+	updated.ProxyUUID = strings.TrimSpace(user.ProxyUUID)
+	if updated.ProxyUUID == "" {
+		credentialID, err := uuid.NewV7()
+		if err != nil {
+			return err
+		}
+		updated.ProxyUUID = credentialID.String()
+	}
 	updated.ProxyUUIDExpiresAt = user.ProxyUUIDExpiresAt
 	normalizeUserRoleFields(&updated)
 	if user.CreatedAt.IsZero() {
@@ -797,9 +810,7 @@ func (s *memoryStore) CountSuperAdmins(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-const (
-
-)
+const ()
 
 const (
 	// LevelAdmin is the numeric level for administrator accounts.
@@ -811,7 +822,8 @@ const (
 )
 
 const (
-	// RoleRoot identifies the single root administrator account.
+	// RoleRoot identifies a root administrator account. More than one root is
+	// permitted so recovery does not depend on a singleton account.
 	RoleRoot = "root"
 	// RoleAdmin identifies legacy administrator accounts from earlier versions.
 	RoleAdmin = "admin"

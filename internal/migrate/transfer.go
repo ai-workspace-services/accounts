@@ -13,6 +13,7 @@ import (
 	"time"
 
 	accountschema "account/sql"
+	"github.com/google/uuid"
 )
 
 // AccountDump represents the serialized snapshot of account-related tables.
@@ -25,22 +26,24 @@ type AccountDump struct {
 
 // UserRecord captures the exported representation of a user row.
 type UserRecord struct {
-	UUID              string     `yaml:"uuid"`
-	Username          string     `yaml:"username"`
-	PasswordHash      string     `yaml:"password"`
-	Email             string     `yaml:"email,omitempty"`
-	EmailVerified     bool       `yaml:"emailVerified"`
-	EmailVerifiedAt   *time.Time `yaml:"emailVerifiedAt,omitempty"`
-	Level             int        `yaml:"level"`
-	Role              string     `yaml:"role"`
-	Groups            []string   `yaml:"groups,omitempty"`
-	Permissions       []string   `yaml:"permissions,omitempty"`
-	CreatedAt         time.Time  `yaml:"createdAt"`
-	UpdatedAt         time.Time  `yaml:"updatedAt"`
-	MFATOTPSecret     string     `yaml:"mfaTotpSecret,omitempty"`
-	MFAEnabled        bool       `yaml:"mfaEnabled"`
-	MFASecretIssuedAt *time.Time `yaml:"mfaSecretIssuedAt,omitempty"`
-	MFAConfirmedAt    *time.Time `yaml:"mfaConfirmedAt,omitempty"`
+	UUID               string     `yaml:"uuid"`
+	ProxyUUID          string     `yaml:"proxyUuid"`
+	ProxyUUIDExpiresAt *time.Time `yaml:"proxyUuidExpiresAt,omitempty"`
+	Username           string     `yaml:"username"`
+	PasswordHash       string     `yaml:"password"`
+	Email              string     `yaml:"email,omitempty"`
+	EmailVerified      bool       `yaml:"emailVerified"`
+	EmailVerifiedAt    *time.Time `yaml:"emailVerifiedAt,omitempty"`
+	Level              int        `yaml:"level"`
+	Role               string     `yaml:"role"`
+	Groups             []string   `yaml:"groups,omitempty"`
+	Permissions        []string   `yaml:"permissions,omitempty"`
+	CreatedAt          time.Time  `yaml:"createdAt"`
+	UpdatedAt          time.Time  `yaml:"updatedAt"`
+	MFATOTPSecret      string     `yaml:"mfaTotpSecret,omitempty"`
+	MFAEnabled         bool       `yaml:"mfaEnabled"`
+	MFASecretIssuedAt  *time.Time `yaml:"mfaSecretIssuedAt,omitempty"`
+	MFAConfirmedAt     *time.Time `yaml:"mfaConfirmedAt,omitempty"`
 }
 
 // IdentityRecord captures a federated identity row associated with a user.
@@ -63,6 +66,11 @@ type SessionRecord struct {
 	UpdatedAt *time.Time `yaml:"updatedAt,omitempty"`
 }
 
+type userUUIDRekey struct {
+	Source string
+	Target string
+}
+
 // MergeStrategy defines how snapshot data should be reconciled with the target database.
 type MergeStrategy string
 
@@ -83,8 +91,12 @@ type ImportOptions struct {
 	Merge         bool
 	MergeStrategy MergeStrategy
 	DryRun        bool
-	Allowlist     map[string]struct{}
-	LogWriter     io.Writer
+	// RegenerateUserUUIDs gives imported users new identity UUIDs while
+	// preserving their proxy UUIDs. The source UUID remains only as the
+	// relationship key for identities and sessions during this import.
+	RegenerateUserUUIDs bool
+	Allowlist           map[string]struct{}
+	LogWriter           io.Writer
 }
 
 // ImportReport captures the outcome of an import (or dry-run) execution.
@@ -218,21 +230,39 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		return nil, err
 	}
 
+	userUUIDMap := map[string]string{}
+	targetToSource := map[string]string{}
+	var rekeys []userUUIDRekey
+	if opts.RegenerateUserUUIDs {
+		var err error
+		dump, userUUIDMap, targetToSource, rekeys, err = prepareIdentityUUIDIsolation(ctx, db, dump)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	userUUIDs := make([]string, 0, len(dump.Users))
 	for _, user := range dump.Users {
+		if strings.TrimSpace(user.ProxyUUID) == "" {
+			return nil, fmt.Errorf("user %s has no proxy UUID; refusing to import identity UUID as a proxy credential", user.UUID)
+		}
 		userUUIDs = append(userUUIDs, user.UUID)
 	}
 
-	existingUsers, err := loadUsersByUUIDs(ctx, db, userUUIDs)
+	lookupUUIDs := append([]string(nil), userUUIDs...)
+	for _, rekey := range rekeys {
+		lookupUUIDs = append(lookupUUIDs, rekey.Source)
+	}
+	existingUsers, err := loadUsersByUUIDs(ctx, db, lookupUUIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	existingIdentitiesSlice, err := loadIdentities(ctx, db, userUUIDs)
+	existingIdentitiesSlice, err := loadIdentities(ctx, db, lookupUUIDs)
 	if err != nil {
 		return nil, err
 	}
-	existingSessionsSlice, err := loadSessions(ctx, db, userUUIDs)
+	existingSessionsSlice, err := loadSessions(ctx, db, lookupUUIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +270,9 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	existingIdentitiesByUUID := make(map[string]IdentityRecord, len(existingIdentitiesSlice))
 	existingIdentitiesByUser := make(map[string][]IdentityRecord)
 	for _, identity := range existingIdentitiesSlice {
+		if targetUUID, ok := userUUIDMap[identity.UserUUID]; ok {
+			identity.UserUUID = targetUUID
+		}
 		existingIdentitiesByUUID[identity.UUID] = identity
 		existingIdentitiesByUser[identity.UserUUID] = append(existingIdentitiesByUser[identity.UserUUID], identity)
 	}
@@ -247,8 +280,20 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	existingSessionsByUUID := make(map[string]SessionRecord, len(existingSessionsSlice))
 	existingSessionsByUser := make(map[string][]SessionRecord)
 	for _, session := range existingSessionsSlice {
+		if targetUUID, ok := userUUIDMap[session.UserUUID]; ok {
+			session.UserUUID = targetUUID
+		}
 		existingSessionsByUUID[session.UUID] = session
 		existingSessionsByUser[session.UserUUID] = append(existingSessionsByUser[session.UserUUID], session)
+	}
+	for source, target := range userUUIDMap {
+		if source == target {
+			continue
+		}
+		if existing, ok := existingUsers[source]; ok {
+			existing.UUID = target
+			existingUsers[target] = existing
+		}
 	}
 
 	incomingIdentitiesByUser := make(map[string][]IdentityRecord)
@@ -273,15 +318,24 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	}()
 
 	report := &ImportReport{}
+	if !opts.DryRun {
+		if err := applyUserUUIDRekeys(ctx, tx, rekeys, existingUsers); err != nil {
+			return nil, err
+		}
+	}
 
 	allowlist := opts.Allowlist
 	allowlistEnabled := opts.Merge && len(allowlist) > 0
 
 	for _, user := range dump.Users {
 		if allowlistEnabled {
-			if _, ok := allowlist[user.UUID]; !ok {
+			sourceUUID := targetToSource[user.UUID]
+			if sourceUUID == "" {
+				sourceUUID = user.UUID
+			}
+			if _, ok := allowlist[sourceUUID]; !ok {
 				report.UsersSkipped++
-				logf("skip user %s: not present in merge allowlist\n", user.UUID)
+				logf("skip user %s: not present in merge allowlist\n", sourceUUID)
 				continue
 			}
 		}
@@ -295,9 +349,22 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		existing, hasExisting := existingUsers[user.UUID]
 
 		if opts.Merge && hasExisting && strategy == MergeStrategyTimestamp && existing.UpdatedAt.After(user.UpdatedAt) {
-			report.UsersSkipped++
+			if existing.ProxyUUID != user.ProxyUUID || !timePtrEqual(existing.ProxyUUIDExpiresAt, user.ProxyUUIDExpiresAt) {
+				if !opts.DryRun {
+					if err := updateUserProxyUUID(ctx, tx, user.UUID, user.ProxyUUID, user.ProxyUUIDExpiresAt); err != nil {
+						return nil, err
+					}
+				}
+				existing.ProxyUUID = user.ProxyUUID
+				existing.ProxyUUIDExpiresAt = user.ProxyUUIDExpiresAt
+				existingUsers[user.UUID] = existing
+				report.UsersUpdated++
+				logf("update proxy UUID for %s despite newer target profile\n", user.UUID)
+			} else {
+				report.UsersSkipped++
+			}
 			report.ConflictsSkipped++
-			logf("skip user %s: existing updated_at %s newer than snapshot %s\n", user.UUID, existing.UpdatedAt.Format(time.RFC3339), user.UpdatedAt.Format(time.RFC3339))
+			logf("skip profile for user %s: existing updated_at %s newer than snapshot %s\n", user.UUID, existing.UpdatedAt.Format(time.RFC3339), user.UpdatedAt.Format(time.RFC3339))
 			continue
 		}
 
@@ -452,7 +519,343 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	return report, nil
 }
 
-const userSelectColumns = `uuid, username, password, email, email_verified, email_verified_at, level, role, groups, permissions, created_at, updated_at, mfa_totp_secret, mfa_enabled, mfa_secret_issued_at, mfa_confirmed_at`
+// prepareIdentityUUIDIsolation assigns target-local identity UUIDs while
+// retaining every source proxy UUID. Existing target users are matched by
+// proxy UUID first and email second so repeated migrations remain idempotent.
+// When an earlier import left the source UUID in users.uuid, the returned rekey
+// plan moves that existing account and all of its foreign-key references in
+// the same import transaction.
+func prepareIdentityUUIDIsolation(ctx context.Context, db *sql.DB, dump *AccountDump) (*AccountDump, map[string]string, map[string]string, []userUUIDRekey, error) {
+	isolated := *dump
+	isolated.Users = append([]UserRecord(nil), dump.Users...)
+	isolated.Identities = append([]IdentityRecord(nil), dump.Identities...)
+	isolated.Sessions = append([]SessionRecord(nil), dump.Sessions...)
+
+	sourceToTarget := make(map[string]string, len(isolated.Users))
+	targetToSource := make(map[string]string, len(isolated.Users))
+	rekeys := make([]userUUIDRekey, 0)
+	sourceUUIDs := make(map[string]struct{}, len(isolated.Users))
+	proxyOwners := make(map[string]string, len(isolated.Users))
+	for _, user := range isolated.Users {
+		sourceUUID := strings.TrimSpace(user.UUID)
+		proxyUUID := strings.TrimSpace(user.ProxyUUID)
+		if sourceUUID == "" {
+			return nil, nil, nil, nil, errors.New("snapshot user is missing source identity UUID")
+		}
+		if proxyUUID == "" {
+			return nil, nil, nil, nil, fmt.Errorf("user %s has no proxy UUID", sourceUUID)
+		}
+		if _, err := uuid.Parse(sourceUUID); err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("user %s has invalid identity UUID: %w", sourceUUID, err)
+		}
+		if _, err := uuid.Parse(proxyUUID); err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("user %s has invalid proxy UUID: %w", sourceUUID, err)
+		}
+		if _, exists := sourceUUIDs[sourceUUID]; exists {
+			return nil, nil, nil, nil, fmt.Errorf("snapshot contains duplicate identity UUID %s", sourceUUID)
+		}
+		if owner := proxyOwners[proxyUUID]; owner != "" && owner != sourceUUID {
+			return nil, nil, nil, nil, fmt.Errorf("proxy UUID %s is assigned to multiple snapshot users", proxyUUID)
+		}
+		sourceUUIDs[sourceUUID] = struct{}{}
+		proxyOwners[proxyUUID] = sourceUUID
+	}
+	for index := range isolated.Users {
+		user := &isolated.Users[index]
+		sourceUUID := strings.TrimSpace(user.UUID)
+		proxyUUID := strings.TrimSpace(user.ProxyUUID)
+
+		target, err := findTargetUser(ctx, db, sourceUUID, proxyUUID, user.Email)
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		targetUUID := ""
+		if target != nil {
+			targetUUID = target.UUID
+		}
+		if targetUUID == sourceUUID || targetUUID == proxyUUID {
+			targetUUID, err = newTargetUUID(ctx, db, sourceUUIDs, proxyOwners)
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+			rekeys = append(rekeys, userUUIDRekey{Source: target.UUID, Target: targetUUID})
+		} else if targetUUID == "" {
+			targetUUID, err = newTargetUUID(ctx, db, sourceUUIDs, proxyOwners)
+			if err != nil {
+				return nil, nil, nil, nil, err
+			}
+		} else if _, exists := sourceUUIDs[targetUUID]; exists {
+			return nil, nil, nil, nil, fmt.Errorf("target identity UUID %s collides with another source identity UUID", targetUUID)
+		}
+
+		if previous := targetToSource[targetUUID]; previous != "" && previous != sourceUUID {
+			return nil, nil, nil, nil, fmt.Errorf("snapshot users %s and %s resolve to target identity UUID %s", previous, sourceUUID, targetUUID)
+		}
+		sourceToTarget[sourceUUID] = targetUUID
+		targetToSource[targetUUID] = sourceUUID
+		user.UUID = targetUUID
+	}
+
+	for index := range isolated.Identities {
+		if targetUUID, ok := sourceToTarget[isolated.Identities[index].UserUUID]; ok {
+			isolated.Identities[index].UserUUID = targetUUID
+		}
+	}
+	for index := range isolated.Sessions {
+		if targetUUID, ok := sourceToTarget[isolated.Sessions[index].UserUUID]; ok {
+			isolated.Sessions[index].UserUUID = targetUUID
+		}
+	}
+
+	return &isolated, sourceToTarget, targetToSource, rekeys, nil
+}
+
+type targetUser struct {
+	UUID      string
+	ProxyUUID string
+}
+
+func findTargetUser(ctx context.Context, db *sql.DB, sourceUUID, proxyUUID, email string) (*targetUser, error) {
+	byProxy, err := queryTargetUser(ctx, db, `SELECT uuid::text, proxy_uuid::text FROM users WHERE proxy_uuid = $1 LIMIT 2`, proxyUUID)
+	if err != nil {
+		return nil, fmt.Errorf("lookup target proxy UUID %s: %w", proxyUUID, err)
+	}
+	byEmail, err := queryTargetUserByEmail(ctx, db, email)
+	if err != nil {
+		return nil, err
+	}
+	bySource, err := queryTargetUser(ctx, db, `SELECT uuid::text, proxy_uuid::text FROM users WHERE uuid = $1 LIMIT 2`, sourceUUID)
+	if err != nil {
+		return nil, fmt.Errorf("lookup target identity UUID %s: %w", sourceUUID, err)
+	}
+
+	if byProxy != nil && byEmail != nil && byProxy.UUID != byEmail.UUID {
+		return nil, fmt.Errorf("target proxy UUID %s and email %s belong to different users", proxyUUID, email)
+	}
+	if byProxy != nil {
+		return byProxy, nil
+	}
+	if byEmail != nil {
+		return byEmail, nil
+	}
+	return bySource, nil
+}
+
+func queryTargetUser(ctx context.Context, db *sql.DB, query, arg string) (*targetUser, error) {
+	rows, err := db.QueryContext(ctx, query, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result *targetUser
+	for rows.Next() {
+		var current targetUser
+		if err := rows.Scan(&current.UUID, &current.ProxyUUID); err != nil {
+			return nil, err
+		}
+		if result != nil {
+			return nil, errors.New("target lookup matched multiple users")
+		}
+		result = &current
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func queryTargetUserByEmail(ctx context.Context, db *sql.DB, email string) (*targetUser, error) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil, nil
+	}
+	return queryTargetUser(ctx, db, `SELECT uuid::text, proxy_uuid::text FROM users WHERE lower(email) = lower($1) LIMIT 2`, email)
+}
+
+func newTargetUUID(ctx context.Context, db *sql.DB, sourceUUIDs map[string]struct{}, proxyOwners map[string]string) (string, error) {
+	for attempt := 0; attempt < 10; attempt++ {
+		candidate := uuid.NewString()
+		if _, exists := sourceUUIDs[candidate]; exists {
+			continue
+		}
+		if _, exists := proxyOwners[candidate]; exists {
+			continue
+		}
+		var exists bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE uuid = $1 OR proxy_uuid = $1)`, candidate).Scan(&exists); err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("could not allocate a target identity UUID")
+}
+
+func applyUserUUIDRekeys(ctx context.Context, tx *sql.Tx, rekeys []userUUIDRekey, existingUsers map[string]UserRecord) error {
+	if len(rekeys) == 0 {
+		return nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT table_schema, table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name <> 'users'
+  AND column_name IN ('user_uuid', 'account_uuid')
+ORDER BY CASE WHEN table_name = 'overlay_devices' THEN 0 ELSE 1 END, table_name, column_name`)
+	if err != nil {
+		return fmt.Errorf("discover user UUID references: %w", err)
+	}
+	type referenceColumn struct {
+		schema string
+		table  string
+		column string
+	}
+	var references []referenceColumn
+	for rows.Next() {
+		var reference referenceColumn
+		if err := rows.Scan(&reference.schema, &reference.table, &reference.column); err != nil {
+			rows.Close()
+			return err
+		}
+		references = append(references, reference)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(references) == 0 {
+		return errors.New("no user UUID reference columns discovered")
+	}
+	hasOverlayDevices := false
+	hasOverlayAcks := false
+	for _, reference := range references {
+		hasOverlayDevices = hasOverlayDevices || reference.table == "overlay_devices"
+		hasOverlayAcks = hasOverlayAcks || reference.table == "overlay_config_acks"
+	}
+
+	for _, rekey := range rekeys {
+		oldUser, ok := existingUsers[rekey.Source]
+		if !ok {
+			return fmt.Errorf("cannot rekey missing target user %s", rekey.Source)
+		}
+		newUser := oldUser
+		newUser.UUID = rekey.Target
+		temporaryUser := newUser
+		temporaryUser.Username = "__rekey__" + rekey.Target
+		if temporaryUser.Email != "" {
+			temporaryUser.Email = "__rekey__" + rekey.Target + "@invalid.local"
+		}
+		if strings.EqualFold(temporaryUser.Role, "root") {
+			temporaryUser.Role = "user"
+		}
+		if err := upsertUser(ctx, tx, &temporaryUser, false); err != nil {
+			return fmt.Errorf("create rekeyed user %s: %w", rekey.Target, err)
+		}
+		if hasOverlayDevices && hasOverlayAcks {
+			if err := rekeyOverlayData(ctx, tx, rekey.Source, rekey.Target); err != nil {
+				return err
+			}
+		}
+
+		for _, reference := range references {
+			if hasOverlayDevices && hasOverlayAcks && (reference.table == "overlay_devices" || reference.table == "overlay_config_acks") {
+				continue
+			}
+			query := fmt.Sprintf(
+				`UPDATE %s.%s SET %s = $1 WHERE %s = $2`,
+				quoteIdentifier(reference.schema),
+				quoteIdentifier(reference.table),
+				quoteIdentifier(reference.column),
+				quoteIdentifier(reference.column),
+			)
+			if _, err := tx.ExecContext(ctx, query, rekey.Target, rekey.Source); err != nil {
+				return fmt.Errorf("rekey %s.%s for %s: %w", reference.table, reference.column, rekey.Source, err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE uuid = $1`, rekey.Source); err != nil {
+			return fmt.Errorf("remove old identity UUID %s: %w", rekey.Source, err)
+		}
+		if err := upsertUser(ctx, tx, &newUser, false); err != nil {
+			return fmt.Errorf("restore rekeyed user %s: %w", rekey.Target, err)
+		}
+	}
+	return nil
+}
+
+func rekeyOverlayData(ctx context.Context, tx *sql.Tx, sourceUUID, targetUUID string) error {
+	if _, err := tx.ExecContext(ctx, `
+CREATE TEMP TABLE IF NOT EXISTS migration_overlay_devices_rekey
+ON COMMIT DROP AS
+SELECT id, user_uuid, network_id, name, platform, hostname,
+       wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
+FROM overlay_devices
+WHERE false`); err != nil {
+		return fmt.Errorf("prepare overlay rekey buffer: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `TRUNCATE migration_overlay_devices_rekey`); err != nil {
+		return fmt.Errorf("reset overlay rekey buffer: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO migration_overlay_devices_rekey (
+        id, user_uuid, network_id, name, platform, hostname,
+        wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
+)
+SELECT id, user_uuid, network_id, name, platform, hostname,
+       wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
+FROM overlay_devices
+WHERE user_uuid = $1`, sourceUUID); err != nil {
+		return fmt.Errorf("save overlay devices for %s: %w", sourceUUID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE overlay_devices
+SET wireguard_address = '__rekey__' || $1 || '__' || id
+WHERE user_uuid = $1`, sourceUUID); err != nil {
+		return fmt.Errorf("reserve overlay addresses for %s: %w", sourceUUID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO overlay_devices (
+        id, user_uuid, network_id, name, platform, hostname,
+        wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
+)
+SELECT id, $1, network_id, name, platform, hostname,
+       wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
+FROM migration_overlay_devices_rekey`, targetUUID); err != nil {
+		return fmt.Errorf("rekey overlay_devices for %s: %w", sourceUUID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO overlay_config_acks (
+        user_uuid, device_id, network_id, revision, digest, applied_at, received_at
+)
+SELECT $1, device_id, network_id, revision, digest, applied_at, received_at
+FROM overlay_config_acks
+WHERE user_uuid = $2`, targetUUID, sourceUUID); err != nil {
+		return fmt.Errorf("rekey overlay_config_acks for %s: %w", sourceUUID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM overlay_config_acks WHERE user_uuid = $1`, sourceUUID); err != nil {
+		return fmt.Errorf("remove old overlay_config_acks for %s: %w", sourceUUID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM overlay_devices WHERE user_uuid = $1`, sourceUUID); err != nil {
+		return fmt.Errorf("remove old overlay_devices for %s: %w", sourceUUID, err)
+	}
+	return nil
+}
+
+func quoteIdentifier(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+func updateUserProxyUUID(ctx context.Context, tx *sql.Tx, userUUID, proxyUUID string, expiresAt *time.Time) error {
+	_, err := tx.ExecContext(ctx, `
+UPDATE users
+SET proxy_uuid = $1, proxy_uuid_expires_at = $2
+WHERE uuid = $3`, proxyUUID, nullableTime(expiresAt), userUUID)
+	return err
+}
+
+const userSelectColumns = `uuid, proxy_uuid, proxy_uuid_expires_at, username, password, email, email_verified, email_verified_at, level, role, groups, permissions, created_at, updated_at, mfa_totp_secret, mfa_enabled, mfa_secret_issued_at, mfa_confirmed_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -539,11 +942,15 @@ func scanUserRow(scanner rowScanner) (UserRecord, error) {
 		mfaEnabled      sql.NullBool
 		mfaIssuedAt     sql.NullTime
 		mfaConfirmedAt  sql.NullTime
+		proxyUUID       sql.NullString
+		proxyExpiresAt  sql.NullTime
 		user            UserRecord
 	)
 
 	if err := scanner.Scan(
 		&user.UUID,
+		&proxyUUID,
+		&proxyExpiresAt,
 		&user.Username,
 		&user.PasswordHash,
 		&email,
@@ -565,6 +972,13 @@ func scanUserRow(scanner rowScanner) (UserRecord, error) {
 
 	if email.Valid {
 		user.Email = email.String
+	}
+	if proxyUUID.Valid {
+		user.ProxyUUID = strings.TrimSpace(proxyUUID.String)
+	}
+	if proxyExpiresAt.Valid {
+		ts := proxyExpiresAt.Time
+		user.ProxyUUIDExpiresAt = &ts
 	}
 	user.EmailVerified = emailVerified
 	if emailVerifiedAt.Valid {
@@ -692,6 +1106,12 @@ func userDiffers(a, b UserRecord) bool {
 		return true
 	}
 	if a.MFATOTPSecret != b.MFATOTPSecret {
+		return true
+	}
+	if a.ProxyUUID != b.ProxyUUID {
+		return true
+	}
+	if !timePtrEqual(a.ProxyUUIDExpiresAt, b.ProxyUUIDExpiresAt) {
 		return true
 	}
 	if a.MFAEnabled != b.MFAEnabled {
@@ -1009,31 +1429,32 @@ func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord, isMerge bool)
 		user.EmailVerifiedAt = &ts
 	}
 
-		if isMerge {
-			_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE lower(username) = lower($1) AND uuid != $2`, user.Username, user.UUID)
+	if isMerge {
+		_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE lower(username) = lower($1) AND uuid != $2`, user.Username, user.UUID)
+		if err != nil {
+			return fmt.Errorf("failed to delete conflicting username for user %s: %w", user.UUID, err)
+		}
+		if user.Email != "" {
+			_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE lower(email) = lower($1) AND uuid != $2`, user.Email, user.UUID)
 			if err != nil {
-				return fmt.Errorf("failed to delete conflicting username for user %s: %w", user.UUID, err)
-			}
-			if user.Email != "" {
-				_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE lower(email) = lower($1) AND uuid != $2`, user.Email, user.UUID)
-				if err != nil {
-					return fmt.Errorf("failed to delete conflicting email for user %s: %w", user.UUID, err)
-				}
+				return fmt.Errorf("failed to delete conflicting email for user %s: %w", user.UUID, err)
 			}
 		}
+	}
 
-		_, err = tx.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO users (
-        uuid, username, password, email, email_verified_at,
+        uuid, proxy_uuid, proxy_uuid_expires_at, username, password, email, email_verified_at,
         level, role, groups, permissions, created_at, updated_at,
-        mfa_totp_secret, mfa_enabled, mfa_secret_issued_at, mfa_confirmed_at,
-        proxy_uuid
+        mfa_totp_secret, mfa_enabled, mfa_secret_issued_at, mfa_confirmed_at
 ) VALUES (
-        $1, $2, $3, $4, $5,
-        $6, $7, $8::jsonb, $9::jsonb, $10, $11,
-        $12, $13, $14, $15, $1
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10::jsonb, $11::jsonb, $12, $13,
+        $14, $15, $16, $17
 )
 ON CONFLICT (uuid) DO UPDATE SET
+        proxy_uuid = EXCLUDED.proxy_uuid,
+        proxy_uuid_expires_at = EXCLUDED.proxy_uuid_expires_at,
         username = EXCLUDED.username,
         password = EXCLUDED.password,
         email = EXCLUDED.email,
@@ -1046,11 +1467,12 @@ ON CONFLICT (uuid) DO UPDATE SET
         updated_at = EXCLUDED.updated_at,
         mfa_totp_secret = EXCLUDED.mfa_totp_secret,
         mfa_enabled = EXCLUDED.mfa_enabled,
-        mfa_secret_issued_at = EXCLUDED.mfa_secret_issued_at,
-        mfa_confirmed_at = EXCLUDED.mfa_confirmed_at,
-        proxy_uuid = EXCLUDED.proxy_uuid
+		mfa_secret_issued_at = EXCLUDED.mfa_secret_issued_at,
+		mfa_confirmed_at = EXCLUDED.mfa_confirmed_at
 `,
 		user.UUID,
+		user.ProxyUUID,
+		nullableTime(user.ProxyUUIDExpiresAt),
 		user.Username,
 		user.PasswordHash,
 		nullableString(user.Email),

@@ -21,6 +21,9 @@ type billingPlanPayload struct {
 	Kind               string             `json:"kind"`
 	IncludedQuotaBytes int64              `json:"includedQuotaBytes"`
 	PackageName        string             `json:"packageName"`
+	PriceAmount        int64              `json:"priceAmount"`
+	PriceCurrency      string             `json:"priceCurrency,omitempty"`
+	PriceUnit          string             `json:"priceUnit,omitempty"`
 	PriceMultipliers   map[string]float64 `json:"priceMultipliers,omitempty"`
 	Features           map[string]any     `json:"features,omitempty"`
 	TrialDays          int                `json:"trialDays"`
@@ -39,6 +42,9 @@ func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
 		Kind:               plan.Kind,
 		IncludedQuotaBytes: plan.IncludedQuotaBytes,
 		PackageName:        plan.PackageName,
+		PriceAmount:        plan.PriceAmount,
+		PriceCurrency:      plan.PriceCurrency,
+		PriceUnit:          plan.PriceUnit,
 		PriceMultipliers:   plan.PriceMultipliers,
 		Features:           plan.Features,
 		TrialDays:          plan.TrialDays,
@@ -108,6 +114,29 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "quota and trial days must be non-negative")
 		return
 	}
+	// The list price is what the storefront shows. A negative amount, or an
+	// amount with no currency to read it in, would render as a nonsense price
+	// next to a working buy button.
+	if req.PriceAmount < 0 {
+		respondError(c, http.StatusBadRequest, "invalid_price", "priceAmount must be non-negative")
+		return
+	}
+	priceCurrency := strings.ToUpper(strings.TrimSpace(req.PriceCurrency))
+	if req.PriceAmount > 0 && priceCurrency == "" {
+		respondError(c, http.StatusBadRequest, "invalid_price", "priceCurrency is required when priceAmount is set")
+		return
+	}
+	if priceCurrency != "" && len(priceCurrency) != 3 {
+		respondError(c, http.StatusBadRequest, "invalid_price", "priceCurrency must be a 3-letter ISO 4217 code")
+		return
+	}
+	priceUnit := strings.ToLower(strings.TrimSpace(req.PriceUnit))
+	switch priceUnit {
+	case "", "month", "year", "once", "gb":
+	default:
+		respondError(c, http.StatusBadRequest, "invalid_price", "priceUnit must be month, year, once or gb")
+		return
+	}
 	if priceID := strings.TrimSpace(req.StripePriceID); priceID != "" && !strings.HasPrefix(priceID, "price_") {
 		respondError(c, http.StatusBadRequest, "invalid_price_id", "stripePriceId must be a Stripe price id")
 		return
@@ -120,6 +149,9 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		Kind:               kind,
 		IncludedQuotaBytes: req.IncludedQuotaBytes,
 		PackageName:        strings.TrimSpace(req.PackageName),
+		PriceAmount:        req.PriceAmount,
+		PriceCurrency:      priceCurrency,
+		PriceUnit:          priceUnit,
 		PriceMultipliers:   req.PriceMultipliers,
 		Features:           req.Features,
 		TrialDays:          req.TrialDays,
@@ -138,6 +170,9 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 			"stripe_price_id":      existing.StripePriceID,
 			"included_quota_bytes": existing.IncludedQuotaBytes,
 			"package_name":         existing.PackageName,
+			"price_amount":         existing.PriceAmount,
+			"price_currency":       existing.PriceCurrency,
+			"price_unit":           existing.PriceUnit,
 			"active":               existing.Active,
 			"sort_order":           existing.SortOrder,
 		}
@@ -153,6 +188,9 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		"stripe_price_id":      plan.StripePriceID,
 		"included_quota_bytes": plan.IncludedQuotaBytes,
 		"package_name":         plan.PackageName,
+		"price_amount":         plan.PriceAmount,
+		"price_currency":       plan.PriceCurrency,
+		"price_unit":           plan.PriceUnit,
 		"active":               plan.Active,
 		"sort_order":           plan.SortOrder,
 	}
@@ -191,6 +229,9 @@ func (h *handler) adminDeleteBillingPlan(c *gin.Context) {
 			"stripe_price_id":      existing.StripePriceID,
 			"included_quota_bytes": existing.IncludedQuotaBytes,
 			"package_name":         existing.PackageName,
+			"price_amount":         existing.PriceAmount,
+			"price_currency":       existing.PriceCurrency,
+			"price_unit":           existing.PriceUnit,
 			"active":               existing.Active,
 		}
 	}

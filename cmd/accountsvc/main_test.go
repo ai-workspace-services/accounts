@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"account/config"
 	"account/internal/store"
 )
 
@@ -54,7 +53,7 @@ func TestBillingSchemaStatementsCoverSharedAccountingControlPlane(t *testing.T) 
 	}
 }
 
-func TestEnsureSharedReviewXWorkmateProfileBootstrapsManagedBridgeContract(t *testing.T) {
+func TestEnsureSharedXWorkmateProfileBootstrapsManagedBridgeContractForAllUsers(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -67,28 +66,11 @@ func TestEnsureSharedReviewXWorkmateProfileBootstrapsManagedBridgeContract(t *te
 		t.Fatalf("ensure tenant: %v", err)
 	}
 
-	writes := make([]struct {
-		locator store.XWorkmateSecretLocator
-		value   string
-	}, 0, 1)
-	err := ensureSharedReviewXWorkmateProfile(
+	err := ensureSharedXWorkmateProfile(
 		ctx,
 		st,
-		config.ReviewAccount{Enabled: true},
 		sharedXWorkmateBootstrapConfig{
-			BridgeServerURL: SharedXWorkmateBridgeServerURL,
-			BridgeAuthToken: "bridge-token",
-		},
-		func(
-			ctx context.Context,
-			locator store.XWorkmateSecretLocator,
-			value string,
-		) error {
-			writes = append(writes, struct {
-				locator store.XWorkmateSecretLocator
-				value   string
-			}{locator: locator, value: value})
-			return nil
+			BridgeServerURL: "https://acp-bridge.uat.example.test",
 		},
 		slog.Default(),
 	)
@@ -106,31 +88,18 @@ func TestEnsureSharedReviewXWorkmateProfileBootstrapsManagedBridgeContract(t *te
 		t.Fatalf("load shared profile: %v", err)
 	}
 
-	if got := profile.BridgeServerURL; got != SharedXWorkmateBridgeServerURL {
-		t.Fatalf("expected bridge server url %q, got %q", SharedXWorkmateBridgeServerURL, got)
+	if got := profile.BridgeServerURL; got != "https://acp-bridge.uat.example.test" {
+		t.Fatalf("expected configured bridge server url, got %q", got)
 	}
-	if got := profile.BridgeServerOrigin; got != SharedXWorkmateBridgeServerURL {
-		t.Fatalf("expected bridge server origin %q, got %q", SharedXWorkmateBridgeServerURL, got)
+	if got := profile.BridgeServerOrigin; got != "https://acp-bridge.uat.example.test" {
+		t.Fatalf("expected normalized bridge server origin, got %q", got)
 	}
-	if len(profile.SecretLocators) != 1 {
-		t.Fatalf("expected 1 secret locator, got %d", len(profile.SecretLocators))
-	}
-	locator := profile.SecretLocators[0]
-	if locator.Target != store.XWorkmateSecretLocatorTargetBridgeAuthToken {
-		t.Fatalf("expected bridge auth token locator, got %#v", locator)
-	}
-	if locator.SecretPath != "xworkmate/tenants/svc-plus-xworkmate/shared" {
-		t.Fatalf("expected managed shared secret path, got %#v", locator)
-	}
-	if len(writes) != 1 {
-		t.Fatalf("expected 1 secret write, got %d", len(writes))
-	}
-	if writes[0].value != "bridge-token" {
-		t.Fatalf("expected secret value bridge-token, got %q", writes[0].value)
+	if len(profile.SecretLocators) != 0 {
+		t.Fatalf("startup must not write a shared user credential, got %#v", profile.SecretLocators)
 	}
 }
 
-func TestEnsureSharedReviewXWorkmateProfileRequiresBridgeContract(t *testing.T) {
+func TestEnsureSharedXWorkmateProfileSkipsWhenBridgeIsNotConfigured(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -143,19 +112,17 @@ func TestEnsureSharedReviewXWorkmateProfileRequiresBridgeContract(t *testing.T) 
 		t.Fatalf("ensure tenant: %v", err)
 	}
 
-	err := ensureSharedReviewXWorkmateProfile(
+	err := ensureSharedXWorkmateProfile(
 		ctx,
 		st,
-		config.ReviewAccount{Enabled: true},
-		sharedXWorkmateBootstrapConfig{
-			BridgeServerURL: SharedXWorkmateBridgeServerURL,
-		},
-		func(context.Context, store.XWorkmateSecretLocator, string) error {
-			return nil
-		},
+		sharedXWorkmateBootstrapConfig{},
 		nil,
 	)
-	if err == nil || err.Error() != "shared xworkmate bridge auth token is required" {
-		t.Fatalf("expected missing bridge token error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected unconfigured bridge to be a no-op, got %v", err)
+	}
+	_, err = st.GetXWorkmateProfile(ctx, store.SharedXWorkmateTenantID, "", store.XWorkmateProfileScopeTenantShared)
+	if err != store.ErrXWorkmateProfileNotFound {
+		t.Fatalf("expected no shared profile without a bridge endpoint, got %v", err)
 	}
 }

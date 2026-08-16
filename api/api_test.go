@@ -221,6 +221,7 @@ func newAuthenticatedSyncHarness(t *testing.T, opts ...Option) (*gin.Engine, *st
 	baseOpts := []Option{
 		WithStore(st),
 		WithEmailVerification(false),
+		WithServerPublicURL("https://accounts.test.invalid"),
 	}
 	RegisterRoutes(router, append(baseOpts, opts...)...)
 	return router, freshUser, token
@@ -345,6 +346,10 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
+	sandbox, err = st.GetUserByEmail(ctx, sandboxUserEmail)
+	if err != nil {
+		t.Fatalf("reload sandbox user: %v", err)
+	}
 
 	seenSandbox := false
 	seenNormal := false
@@ -352,8 +357,14 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 		if c.Email == strings.ToLower(strings.TrimSpace(sandbox.Email)) && strings.TrimSpace(c.ID) != "" {
 			seenSandbox = true
 		}
-		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) && strings.TrimSpace(c.ID) != "" {
-			seenNormal = true
+		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) {
+			if c.ID != normal.ProxyUUID {
+				t.Fatalf("expected normal client to use proxy UUID %q, got %q", normal.ProxyUUID, c.ID)
+			}
+			if c.ID == normal.ID {
+				t.Fatalf("normal client must not use internal identity UUID %q", normal.ID)
+			}
+			seenNormal = strings.TrimSpace(c.ID) != ""
 		}
 	}
 
@@ -364,11 +375,11 @@ func TestAgentServerUsers_DefaultSyncIncludesSandboxAndRegularUsers(t *testing.T
 		t.Fatalf("expected normal client in response, got=%v", payload.Clients)
 	}
 	for _, c := range payload.Clients {
-		if c.Email == strings.ToLower(strings.TrimSpace(sandbox.Email)) && c.ID != sandbox.ID {
-			t.Fatalf("expected sandbox client ID %q to equal account UUID %q, got %q", sandbox.ID, sandbox.ID, c.ID)
+		if c.Email == strings.ToLower(strings.TrimSpace(sandbox.Email)) && c.ID != sandbox.ProxyUUID {
+			t.Fatalf("expected sandbox client ID %q to use proxy UUID, got %q", sandbox.ProxyUUID, c.ID)
 		}
-		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) && c.ID != normal.ID {
-			t.Fatalf("expected normal client ID %q to equal account UUID %q, got %q", normal.ID, normal.ID, c.ID)
+		if c.Email == strings.ToLower(strings.TrimSpace(normal.Email)) && c.ID != normal.ProxyUUID {
+			t.Fatalf("expected normal client ID %q to use proxy UUID, got %q", normal.ProxyUUID, c.ID)
 		}
 	}
 }
@@ -964,6 +975,7 @@ func TestSyncConfigAckReturnsReceipt(t *testing.T) {
 func TestOverlayDeviceRegisterAndConfigContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("OVERLAY_TRANSPORT_UUID", "11111111-1111-1111-1111-111111111111")
+	t.Setenv("XWORKMATE_BRIDGE_SERVER_URL", "https://bridge-uat.onwalk.net")
 
 	router, _, token := newAuthenticatedSyncHarness(t)
 	registerBody := bytes.NewBufferString(`{
@@ -1032,8 +1044,8 @@ func TestOverlayDeviceRegisterAndConfigContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected transport config object, got %#v", configPayload["transport"])
 	}
-	if got, _ := transport["server"].(string); got != "xworkmate-bridge.svc.plus" {
-		t.Fatalf("expected default gateway server, got %q", got)
+	if got, _ := transport["server"].(string); got != "bridge-uat.onwalk.net" {
+		t.Fatalf("expected managed gateway server, got %q", got)
 	}
 	if got, _ := transport["uuid"].(string); strings.TrimSpace(got) == "" {
 		t.Fatalf("expected transport uuid to be populated")
@@ -2422,6 +2434,27 @@ func TestHealthzEndpoint(t *testing.T) {
 	}
 	if status := resp["status"]; status != "ok" {
 		t.Fatalf("expected health status 'ok', got %q", status)
+	}
+}
+
+func TestReadyzRequiresConfiguredDatabaseProbe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	RegisterRoutes(router)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected unconfigured database to be not ready, got %d", rr.Code)
+	}
+
+	router = gin.New()
+	RegisterRoutes(router, WithDBHealth(func(context.Context) error { return nil }))
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected configured healthy database to be ready, got %d", rr.Code)
 	}
 }
 
