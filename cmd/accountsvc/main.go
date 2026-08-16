@@ -1811,6 +1811,14 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 	); err != nil {
 		return nil, nil, err
 	}
+	// Older UAT databases may already have tenant_domains without the unique
+	// index required by EnsureTenantDomain's ON CONFLICT (domain) clause. Keep
+	// the repair explicit and idempotent instead of relying on GORM's legacy
+	// constraint-name migration.
+	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS tenant_domains_domain_uk
+ON public.tenant_domains (domain)`).Error; err != nil {
+		return nil, nil, fmt.Errorf("ensure tenant domain unique index: %w", err)
+	}
 
 	if cfg.MaxOpenConns > 0 {
 		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)

@@ -305,13 +305,15 @@ CREATE TABLE IF NOT EXISTS public.tenants (
 CREATE TABLE IF NOT EXISTS public.tenant_domains (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
-  domain TEXT NOT NULL UNIQUE,
+  domain TEXT NOT NULL,
   kind TEXT NOT NULL,
   is_primary BOOLEAN NOT NULL DEFAULT FALSE,
   status TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX IF NOT EXISTS tenant_domains_domain_uk
+  ON public.tenant_domains (domain);
 CREATE TABLE IF NOT EXISTS public.tenant_memberships (
   tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL,

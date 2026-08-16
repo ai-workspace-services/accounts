@@ -28,7 +28,10 @@ func (tenant *Tenant) BeforeCreate(tx *gorm.DB) error {
 type TenantDomain struct {
 	ID        string    `gorm:"column:id;type:text;primaryKey"`
 	TenantID  string    `gorm:"column:tenant_id;type:text;not null;index"`
-	Domain    string    `gorm:"column:domain;type:text;not null;uniqueIndex"`
+	// The unique index is created explicitly by the startup migration. Keeping
+	// this out of the GORM tag avoids AutoMigrate trying to drop a legacy
+	// constraint name that may not exist on upgraded databases.
+	Domain    string    `gorm:"column:domain;type:text;not null"`
 	Kind      string    `gorm:"column:kind;type:text;not null"`
 	IsPrimary bool      `gorm:"column:is_primary;not null;default:false"`
 	Status    string    `gorm:"column:status;type:text;not null;index"`
