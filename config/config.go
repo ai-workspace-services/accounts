@@ -213,5 +213,20 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, err
 	}
+
+	// Supabase connection settings are injected by the deployment runtime and
+	// take precedence over the file DSN. URI is the canonical Supabase name;
+	// URL is accepted as a transition alias. DATABASE_URL is the generic
+	// business-service fallback, so existing VPS YAML configs remain valid.
+	supabaseConnectURI := strings.TrimSpace(os.Getenv("SUPABASE_CONNECT_URI"))
+	if supabaseConnectURI == "" {
+		supabaseConnectURI = strings.TrimSpace(os.Getenv("SUPABASE_CONNECT_URL"))
+	}
+	if supabaseConnectURI == "" {
+		supabaseConnectURI = strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	}
+	if supabaseConnectURI != "" {
+		cfg.Store.DSN = supabaseConnectURI
+	}
 	return &cfg, nil
 }
