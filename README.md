@@ -15,6 +15,18 @@ Cloud Neutral Toolkit 的账号与身份服务 (Account Service).
 | 最低 | 1 CPU / 1GB RAM | 开发/小规模 |
 | 推荐 | 2 CPU / 2GB RAM | 生产建议 |
 
+### 部署边界
+
+`accounts` 是容器化业务 API，只支持 VPS（Caddy/Docker）和 Cloud Run
+运行路径；本仓库不包含 Wrangler、Cloudflare Worker 源码或 Cloudflare
+Workers 部署流水线。
+
+Cloudflare Workers 仅由
+`ai-workspace-service/edge-gateway.svc.plus` 的 `edge-gateway` 负责，作为
+统一入口调度 VPS 与 Cloud Run。Cloudflare
+Dashboard 中若仍存在名为 `accounts` 的 Workers Builds 项目，应将该项目
+与本仓库解除 Git 集成，不能把 Accounts 发布误当成 Edge Gateway 发布。
+
 ### CI/CD 部署前置条件 (Vault JWT Role)
 
 `.github/workflows/pipeline.yml` 的 `deploy` / `validate` job 用
