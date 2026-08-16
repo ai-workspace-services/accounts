@@ -572,9 +572,6 @@ func prepareIdentityUUIDIsolation(ctx context.Context, db *sql.DB, dump *Account
 		targetUUID := ""
 		if target != nil {
 			targetUUID = target.UUID
-			if target.ProxyUUID != "" && target.ProxyUUID != proxyUUID {
-				return nil, nil, nil, nil, fmt.Errorf("target user %s has proxy UUID %s, snapshot requires %s", user.Email, target.ProxyUUID, proxyUUID)
-			}
 		}
 		if targetUUID == sourceUUID || targetUUID == proxyUUID {
 			targetUUID, err = newTargetUUID(ctx, db, sourceUUIDs, proxyOwners)

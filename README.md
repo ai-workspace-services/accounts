@@ -15,6 +15,16 @@ Cloud Neutral Toolkit 的账号与身份服务 (Account Service).
 | 最低 | 1 CPU / 1GB RAM | 开发/小规模 |
 | 推荐 | 2 CPU / 2GB RAM | 生产建议 |
 
+### 数据库连接配置
+
+VPS 自建 PostgreSQL 继续使用各环境 YAML 中的 `store.dsn`。接入 Supabase
+Cloud 时，由部署运行时注入 `SUPABASE_CONNECT_URI`，它会覆盖文件中的 DSN；
+`SUPABASE_CONNECT_URL` 仅作为兼容别名；当使用环境变量驱动配置时，
+`DATABASE_URL` 作为通用业务层 fallback。迁移/备份连接不得写入这些运行时变量。
+
+运行时应注入 `DATABASE_SESSION_POOLER_URL` 对应的 Session pooler URI；
+`DATABASE_DIRECT_URL` 只供 schema/DDL、迁移和备份作业使用，不得注入普通服务。
+
 ### 部署边界
 
 `accounts` 是容器化业务 API，只支持 VPS（Caddy/Docker）和 Cloud Run
@@ -23,9 +33,9 @@ Workers 部署流水线。
 
 Cloudflare Workers 仅由
 `ai-workspace-service/edge-gateway.svc.plus` 的 `edge-gateway` 负责，作为
-统一入口调度 VPS 与 Cloud Run。Cloudflare
-Dashboard 中若仍存在名为 `accounts` 的 Workers Builds 项目，应将该项目
-与本仓库解除 Git 集成，不能把 Accounts 发布误当成 Edge Gateway 发布。
+统一入口调度 VPS 与 Cloud Run。Cloudflare Dashboard 中若仍存在名为
+`accounts` 的 Workers Builds 项目，应将该项目与本仓库解除 Git 集成，不能
+把 Accounts 发布误当成 Edge Gateway 发布。
 
 ### CI/CD 部署前置条件 (Vault JWT Role)
 
