@@ -1805,11 +1805,25 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		&model.HomepageVideoSetting{},
 		&model.SandboxBinding{},
 		&model.Tenant{},
-		&model.TenantDomain{},
 		&model.TenantMembership{},
 		&model.XWorkmateProfile{},
 	); err != nil {
 		return nil, nil, err
+	}
+	// Do not let GORM reconcile the legacy tenant_domains column-level unique
+	// metadata: older databases may expose it as a constraint while the
+	// historical GORM name is absent. Provision the table explicitly instead.
+	if err := db.Exec(`CREATE TABLE IF NOT EXISTS public.tenant_domains (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
+  domain TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+  status TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`).Error; err != nil {
+		return nil, nil, fmt.Errorf("ensure tenant domains table: %w", err)
 	}
 	// Older UAT databases may already have tenant_domains without the unique
 	// index required by EnsureTenantDomain's ON CONFLICT (domain) clause. Keep
