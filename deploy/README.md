@@ -1,6 +1,6 @@
 # Deployment Configuration Guide
 
-This directory contains the deployment configurations and procedures for the Accounts Service (`accounts.svc.plus`) on Google Cloud Run.
+This directory contains the deployment configurations and procedures for the Accounts Service (`accounts.svc.plus`) on Google Cloud Run. The existing VPS `docker run`/Compose flow remains unchanged.
 
 ## Environments
 
@@ -8,19 +8,31 @@ This directory contains the deployment configurations and procedures for the Acc
 - **Service Name**: `accounts-svc-plus`
 - **Repository**: [https://github.com/cloud-neutral-toolkit/accounts.svc.plus.git](https://github.com/cloud-neutral-toolkit/accounts.svc.plus.git)
 - **Branch**: `release/v0.1`
-- **Configuration File**: `gcp/cloud-run/prod-service.yaml`
+- **Configuration File**: `deploy/gcp/cloud-run/prod-service.yaml`
 - **Deployment Status**: [Production URL](https://accounts-svc-plus-266500572462.asia-northeast1.run.app)
 
 ### 2. Preview Environment
 - **Service Name**: `preview-accounts-svc-plus`
 - **Repository**: [https://github.com/cloud-neutral-toolkit/accounts.svc.plus.git](https://github.com/cloud-neutral-toolkit/accounts.svc.plus.git)
 - **Branch**: `main`
-- **Configuration File**: `gcp/cloud-run/preview-service.yaml`
+- **Configuration File**: `deploy/gcp/cloud-run/preview-service.yaml`
 - **Deployment Status**: [Preview URL](https://preview-accounts-svc-plus-266500572462.asia-northeast1.run.app)
 
 ---
 
 ## Deployment Procedures
+
+The Makefile is the recommended entrypoint because it selects the environment
+manifest and renders the selected Artifact Registry image into both the image
+field and the runtime `IMAGE` metadata:
+
+```bash
+make cloudrun-build CLOUD_RUN_ENV=preview
+make cloudrun-deploy CLOUD_RUN_ENV=preview
+```
+
+Use `CLOUD_RUN_ENV=prod` for production. Set `GCP_PROJECT`, `GCP_REGION`, or
+`CLOUD_RUN_IMAGE` to override the defaults.
 
 ### Build and Deploy Preview (from `main`)
 ```bash
