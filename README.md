@@ -15,6 +15,16 @@ Cloud Neutral Toolkit 的账号与身份服务 (Account Service).
 | 最低 | 1 CPU / 1GB RAM | 开发/小规模 |
 | 推荐 | 2 CPU / 2GB RAM | 生产建议 |
 
+### 数据库连接配置
+
+VPS 自建 PostgreSQL 继续使用各环境 YAML 中的 `store.dsn`。接入 Supabase
+Cloud 时，由部署运行时注入 `SUPABASE_CONNECT_URI`，它会覆盖文件中的 DSN；
+`SUPABASE_CONNECT_URL` 仅作为兼容别名；当使用环境变量驱动配置时，
+`DATABASE_URL` 作为通用业务层 fallback。迁移/备份连接不得写入这些运行时变量。
+
+运行时应注入 `DATABASE_SESSION_POOLER_URL` 对应的 Session pooler URI；
+`DATABASE_DIRECT_URL` 只供 schema/DDL、迁移和备份作业使用，不得注入普通服务。
+
 ### CI/CD 部署前置条件 (Vault JWT Role)
 
 `.github/workflows/pipeline.yml` 的 `deploy` / `validate` job 用

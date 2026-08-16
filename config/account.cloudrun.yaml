@@ -54,6 +54,8 @@ server:
 
 store:
   driver: "postgres"
+  # Optional runtime override: SUPABASE_CONNECT_URI, then SUPABASE_CONNECT_URL.
+  # If neither is set, this VPS-compatible DSN template remains in effect.
   dsn: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
   maxOpenConns: 30
   maxIdleConns: 10
