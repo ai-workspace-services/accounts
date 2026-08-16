@@ -2437,6 +2437,27 @@ func TestHealthzEndpoint(t *testing.T) {
 	}
 }
 
+func TestReadyzRequiresConfiguredDatabaseProbe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	RegisterRoutes(router)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected unconfigured database to be not ready, got %d", rr.Code)
+	}
+
+	router = gin.New()
+	RegisterRoutes(router, WithDBHealth(func(context.Context) error { return nil }))
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected configured healthy database to be ready, got %d", rr.Code)
+	}
+}
+
 func TestPingEndpointDerivesVersionFromImageEnv(t *testing.T) {
 	t.Setenv("IMAGE", "ghcr.io/example/accounts:abcdef1234567890abcdef1234567890abcdef12")
 	gin.SetMode(gin.TestMode)

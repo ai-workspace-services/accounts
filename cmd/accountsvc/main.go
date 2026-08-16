@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -1029,7 +1030,9 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	var st store.Store
 	var cleanup func(context.Context) error
 	for i := 0; i < 15; i++ {
-		st, cleanup, err = store.New(ctx, storeCfg)
+		attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		st, cleanup, err = store.New(attemptCtx, storeCfg)
+		cancel()
 		if err == nil {
 			break
 		}
@@ -1037,7 +1040,13 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			return err
 		}
 		slog.Warn("retrying business store connection...", "attempt", i+1, "err", err)
-		time.Sleep(2 * time.Second)
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	if err != nil {
 		return fmt.Errorf("business store connection failed after sidecar wait: %w", err)
@@ -1436,6 +1445,19 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	options = append(options, api.WithOAuthProviders(oauthProviders))
 	options = append(options, api.WithAgentRegistry(agentRegistry))
 	options = append(options, api.WithGormDB(gormDB))
+	if sqlDB, dbErr := gormDB.DB(); dbErr != nil {
+		return fmt.Errorf("open admin settings sql db: %w", dbErr)
+	} else {
+		businessDB, _ := st.(interface{ Ping(context.Context) error })
+		options = append(options, api.WithDBHealth(func(probeCtx context.Context) error {
+			if businessDB != nil {
+				if err := businessDB.Ping(probeCtx); err != nil {
+					return err
+				}
+			}
+			return sqlDB.PingContext(probeCtx)
+		}))
+	}
 
 	// Pre-load sandbox bindings from database into the registry
 	if agentRegistry != nil {
@@ -1735,10 +1757,13 @@ var rootCmd = &cobra.Command{
 func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) error, error) {
 	driver := strings.ToLower(strings.TrimSpace(cfg.Driver))
 	var (
-		db  *gorm.DB
-		err error
+		db    *gorm.DB
+		sqlDB *sql.DB
+		err   error
 	)
 	for i := 0; i < 15; i++ {
+		db = nil
+		sqlDB = nil
 		switch driver {
 		case "", "memory":
 			db, err = gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
@@ -1752,7 +1777,18 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		}
 
 		if err == nil {
+			sqlDB, err = db.DB()
+		}
+		if err == nil {
+			probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			err = sqlDB.PingContext(probeCtx)
+			cancel()
+		}
+		if err == nil {
 			break
+		}
+		if sqlDB != nil {
+			_ = sqlDB.Close()
 		}
 		if driver == "" || driver == "memory" {
 			return nil, nil, err
@@ -1776,10 +1812,6 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		return nil, nil, err
 	}
 
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, nil, err
-	}
 	if cfg.MaxOpenConns > 0 {
 		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
 	}

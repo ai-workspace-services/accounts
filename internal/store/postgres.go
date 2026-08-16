@@ -107,6 +107,13 @@ type postgresStore struct {
 	capsLoaded bool
 }
 
+// Ping verifies the business store's own connection pool. Accounts keeps the
+// business store and admin-settings GORM handle separate, so readiness checks
+// both pools before traffic is routed to this process.
+func (s *postgresStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 	normalizedEmail := strings.ToLower(strings.TrimSpace(user.Email))
 	normalizedName := strings.TrimSpace(user.Name)

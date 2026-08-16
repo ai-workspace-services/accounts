@@ -93,6 +93,7 @@ type handler struct {
 	xrayConfigRenderer        func(*store.User) (string, string, []string, error)
 	agentRegistry             agentRegistry
 	db                        *gorm.DB
+	dbHealth                  func(context.Context) error
 	stripe                    *stripeClient
 	bridgeCredentials         map[string]memoryBridgeCredential
 	taskSessions              tasksession.Store
@@ -306,6 +307,16 @@ func WithGormDB(db *gorm.DB) Option {
 	}
 }
 
+// WithDBHealth configures the readiness probe for the single active database.
+// It deliberately accepts one probe rather than a list of endpoints: account
+// writes must always go to one configured primary, never to an in-process
+// failover or dual-write set.
+func WithDBHealth(probe func(context.Context) error) Option {
+	return func(h *handler) {
+		h.dbHealth = probe
+	}
+}
+
 // WithStripeConfig configures Stripe billing integration.
 func WithStripeConfig(cfg StripeConfig) Option {
 	return func(h *handler) {
@@ -344,6 +355,29 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	r.GET("/readyz", func(c *gin.Context) {
+		if h.dbHealth == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":   "not_ready",
+				"database": "not_configured",
+			})
+			return
+		}
+		probeCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		if err := h.dbHealth(probeCtx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{
+				"status":   "not_ready",
+				"database": "unavailable",
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"status":   "ready",
+			"database": "ok",
+		})
 	})
 
 	r.GET("/api/ping", func(c *gin.Context) {
