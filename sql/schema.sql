@@ -64,7 +64,7 @@ $$;
 -- Tables
 -- =========================================
 
-CREATE TABLE public.users (
+CREATE TABLE IF NOT EXISTS public.users (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   username TEXT NOT NULL,
   password TEXT NOT NULL,
@@ -89,13 +89,13 @@ CREATE TABLE public.users (
 );
 
 
-CREATE TABLE public.email_blacklist (
+CREATE TABLE IF NOT EXISTS public.email_blacklist (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT NOT NULL UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.identities (
+CREATE TABLE IF NOT EXISTS public.identities (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   provider TEXT NOT NULL,
   external_id TEXT NOT NULL,
@@ -107,7 +107,7 @@ CREATE TABLE public.identities (
   CONSTRAINT identities_provider_external_id_uk UNIQUE (provider, external_id)
 );
 
-CREATE TABLE public.sessions (
+CREATE TABLE IF NOT EXISTS public.sessions (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   token TEXT NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL,
@@ -118,7 +118,7 @@ CREATE TABLE public.sessions (
   origin_node TEXT NOT NULL DEFAULT 'local'
 );
 
-CREATE TABLE public.agents (
+CREATE TABLE IF NOT EXISTS public.agents (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL DEFAULT '',
   groups JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -130,7 +130,7 @@ CREATE TABLE public.agents (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.overlay_devices (
+CREATE TABLE IF NOT EXISTS public.overlay_devices (
   id TEXT NOT NULL,
   user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
   network_id TEXT NOT NULL DEFAULT 'xworkmate-private',
@@ -145,7 +145,7 @@ CREATE TABLE public.overlay_devices (
   PRIMARY KEY (user_uuid, id)
 );
 
-CREATE TABLE public.overlay_nodes (
+CREATE TABLE IF NOT EXISTS public.overlay_nodes (
   id TEXT PRIMARY KEY,
   network_id TEXT NOT NULL DEFAULT 'xworkmate-private',
   name TEXT NOT NULL DEFAULT '',
@@ -166,7 +166,7 @@ CREATE TABLE public.overlay_nodes (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.overlay_config_acks (
+CREATE TABLE IF NOT EXISTS public.overlay_config_acks (
   user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
   device_id TEXT NOT NULL,
   network_id TEXT NOT NULL DEFAULT 'xworkmate-private',
@@ -178,10 +178,10 @@ CREATE TABLE public.overlay_config_acks (
   FOREIGN KEY (user_uuid, device_id) REFERENCES public.overlay_devices(user_uuid, id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_overlay_devices_network ON public.overlay_devices(network_id);
-CREATE UNIQUE INDEX idx_overlay_devices_network_address
+CREATE INDEX IF NOT EXISTS idx_overlay_devices_network ON public.overlay_devices(network_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_overlay_devices_network_address
   ON public.overlay_devices(network_id, wireguard_address);
-CREATE INDEX idx_overlay_nodes_network ON public.overlay_nodes(network_id);
+CREATE INDEX IF NOT EXISTS idx_overlay_nodes_network ON public.overlay_nodes(network_id);
 
 -- The account service also creates these tables during startup via GORM.  Keep
 -- the baseline safe when startup races this initializer: the baseline owns the
@@ -198,7 +198,7 @@ CREATE TABLE IF NOT EXISTS public.admin_settings (
   CONSTRAINT admin_settings_module_role_uk UNIQUE (module_key, role)
 );
 
-CREATE TABLE public.rbac_roles (
+CREATE TABLE IF NOT EXISTS public.rbac_roles (
   role_key TEXT PRIMARY KEY,
   description TEXT NOT NULL DEFAULT '',
   priority INTEGER NOT NULL DEFAULT 100,
@@ -206,14 +206,14 @@ CREATE TABLE public.rbac_roles (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.rbac_permissions (
+CREATE TABLE IF NOT EXISTS public.rbac_permissions (
   permission_key TEXT PRIMARY KEY,
   description TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE public.rbac_role_permissions (
+CREATE TABLE IF NOT EXISTS public.rbac_role_permissions (
   role_key TEXT NOT NULL REFERENCES public.rbac_roles(role_key) ON DELETE CASCADE,
   permission_key TEXT NOT NULL REFERENCES public.rbac_permissions(permission_key) ON DELETE CASCADE,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -222,7 +222,7 @@ CREATE TABLE public.rbac_role_permissions (
   PRIMARY KEY (role_key, permission_key)
 );
 
-CREATE TABLE public.subscriptions (
+CREATE TABLE IF NOT EXISTS public.subscriptions (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
   provider TEXT NOT NULL,
@@ -241,7 +241,7 @@ CREATE TABLE public.subscriptions (
 
 -- Billing plan catalog (billing P1): maps Stripe prices to entitlements.
 -- Data-driven: price/quota adjustments are catalog edits, never deploys.
-CREATE TABLE public.billing_plans (
+CREATE TABLE IF NOT EXISTS public.billing_plans (
   plan_id TEXT PRIMARY KEY,
   stripe_price_id TEXT UNIQUE,
   display_name TEXT NOT NULL DEFAULT '',
@@ -258,7 +258,7 @@ CREATE TABLE public.billing_plans (
 );
 
 -- Stripe webhook audit/dedup trail (billing P1).
-CREATE TABLE public.stripe_webhook_events (
+CREATE TABLE IF NOT EXISTS public.stripe_webhook_events (
   event_id TEXT PRIMARY KEY,
   event_type TEXT NOT NULL DEFAULT '',
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -267,9 +267,9 @@ CREATE TABLE public.stripe_webhook_events (
   received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   processed_at TIMESTAMPTZ
 );
-CREATE INDEX stripe_webhook_events_received_at_idx ON public.stripe_webhook_events (received_at DESC);
+CREATE INDEX IF NOT EXISTS stripe_webhook_events_received_at_idx ON public.stripe_webhook_events (received_at DESC);
 
-CREATE TABLE public.nodes (
+CREATE TABLE IF NOT EXISTS public.nodes (
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   location TEXT NOT NULL,
@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS public.tenant_memberships (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, user_id)
 );
-CREATE TABLE public.bridge_credentials (
+CREATE TABLE IF NOT EXISTS public.bridge_credentials (
   credential_uuid UUID PRIMARY KEY,
   user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
   tenant_id TEXT NOT NULL REFERENCES public.tenants(id) ON DELETE CASCADE,
@@ -336,23 +336,40 @@ CREATE TABLE public.bridge_credentials (
 -- =========================================
 -- Indexes
 -- =========================================
-CREATE UNIQUE INDEX users_username_lower_uk ON public.users (lower(username));
-CREATE UNIQUE INDEX users_email_lower_uk ON public.users (lower(email)) WHERE email IS NOT NULL;
-CREATE INDEX idx_identities_user_uuid ON public.identities (user_uuid);
-CREATE INDEX idx_sessions_user_uuid ON public.sessions (user_uuid);
-CREATE UNIQUE INDEX sessions_token_uk ON public.sessions (token);
-CREATE INDEX idx_admin_settings_version ON public.admin_settings (version);
-CREATE INDEX idx_subscriptions_user_uuid ON public.subscriptions (user_uuid);
-CREATE INDEX idx_subscriptions_status ON public.subscriptions (status);
-CREATE INDEX idx_nodes_available ON public.nodes (available);
-CREATE INDEX idx_audit_logs_created_at ON public.audit_logs (created_at DESC);
-CREATE INDEX idx_audit_logs_action_created_at ON public.audit_logs (action, created_at DESC);
-CREATE INDEX bridge_credentials_user_tenant_idx ON public.bridge_credentials (user_uuid, tenant_id, status);
-CREATE UNIQUE INDEX bridge_credentials_active_user_tenant_uk ON public.bridge_credentials (user_uuid, tenant_id) WHERE status = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_uk ON public.users (lower(username));
+CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_uk ON public.users (lower(email)) WHERE email IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_identities_user_uuid ON public.identities (user_uuid);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_uuid ON public.sessions (user_uuid);
+CREATE UNIQUE INDEX IF NOT EXISTS sessions_token_uk ON public.sessions (token);
+CREATE INDEX IF NOT EXISTS idx_admin_settings_version ON public.admin_settings (version);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user_uuid ON public.subscriptions (user_uuid);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON public.subscriptions (status);
+CREATE INDEX IF NOT EXISTS idx_nodes_available ON public.nodes (available);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON public.audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action_created_at ON public.audit_logs (action, created_at DESC);
+CREATE INDEX IF NOT EXISTS bridge_credentials_user_tenant_idx ON public.bridge_credentials (user_uuid, tenant_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS bridge_credentials_active_user_tenant_uk ON public.bridge_credentials (user_uuid, tenant_id) WHERE status = 'active';
 
 -- =========================================
 -- Triggers
 -- =========================================
+
+DROP TRIGGER IF EXISTS trg_users_set_updated_at ON public.users;
+DROP TRIGGER IF EXISTS trg_users_maintain_email_verified ON public.users;
+DROP TRIGGER IF EXISTS trg_users_bump_version ON public.users;
+DROP TRIGGER IF EXISTS trg_identities_set_updated_at ON public.identities;
+DROP TRIGGER IF EXISTS trg_identities_bump_version ON public.identities;
+DROP TRIGGER IF EXISTS trg_sessions_set_updated_at ON public.sessions;
+DROP TRIGGER IF EXISTS trg_sessions_bump_version ON public.sessions;
+DROP TRIGGER IF EXISTS trg_agents_set_updated_at ON public.agents;
+DROP TRIGGER IF EXISTS trg_admin_settings_set_updated_at ON public.admin_settings;
+DROP TRIGGER IF EXISTS trg_admin_settings_bump_version ON public.admin_settings;
+DROP TRIGGER IF EXISTS trg_rbac_roles_set_updated_at ON public.rbac_roles;
+DROP TRIGGER IF EXISTS trg_rbac_permissions_set_updated_at ON public.rbac_permissions;
+DROP TRIGGER IF EXISTS trg_rbac_role_permissions_set_updated_at ON public.rbac_role_permissions;
+DROP TRIGGER IF EXISTS trg_subscriptions_set_updated_at ON public.subscriptions;
+DROP TRIGGER IF EXISTS trg_nodes_set_updated_at ON public.nodes;
+DROP TRIGGER IF EXISTS trg_nodes_bump_version ON public.nodes;
 
 -- users
 CREATE TRIGGER trg_users_set_updated_at
