@@ -25,10 +25,15 @@ func (tenant *Tenant) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// TenantDomain uses a column-level UNIQUE constraint rather than a generated
+// unique index. Existing PostgreSQL/Supabase databases may name the constraint
+// differently (for example, tenant_domains_domain_key). GORM treats
+// uniqueIndex as an absent column-level constraint and attempts to drop its
+// generated name during AutoMigrate, which makes application startup fail.
 type TenantDomain struct {
 	ID        string    `gorm:"column:id;type:text;primaryKey"`
 	TenantID  string    `gorm:"column:tenant_id;type:text;not null;index"`
-	Domain    string    `gorm:"column:domain;type:text;not null;uniqueIndex"`
+	Domain    string    `gorm:"column:domain;type:text;not null;unique"`
 	Kind      string    `gorm:"column:kind;type:text;not null"`
 	IsPrimary bool      `gorm:"column:is_primary;not null;default:false"`
 	Status    string    `gorm:"column:status;type:text;not null;index"`
