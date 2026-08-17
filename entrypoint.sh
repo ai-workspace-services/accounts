@@ -8,6 +8,13 @@ set -euo pipefail
 USE_STUNNEL=0
 STUNNEL_CONF="/etc/stunnel/stunnel.conf"
 
+# Cloud Run receives the Supabase Session pooler as a full connection URI.
+# That endpoint already terminates TLS, so it must not be routed through the
+# legacy self-hosted PostgreSQL stunnel client even when inherited DB_TLS_*
+# variables are present. The stunnel client remains exclusively for the
+# self-hosted PostgreSQL -> remote stunnel-server topology.
+SUPABASE_RUNTIME_URI="${SUPABASE_CONNECT_URI:-${SUPABASE_CONNECT_URL:-}}"
+
 if [ -z "${DB_USER:-}" ] && [ -n "${POSTGRES_USER:-}" ]; then
   export DB_USER="${POSTGRES_USER}"
 fi
@@ -28,7 +35,7 @@ if [ -z "${DB_NAME:-}" ] && [ -n "${POSTGRES_DB:-}" ]; then
   export DB_NAME="${POSTGRES_DB}"
 fi
 
-if [ -n "${DB_TLS_HOST:-}" ] && [ -n "${DB_TLS_PORT:-}" ]; then
+if [ -z "${SUPABASE_RUNTIME_URI}" ] && [ -n "${DB_TLS_HOST:-}" ] && [ -n "${DB_TLS_PORT:-}" ]; then
   USE_STUNNEL=1
   export DB_HOST="${DB_HOST:-127.0.0.1}"
   export DB_PORT="${DB_PORT:-15432}"
@@ -107,21 +114,17 @@ if [ "${USE_STUNNEL}" -eq 1 ]; then
   stunnel "${STUNNEL_CONF}"
 fi
 
-if [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ]; then
-  if [ "${DB_HOST}" = "127.0.0.1" ] || [ "${DB_HOST}" = "localhost" ]; then
-    if command -v nc >/dev/null; then
-      wait_seconds="${STUNNEL_WAIT_SECONDS:-30}"
-      i=0
-      while ! nc -z "${DB_HOST}" "${DB_PORT}" >/dev/null 2>&1; do
-        i=$((i + 1))
-        if [ "${i}" -ge "${wait_seconds}" ]; then
-          echo "stunnel not ready after ${wait_seconds}s on ${DB_HOST}:${DB_PORT}" >&2
-          break
-        fi
-        sleep 1
-      done
+if [ "${USE_STUNNEL}" -eq 1 ] && command -v nc >/dev/null 2>&1; then
+  wait_seconds="${STUNNEL_WAIT_SECONDS:-30}"
+  i=0
+  while ! nc -z "${DB_HOST}" "${DB_PORT}" >/dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "${i}" -ge "${wait_seconds}" ]; then
+      echo "stunnel not ready after ${wait_seconds}s on ${DB_HOST}:${DB_PORT}" >&2
+      break
     fi
-  fi
+    sleep 1
+  done
 fi
 
 exec /usr/local/bin/account --config "${CONFIG_FILE}" "$@"
