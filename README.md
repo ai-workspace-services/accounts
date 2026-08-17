@@ -25,6 +25,10 @@ Cloud 时，由部署运行时注入 `SUPABASE_CONNECT_URI`，它会覆盖文件
 运行时应注入 `DATABASE_SESSION_POOLER_URL` 对应的 Session pooler URI；
 `DATABASE_DIRECT_URL` 只供 schema/DDL、迁移和备份作业使用，不得注入普通服务。
 
+当注入 `SUPABASE_CONNECT_URI`（或兼容别名 `SUPABASE_CONNECT_URL`）时，容器会直连
+Supabase pooler，且不会启动或等待本地 stunnel。stunnel client 只用于自建 PostgreSQL
+经 `DB_TLS_HOST` / `DB_TLS_PORT` 连接远端 stunnel server 的部署形态。
+
 ### 部署边界
 
 `accounts` 是容器化业务 API，只支持 VPS（Caddy/Docker）和 Cloud Run
