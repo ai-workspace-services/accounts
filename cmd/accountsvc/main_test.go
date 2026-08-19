@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
 
+	"account/config"
 	"account/internal/store"
 )
 
@@ -124,5 +126,61 @@ func TestEnsureSharedXWorkmateProfileSkipsWhenBridgeIsNotConfigured(t *testing.T
 	_, err = st.GetXWorkmateProfile(ctx, store.SharedXWorkmateTenantID, "", store.XWorkmateProfileScopeTenantShared)
 	if err != store.ErrXWorkmateProfileNotFound {
 		t.Fatalf("expected no shared profile without a bridge endpoint, got %v", err)
+	}
+}
+
+func TestResolveAllowedOriginsMergesEnvironmentOrigins(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	serverCfg := config.Server{AllowedOrigins: []string{"https://console.svc.plus"}}
+
+	t.Setenv(allowedOriginsEnv, " https://console-cloudflare-uat.onwalk.net , console-cloudflare-sit.onwalk.net ,, https://console.svc.plus ")
+
+	origins, allowAll := resolveAllowedOrigins(logger, serverCfg)
+	if allowAll {
+		t.Fatal("allowAll must stay false when no entry is *")
+	}
+
+	want := []string{
+		"https://console.svc.plus",
+		"https://console-cloudflare-uat.onwalk.net",
+		"https://console-cloudflare-sit.onwalk.net",
+	}
+	if len(origins) != len(want) {
+		t.Fatalf("origins = %v, want %v", origins, want)
+	}
+	for i, origin := range want {
+		if origins[i] != origin {
+			t.Errorf("origins[%d] = %q, want %q", i, origins[i], origin)
+		}
+	}
+}
+
+func TestResolveAllowedOriginsIgnoresUnsetEnvironmentOrigins(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	serverCfg := config.Server{AllowedOrigins: []string{"https://console.svc.plus"}}
+
+	t.Setenv(allowedOriginsEnv, "")
+
+	origins, allowAll := resolveAllowedOrigins(logger, serverCfg)
+	if allowAll {
+		t.Fatal("allowAll must stay false when no entry is *")
+	}
+	if len(origins) != 1 || origins[0] != "https://console.svc.plus" {
+		t.Fatalf("origins = %v, want [https://console.svc.plus]", origins)
+	}
+}
+
+func TestResolveAllowedOriginsHonoursWildcardFromEnvironment(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	serverCfg := config.Server{AllowedOrigins: []string{"https://console.svc.plus"}}
+
+	t.Setenv(allowedOriginsEnv, "*")
+
+	origins, allowAll := resolveAllowedOrigins(logger, serverCfg)
+	if !allowAll {
+		t.Fatal("allowAll must be true when the environment supplies *")
+	}
+	if origins != nil {
+		t.Fatalf("origins = %v, want nil when allowAll is set", origins)
 	}
 }

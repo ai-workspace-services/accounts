@@ -13,6 +13,7 @@
 
 | 日期 | 任务 | 状态 | 关联 PR |
 |---|---|---|---|
+| 2026-08-19 | [Cloudflare UAT 登录链路修复(accounts 视角:CORS Origin 白名单)](2026-08-19-cloudflare-uat-login-path-repair.md) | 🟡 代码已提交,待合并 + 重新部署 | 本仓 PR + toolkit/edge-gateway/portal 各一 |
 | 2026-08-01 | [UAT 共享计费 Schema 初始化补全](2026-08-01-uat-shared-accounting-schema.md) | 🟡 已部署；结构通过，真实流量待环境解阻 | accounts [#46](https://github.com/ai-workspace-services/accounts/pull/46) [MERGED] · portal [#131](https://github.com/ai-workspace-services/portal/pull/131) [MERGED] · gitops [#130](https://github.com/ai-workspace-infra/gitops/pull/130) [MERGED] |
 | 2026-07-14 | [Overlay 控制面(设备/节点注册、配置下发、ack)+ accounting 更新](2026-07-14-overlay-control-plane.md) | 🟢 已合并(重接到 main,原分支建在已废弃 PR#21 提交上) | accounts #29(名义)→ 实际经重接 PR 落地 |
 | 2026-07-14 | [用户自助:找回密码 · MFA 恢复码 · 自助注销](2026-07-14-self-service-recovery-and-deletion.md) | 🟢 找回密码已合并;恢复码/注销待实现(决策已锁) | accounts [#26](https://github.com/ai-workspace-services/accounts/pull/26) [MERGED] |
