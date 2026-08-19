@@ -1914,33 +1914,47 @@ func buildCORSConfig(logger *slog.Logger, serverCfg config.Server, st store.Stor
 	return cfg
 }
 
+// allowedOriginsEnv supplies additional browser origins at deploy time as a
+// comma separated list. It is additive to server.allowedOrigins in the config
+// file so a deployment can register its own console host without forking the
+// config template per environment. Requests carrying an Origin that is not on
+// the resulting list are rejected by the CORS middleware with an empty 403,
+// which is indistinguishable from an application error on the client, so the
+// deploy pipeline is the right place to keep this list in sync.
+const allowedOriginsEnv = "ALLOWED_ORIGINS"
+
 func resolveAllowedOrigins(logger *slog.Logger, serverCfg config.Server) ([]string, bool) {
 	rawOrigins := serverCfg.AllowedOrigins
 	seen := make(map[string]struct{}, len(rawOrigins))
 	origins := make([]string, 0, len(rawOrigins))
 	allowAll := false
 
-	for _, origin := range rawOrigins {
-		trimmed := strings.TrimSpace(origin)
-		if trimmed == "" {
-			continue
-		}
-		if trimmed == "*" {
-			allowAll = true
-			continue
-		}
+	collect := func(candidates []string, source string) {
+		for _, origin := range candidates {
+			trimmed := strings.TrimSpace(origin)
+			if trimmed == "" {
+				continue
+			}
+			if trimmed == "*" {
+				allowAll = true
+				continue
+			}
 
-		normalized, err := parseOrigin(trimmed)
-		if err != nil {
-			logger.Warn("ignoring invalid cors origin", "origin", origin, "err", err)
-			continue
+			normalized, err := parseOrigin(trimmed)
+			if err != nil {
+				logger.Warn("ignoring invalid cors origin", "origin", origin, "source", source, "err", err)
+				continue
+			}
+			if _, exists := seen[normalized]; exists {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			origins = append(origins, normalized)
 		}
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		origins = append(origins, normalized)
 	}
+
+	collect(rawOrigins, "config")
+	collect(strings.Split(os.Getenv(allowedOriginsEnv), ","), allowedOriginsEnv)
 
 	if allowAll {
 		return nil, true
