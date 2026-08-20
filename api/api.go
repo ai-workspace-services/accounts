@@ -541,6 +541,11 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		apiGroup.Use(h.tokenService.AuthMiddleware())
 		apiGroup.Use(auth.RequireActiveUser(h.store))
 	}
+	// The Console Frontend Router forwards non-auth /api/* requests to the
+	// Accounts API. Keep the user-list endpoint available at that boundary as
+	// well as its canonical /api/auth/users path so the management page can
+	// read migrated users without bypassing the normal admin permission check.
+	apiGroup.GET("/users", h.listUsers)
 	registerAdminRoutes(apiGroup, h)
 
 	overlayGroup := r.Group("/api/overlay")
