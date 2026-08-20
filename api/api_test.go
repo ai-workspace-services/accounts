@@ -2935,6 +2935,55 @@ func TestAdminUsersMetricsForbiddenForStandardUser(t *testing.T) {
 	}
 }
 
+func TestUsersListSupportsConsoleAPIAlias(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	st := store.NewMemoryStore()
+	admin := &store.User{
+		ID:            "admin-list-1",
+		Name:          "administrator",
+		Email:         "admin-list@example.com",
+		EmailVerified: true,
+		Role:          store.RoleAdmin,
+		Active:        true,
+	}
+	if err := st.CreateUser(context.Background(), admin); err != nil {
+		t.Fatalf("failed to seed admin: %v", err)
+	}
+	if err := st.CreateSession(context.Background(), "admin-list-token", admin.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("failed to seed admin session: %v", err)
+	}
+	listed := &store.User{
+		ID:            "listed-user-1",
+		Name:          "migrated user",
+		Email:         "migrated@example.com",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Active:        true,
+	}
+	if err := st.CreateUser(context.Background(), listed); err != nil {
+		t.Fatalf("failed to seed listed user: %v", err)
+	}
+
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+
+	responses := make([]string, 0, 2)
+	for _, path := range []string{"/api/auth/users", "/api/users"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer admin-list-token")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", path, rr.Code, rr.Body.String())
+		}
+		responses = append(responses, rr.Body.String())
+	}
+	if responses[0] != responses[1] {
+		t.Fatalf("user list aliases returned different payloads: %s vs %s", responses[0], responses[1])
+	}
+}
+
 func TestAdminUsersMetricsSuccess(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
