@@ -11,6 +11,7 @@ import (
 	"html"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1724,8 +1725,74 @@ func (h *handler) setSessionCookie(c *gin.Context, token string, expiresAt time.
 	secure := c.Request.TLS != nil
 	c.SetSameSite(http.SameSiteLaxMode)
 
-	domain := h.getCookieDomain()
+	domain := h.cookieDomainFor(c)
 	c.SetCookie(sessionCookieName, token, maxAge, "/", domain, secure, true)
+}
+
+// cookieDomainFor returns the Domain attribute for the session cookie, or the
+// empty string for a host-only cookie.
+//
+// The registrable domain of publicUrl is only usable when the request actually
+// came through a host under it. A browser silently discards a cookie whose
+// Domain does not domain-match the host that served the response, so an
+// environment reached under a different domain than the one publicUrl names --
+// UAT answers on *.onwalk.net while the config template still says
+// accounts.svc.plus -- would sign the user in and hand back a cookie the
+// browser drops on the floor, leaving every later request unauthenticated.
+// Falling back to a host-only cookie keeps that environment working instead of
+// depending on the config being right.
+func (h *handler) cookieDomainFor(c *gin.Context) string {
+	domain := h.getCookieDomain()
+	if domain == "" {
+		return ""
+	}
+	host := requestHost(c)
+	if host == "" {
+		return ""
+	}
+	if !domainMatches(host, domain) {
+		return ""
+	}
+	return domain
+}
+
+// requestHost is the host the browser addressed, which behind the edge gateway
+// is the forwarded host rather than the upstream one this process was reached
+// on.
+func requestHost(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	for _, headerName := range []string{"X-Forwarded-Host", "X-Original-Host", "X-Host"} {
+		if candidate := normalizeCookieHost(c.GetHeader(headerName)); candidate != "" {
+			return candidate
+		}
+	}
+	return normalizeCookieHost(c.Request.Host)
+}
+
+func normalizeCookieHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if host == "" {
+		return ""
+	}
+	// A forwarded header may carry a comma-separated chain; the first entry is
+	// the host the browser used.
+	if comma := strings.Index(host, ","); comma >= 0 {
+		host = strings.TrimSpace(host[:comma])
+	}
+	if withoutPort, _, err := net.SplitHostPort(host); err == nil {
+		host = withoutPort
+	}
+	return strings.ToLower(strings.Trim(host, "."))
+}
+
+func domainMatches(host, domain string) bool {
+	suffix := strings.ToLower(strings.TrimPrefix(domain, "."))
+	if suffix == "" {
+		return false
+	}
+	return host == suffix || strings.HasSuffix(host, "."+suffix)
 }
 
 func (h *handler) getCookieDomain() string {
