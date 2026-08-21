@@ -1,0 +1,173 @@
+{
+  "_comment": [
+    "The billing_plans rows we publish. Read by scripts/seed-billing-plans.sh,",
+    "and checked against scripts/stripe-catalog.yaml by",
+    "internal/billingcatalog/catalog_test.go -- the storefront must quote the",
+    "amount Stripe actually charges.",
+    "",
+    "stripePriceId is deliberately absent. Stripe assigns it, so it is filled in",
+    "after scripts/stripe-sync-catalog.sh runs and differs per environment; the",
+    "seeder preserves whatever is already stored rather than blanking it.",
+    "",
+    "TRIAL-7D is not listed: onboarding owns it (provisionOnboardingTrial), and",
+    "a seed run must not redefine the plan every new account is placed on."
+  ],
+  "plans": [
+    {
+      "planId": "FREE",
+      "displayName": "Free",
+      "kind": "subscription",
+      "includedQuotaBytes": 0,
+      "packageName": "free",
+      "priceAmount": 0,
+      "priceCurrency": "",
+      "priceUnit": "",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "sla": "none",
+        "session_persistence": false,
+        "demo_cards": { "enabled": true, "create": true, "runs_per_day": 1, "session_minutes": 60 },
+        "fast_lane": { "mode": "windowed", "window": "weekly", "minutes": 60, "fallback": "vps" },
+        "resource_cards": { "create": false },
+        "dunning": { "policy": "none" }
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 10
+    },
+    {
+      "planId": "PAYG",
+      "displayName": "Pay As You Go",
+      "kind": "subscription",
+      "includedQuotaBytes": 0,
+      "packageName": "payg",
+      "priceAmount": 0,
+      "priceCurrency": "",
+      "priceUnit": "",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "sla": "standard",
+        "session_persistence": true,
+        "resource_cards": { "create": true, "pricing": "list_price" },
+        "retention": { "compute_days": 7, "object_storage_days": 30 },
+        "dunning": { "policy": "suspend_on_zero_balance", "grace_hours": 0 }
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 20
+    },
+    {
+      "planId": "PAYG-TOPUP-50",
+      "displayName": "余额充值 ¥50",
+      "kind": "paygo_topup",
+      "includedQuotaBytes": 0,
+      "packageName": "payg",
+      "priceAmount": 5000,
+      "priceCurrency": "CNY",
+      "priceUnit": "once",
+      "priceMultipliers": {},
+      "features": { "topup": { "credits_balance": true } },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 21
+    },
+    {
+      "planId": "PAYG-TOPUP-100",
+      "displayName": "余额充值 ¥100",
+      "kind": "paygo_topup",
+      "includedQuotaBytes": 0,
+      "packageName": "payg",
+      "priceAmount": 10000,
+      "priceCurrency": "CNY",
+      "priceUnit": "once",
+      "priceMultipliers": {},
+      "features": { "topup": { "credits_balance": true } },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 22
+    },
+    {
+      "planId": "PAYG-TOPUP-500",
+      "displayName": "余额充值 ¥500",
+      "kind": "paygo_topup",
+      "includedQuotaBytes": 0,
+      "packageName": "payg",
+      "priceAmount": 50000,
+      "priceCurrency": "CNY",
+      "priceUnit": "once",
+      "priceMultipliers": {},
+      "features": { "topup": { "credits_balance": true } },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 23
+    },
+    {
+      "planId": "PRO-MONTHLY",
+      "displayName": "Pro 月付",
+      "kind": "subscription",
+      "includedQuotaBytes": 21474836480,
+      "packageName": "pro",
+      "priceAmount": 2000,
+      "priceCurrency": "CNY",
+      "priceUnit": "month",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "sla": "standard",
+        "session_persistence": true,
+        "resource_cards": { "create": true, "pricing": "list_price_plus_managed_fee", "managed_fee_rate": 0.20 },
+        "fast_lane": { "mode": "quota" },
+        "overage": { "policy": "charge", "cny_per_gb": 1.0 },
+        "dunning": { "policy": "grace_then_suspend", "grace_days": 14 },
+        "quota_cycle": "natural_month"
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 30
+    },
+    {
+      "planId": "PRO-YEARLY",
+      "displayName": "Pro 年付",
+      "kind": "subscription",
+      "includedQuotaBytes": 21474836480,
+      "packageName": "pro",
+      "priceAmount": 20000,
+      "priceCurrency": "CNY",
+      "priceUnit": "year",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "sla": "standard",
+        "session_persistence": true,
+        "resource_cards": { "create": true, "pricing": "list_price_plus_managed_fee", "managed_fee_rate": 0.20 },
+        "fast_lane": { "mode": "quota" },
+        "overage": { "policy": "charge", "cny_per_gb": 1.0 },
+        "dunning": { "policy": "grace_then_suspend", "grace_days": 14 },
+        "quota_cycle": "natural_month"
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 40
+    },
+    {
+      "planId": "LEGACY-GRANDFATHERED",
+      "displayName": "存量用户过渡档",
+      "kind": "subscription",
+      "includedQuotaBytes": 0,
+      "packageName": "legacy",
+      "priceAmount": 0,
+      "priceCurrency": "",
+      "priceUnit": "",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "sla": "standard",
+        "session_persistence": true,
+        "fast_lane": { "mode": "quota" },
+        "overage": { "policy": "none" },
+        "dunning": { "policy": "manual" },
+        "grandfathered": { "reason": "pre-billing existing user" }
+      },
+      "trialDays": 0,
+      "active": false,
+      "sortOrder": 90
+    }
+  ]
+}
