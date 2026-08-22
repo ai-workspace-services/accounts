@@ -19,6 +19,10 @@
 #   STRIPE_SECRET_KEY=sk_test_... \
 #     scripts/stripe-sync-catalog.sh --env uat --domain-base onwalk.net
 #
+#   STRIPE_SECRET_KEY=sk_test_... ACCOUNTS_ADMIN_TOKEN=... \
+#     ACCOUNTS_BASE_URL=https://accounts-cloudflare-uat.onwalk.net \
+#     scripts/stripe-sync-catalog.sh --env uat --domain-base onwalk.net --write-catalog
+#
 #   加 --dry-run 只打印将要做什么，不实际调用会产生副作用的 Stripe API。
 set -euo pipefail
 
@@ -26,8 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATALOG_FILE="${SCRIPT_DIR}/stripe-catalog.yaml"
 STRIPE_API_BASE="${STRIPE_API_BASE:-https://api.stripe.com/v1}"
 DRY_RUN=false
+WRITE_CATALOG=false
 ENV_NAME=""
 DOMAIN_BASE=""
+ACCOUNTS_BASE_URL="${ACCOUNTS_BASE_URL:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +41,8 @@ while [[ $# -gt 0 ]]; do
     --domain-base) DOMAIN_BASE="$2"; shift 2 ;;
     --catalog) CATALOG_FILE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --write-catalog) WRITE_CATALOG=true; shift ;;
+    --accounts-base-url) ACCOUNTS_BASE_URL="$2"; shift 2 ;;
     *) echo "::error::unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -43,6 +51,10 @@ done
 [[ -n "${ENV_NAME}" ]] || { echo "::error::--env is required (e.g. uat, prod)" >&2; exit 1; }
 [[ -n "${DOMAIN_BASE}" ]] || { echo "::error::--domain-base is required (e.g. onwalk.net, svc.plus)" >&2; exit 1; }
 [[ -f "${CATALOG_FILE}" ]] || { echo "::error::catalog file not found: ${CATALOG_FILE}" >&2; exit 1; }
+
+if [[ "${WRITE_CATALOG}" == "true" ]]; then
+  : "${ACCOUNTS_ADMIN_TOKEN:?ACCOUNTS_ADMIN_TOKEN is required with --write-catalog}"
+fi
 
 command -v jq >/dev/null || { echo "::error::jq is required" >&2; exit 1; }
 python3 -c "import yaml" 2>/dev/null || { echo "::error::python3 + pyyaml is required (pip install pyyaml)" >&2; exit 1; }
@@ -57,6 +69,25 @@ stripe_get() {
 stripe_post() {
   local path="$1"; shift
   curl -sS "${auth[@]}" -X POST "${STRIPE_API_BASE}${path}" "$@"
+}
+
+accounts_get() {
+  curl -sS \
+    -H "Authorization: Bearer ${ACCOUNTS_ADMIN_TOKEN}" \
+    -H "Accept: application/json" \
+    "${ACCOUNTS_BASE_URL}/api/auth/admin/billing/plans"
+}
+
+accounts_put_plan() {
+  local plan_id="$1"
+  local payload="$2"
+  curl -sS --fail-with-body \
+    -X PUT \
+    -H "Authorization: Bearer ${ACCOUNTS_ADMIN_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/json" \
+    "${ACCOUNTS_BASE_URL}/api/auth/admin/billing/plans/${plan_id}" \
+    --data "${payload}"
 }
 stripe_patch() {
   local path="$1"; shift
@@ -111,8 +142,16 @@ for ((pi = 0; pi < product_count; pi++)); do
     lookup="$(stripe_get "/prices?lookup_keys[]=${qkey}&active=true")"
     found_id="$(jq -r '.data[0].id // ""' <<<"${lookup}")"
 
+    actual_amount="${amount}"
+    actual_currency="${currency}"
+    actual_unit="once"
+    [[ -n "${interval}" ]] && actual_unit="${interval}"
     if [[ -n "${found_id}" ]]; then
       existing_amount="$(jq -r '.data[0].unit_amount' <<<"${lookup}")"
+      actual_amount="${existing_amount}"
+      actual_currency="$(jq -r '.data[0].currency // empty' <<<"${lookup}")"
+      existing_interval="$(jq -r '.data[0].recurring.interval // empty' <<<"${lookup}")"
+      [[ -n "${existing_interval}" ]] && actual_unit="${existing_interval}"
       if [[ "${existing_amount}" != "${amount}" ]]; then
         echo "::warning::price ${qkey} (${found_id}) is ${existing_amount}, catalog says ${amount} — Stripe prices are immutable, bump the lookup_key (e.g. ${qkey}-v2) to change the amount, do not edit in place"
       fi
@@ -128,6 +167,10 @@ for ((pi = 0; pi < product_count; pi++)); do
         [[ -n "${interval}" ]] && args+=(--data-urlencode "recurring[interval]=${interval}")
         created="$(stripe_post "/prices" "${args[@]}")"
         price_id="$(jq -r '.id // ""' <<<"${created}")"
+        actual_amount="$(jq -r '.unit_amount // empty' <<<"${created}")"
+        actual_currency="$(jq -r '.currency // empty' <<<"${created}")"
+        created_interval="$(jq -r '.recurring.interval // empty' <<<"${created}")"
+        [[ -n "${created_interval}" ]] && actual_unit="${created_interval}"
         [[ -n "${price_id}" ]] || {
           echo "::error::failed to create price ${qkey}: $(jq -c . <<<"${created}")" >&2
           exit 1
@@ -136,7 +179,7 @@ for ((pi = 0; pi < product_count; pi++)); do
         price_id="(dry-run, not created)"
       fi
     fi
-    price_summary+=("${plan_id}|${price_id}")
+    price_summary+=("${plan_id}|${price_id}|${actual_amount}|${actual_currency}|${actual_unit}")
   done
 done
 
@@ -186,14 +229,67 @@ else
   fi
 fi
 
+# --- Write catalog price snapshots --------------------------------------
+if [[ "${WRITE_CATALOG}" == "true" ]]; then
+  if [[ -z "${ACCOUNTS_BASE_URL}" ]]; then
+    ACCOUNTS_BASE_URL="https://accounts-${ENV_NAME}.${DOMAIN_BASE}"
+    [[ "${ENV_NAME}" == "prod" ]] && ACCOUNTS_BASE_URL="https://accounts.${DOMAIN_BASE}"
+  fi
+  ACCOUNTS_BASE_URL="${ACCOUNTS_BASE_URL%/}"
+
+  echo
+  echo "== writing Stripe prices to accounts billing_plans =="
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    echo "dry-run: would read ${ACCOUNTS_BASE_URL}/api/auth/admin/billing/plans"
+  else
+    plans_response="$(accounts_get)"
+    jq -e '.plans | type == "array"' <<<"${plans_response}" >/dev/null || {
+      echo "::error::accounts admin plans response is invalid: $(jq -c . <<<"${plans_response}")" >&2
+      exit 1
+    }
+  fi
+
+  for row in "${price_summary[@]}"; do
+    IFS='|' read -r plan_id price_id amount price_currency price_unit <<<"${row}"
+    [[ "${price_id}" != "(dry-run, not created)" ]] || continue
+    if [[ "${DRY_RUN}" == "true" ]]; then
+      echo "dry-run: ${plan_id} -> ${price_id} (${amount} ${price_currency}/${price_unit})"
+      continue
+    fi
+
+    existing_plan="$(jq -c --arg plan_id "${plan_id}" '.plans[] | select(.planId == $plan_id)' <<<"${plans_response}" | head -1)"
+    if [[ -z "${existing_plan}" ]]; then
+      echo "::error::billing plan ${plan_id} does not exist in accounts; seed it before --write-catalog" >&2
+      exit 1
+    fi
+    payload="$(jq -c \
+      --arg plan_id "${plan_id}" \
+      --arg price_id "${price_id}" \
+      --arg currency "$(tr '[:lower:]' '[:upper:]' <<<"${price_currency}")" \
+      --arg unit "$(tr '[:upper:]' '[:lower:]' <<<"${price_unit}")" \
+      --argjson amount "${amount}" \
+      --arg reason "stripe-sync-catalog.sh --env ${ENV_NAME}" \
+      '.plans[] | select(.planId == $plan_id)
+       | .stripePriceId = $price_id
+       | .priceAmount = $amount
+       | .priceCurrency = $currency
+       | .priceUnit = $unit
+       | .reason = $reason' <<<"${plans_response}")"
+    accounts_put_plan "${plan_id}" "${payload}" >/dev/null
+    echo "catalog ${plan_id}: ${price_id} (${amount} ${price_currency}/${price_unit})"
+  done
+fi
+
 # --- Summary ---------------------------------------------------------------
 echo
 echo "== billing_plans.stripe_price_id to write =="
 for row in "${price_summary[@]}"; do
-  plan_id="${row%%|*}"
-  pid="${row#*|}"
-  printf '  %-16s -> %s\n' "${plan_id}" "${pid}"
+  IFS='|' read -r plan_id pid amount price_currency price_unit <<<"${row}"
+  printf '  %-16s -> %s (%s %s/%s)\n' "${plan_id}" "${pid}" "${amount}" "${price_currency}" "${price_unit}"
 done
 echo
-echo "Feed these into billing_plans via the admin API (see"
-echo "docs/roadmap/feature-subscription-billing-operations/05-stripe-catalog-automation.md)."
+if [[ "${WRITE_CATALOG}" == "true" ]]; then
+  echo "Stripe price IDs and published price snapshots were written to accounts."
+else
+  echo "Feed these into billing_plans via the admin API, or rerun with --write-catalog."
+fi

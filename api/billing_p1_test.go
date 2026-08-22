@@ -372,7 +372,7 @@ func TestPublicAndAdminBillingPlanEndpoints(t *testing.T) {
 	RegisterRoutes(router, WithStore(st))
 
 	// Admin upsert.
-	body := `{"displayName":"Pro Monthly","kind":"subscription","includedQuotaBytes":1024,"packageName":"pro","stripePriceId":"price_x","active":true,"sortOrder":5,"reason":"initial catalog publish"}`
+	body := `{"displayName":"Pro Monthly","kind":"subscription","includedQuotaBytes":1024,"packageName":"pro","stripePriceId":"price_x","priceAmount":2000,"priceCurrency":"cny","priceUnit":"month","active":true,"sortOrder":5,"reason":"initial catalog publish"}`
 	req := httptest.NewRequest(http.MethodPut, "/api/auth/admin/billing/plans/pro-m", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+adminToken)
@@ -380,6 +380,31 @@ func TestPublicAndAdminBillingPlanEndpoints(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("admin upsert failed: %d %s", rec.Code, rec.Body.String())
+	}
+	plan, err := st.GetBillingPlan(ctx, "PRO-M")
+	if err != nil {
+		t.Fatalf("load published plan: %v", err)
+	}
+	if plan.PriceAmount != 2000 || plan.PriceCurrency != "CNY" || plan.PriceUnit != "month" {
+		t.Fatalf("published price was not normalized: %+v", plan)
+	}
+
+	// The existing operator UI does not submit price fields. A legacy plan edit
+	// must preserve the published price instead of clearing it.
+	legacyEdit := httptest.NewRequest(http.MethodPut, "/api/auth/admin/billing/plans/pro-m", strings.NewReader(`{"displayName":"Pro Monthly v2","kind":"subscription","includedQuotaBytes":1024,"packageName":"pro","stripePriceId":"price_x","active":true,"sortOrder":5,"reason":"rename only"}`))
+	legacyEdit.Header.Set("Content-Type", "application/json")
+	legacyEdit.Header.Set("Authorization", "Bearer "+adminToken)
+	legacyRec := httptest.NewRecorder()
+	router.ServeHTTP(legacyRec, legacyEdit)
+	if legacyRec.Code != http.StatusOK {
+		t.Fatalf("legacy plan edit failed: %d %s", legacyRec.Code, legacyRec.Body.String())
+	}
+	plan, err = st.GetBillingPlan(ctx, "PRO-M")
+	if err != nil {
+		t.Fatalf("reload published plan: %v", err)
+	}
+	if plan.PriceAmount != 2000 || plan.PriceCurrency != "CNY" || plan.PriceUnit != "month" {
+		t.Fatalf("legacy plan edit cleared published price: %+v", plan)
 	}
 
 	// Inactive plan must not appear publicly.
@@ -401,6 +426,11 @@ func TestPublicAndAdminBillingPlanEndpoints(t *testing.T) {
 	}
 	if len(pub.Plans) != 1 || pub.Plans[0].PlanID != "PRO-M" {
 		t.Fatalf("unexpected public plans: %+v", pub.Plans)
+	}
+	if pub.Plans[0].PriceAmount != 2000 ||
+		pub.Plans[0].PriceCurrency != "CNY" ||
+		pub.Plans[0].PriceUnit != "month" {
+		t.Fatalf("public plan omitted published price: %+v", pub.Plans[0])
 	}
 
 	// Invalid kind rejected.

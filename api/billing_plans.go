@@ -34,6 +34,57 @@ type billingPlanPayload struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// billingPlanUpsertRequest keeps the published price fields optional for
+// writes. The response always has concrete values, while a legacy operator UI
+// that has not yet been taught to edit prices can omit them without replacing
+// an already-published Stripe price with zero values.
+type billingPlanUpsertRequest struct {
+	StripePriceID      string             `json:"stripePriceId,omitempty"`
+	DisplayName        string             `json:"displayName"`
+	Kind               string             `json:"kind"`
+	IncludedQuotaBytes int64              `json:"includedQuotaBytes"`
+	PackageName        string             `json:"packageName"`
+	PriceAmount        *int64             `json:"priceAmount"`
+	PriceCurrency      *string            `json:"priceCurrency"`
+	PriceUnit          *string            `json:"priceUnit"`
+	PriceMultipliers   map[string]float64 `json:"priceMultipliers,omitempty"`
+	Features           map[string]any     `json:"features,omitempty"`
+	TrialDays          int                `json:"trialDays"`
+	Active             bool               `json:"active"`
+	SortOrder          int                `json:"sortOrder"`
+	Reason             string             `json:"reason,omitempty"`
+}
+
+func validatePublishedPrice(plan *store.BillingPlan) error {
+	if plan.PriceAmount < 0 {
+		return errors.New("price amount must be non-negative")
+	}
+	currency := strings.ToUpper(strings.TrimSpace(plan.PriceCurrency))
+	unit := strings.ToLower(strings.TrimSpace(plan.PriceUnit))
+	if plan.PriceAmount == 0 && currency == "" && unit == "" {
+		return nil
+	}
+	if plan.PriceAmount <= 0 || currency == "" || unit == "" {
+		return errors.New("price amount, currency and unit must be provided together")
+	}
+	if len(currency) != 3 {
+		return errors.New("price currency must be a three-letter ISO code")
+	}
+	for _, char := range currency {
+		if char < 'A' || char > 'Z' {
+			return errors.New("price currency must be a three-letter ISO code")
+		}
+	}
+	switch unit {
+	case "month", "year", "once", "gb":
+	default:
+		return errors.New("price unit must be month, year, once or gb")
+	}
+	plan.PriceCurrency = currency
+	plan.PriceUnit = unit
+	return nil
+}
+
 func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
 	return billingPlanPayload{
 		PlanID:             plan.PlanID,
@@ -94,7 +145,7 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		return
 	}
 
-	var req billingPlanPayload
+	var req billingPlanUpsertRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid billing plan payload")
 		return
@@ -114,29 +165,6 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "quota and trial days must be non-negative")
 		return
 	}
-	// The list price is what the storefront shows. A negative amount, or an
-	// amount with no currency to read it in, would render as a nonsense price
-	// next to a working buy button.
-	if req.PriceAmount < 0 {
-		respondError(c, http.StatusBadRequest, "invalid_price", "priceAmount must be non-negative")
-		return
-	}
-	priceCurrency := strings.ToUpper(strings.TrimSpace(req.PriceCurrency))
-	if req.PriceAmount > 0 && priceCurrency == "" {
-		respondError(c, http.StatusBadRequest, "invalid_price", "priceCurrency is required when priceAmount is set")
-		return
-	}
-	if priceCurrency != "" && len(priceCurrency) != 3 {
-		respondError(c, http.StatusBadRequest, "invalid_price", "priceCurrency must be a 3-letter ISO 4217 code")
-		return
-	}
-	priceUnit := strings.ToLower(strings.TrimSpace(req.PriceUnit))
-	switch priceUnit {
-	case "", "month", "year", "once", "gb":
-	default:
-		respondError(c, http.StatusBadRequest, "invalid_price", "priceUnit must be month, year, once or gb")
-		return
-	}
 	if priceID := strings.TrimSpace(req.StripePriceID); priceID != "" && !strings.HasPrefix(priceID, "price_") {
 		respondError(c, http.StatusBadRequest, "invalid_price_id", "stripePriceId must be a Stripe price id")
 		return
@@ -149,17 +177,32 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		Kind:               kind,
 		IncludedQuotaBytes: req.IncludedQuotaBytes,
 		PackageName:        strings.TrimSpace(req.PackageName),
-		PriceAmount:        req.PriceAmount,
-		PriceCurrency:      priceCurrency,
-		PriceUnit:          priceUnit,
 		PriceMultipliers:   req.PriceMultipliers,
 		Features:           req.Features,
 		TrialDays:          req.TrialDays,
 		Active:             req.Active,
 		SortOrder:          req.SortOrder,
 	}
+	if existing, err := h.store.GetBillingPlan(c.Request.Context(), planID); err == nil && existing != nil {
+		plan.PriceAmount = existing.PriceAmount
+		plan.PriceCurrency = existing.PriceCurrency
+		plan.PriceUnit = existing.PriceUnit
+	}
+	if req.PriceAmount != nil {
+		plan.PriceAmount = *req.PriceAmount
+	}
+	if req.PriceCurrency != nil {
+		plan.PriceCurrency = *req.PriceCurrency
+	}
+	if req.PriceUnit != nil {
+		plan.PriceUnit = *req.PriceUnit
+	}
 	if plan.PackageName == "" {
 		plan.PackageName = "default"
+	}
+	if err := validatePublishedPrice(plan); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_price", err.Error())
+		return
 	}
 	// The public pricing page reads this catalog live, so an upsert here is a
 	// price/packaging publish. Capture what it replaced before overwriting.
