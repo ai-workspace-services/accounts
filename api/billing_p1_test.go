@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -42,12 +43,17 @@ func billingEventTypes(t *testing.T, st store.Store) []string {
 	return types
 }
 
+func signStripePayloadAt(t *testing.T, payload []byte, timestamp time.Time) string {
+	t.Helper()
+	timestampValue := fmt.Sprintf("%d", timestamp.Unix())
+	mac := hmac.New(sha256.New, []byte(testStripeWebhookSecret))
+	_, _ = mac.Write([]byte(timestampValue + "." + string(payload)))
+	return fmt.Sprintf("t=%s,v1=%s", timestampValue, hex.EncodeToString(mac.Sum(nil)))
+}
+
 func signStripePayload(t *testing.T, payload []byte) string {
 	t.Helper()
-	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	mac := hmac.New(sha256.New, []byte(testStripeWebhookSecret))
-	_, _ = mac.Write([]byte(timestamp + "." + string(payload)))
-	return fmt.Sprintf("t=%s,v1=%s", timestamp, hex.EncodeToString(mac.Sum(nil)))
+	return signStripePayloadAt(t, payload, time.Now())
 }
 
 func newBillingWebhookHarness(t *testing.T) (*gin.Engine, store.Store, *store.User) {
@@ -227,6 +233,114 @@ func TestSubscriptionPeriodFallsBackForInvalidStripeBounds(t *testing.T) {
 	})
 	if !gotStart.Equal(start) || !gotEnd.Equal(end) {
 		t.Fatalf("expected natural month fallback %v..%v, got %v..%v", start, end, gotStart, gotEnd)
+	}
+}
+
+func TestStripeWebhookRejectsSignaturesOutsideTimestampTolerance(t *testing.T) {
+	client := newStripeClient(StripeConfig{
+		SecretKey:     "sk_test_x",
+		WebhookSecret: testStripeWebhookSecret,
+	})
+	payload := []byte(`{"id":"evt_timestamp"}`)
+
+	for _, timestamp := range []time.Time{
+		time.Now().Add(-stripeWebhookTimestampTolerance - time.Second),
+		time.Now().Add(stripeWebhookTimestampTolerance + time.Second),
+	} {
+		if client.verifyWebhook(payload, signStripePayloadAt(t, payload, timestamp)) {
+			t.Fatalf("expected signature at %v to be rejected", timestamp)
+		}
+	}
+}
+
+func TestPaymentLinkURLPreservesConfiguredParametersAndAddsAccountContext(t *testing.T) {
+	client := newStripeClient(StripeConfig{
+		PayURL:        "https://buy.stripe.com/test_example?locale=zh&client_reference_id=old",
+		WebhookSecret: testStripeWebhookSecret,
+	})
+	if client == nil {
+		t.Fatal("expected Payment Link configuration to initialize Stripe client without a Secret Key")
+	}
+	user := &store.User{ID: "user_123-abc", Email: "Buyer@Example.com"}
+
+	link, err := client.paymentLinkURL(user)
+	if err != nil {
+		t.Fatalf("decorate payment link: %v", err)
+	}
+	parsed, err := url.Parse(link)
+	if err != nil {
+		t.Fatalf("parse decorated link: %v", err)
+	}
+	query := parsed.Query()
+	if query.Get("locale") != "zh" || client.userIDFromClientReference(query.Get("client_reference_id")) != user.ID {
+		t.Fatalf("configured/payment context parameters were not preserved: %q", parsed.RawQuery)
+	}
+	if query.Get("prefilled_email") != "buyer@example.com" {
+		t.Fatalf("expected normalized prefilled email, got %q", query.Get("prefilled_email"))
+	}
+	reference := query.Get("client_reference_id")
+	tampered := reference[:len(reference)-1] + "0"
+	if tampered == reference {
+		tampered = reference[:len(reference)-1] + "1"
+	}
+	if client.userIDFromClientReference(tampered) != "" {
+		t.Fatal("expected tampered client reference to be rejected")
+	}
+}
+
+func TestPaymentLinkURLRejectsNonHTTPSLinksAndInvalidReferences(t *testing.T) {
+	client := newStripeClient(StripeConfig{SecretKey: "sk_test_x", WebhookSecret: testStripeWebhookSecret, PayURL: "http://example.com/pay"})
+	if _, err := client.paymentLinkURL(&store.User{ID: "user_123"}); err == nil {
+		t.Fatal("expected non-HTTPS payment link to be rejected")
+	}
+
+	client.payURL = "https://buy.stripe.com/test_example"
+	if _, err := client.paymentLinkURL(&store.User{ID: "user/123"}); err == nil {
+		t.Fatal("expected invalid client reference id to be rejected")
+	}
+}
+
+func TestCheckoutCompletedUsesClientReferenceIDWhenMetadataIsMissing(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := &store.User{
+		Name: "Reference User", Email: "reference@example.com", EmailVerified: true,
+		Role: store.RoleUser, Level: store.LevelUser, Active: true,
+	}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	stripe := newStripeClient(StripeConfig{SecretKey: "sk_test_x", WebhookSecret: testStripeWebhookSecret})
+	clientReferenceID, err := stripe.signedClientReferenceID(user.ID)
+	if err != nil {
+		t.Fatalf("sign client reference: %v", err)
+	}
+	h := &handler{store: st, stripe: stripe}
+	event := stripeEvent{
+		ID:   "evt_client_reference",
+		Type: "checkout.session.completed",
+		Data: struct {
+			Object json.RawMessage `json:"object"`
+		}{Object: json.RawMessage(fmt.Sprintf(`{
+			"id":"cs_test_reference",
+			"client_reference_id":%q,
+			"payment_intent":"pi_reference",
+			"payment_status":"paid",
+			"amount_total":1234,
+			"currency":"usd",
+			"metadata":{}
+		}`, clientReferenceID))},
+	}
+
+	if err := h.handleStripeEvent(ctx, event); err != nil {
+		t.Fatalf("handle checkout event: %v", err)
+	}
+	quota, err := st.GetAccountQuotaState(ctx, user.ID)
+	if err != nil || quota == nil {
+		t.Fatalf("load credited quota, err=%v state=%+v", err, quota)
+	}
+	if quota.CurrentBalance != 12.34 {
+		t.Fatalf("expected 12.34 top-up credited through client_reference_id, got %+v", quota)
 	}
 }
 
