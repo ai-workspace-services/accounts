@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -24,9 +25,15 @@ import (
 
 const stripeAPIBaseURL = "https://api.stripe.com/v1"
 
+// Stripe signs webhook payloads with a timestamp. Keep the same bounded
+// tolerance used by Stripe's official SDKs so an old captured request cannot
+// be replayed outside the event-id deduplication window.
+const stripeWebhookTimestampTolerance = 5 * time.Minute
+
 type StripeConfig struct {
 	SecretKey       string
 	WebhookSecret   string
+	PayURL          string
 	AllowedPriceIDs []string
 	FrontendURL     string
 }
@@ -34,6 +41,7 @@ type StripeConfig struct {
 type stripeClient struct {
 	secretKey      string
 	webhookSecret  string
+	payURL         string
 	frontendURL    string
 	allowedPriceID map[string]struct{}
 	httpClient     *http.Client
@@ -87,12 +95,13 @@ type stripeEvent struct {
 }
 
 type stripeCheckoutSession struct {
-	ID            string `json:"id"`
-	Mode          string `json:"mode"`
-	Subscription  string `json:"subscription"`
-	PaymentIntent string `json:"payment_intent"`
-	Customer      string `json:"customer"`
-	PaymentStatus string `json:"payment_status"`
+	ID                string `json:"id"`
+	Mode              string `json:"mode"`
+	ClientReferenceID string `json:"client_reference_id"`
+	Subscription      string `json:"subscription"`
+	PaymentIntent     string `json:"payment_intent"`
+	Customer          string `json:"customer"`
+	PaymentStatus     string `json:"payment_status"`
 	// AmountTotal is in the currency's smallest unit (cents/分), which is how
 	// Stripe reports every amount. It has to be divided by 100 before it means
 	// anything in balance terms.
@@ -110,7 +119,8 @@ type stripeInvoice struct {
 
 func newStripeClient(cfg StripeConfig) *stripeClient {
 	secretKey := strings.TrimSpace(cfg.SecretKey)
-	if secretKey == "" {
+	payURL := strings.TrimSpace(cfg.PayURL)
+	if secretKey == "" && payURL == "" {
 		return nil
 	}
 
@@ -125,6 +135,7 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 	return &stripeClient{
 		secretKey:      secretKey,
 		webhookSecret:  strings.TrimSpace(cfg.WebhookSecret),
+		payURL:         payURL,
 		frontendURL:    strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/"),
 		allowedPriceID: allowed,
 		httpClient: &http.Client{
@@ -135,6 +146,86 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 
 func (c *stripeClient) enabled() bool {
 	return c != nil && c.secretKey != ""
+}
+
+func validStripeClientReferenceID(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 200 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') &&
+			(char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') && char != '-' && char != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *stripeClient) signedClientReferenceID(userID string) (string, error) {
+	userID = strings.TrimSpace(userID)
+	if !validStripeClientReferenceID(userID) || strings.TrimSpace(c.webhookSecret) == "" {
+		return "", errors.New("cannot sign stripe client reference")
+	}
+	mac := hmac.New(sha256.New, []byte(c.webhookSecret))
+	_, _ = mac.Write([]byte(userID))
+	encodedUserID := base64.RawURLEncoding.EncodeToString([]byte(userID))
+	return encodedUserID + "_" + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func (c *stripeClient) userIDFromClientReference(reference string) string {
+	if c == nil || strings.TrimSpace(c.webhookSecret) == "" {
+		return ""
+	}
+	separator := strings.LastIndex(strings.TrimSpace(reference), "_")
+	if separator <= 0 || separator == len(strings.TrimSpace(reference))-1 {
+		return ""
+	}
+	encodedUserID := strings.TrimSpace(reference)[:separator]
+	providedSignature := strings.TrimSpace(reference)[separator+1:]
+	userIDBytes, err := base64.RawURLEncoding.DecodeString(encodedUserID)
+	if err != nil {
+		return ""
+	}
+	userID := string(userIDBytes)
+	if !validStripeClientReferenceID(userID) {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(c.webhookSecret))
+	_, _ = mac.Write([]byte(userID))
+	if !hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(providedSignature)) {
+		return ""
+	}
+	return userID
+}
+
+// paymentLinkURL decorates the configured Payment Link with Stripe's
+// documented URL parameters. Payment Link configuration remains in Stripe
+// Dashboard, where the account can enable all eligible payment methods; this
+// helper only carries the authenticated account reference and email.
+func (c *stripeClient) paymentLinkURL(user *store.User) (string, error) {
+	if c == nil || strings.TrimSpace(c.payURL) == "" {
+		return "", errors.New("stripe payment link is not configured")
+	}
+	if user == nil || !validStripeClientReferenceID(user.ID) {
+		return "", errors.New("user id is not a valid stripe client reference")
+	}
+	parsed, err := url.Parse(c.payURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return "", errors.New("stripe payment link must be an https URL")
+	}
+	query := parsed.Query()
+	clientReferenceID, err := c.signedClientReferenceID(user.ID)
+	if err != nil {
+		return "", err
+	}
+	query.Set("client_reference_id", clientReferenceID)
+	if email := strings.TrimSpace(strings.ToLower(user.Email)); email != "" {
+		query.Set("prefilled_email", email)
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 func (c *stripeClient) validPriceID(priceID string) bool {
@@ -281,6 +372,7 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 		"mode":                    []string{mode},
 		"success_url":             []string{successURL},
 		"cancel_url":              []string{cancelURL},
+		"customer_email":          []string{strings.TrimSpace(strings.ToLower(user.Email))},
 		"line_items[0][price]":    []string{strings.TrimSpace(req.StripePriceID)},
 		"line_items[0][quantity]": []string{"1"},
 		"metadata[user_id]":       []string{strings.TrimSpace(user.ID)},
@@ -288,6 +380,10 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 		"metadata[plan_id]":       []string{strings.TrimSpace(req.PlanID)},
 		"metadata[product_slug]":  []string{strings.TrimSpace(req.ProductSlug)},
 		"metadata[kind]":          []string{map[string]string{"payment": "paygo", "subscription": "subscription"}[mode]},
+	}
+	clientReferenceID, err := c.signedClientReferenceID(user.ID)
+	if err == nil {
+		form.Set("client_reference_id", clientReferenceID)
 	}
 	if mode == "subscription" {
 		form.Set("subscription_data[metadata][user_id]", strings.TrimSpace(user.ID))
@@ -361,6 +457,15 @@ func (c *stripeClient) verifyWebhook(payload []byte, signatureHeader string) boo
 		}
 	}
 	if timestamp == "" || len(signatures) == 0 {
+		return false
+	}
+	timestampValue, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false
+	}
+	signedAt := time.Unix(timestampValue, 0)
+	now := time.Now()
+	if now.Sub(signedAt) > stripeWebhookTimestampTolerance || signedAt.Sub(now) > stripeWebhookTimestampTolerance {
 		return false
 	}
 
@@ -449,6 +554,36 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"url": session.URL, "id": session.ID})
+}
+
+// stripePay redirects an authenticated user to the configured Stripe Payment
+// Link. Payment Links support multiple payment methods configured in Stripe
+// Dashboard, while client_reference_id lets the webhook reconcile the
+// resulting Checkout Session back to this account.
+func (h *handler) stripePay(c *gin.Context) {
+	user, ok := h.requireAuthenticatedUser(c)
+	if !ok {
+		return
+	}
+	if h.isReadOnlyAccount(user) {
+		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
+		return
+	}
+	if !user.MFAEnabled {
+		respondError(c, http.StatusForbidden, "mfa_required", "multi-factor authentication is required before starting a payment")
+		return
+	}
+	if h.stripe == nil || strings.TrimSpace(h.stripe.payURL) == "" {
+		respondError(c, http.StatusServiceUnavailable, "stripe_pay_link_not_configured", "stripe payment link is not configured")
+		return
+	}
+
+	link, err := h.stripe.paymentLinkURL(user)
+	if err != nil {
+		respondError(c, http.StatusServiceUnavailable, "stripe_pay_link_not_configured", "stripe payment link is not configured")
+		return
+	}
+	c.Redirect(http.StatusSeeOther, link)
 }
 
 func (h *handler) stripePortal(c *gin.Context) {
@@ -557,6 +692,15 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			if err != nil {
 				return err
 			}
+			if strings.TrimSpace(sub.Metadata["user_id"]) == "" {
+				if userID := h.stripe.userIDFromClientReference(session.ClientReferenceID); userID != "" {
+					if sub.Metadata == nil {
+						sub.Metadata = make(map[string]string)
+					}
+					sub.Metadata["user_id"] = userID
+					sub.Metadata["kind"] = "subscription"
+				}
+			}
 			if err := h.upsertStripeSubscription(ctx, sub, session.Customer); err != nil {
 				return err
 			}
@@ -564,6 +708,9 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		}
 
 		userID := strings.TrimSpace(session.Metadata["user_id"])
+		if userID == "" {
+			userID = h.stripe.userIDFromClientReference(session.ClientReferenceID)
+		}
 		if userID == "" {
 			return nil
 		}
