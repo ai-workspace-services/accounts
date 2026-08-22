@@ -164,3 +164,26 @@ func TestKindsAreAcceptedByTheUpsertEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestFreeTierGrantsTheQuotaTheStorefrontPromises(t *testing.T) {
+	// The storefront sells Free as "5 GB of accelerated traffic per month".
+	// That promise is kept by included_quota_bytes: with 0 the account is
+	// admitted, granted nothing, and throttled on its first request -- which
+	// looks like a broken product rather than a mis-seeded plan.
+	const fiveGiB = int64(5 * 1024 * 1024 * 1024)
+
+	for _, plan := range loadManifest(t) {
+		if plan.PlanID != "FREE" {
+			continue
+		}
+		if plan.IncludedQuotaBytes != fiveGiB {
+			t.Errorf("FREE grants %d bytes, storefront promises %d", plan.IncludedQuotaBytes, fiveGiB)
+		}
+		fastLane, _ := plan.Features["fast_lane"].(map[string]any)
+		if mode, _ := fastLane["mode"].(string); mode != "quota" {
+			t.Errorf("FREE fast_lane mode is %q; a monthly byte allowance is metered as %q", mode, "quota")
+		}
+		return
+	}
+	t.Error("manifest defines no FREE plan; accounts downgrades to it when a subscription ends")
+}

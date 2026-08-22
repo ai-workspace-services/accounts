@@ -17,7 +17,7 @@
       "planId": "FREE",
       "displayName": "Free",
       "kind": "subscription",
-      "includedQuotaBytes": 0,
+      "includedQuotaBytes": 5368709120,
       "packageName": "free",
       "priceAmount": 0,
       "priceCurrency": "",
@@ -27,7 +27,8 @@
         "sla": "none",
         "session_persistence": false,
         "demo_cards": { "enabled": true, "create": true, "runs_per_day": 1, "session_minutes": 60 },
-        "fast_lane": { "mode": "windowed", "window": "weekly", "minutes": 60, "fallback": "vps" },
+        "fast_lane": { "mode": "quota", "fallback": "vps" },
+        "quota_cycle": "natural_month",
         "resource_cards": { "create": false },
         "dunning": { "policy": "none" }
       },
