@@ -363,7 +363,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		opt(h)
 	}
 	if h.overlayProjection == nil {
-		service, err := newOverlayProjectionServiceFromEnvironment()
+		service, err := newOverlayProjectionServiceFromEnvironment(h.store)
 		if err != nil {
 			slog.Error("overlay_projection_disabled", "error", err)
 		} else {
@@ -590,6 +590,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	}
 	h.registerOverlayRoutes(overlayV1Group)
 	overlayV1Group.GET("/signed-config", h.overlaySignedConfig)
+	overlayV1Group.GET("/signing-keys", h.overlaySigningKeys)
 	overlayV1Group.POST("/signed-config/:generation/ack", h.overlaySignedConfigAck)
 
 	// Canonical user-facing agent routes.

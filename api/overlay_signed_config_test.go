@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 	"account/internal/overlay/domain"
 	"account/internal/overlay/projection"
+	"account/internal/store"
 )
 
 func newSignedConfigTestService(t *testing.T) (*projection.Service, *projection.Ed25519Signer, time.Time) {
@@ -50,6 +52,46 @@ func TestOverlayProjectionEnvironmentFailsClosedWithoutDurableRepository(t *test
 	service, err = newOverlayProjectionServiceFromEnvironment()
 	if err != nil || service == nil {
 		t.Fatalf("explicit development memory mode failed: service=%v err=%v", service, err)
+	}
+}
+
+func TestOverlayProjectionEnvironmentRejectsShortPreviousVerificationWindow(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	previous := ed25519.NewKeyFromSeed(append([]byte(nil), seed...)).Public().(ed25519.PublicKey)
+	now := time.Now().UTC()
+	t.Setenv("OVERLAY_SIGNING_CURRENT_PRIVATE_KEY", base64.StdEncoding.EncodeToString(seed))
+	t.Setenv("OVERLAY_SIGNING_CURRENT_KEY_ID", "key-current")
+	t.Setenv("OVERLAY_PROJECTION_ALLOW_MEMORY", "true")
+	t.Setenv("OVERLAY_SIGNED_CONFIG_TTL", "24h")
+	t.Setenv("OVERLAY_SIGNING_PREVIOUS_KEYS_JSON", fmt.Sprintf(`[{"key_id":"key-old","public_key":%q,"not_before":%q,"not_after":%q}]`,
+		base64.StdEncoding.EncodeToString(previous), now.Add(-time.Hour).Format(time.RFC3339), now.Add(time.Hour).Format(time.RFC3339)))
+	service, err := newOverlayProjectionServiceFromEnvironment()
+	if err == nil || service != nil || !strings.Contains(err.Error(), "required SignedConfig verification window") {
+		t.Fatalf("short previous window accepted: service=%v err=%v", service, err)
+	}
+}
+
+func TestOverlayProjectionEnvironmentCoversPersistedPreviousConfigExpiry(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	previous := ed25519.NewKeyFromSeed(append([]byte(nil), seed...)).Public().(ed25519.PublicKey)
+	now := time.Now().UTC().Truncate(time.Second)
+	st := store.NewMemoryStore()
+	if err := st.SaveOverlaySignedConfig(t.Context(), &store.OverlaySignedConfigRecord{
+		UserID: "user-1", DeviceID: "device-1", ConfigID: "config-1", NetworkID: "network-1",
+		Generation: 1, SourceRevision: "source-1", SigningKeyID: "key-old", SignedPayload: []byte(`{}`),
+		IssuedAt: now, ExpiresAt: now.Add(48 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OVERLAY_SIGNING_CURRENT_PRIVATE_KEY", base64.StdEncoding.EncodeToString(seed))
+	t.Setenv("OVERLAY_SIGNING_CURRENT_KEY_ID", "key-current")
+	t.Setenv("OVERLAY_PROJECTION_ALLOW_MEMORY", "true")
+	t.Setenv("OVERLAY_SIGNED_CONFIG_TTL", "24h")
+	t.Setenv("OVERLAY_SIGNING_PREVIOUS_KEYS_JSON", fmt.Sprintf(`[{"key_id":"key-old","public_key":%q,"not_before":%q,"not_after":%q}]`,
+		base64.StdEncoding.EncodeToString(previous), now.Add(-time.Hour).Format(time.RFC3339), now.Add(30*time.Hour).Format(time.RFC3339)))
+	service, err := newOverlayProjectionServiceFromEnvironment(st)
+	if err == nil || service != nil || !strings.Contains(err.Error(), "required SignedConfig verification window") {
+		t.Fatalf("persisted previous expiry was ignored: service=%v err=%v", service, err)
 	}
 }
 
@@ -133,6 +175,63 @@ func TestOverlaySignedConfigRequiresAuthentication(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestOverlaySigningKeyDiscoveryPublishesOnlyVerificationMaterial(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	now := time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC)
+	currentSeed := make([]byte, ed25519.SeedSize)
+	currentSeed[0] = 7
+	previousSeed := make([]byte, ed25519.SeedSize)
+	previousSeed[0] = 8
+	currentPrivate := ed25519.NewKeyFromSeed(currentSeed)
+	previousPrivate := ed25519.NewKeyFromSeed(previousSeed)
+	current, err := projection.NewEd25519Signer(currentPrivate, "key-current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowEnd := now.Add(24 * time.Hour)
+	ring, err := projection.NewEd25519KeyRingWithCurrentSigner(current, now.Add(-time.Hour), nil, []projection.KeyRingEntry{{
+		KeyID: "key-previous", PublicKey: previousPrivate.Public().(ed25519.PublicKey), Status: "previous",
+		NotBefore: now.Add(-24 * time.Hour), NotAfter: &windowEnd,
+	}}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := projection.NewService(projection.NewMemoryRepository(func() time.Time { return now }), ring, func() time.Time { return now }, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, _, token := newAuthenticatedSyncHarness(t, WithOverlayProjectionService(service))
+	request := httptest.NewRequest(http.MethodGet, "/api/overlay/v1/signing-keys", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("signing keys status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "private, max-age=300" || recorder.Header().Get("Vary") != "Authorization" || recorder.Header().Get("ETag") == "" {
+		t.Fatalf("unsafe signing-key cache headers: %#v", recorder.Header())
+	}
+	body := recorder.Body.String()
+	for _, required := range []string{`"key_id":"key-current"`, `"key_id":"key-previous"`, `"status":"current"`, `"status":"previous"`} {
+		if !strings.Contains(body, required) {
+			t.Errorf("response missing %s: %s", required, body)
+		}
+	}
+	for _, forbidden := range []string{"private", base64.StdEncoding.EncodeToString(currentSeed), base64.StdEncoding.EncodeToString(currentPrivate)} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("signing discovery leaked private material %q", forbidden)
+		}
+	}
+	conditional := httptest.NewRequest(http.MethodGet, "/api/overlay/v1/signing-keys", nil)
+	conditional.Header.Set("Authorization", "Bearer "+token)
+	conditional.Header.Set("If-None-Match", recorder.Header().Get("ETag"))
+	conditionalRecorder := httptest.NewRecorder()
+	router.ServeHTTP(conditionalRecorder, conditional)
+	if conditionalRecorder.Code != http.StatusNotModified || conditionalRecorder.Body.Len() != 0 {
+		t.Fatalf("conditional signing-key response=%d %q", conditionalRecorder.Code, conditionalRecorder.Body.String())
 	}
 }
 

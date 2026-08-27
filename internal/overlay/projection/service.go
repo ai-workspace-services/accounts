@@ -58,7 +58,7 @@ func (s *Service) Project(ctx context.Context, input Input) (domain.SignedConfig
 	if strings.TrimSpace(input.UserID) == "" || strings.TrimSpace(input.SourceRevision) == "" {
 		return domain.SignedConfig{}, errors.New("projection user and source revision are required")
 	}
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 32; attempt++ {
 		now := s.clock().UTC().Truncate(time.Second)
 		latest, exists, err := s.repository.Latest(ctx, input.UserID, input.DeviceID)
 		if err != nil {
@@ -133,6 +133,14 @@ func (s *Service) Project(ctx context.Context, input Input) (domain.SignedConfig
 
 func (s *Service) Acknowledge(ctx context.Context, ack Ack) (AckResult, error) {
 	return s.repository.Acknowledge(ctx, ack)
+}
+
+func (s *Service) PublicSigningKeys() []PublicSigningKey {
+	provider, ok := s.signer.(SigningKeyProvider)
+	if !ok {
+		return nil
+	}
+	return provider.PublicSigningKeys()
 }
 
 func deriveConfigID(userID, deviceID, networkID string, generation uint64) string {

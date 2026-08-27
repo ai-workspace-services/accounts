@@ -158,6 +158,37 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/SignedConfig"}
         default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/signing-keys:
+    get:
+      tags: [Overlay]
+      operationId: listOverlaySigningKeysV1
+      description: >-
+        Publishes only current and previous Ed25519 verification keys. Signing
+        private keys are secret-injected and are never returned or persisted.
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: Active verification window for SignedConfig.
+          headers:
+            Cache-Control:
+              schema: {const: "private, max-age=300"}
+            Vary:
+              schema: {const: Authorization}
+            ETag:
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                additionalProperties: false
+                properties:
+                  keys:
+                    type: array
+                    items: {$ref: "#/components/schemas/OverlaySigningKey"}
+        "304":
+          description: Verification key set has not changed.
+        default: {$ref: "#/components/responses/Error"}
   /api/overlay/v1/signed-config/{generation}/ack:
     post:
       tags: [Overlay]
@@ -225,6 +256,20 @@ components:
       $ref: ../schemas/overlay/signed-config.schema.json
     GatewaySnapshot:
       $ref: ../schemas/overlay/gateway-snapshot.schema.json
+    OverlaySigningKey:
+      type: object
+      additionalProperties: false
+      required: [key_id, algorithm, public_key, status, not_before]
+      properties:
+        key_id: {type: string, minLength: 1}
+        algorithm: {const: Ed25519}
+        public_key:
+          type: string
+          contentEncoding: base64
+          description: Base64-encoded 32-byte Ed25519 public key.
+        status: {type: string, enum: [current, previous]}
+        not_before: {type: string, format: date-time}
+        not_after: {type: string, format: date-time}
     Error:
       type: object
       required: [error, message]

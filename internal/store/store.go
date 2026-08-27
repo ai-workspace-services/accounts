@@ -291,6 +291,33 @@ type SchedulerDecision struct {
 	CreatedAt   time.Time
 }
 
+// OverlaySignedConfigRecord stores the signed public client projection. The
+// payload may contain the opaque VLESS auth_id, but never signing private keys,
+// refresh tokens, vault tokens, or WireGuard private keys.
+type OverlaySignedConfigRecord struct {
+	UserID         string
+	DeviceID       string
+	ConfigID       string
+	NetworkID      string
+	Generation     uint64
+	SourceRevision string
+	SigningKeyID   string
+	SignedPayload  []byte
+	IssuedAt       time.Time
+	ExpiresAt      time.Time
+	CreatedAt      time.Time
+	Ack            *OverlaySignedConfigAck
+}
+
+type OverlaySignedConfigAck struct {
+	UserID     string
+	DeviceID   string
+	ConfigID   string
+	Generation uint64
+	AppliedAt  time.Time
+	ReceivedAt time.Time
+}
+
 // Store provides persistence operations for users.
 type Store interface {
 	CreateUser(ctx context.Context, user *User) error
@@ -331,6 +358,11 @@ type Store interface {
 	UpsertOverlayNode(ctx context.Context, node *OverlayNode) error
 	ListOverlayNodes(ctx context.Context, networkID string) ([]OverlayNode, error)
 	UpsertOverlayConfigAck(ctx context.Context, ack *OverlayConfigAck) error
+	GetLatestOverlaySignedConfig(ctx context.Context, userID, deviceID string) (*OverlaySignedConfigRecord, error)
+	SaveOverlaySignedConfig(ctx context.Context, record *OverlaySignedConfigRecord) error
+	AcknowledgeOverlaySignedConfig(ctx context.Context, ack *OverlaySignedConfigAck) (duplicate bool, err error)
+	GetOverlaySigningKeyMaxExpiresAt(ctx context.Context, keyID string) (time.Time, error)
+	OverlayProjectionDurable() bool
 
 	UpsertTrafficStatCheckpoint(ctx context.Context, checkpoint *TrafficStatCheckpoint) error
 	GetTrafficStatCheckpoint(ctx context.Context, nodeID, accountUUID string) (*TrafficStatCheckpoint, error)
@@ -390,13 +422,17 @@ type Store interface {
 
 // Domain level errors returned by the store implementation.
 var (
-	ErrEmailExists                = errors.New("email already exists")
-	ErrNameExists                 = errors.New("name already exists")
-	ErrInvalidName                = errors.New("invalid user name")
-	ErrUserNotFound               = errors.New("user not found")
-	ErrMFANotSupported            = errors.New("mfa is not supported by the current store schema")
-	ErrSuperAdminCountingDisabled = errors.New("super administrator counting is disabled")
-	ErrSubscriptionNotFound       = errors.New("subscription not found")
+	ErrEmailExists                 = errors.New("email already exists")
+	ErrNameExists                  = errors.New("name already exists")
+	ErrInvalidName                 = errors.New("invalid user name")
+	ErrUserNotFound                = errors.New("user not found")
+	ErrMFANotSupported             = errors.New("mfa is not supported by the current store schema")
+	ErrSuperAdminCountingDisabled  = errors.New("super administrator counting is disabled")
+	ErrSubscriptionNotFound        = errors.New("subscription not found")
+	ErrOverlaySignedConfigNotFound = errors.New("overlay signed config not found")
+	ErrOverlaySignedConfigMismatch = errors.New("overlay signed config mismatch")
+	ErrOverlaySignedConfigStale    = errors.New("overlay signed config generation is stale")
+	ErrOverlaySignedConfigGap      = errors.New("overlay signed config generation must advance by one")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for
@@ -414,6 +450,7 @@ type memoryStore struct {
 	overlayDevices          map[string]*OverlayDevice
 	overlayNodes            map[string]*OverlayNode
 	overlayConfigAcks       map[string]*OverlayConfigAck
+	overlaySignedConfigs    map[string]*OverlaySignedConfigRecord
 	sessions                map[string]*sessionRecord
 	tenants                 map[string]*Tenant
 	tenantDomains           map[string]*TenantDomain
@@ -468,6 +505,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		overlayDevices:          make(map[string]*OverlayDevice),
 		overlayNodes:            make(map[string]*OverlayNode),
 		overlayConfigAcks:       make(map[string]*OverlayConfigAck),
+		overlaySignedConfigs:    make(map[string]*OverlaySignedConfigRecord),
 		sessions:                make(map[string]*sessionRecord),
 		tenants:                 make(map[string]*Tenant),
 		tenantDomains:           make(map[string]*TenantDomain),

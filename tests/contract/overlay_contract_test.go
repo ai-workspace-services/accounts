@@ -52,6 +52,7 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		"/api/overlay/v1/config",
 		"/api/overlay/v1/config/ack",
 		"/api/overlay/v1/signed-config",
+		"/api/overlay/v1/signing-keys",
 		"/api/overlay/v1/signed-config/{generation}/ack",
 		"/api/internal/overlay/v1/nodes/heartbeat",
 	} {
