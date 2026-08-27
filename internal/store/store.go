@@ -203,16 +203,19 @@ type AuditLogFilter struct {
 // Audit action names. Kept as constants so a typo cannot silently create a
 // second, unqueryable action stream.
 const (
-	AuditActionPlanUpsert         = "billing.plan.upsert"
-	AuditActionPlanDelete         = "billing.plan.delete"
-	AuditActionQuotaAdjust        = "billing.quota.adjust"
-	AuditActionBalanceAdjust      = "billing.balance.adjust"
-	AuditActionEntitlementGrant   = "billing.entitlement.grant"
-	AuditActionTrialGrant         = "billing.trial.grant"
-	AuditActionArrearsClear       = "billing.arrears.clear"
-	AuditActionSubscriptionCancel = "billing.subscription.cancel"
-	AuditActionSegmentUpdate      = "account.segment.update"
-	AuditActionRoleUpdate         = "account.role.update"
+	AuditActionPlanUpsert          = "billing.plan.upsert"
+	AuditActionPlanDelete          = "billing.plan.delete"
+	AuditActionQuotaAdjust         = "billing.quota.adjust"
+	AuditActionBalanceAdjust       = "billing.balance.adjust"
+	AuditActionEntitlementGrant    = "billing.entitlement.grant"
+	AuditActionTrialGrant          = "billing.trial.grant"
+	AuditActionArrearsClear        = "billing.arrears.clear"
+	AuditActionSubscriptionCancel  = "billing.subscription.cancel"
+	AuditActionSegmentUpdate       = "account.segment.update"
+	AuditActionRoleUpdate          = "account.role.update"
+	AuditActionOverlayJoinCreate   = "overlay.join_token.create"
+	AuditActionOverlayJoinRevoke   = "overlay.join_token.revoke"
+	AuditActionOverlayJoinExchange = "overlay.join_token.exchange"
 )
 
 type AccountQuotaState struct {
@@ -318,6 +321,43 @@ type OverlaySignedConfigAck struct {
 	ReceivedAt time.Time
 }
 
+type OverlayJoinToken struct {
+	ID              string
+	TokenHash       []byte `json:"-"`
+	UserID          string
+	NetworkID       string
+	DeviceID        string
+	Platform        string
+	RemainingUses   int
+	ExpiresAt       time.Time
+	RevokedAt       *time.Time
+	CreatedAt       time.Time
+	LastExchangedAt *time.Time
+}
+
+type OverlayEnrollmentSession struct {
+	ID                 string
+	TokenHash          []byte `json:"-"`
+	JoinTokenID        string
+	UserID             string
+	NetworkID          string
+	DeviceID           string
+	Platform           string
+	WireGuardPublicKey string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+	LastUsedAt         *time.Time
+}
+
+type OverlayJoinExchange struct {
+	JoinTokenHash    []byte `json:"-"`
+	Enrollment       OverlayEnrollmentSession
+	Device           OverlayDevice
+	AddressPrefix    string
+	AddressStartHost int
+	AddressEndHost   int
+}
+
 // Store provides persistence operations for users.
 type Store interface {
 	CreateUser(ctx context.Context, user *User) error
@@ -363,6 +403,10 @@ type Store interface {
 	AcknowledgeOverlaySignedConfig(ctx context.Context, ack *OverlaySignedConfigAck) (duplicate bool, err error)
 	GetOverlaySigningKeyMaxExpiresAt(ctx context.Context, keyID string) (time.Time, error)
 	OverlayProjectionDurable() bool
+	CreateOverlayJoinToken(ctx context.Context, token *OverlayJoinToken, audit *AuditLog) error
+	RevokeOverlayJoinToken(ctx context.Context, userID, tokenID string, revokedAt time.Time, audit *AuditLog) error
+	ExchangeOverlayJoinToken(ctx context.Context, exchange *OverlayJoinExchange, audit *AuditLog) error
+	GetOverlayEnrollmentSession(ctx context.Context, tokenHash []byte, now time.Time) (*OverlayEnrollmentSession, error)
 
 	UpsertTrafficStatCheckpoint(ctx context.Context, checkpoint *TrafficStatCheckpoint) error
 	GetTrafficStatCheckpoint(ctx context.Context, nodeID, accountUUID string) (*TrafficStatCheckpoint, error)
@@ -433,6 +477,15 @@ var (
 	ErrOverlaySignedConfigMismatch = errors.New("overlay signed config mismatch")
 	ErrOverlaySignedConfigStale    = errors.New("overlay signed config generation is stale")
 	ErrOverlaySignedConfigGap      = errors.New("overlay signed config generation must advance by one")
+	ErrOverlayJoinTokenNotFound    = errors.New("overlay join token not found")
+	ErrOverlayJoinTokenExpired     = errors.New("overlay join token expired")
+	ErrOverlayJoinTokenRevoked     = errors.New("overlay join token revoked")
+	ErrOverlayJoinTokenExhausted   = errors.New("overlay join token exhausted")
+	ErrOverlayJoinConstraint       = errors.New("overlay join constraint mismatch")
+	ErrOverlayJoinDeviceConflict   = errors.New("overlay join device conflicts with existing registration")
+	ErrOverlayJoinReplay           = errors.New("overlay join device already exchanged this token")
+	ErrOverlayEnrollmentNotFound   = errors.New("overlay enrollment session not found")
+	ErrOverlayEnrollmentExpired    = errors.New("overlay enrollment session expired")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for
@@ -451,6 +504,9 @@ type memoryStore struct {
 	overlayNodes            map[string]*OverlayNode
 	overlayConfigAcks       map[string]*OverlayConfigAck
 	overlaySignedConfigs    map[string]*OverlaySignedConfigRecord
+	overlayJoinTokens       map[string]*OverlayJoinToken
+	overlayJoinTokenHashes  map[string]string
+	overlayEnrollments      map[string]*OverlayEnrollmentSession
 	sessions                map[string]*sessionRecord
 	tenants                 map[string]*Tenant
 	tenantDomains           map[string]*TenantDomain
@@ -506,6 +562,9 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		overlayNodes:            make(map[string]*OverlayNode),
 		overlayConfigAcks:       make(map[string]*OverlayConfigAck),
 		overlaySignedConfigs:    make(map[string]*OverlaySignedConfigRecord),
+		overlayJoinTokens:       make(map[string]*OverlayJoinToken),
+		overlayJoinTokenHashes:  make(map[string]string),
+		overlayEnrollments:      make(map[string]*OverlayEnrollmentSession),
 		sessions:                make(map[string]*sessionRecord),
 		tenants:                 make(map[string]*Tenant),
 		tenantDomains:           make(map[string]*TenantDomain),

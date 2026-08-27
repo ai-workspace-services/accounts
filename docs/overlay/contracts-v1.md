@@ -26,6 +26,8 @@ Canonical SignedConfig projection is available as an additive endpoint without
 changing the legacy config response. See
 [`signed-config-projection.md`](signed-config-projection.md) for enablement,
 migration, ACK semantics, rollback, and the durable repository requirement.
+The one-command invite and short-lived enrollment flow is documented in
+[`join-enrollment.md`](join-enrollment.md).
 
 ## Runtime boundary
 

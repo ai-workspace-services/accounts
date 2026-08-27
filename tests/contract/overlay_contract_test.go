@@ -2,9 +2,11 @@ package contract_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"account/internal/overlay/domain"
@@ -53,6 +55,13 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		"/api/overlay/v1/config/ack",
 		"/api/overlay/v1/signed-config",
 		"/api/overlay/v1/signing-keys",
+		"/api/overlay/v1/join-tokens",
+		"/api/overlay/v1/join-tokens/{id}",
+		"/api/overlay/v1/join-tokens/exchange",
+		"/api/overlay/v1/enrollment/config",
+		"/api/overlay/v1/enrollment/signed-config",
+		"/api/overlay/v1/enrollment/config/ack",
+		"/api/overlay/v1/enrollment/signed-config/{generation}/ack",
 		"/api/overlay/v1/signed-config/{generation}/ack",
 		"/api/internal/overlay/v1/nodes/heartbeat",
 	} {
@@ -71,6 +80,33 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		if got := schema["$ref"]; got != want {
 			t.Errorf("OpenAPI %s ref = %#v, want %q", name, got, want)
 		}
+	}
+}
+
+func TestOverlayOpenAPILocksJoinAndEnrollmentSecurityBoundaries(t *testing.T) {
+	var document map[string]any
+	if err := yaml.Unmarshal(readFile(t, "api/openapi/overlay-v1.yaml"), &document); err != nil {
+		t.Fatal(err)
+	}
+	paths := document["paths"].(map[string]any)
+	exchange := paths["/api/overlay/v1/join-tokens/exchange"].(map[string]any)["post"].(map[string]any)
+	security, ok := exchange["security"].([]any)
+	if !ok || len(security) != 0 {
+		t.Fatalf("join exchange must be outside account auth middleware: %#v", exchange["security"])
+	}
+	enrollment := paths["/api/overlay/v1/enrollment/signed-config"].(map[string]any)["get"].(map[string]any)
+	if !strings.Contains(fmt.Sprint(enrollment["security"]), "enrollmentBearer") {
+		t.Fatalf("enrollment endpoint missing restricted bearer: %#v", enrollment["security"])
+	}
+	components := document["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+	exchangeRequest := schemas["ExchangeJoinTokenRequest"].(map[string]any)["properties"].(map[string]any)
+	if exchangeRequest["join_token"].(map[string]any)["writeOnly"] != true {
+		t.Fatal("join secret must be writeOnly")
+	}
+	exchangeResponse := schemas["ExchangeJoinTokenResponse"].(map[string]any)["properties"].(map[string]any)
+	if exchangeResponse["enrollment_token"].(map[string]any)["writeOnly"] != true {
+		t.Fatal("enrollment secret must be writeOnly")
 	}
 }
 

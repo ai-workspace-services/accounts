@@ -126,6 +126,103 @@ paths:
                   revision: {type: string}
                   received_at: {type: string, format: date-time}
         default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/join-tokens:
+    post:
+      tags: [Overlay]
+      operationId: createOverlayJoinTokenV1
+      description: Creates a strictly one-time invite. The raw secret appears only once inside join_uri.
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateJoinTokenRequest"}
+      responses:
+        "201":
+          description: One-time secret response; clients and intermediaries must not cache it.
+          headers:
+            Cache-Control: {schema: {const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/CreateJoinTokenResponse"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/join-tokens/{id}:
+    delete:
+      tags: [Overlay]
+      operationId: revokeOverlayJoinTokenV1
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "204": {description: Invite revoked.}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/join-tokens/exchange:
+    post:
+      tags: [Overlay]
+      operationId: exchangeOverlayJoinTokenV1
+      description: >-
+        Public, rate-limited exchange. It atomically consumes one invite use,
+        registers the constrained device, and returns a short-lived bearer.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ExchangeJoinTokenRequest"}
+      responses:
+        "200":
+          description: Enrollment bearer returned once.
+          headers:
+            Cache-Control: {schema: {const: no-store}}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ExchangeJoinTokenResponse"}
+        "429": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/enrollment/config:
+    get:
+      tags: [Overlay]
+      operationId: getEnrollmentOverlayConfigV1
+      description: Device/network-bound legacy config bootstrap.
+      security: [{enrollmentBearer: []}]
+      responses:
+        "200": {description: Bound config., content: {application/json: {schema: {$ref: "#/components/schemas/OverlayConfigV1"}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/enrollment/signed-config:
+    get:
+      tags: [Overlay]
+      operationId: getEnrollmentOverlaySignedConfigV1
+      description: Device/network-bound canonical xray SignedConfig bootstrap.
+      security: [{enrollmentBearer: []}]
+      responses:
+        "200": {description: Bound signed config., content: {application/json: {schema: {$ref: "#/components/schemas/SignedConfig"}}}}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/enrollment/config/ack:
+    post:
+      tags: [Overlay]
+      operationId: acknowledgeEnrollmentOverlayConfigV1
+      security: [{enrollmentBearer: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/ConfigAckRequest"}}}}
+      responses:
+        "200": {description: Bound ACK accepted.}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/enrollment/signed-config/{generation}/ack:
+    post:
+      tags: [Overlay]
+      operationId: acknowledgeEnrollmentOverlaySignedConfigV1
+      security: [{enrollmentBearer: []}]
+      parameters:
+        - name: generation
+          in: path
+          required: true
+          schema: {type: integer, minimum: 1}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SignedConfigAckRequest"}}}}
+      responses:
+        "200": {description: Bound ACK accepted.}
+        default: {$ref: "#/components/responses/Error"}
   /api/overlay/v1/signed-config:
     get:
       tags: [Overlay]
@@ -241,6 +338,10 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+    enrollmentBearer:
+      type: http
+      scheme: bearer
+      description: Short-lived opaque xenr_ token bound to one user/network/device/key.
     serviceToken:
       type: apiKey
       in: header
@@ -307,6 +408,55 @@ components:
         network_id: {type: string}
         wireguard_public_key: {type: string, minLength: 1}
         wireguard_address: {type: string}
+    CreateJoinTokenRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        network_id: {type: string}
+        device_id: {type: string}
+        platform: {type: string, enum: [darwin, windows, linux, ios, android]}
+        expires_in_seconds: {type: integer, minimum: 1, maximum: 86400, default: 900}
+        remaining_uses: {type: integer, enum: [0, 1], default: 1, description: Compatibility field; every invite is strictly one-time.}
+    CreateJoinTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [join_token]
+      properties:
+        join_token:
+          type: object
+          additionalProperties: false
+          required: [id, join_uri, network_id, remaining_uses, expires_at]
+          properties:
+            id: {type: string}
+            join_uri: {type: string, pattern: '^xconnect://join/'}
+            network_id: {type: string}
+            device_id: {type: string}
+            platform: {type: string}
+            remaining_uses: {type: integer, const: 1, description: Every issued invite has exactly one use.}
+            expires_at: {type: string, format: date-time}
+    ExchangeJoinTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [join_token, device_id, platform, wireguard_public_key]
+      properties:
+        join_token: {type: string, writeOnly: true, pattern: '^xjt_'}
+        device_id: {type: string}
+        name: {type: string}
+        platform: {type: string, enum: [darwin, windows, linux, ios, android]}
+        hostname: {type: string}
+        wireguard_public_key: {type: string}
+    ExchangeJoinTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [enrollment_token, token_type, expires_at, scope, device, network, signing_keys]
+      properties:
+        enrollment_token: {type: string, writeOnly: true, pattern: '^xenr_'}
+        token_type: {const: Bearer}
+        expires_at: {type: string, format: date-time}
+        scope: {type: array, items: {type: string, enum: ['overlay:config:read', 'overlay:config:ack']}}
+        device: {$ref: "#/components/schemas/OverlayDevice"}
+        network: {$ref: "#/components/schemas/OverlayNetwork"}
+        signing_keys: {type: array, items: {$ref: "#/components/schemas/OverlaySigningKey"}}
     ConfigAckRequest:
       type: object
       additionalProperties: false

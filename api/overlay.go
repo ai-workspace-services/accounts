@@ -342,6 +342,17 @@ func (h *handler) overlayConfigAck(c *gin.Context) {
 }
 
 func (h *handler) requireActiveOverlayUser(c *gin.Context) (*store.User, bool) {
+	if enrollment, exists := overlayEnrollmentFromContext(c); exists {
+		user, err := activeEnrollmentUser(c.Request.Context(), h.store, enrollment)
+		if err != nil {
+			respondError(c, http.StatusUnauthorized, "invalid_enrollment", "enrollment token is invalid or expired")
+			return nil, false
+		}
+		if h.rejectIfBillingSuspended(c, user.ID) {
+			return nil, false
+		}
+		return user, true
+	}
 	user, ok := h.requireAuthenticatedUser(c)
 	if !ok {
 		return nil, false

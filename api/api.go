@@ -100,6 +100,7 @@ type handler struct {
 	bridgeCredentials         map[string]memoryBridgeCredential
 	taskSessions              tasksession.Store
 	overlayProjection         *projection.Service
+	overlayJoinRateLimiter    OverlayJoinRateLimiter
 }
 
 type memoryBridgeCredential struct {
@@ -167,6 +168,16 @@ func WithOverlayProjectionService(service *projection.Service) Option {
 	return func(h *handler) {
 		if service != nil {
 			h.overlayProjection = service
+		}
+	}
+}
+
+// WithOverlayJoinRateLimiter replaces the per-process public exchange limiter.
+// Production may inject a shared gateway/Redis-backed implementation.
+func WithOverlayJoinRateLimiter(limiter OverlayJoinRateLimiter) Option {
+	return func(h *handler) {
+		if limiter != nil {
+			h.overlayJoinRateLimiter = limiter
 		}
 	}
 }
@@ -357,6 +368,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		oauthExchangeCodes:        make(map[string]oauthExchangeCode),
 		oauthExchangeTTL:          defaultOAuthExchangeCodeTTL,
 		bridgeCredentials:         make(map[string]memoryBridgeCredential),
+		overlayJoinRateLimiter:    newMemoryOverlayJoinRateLimiter(10, time.Minute),
 	}
 
 	for _, opt := range opts {
@@ -589,9 +601,20 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		overlayV1Group.Use(auth.RequireActiveUser(h.store))
 	}
 	h.registerOverlayRoutes(overlayV1Group)
+	overlayV1Group.POST("/join-tokens", h.createOverlayJoinToken)
+	overlayV1Group.DELETE("/join-tokens/:id", h.revokeOverlayJoinToken)
 	overlayV1Group.GET("/signed-config", h.overlaySignedConfig)
 	overlayV1Group.GET("/signing-keys", h.overlaySigningKeys)
 	overlayV1Group.POST("/signed-config/:generation/ack", h.overlaySignedConfigAck)
+
+	// Join exchange and enrollment routes intentionally stay outside the normal
+	// account auth middleware. Exchange authenticates the one-time invite;
+	// enrollment routes accept only a hashed, short-lived, device-bound bearer.
+	r.POST("/api/overlay/v1/join-tokens/exchange", h.exchangeOverlayJoinToken)
+	r.GET("/api/overlay/v1/enrollment/config", h.enrollmentOverlayConfig)
+	r.GET("/api/overlay/v1/enrollment/signed-config", h.enrollmentOverlaySignedConfig)
+	r.POST("/api/overlay/v1/enrollment/config/ack", h.enrollmentOverlayConfigAck)
+	r.POST("/api/overlay/v1/enrollment/signed-config/:generation/ack", h.enrollmentOverlaySignedConfigAck)
 
 	// Canonical user-facing agent routes.
 	// These endpoints use session-based auth in handler logic and intentionally
