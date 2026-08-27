@@ -3,6 +3,7 @@ package tasksession
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -208,5 +209,42 @@ func TestMemoryStoreReplaysOrderedEventsAfterCursor(t *testing.T) {
 	}
 	if _, err := store.ListEvents(context.Background(), "account-2", "session-replay", 0, 100); !errors.Is(err, ErrAccountMismatch) {
 		t.Fatalf("expected account isolation, got %v", err)
+	}
+}
+
+func TestMemoryStoreKeepsSnapshotMessageHistoryBounded(t *testing.T) {
+	store := NewMemoryStore()
+	namespace, err := store.CreateNamespace(context.Background(), CreateNamespaceInput{
+		ID: "ns-window", AccountID: "account-1", Slug: "window",
+	})
+	if err != nil {
+		t.Fatalf("create namespace: %v", err)
+	}
+	if _, err := store.CreateSession(context.Background(), CreateSessionInput{
+		ID: "session-window", AccountID: "account-1", NamespaceID: namespace.ID,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	for index := 0; index < maxSnapshotMessages+5; index++ {
+		if _, err := store.AppendMessage(context.Background(), AppendMessageInput{
+			AccountID: "account-1", SessionID: "session-window",
+			ClientRequestID: "request-" + strconv.Itoa(index),
+			Text:            "message-" + strconv.Itoa(index), TaskRunID: "run-" + strconv.Itoa(index),
+			CreatedAt: time.Unix(int64(index+1), 0),
+		}); err != nil {
+			t.Fatalf("append message %d: %v", index, err)
+		}
+	}
+	snapshot, err := store.GetSnapshot(context.Background(), "account-1", "session-window")
+	if err != nil {
+		t.Fatalf("get snapshot: %v", err)
+	}
+	messages, ok := snapshot.Context["messages"].([]any)
+	if !ok || len(messages) != maxSnapshotMessages {
+		t.Fatalf("snapshot window size = %d, context=%+v", len(messages), snapshot.Context)
+	}
+	events, err := store.ListEvents(context.Background(), "account-1", "session-window", 0, 500)
+	if err != nil || len(events) != (maxSnapshotMessages+5)*2 {
+		t.Fatalf("full ordered history was not retained: len=%d err=%v", len(events), err)
 	}
 }

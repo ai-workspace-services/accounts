@@ -15,6 +15,7 @@ const (
 	defaultGlobalMaxActive    = 5
 	maxEventPayloadBytes      = 16 * 1024
 	maxSnapshotBytes          = 128 * 1024
+	maxSnapshotMessages       = 100
 )
 
 // Store is the small control-plane contract shared by the API and scheduler.
@@ -23,7 +24,9 @@ const (
 type Store interface {
 	EnsurePersonalNamespace(context.Context, string, time.Time) (Namespace, error)
 	CreateNamespace(context.Context, CreateNamespaceInput) (Namespace, error)
+	ListNamespaces(context.Context, string) ([]Namespace, error)
 	CreateSession(context.Context, CreateSessionInput) (Session, error)
+	ListSessions(context.Context, string, string) ([]Snapshot, error)
 	GetSession(context.Context, string, string, string) (Session, error)
 	AppendEvent(context.Context, AppendEventInput) (Event, error)
 	AppendMessage(context.Context, AppendMessageInput) (MessageCommandResult, error)
@@ -32,6 +35,54 @@ type Store interface {
 	EnqueueTaskRun(context.Context, EnqueueTaskRunInput) (TaskRun, error)
 	ClaimNext(context.Context, ClaimInput) (TaskRun, error)
 	RecordTaskRunEvent(context.Context, TaskRunEventInput) (TaskRunEventResult, error)
+}
+
+func (s *MemoryStore) ListNamespaces(_ context.Context, accountID string) ([]Namespace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil, ErrInvalidInput
+	}
+	items := make([]Namespace, 0)
+	for _, namespace := range s.namespaces {
+		if namespace.AccountID == accountID {
+			items = append(items, cloneNamespace(namespace))
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].CreatedAt.Before(items[j].CreatedAt)
+	})
+	return items, nil
+}
+
+func (s *MemoryStore) ListSessions(_ context.Context, accountID, namespaceID string) ([]Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accountID = strings.TrimSpace(accountID)
+	namespaceID = strings.TrimSpace(namespaceID)
+	namespace, ok := s.namespaces[namespaceID]
+	if !ok || namespace.AccountID != accountID {
+		return nil, ErrNotFound
+	}
+	items := make([]Snapshot, 0)
+	for _, session := range s.sessions {
+		if session.AccountID != accountID || session.NamespaceID != namespaceID {
+			continue
+		}
+		snapshot := snapshotFromMemoryState(session, s.taskRuns)
+		items = append(items, snapshot)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return items[i].SessionID < items[j].SessionID
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+	return items, nil
 }
 
 func (s *MemoryStore) ListEvents(_ context.Context, accountID, sessionID string, afterSeq int64, limit int) ([]Event, error) {
@@ -94,7 +145,7 @@ func (s *MemoryStore) AppendMessage(_ context.Context, input AppendMessageInput)
 			if queued.Seq == existing.Seq+1 && queued.Type == EventRunQueued {
 				return MessageCommandResult{
 					Message: existing, Queued: cloneEvent(queued), TaskRun: cloneTaskRun(run),
-					SnapshotVer: session.SnapshotVer, LastEventSeq: session.LastEventSeq,
+					SnapshotVer: session.SnapshotVer, LastEventSeq: session.LastEventSeq, Existing: true,
 				}, nil
 			}
 		}
@@ -138,12 +189,16 @@ func (s *MemoryStore) AppendMessage(_ context.Context, input AppendMessageInput)
 		SessionID: input.SessionID, Seq: message.Seq + 1, Type: EventRunQueued,
 		Payload: queuedPayload, ActorID: input.ActorID, CreatedAt: input.CreatedAt,
 	}
+	nextContext, _, err := appendMessageToContext(session.Context, messageContextValue(input.Text, input.TaskRunID, input.CreatedAt))
+	if err != nil {
+		return MessageCommandResult{}, err
+	}
 	s.events[input.SessionID] = append(s.events[input.SessionID], message, queued)
 	s.eventByRequest[requestKey] = message
 	s.taskRuns[run.ID] = run
 	session.LastEventSeq = queued.Seq
 	session.SnapshotVer += 2
-	session.Context["lastMessage"] = input.Text
+	session.Context = nextContext
 	session.UpdatedAt = input.CreatedAt
 	s.sessions[session.ID] = session
 	return MessageCommandResult{
@@ -261,6 +316,17 @@ func runQueuedEventPayload(taskRunID string) map[string]any {
 		"schemaVersion": 1,
 		"taskRunId":     strings.TrimSpace(taskRunID),
 		"state":         TaskRunQueued,
+	}
+}
+
+func messageContextValue(text, taskRunID string, createdAt time.Time) map[string]any {
+	return map[string]any{
+		"id":          strings.TrimSpace(taskRunID),
+		"role":        "user",
+		"text":        strings.TrimSpace(text),
+		"timestampMs": createdAt.UnixMilli(),
+		"pending":     false,
+		"error":       false,
 	}
 }
 
@@ -453,7 +519,11 @@ func (s *MemoryStore) GetSnapshot(_ context.Context, accountID, sessionID string
 	if session.AccountID != accountID {
 		return Snapshot{}, ErrAccountMismatch
 	}
-	return Snapshot{
+	return snapshotFromMemoryState(session, s.taskRuns), nil
+}
+
+func snapshotFromMemoryState(session Session, runs map[string]TaskRun) Snapshot {
+	snapshot := Snapshot{
 		SessionID:      session.ID,
 		NamespaceID:    session.NamespaceID,
 		Title:          session.Title,
@@ -462,7 +532,18 @@ func (s *MemoryStore) GetSnapshot(_ context.Context, accountID, sessionID string
 		LifecycleState: session.LifecycleState,
 		Context:        cloneMap(session.Context),
 		UpdatedAt:      session.UpdatedAt,
-	}, nil
+	}
+	for _, run := range runs {
+		if run.SessionID != session.ID {
+			continue
+		}
+		if snapshot.TaskRun == nil || run.UpdatedAt.After(snapshot.TaskRun.UpdatedAt) ||
+			(run.UpdatedAt.Equal(snapshot.TaskRun.UpdatedAt) && run.ID > snapshot.TaskRun.ID) {
+			copy := cloneTaskRun(run)
+			snapshot.TaskRun = &copy
+		}
+	}
+	return snapshot
 }
 
 func (s *MemoryStore) EnqueueTaskRun(_ context.Context, input EnqueueTaskRunInput) (TaskRun, error) {

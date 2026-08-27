@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS public.task_namespaces (
   account_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
   slug TEXT NOT NULL,
   display_name TEXT NOT NULL DEFAULT '',
-  max_active_runs INTEGER NOT NULL DEFAULT 2 CHECK (max_active_runs > 0),
+  max_active_runs INTEGER NOT NULL DEFAULT 2 CHECK (max_active_runs > 0 AND max_active_runs <= 2),
+  last_claimed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (account_uuid, slug)
 );
@@ -27,7 +28,8 @@ CREATE TABLE IF NOT EXISTS public.task_sessions (
   context_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CHECK (jsonb_typeof(context_summary) = 'object')
+  CHECK (jsonb_typeof(context_summary) = 'object'),
+  CHECK (octet_length(context_summary::text) <= 131072)
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_sessions_namespace_updated
@@ -58,6 +60,7 @@ CREATE TABLE IF NOT EXISTS public.task_runs (
   account_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
   namespace_id TEXT NOT NULL REFERENCES public.task_namespaces(id) ON DELETE CASCADE,
   session_id TEXT NOT NULL REFERENCES public.task_sessions(id) ON DELETE CASCADE,
+  client_request_id TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL DEFAULT 'queued',
   priority INTEGER NOT NULL DEFAULT 0,
   not_before TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -79,3 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_claimable
 
 CREATE INDEX IF NOT EXISTS idx_task_runs_namespace_state
   ON public.task_runs (namespace_id, state, updated_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_client_request
+  ON public.task_runs (session_id, client_request_id)
+  WHERE client_request_id <> '';

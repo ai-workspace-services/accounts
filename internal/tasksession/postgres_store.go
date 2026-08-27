@@ -78,6 +78,30 @@ RETURNING id, account_uuid::text, slug, display_name, max_active_runs, created_a
 	return namespace, nil
 }
 
+func (s *PostgresStore) ListNamespaces(ctx context.Context, accountID string) ([]Namespace, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil, ErrInvalidInput
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, account_uuid::text, slug, display_name, max_active_runs, created_at
+FROM public.task_namespaces
+WHERE account_uuid = $1
+ORDER BY created_at, id`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Namespace, 0)
+	for rows.Next() {
+		var item Namespace
+		if err := rows.Scan(&item.ID, &item.AccountID, &item.Slug, &item.DisplayName, &item.MaxActiveRuns, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *PostgresStore) CreateSession(ctx context.Context, input CreateSessionInput) (Session, error) {
 	input.ID = strings.TrimSpace(input.ID)
 	input.AccountID = strings.TrimSpace(input.AccountID)
@@ -107,6 +131,39 @@ RETURNING id, account_uuid::text, namespace_id, title, snapshot_version, last_ev
 		return Session{}, mapPostgresError(err)
 	}
 	return session, nil
+}
+
+func (s *PostgresStore) ListSessions(ctx context.Context, accountID, namespaceID string) ([]Snapshot, error) {
+	accountID = strings.TrimSpace(accountID)
+	namespaceID = strings.TrimSpace(namespaceID)
+	if accountID == "" || namespaceID == "" {
+		return nil, ErrInvalidInput
+	}
+	var ownsNamespace bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+  SELECT 1 FROM public.task_namespaces WHERE id = $1 AND account_uuid = $2
+)`, namespaceID, accountID).Scan(&ownsNamespace); err != nil {
+		return nil, err
+	}
+	if !ownsNamespace {
+		return nil, ErrNotFound
+	}
+	rows, err := s.db.QueryContext(ctx, snapshotSelect+`
+WHERE session.account_uuid = $1 AND session.namespace_id = $2
+ORDER BY session.updated_at DESC, session.id`, accountID, namespaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Snapshot, 0)
+	for rows.Next() {
+		item, err := scanSnapshot(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *PostgresStore) GetSession(ctx context.Context, accountID, namespaceID, sessionID string) (Session, error) {
@@ -247,6 +304,7 @@ func (s *PostgresStore) AppendMessage(ctx context.Context, input AppendMessageIn
 		if err := tx.Commit(); err != nil {
 			return MessageCommandResult{}, err
 		}
+		result.Existing = true
 		return result, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -285,7 +343,7 @@ VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $8)`,
 	}
 	contextSummary := cloneMap(locked.context)
 	contextSummary["lastMessage"] = input.Text
-	encodedContext, err := marshalContextSummary(contextSummary)
+	contextSummary, encodedContext, err := appendMessageToContext(contextSummary, messageContextValue(input.Text, input.TaskRunID, input.CreatedAt))
 	if err != nil {
 		return MessageCommandResult{}, err
 	}
@@ -309,26 +367,72 @@ WHERE id = $4 AND account_uuid = $5`, queued.Seq, encodedContext, input.CreatedA
 }
 
 func (s *PostgresStore) GetSnapshot(ctx context.Context, accountID, sessionID string) (Snapshot, error) {
-	var (
-		snapshot    Snapshot
-		contextJSON []byte
-	)
-	err := s.db.QueryRowContext(ctx, `SELECT id, namespace_id, title, snapshot_version,
-  last_event_seq, lifecycle_state, context_summary, updated_at
-FROM public.task_sessions
-WHERE id = $1 AND account_uuid = $2`, strings.TrimSpace(sessionID), strings.TrimSpace(accountID)).Scan(
-		&snapshot.SessionID, &snapshot.NamespaceID, &snapshot.Title, &snapshot.SnapshotVer,
-		&snapshot.LastEventSeq, &snapshot.LifecycleState, &contextJSON, &snapshot.UpdatedAt,
-	)
+	snapshot, err := scanSnapshot(s.db.QueryRowContext(ctx, snapshotSelect+`
+WHERE session.id = $1 AND session.account_uuid = $2`, strings.TrimSpace(sessionID), strings.TrimSpace(accountID)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Snapshot{}, ErrNotFound
 	}
 	if err != nil {
 		return Snapshot{}, err
 	}
-	snapshot.Context, err = decodeObject(contextJSON)
+	return snapshot, nil
+}
+
+const snapshotSelect = `SELECT session.id, session.namespace_id, session.title,
+  session.snapshot_version, session.last_event_seq, session.lifecycle_state,
+  session.context_summary, session.updated_at,
+  run.id, run.state, run.bridge_task_ref, run.priority, run.not_before,
+  run.created_at, run.updated_at
+FROM public.task_sessions AS session
+LEFT JOIN LATERAL (
+  SELECT id, state, bridge_task_ref, priority, not_before, created_at, updated_at
+  FROM public.task_runs
+  WHERE session_id = session.id AND account_uuid = session.account_uuid
+  ORDER BY updated_at DESC, created_at DESC, id DESC
+  LIMIT 1
+) AS run ON TRUE`
+
+func scanSnapshot(row scanner) (Snapshot, error) {
+	var (
+		snapshot      Snapshot
+		contextJSON   []byte
+		runID         sql.NullString
+		runState      sql.NullString
+		bridgeTaskRef sql.NullString
+		priority      sql.NullInt64
+		notBefore     sql.NullTime
+		runCreatedAt  sql.NullTime
+		runUpdatedAt  sql.NullTime
+	)
+	if err := row.Scan(
+		&snapshot.SessionID, &snapshot.NamespaceID, &snapshot.Title,
+		&snapshot.SnapshotVer, &snapshot.LastEventSeq, &snapshot.LifecycleState,
+		&contextJSON, &snapshot.UpdatedAt, &runID, &runState, &bridgeTaskRef,
+		&priority, &notBefore, &runCreatedAt, &runUpdatedAt,
+	); err != nil {
+		return Snapshot{}, err
+	}
+	contextSummary, err := decodeObject(contextJSON)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	snapshot.Context = contextSummary
+	if runID.Valid {
+		run := TaskRun{
+			ID: runID.String, NamespaceID: snapshot.NamespaceID,
+			SessionID: snapshot.SessionID, State: runState.String,
+			BridgeRef: bridgeTaskRef.String, Priority: int(priority.Int64),
+		}
+		if notBefore.Valid {
+			run.NotBefore = notBefore.Time
+		}
+		if runCreatedAt.Valid {
+			run.CreatedAt = runCreatedAt.Time
+		}
+		if runUpdatedAt.Valid {
+			run.UpdatedAt = runUpdatedAt.Time
+		}
+		snapshot.TaskRun = &run
 	}
 	return snapshot, nil
 }
@@ -847,6 +951,9 @@ func marshalEventPayload(payload map[string]any) ([]byte, error) {
 }
 
 func marshalContextSummary(contextSummary map[string]any) ([]byte, error) {
+	if containsArtifactContent(contextSummary) {
+		return nil, ErrArtifactPayload
+	}
 	encoded, err := json.Marshal(cloneMap(contextSummary))
 	if err != nil {
 		return nil, err
@@ -855,6 +962,28 @@ func marshalContextSummary(contextSummary map[string]any) ([]byte, error) {
 		return nil, ErrPayloadTooLarge
 	}
 	return encoded, nil
+}
+
+func appendMessageToContext(contextSummary map[string]any, message map[string]any) (map[string]any, []byte, error) {
+	next := cloneMap(contextSummary)
+	next["lastMessage"] = strings.TrimSpace(fmt.Sprint(message["text"]))
+	messages, _ := next["messages"].([]any)
+	messages = append(append([]any(nil), messages...), cloneMap(message))
+	if len(messages) > maxSnapshotMessages {
+		messages = messages[len(messages)-maxSnapshotMessages:]
+	}
+	for len(messages) > 0 {
+		next["messages"] = messages
+		encoded, err := marshalContextSummary(next)
+		if err == nil {
+			return next, encoded, nil
+		}
+		if !errors.Is(err, ErrPayloadTooLarge) {
+			return nil, nil, err
+		}
+		messages = messages[1:]
+	}
+	return nil, nil, ErrPayloadTooLarge
 }
 
 func containsArtifactContent(value any) bool {

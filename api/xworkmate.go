@@ -712,7 +712,10 @@ func (h *handler) issueBridgeCredential(ctx context.Context, userID, tenantID, l
 		if existing, ok := h.bridgeCredentials[key]; ok {
 			credentialID = existing.CredentialUUID
 		}
-		h.bridgeCredentials[key] = memoryBridgeCredential{CredentialUUID: credentialID, Token: token}
+		h.bridgeCredentials[key] = memoryBridgeCredential{
+			CredentialUUID: credentialID, Token: token,
+			AccountID: strings.TrimSpace(userID), TenantID: strings.TrimSpace(tenantID),
+		}
 		return credentialID, token, nil
 	}
 	tokenHash, err := bridgeCredentialHash(token)
@@ -748,7 +751,10 @@ func (h *handler) introspectBridgeCredential(c *gin.Context) {
 		defer h.mu.RUnlock()
 		for _, credential := range h.bridgeCredentials {
 			if hmac.Equal([]byte(credential.Token), []byte(strings.TrimSpace(request.Token))) {
-				c.JSON(http.StatusOK, gin.H{"active": true})
+				c.JSON(http.StatusOK, gin.H{
+					"active": true, "accountId": credential.AccountID,
+					"tenantId": credential.TenantID, "credentialId": credential.CredentialUUID,
+				})
 				return
 			}
 		}
@@ -760,12 +766,27 @@ func (h *handler) introspectBridgeCredential(c *gin.Context) {
 		respondError(c, http.StatusServiceUnavailable, "bridge_credential_unavailable", err.Error())
 		return
 	}
-	var count int64
-	if err := h.db.WithContext(c.Request.Context()).Raw(`SELECT count(*) FROM public.bridge_credentials WHERE token_hash = ? AND status = 'active'`, hash).Scan(&count).Error; err != nil {
+	var credentials []struct {
+		AccountID    string `gorm:"column:account_id"`
+		TenantID     string `gorm:"column:tenant_id"`
+		CredentialID string `gorm:"column:credential_id"`
+	}
+	if err := h.db.WithContext(c.Request.Context()).Raw(`SELECT user_uuid::text AS account_id, tenant_id, credential_uuid::text AS credential_id
+FROM public.bridge_credentials
+WHERE token_hash = ? AND status = 'active'
+ORDER BY credential_uuid
+LIMIT 2`, hash).Scan(&credentials).Error; err != nil {
 		respondError(c, http.StatusInternalServerError, "credential_lookup_failed", "credential lookup failed")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"active": count == 1})
+	if len(credentials) != 1 || strings.TrimSpace(credentials[0].AccountID) == "" {
+		c.JSON(http.StatusOK, gin.H{"active": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"active": true, "accountId": credentials[0].AccountID,
+		"tenantId": credentials[0].TenantID, "credentialId": credentials[0].CredentialID,
+	})
 }
 
 func (h *handler) updateXWorkmateProfile(c *gin.Context) {

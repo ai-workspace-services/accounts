@@ -103,6 +103,8 @@ type handler struct {
 type memoryBridgeCredential struct {
 	CredentialUUID string
 	Token          string
+	AccountID      string
+	TenantID       string
 }
 
 type agentRegistry interface {
@@ -521,6 +523,25 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	taskProtected.POST("", h.createTaskSession)
 	taskProtected.GET("/:sessionID", h.getTaskSession)
 	taskProtected.POST("/:sessionID/events", h.appendTaskSessionEvent)
+
+	// Accounts is the durable owner of shared XWorkmate sessions. Bridge stays
+	// stateless and consumes this user-scoped facade instead of owning a second
+	// session database.
+	taskV1 := r.Group("/api/v1")
+	taskV1.Use(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	})
+	if h.tokenService != nil {
+		taskV1.Use(h.tokenService.AuthMiddleware())
+		taskV1.Use(auth.RequireActiveUser(h.store))
+	}
+	taskV1.GET("/namespaces", h.listTaskNamespacesV1)
+	taskV1.GET("/namespaces/:namespaceID/sessions", h.listTaskSessionsV1)
+	taskV1.POST("/namespaces/:namespaceID/sessions", h.createTaskSessionV1)
+	taskV1.GET("/sessions/:sessionID", h.getTaskSessionV1)
+	taskV1.GET("/sessions/:sessionID/events", h.listTaskSessionEventsV1)
+	taskV1.POST("/sessions/:sessionID/messages", h.appendTaskSessionMessageV1)
 
 	// Internal routes for service-to-service reads.
 	internalGroup := r.Group("/api/internal")

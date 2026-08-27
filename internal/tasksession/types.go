@@ -76,6 +76,7 @@ type Snapshot struct {
 	LastEventSeq   int64
 	LifecycleState string
 	Context        map[string]any
+	TaskRun        *TaskRun
 	UpdatedAt      time.Time
 }
 
@@ -160,6 +161,7 @@ type MessageCommandResult struct {
 	TaskRun      TaskRun
 	SnapshotVer  int64
 	LastEventSeq int64
+	Existing     bool
 }
 
 // TaskRunEventInput is a Bridge callback guarded by the active lease. The
