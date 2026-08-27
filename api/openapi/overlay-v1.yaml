@@ -1,0 +1,296 @@
+openapi: 3.1.0
+info:
+  title: XConnect-One Overlay API
+  version: 1.0.0
+  description: >-
+    Versioned controller contract for the existing XConnect-One device,
+    configuration, acknowledgement, and gateway heartbeat flow. Unversioned
+    endpoints remain available only as a migration compatibility surface.
+  x-xconnect-product-family: XConnect-One
+servers:
+  - url: https://accounts.svc.plus
+tags:
+  - name: Overlay
+  - name: Internal Overlay
+paths:
+  /api/overlay/v1/networks:
+    get:
+      tags: [Overlay]
+      operationId: listOverlayNetworksV1
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: network_id
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: Networks visible to the active account.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [networks]
+                properties:
+                  networks:
+                    type: array
+                    items: {$ref: "#/components/schemas/OverlayNetwork"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/devices:
+    get:
+      tags: [Overlay]
+      operationId: listOverlayDevicesV1
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: Registered devices owned by the active account.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: {$ref: "#/components/schemas/OverlayDevice"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/devices/register:
+    post:
+      tags: [Overlay]
+      operationId: registerOverlayDeviceV1
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RegisterDeviceRequest"}
+      responses:
+        "200":
+          description: Device registered or idempotently refreshed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device, network]
+                properties:
+                  device: {$ref: "#/components/schemas/OverlayDevice"}
+                  network: {$ref: "#/components/schemas/OverlayNetwork"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/config:
+    get:
+      tags: [Overlay]
+      operationId: getOverlayConfigV1
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: device_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1}
+        - name: network_id
+          in: query
+          schema: {type: string}
+        - name: node_id
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: Current legacy-compatible schema_version 1 device config.
+          headers:
+            ETag:
+              schema: {type: string}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/OverlayConfigV1"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/config/ack:
+    post:
+      tags: [Overlay]
+      operationId: acknowledgeOverlayConfigV1
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ConfigAckRequest"}
+      responses:
+        "200":
+          description: Configuration application receipt persisted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [acked, device_id, network_id, revision, received_at]
+                properties:
+                  acked: {const: true}
+                  device_id: {type: string}
+                  network_id: {type: string}
+                  revision: {type: string}
+                  received_at: {type: string, format: date-time}
+        default: {$ref: "#/components/responses/Error"}
+  /api/internal/overlay/v1/nodes/heartbeat:
+    post:
+      tags: [Internal Overlay]
+      operationId: heartbeatOverlayNodeV1
+      security: [{serviceToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NodeHeartbeatRequest"}
+      responses:
+        "200":
+          description: Gateway node observation accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node]
+                properties:
+                  node: {$ref: "#/components/schemas/OverlayNode"}
+        default: {$ref: "#/components/responses/Error"}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    serviceToken:
+      type: apiKey
+      in: header
+      name: X-Service-Token
+  responses:
+    Error:
+      description: Stable machine-readable error.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Error"}
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: {type: string}
+        message: {type: string}
+    OverlayNetwork:
+      type: object
+      required: [id, display_name, cidr]
+      properties:
+        id: {type: string}
+        display_name: {type: string}
+        cidr: {type: string}
+    OverlayDevice:
+      type: object
+      required: [id, network_id, wireguard_public_key, wireguard_address]
+      properties:
+        id: {type: string}
+        network_id: {type: string}
+        name: {type: string}
+        platform: {type: string}
+        hostname: {type: string}
+        wireguard_public_key: {type: string}
+        wireguard_address: {type: string}
+        last_seen_at: {type: [string, "null"], format: date-time}
+    RegisterDeviceRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id, wireguard_public_key]
+      properties:
+        device_id: {type: string, minLength: 1}
+        name: {type: string}
+        platform: {type: string}
+        hostname: {type: string}
+        network_id: {type: string}
+        wireguard_public_key: {type: string, minLength: 1}
+        wireguard_address: {type: string}
+    ConfigAckRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id, revision]
+      properties:
+        device_id: {type: string, minLength: 1}
+        network_id: {type: string}
+        revision: {type: string, minLength: 1}
+        digest: {type: string}
+        applied_at: {type: string, format: date-time}
+    OverlayNode:
+      type: object
+      required: [id, network_id, wireguard_public_key, wireguard_address, endpoint_host, endpoint_port, transport_type, transport_security, transport_uuid, healthy]
+      properties:
+        id: {type: string}
+        network_id: {type: string}
+        name: {type: string}
+        role: {type: string}
+        region: {type: string}
+        wireguard_public_key: {type: string}
+        wireguard_address: {type: string}
+        endpoint_host: {type: string}
+        endpoint_port: {type: integer, minimum: 1, maximum: 65535}
+        transport_type: {const: vless-tls}
+        transport_security: {const: tls}
+        transport_path: {type: string}
+        transport_mode: {type: string}
+        transport_uuid: {type: string, format: uuid}
+        healthy: {type: boolean}
+        last_heartbeat: {type: [string, "null"], format: date-time}
+    NodeHeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [node_id, wireguard_public_key, wireguard_address, endpoint_host, transport_uuid]
+      properties:
+        node_id: {type: string, minLength: 1}
+        network_id: {type: string}
+        name: {type: string}
+        role: {type: string}
+        region: {type: string}
+        wireguard_public_key: {type: string, minLength: 1}
+        wireguard_address: {type: string, minLength: 1}
+        endpoint_host: {type: string, minLength: 1}
+        endpoint_port: {type: integer, minimum: 1, maximum: 65535, default: 2443}
+        transport_type: {const: vless-tls}
+        transport_security: {const: tls}
+        transport_path: {type: string}
+        transport_mode: {type: string}
+        transport_uuid: {type: string, format: uuid}
+        healthy: {type: boolean}
+        sampled_at: {type: string, format: date-time}
+    OverlayConfigV1:
+      type: object
+      required: [schema_version, revision, digest, network, device, wireguard, transport, nodes]
+      properties:
+        schema_version: {const: 1}
+        revision: {type: string, minLength: 1}
+        digest: {type: string, minLength: 1}
+        network: {$ref: "#/components/schemas/OverlayNetwork"}
+        device: {$ref: "#/components/schemas/OverlayDevice"}
+        wireguard:
+          type: object
+          required: [interface, address, mtu, dns, private_key_ref, local_proxy_endpoint, persistent_keepalive, peer_public_key, peer_allowed_ips, peer_endpoint, gateway_wireguard_ip, gateway_wireguard_cidr]
+          properties:
+            interface: {type: string}
+            address: {type: string}
+            mtu: {type: integer, minimum: 576}
+            dns: {type: array, items: {type: string}}
+            private_key_ref: {type: string}
+            local_proxy_endpoint: {type: string}
+            persistent_keepalive: {type: integer, minimum: 0}
+            peer_public_key: {type: string}
+            peer_allowed_ips: {type: array, items: {type: string}}
+            peer_endpoint: {type: string}
+            gateway_wireguard_ip: {type: string}
+            gateway_wireguard_cidr: {type: string}
+        transport:
+          type: object
+          required: [runtime, type, security, server, port, uuid, path, mode, flow, packet_encoding, local_port]
+          properties:
+            runtime: {const: xray-core}
+            type: {const: vless-tls}
+            security: {const: tls}
+            server: {type: string}
+            port: {type: integer, minimum: 1, maximum: 65535}
+            uuid: {type: string, format: uuid}
+            path: {type: string}
+            mode: {type: string}
+            flow: {type: string}
+            packet_encoding: {const: xudp}
+            local_port: {type: integer, minimum: 1, maximum: 65535}
+        nodes:
+          type: array
+          items: {$ref: "#/components/schemas/OverlayNode"}

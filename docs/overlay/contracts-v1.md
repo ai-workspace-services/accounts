@@ -1,0 +1,40 @@
+# XConnect-One Overlay v1 contracts
+
+This directory records the controller-side compatibility boundary shared by
+XConnect-One clients, gateways, and `accounts.svc.plus`.
+
+## Sources of truth
+
+- `api/openapi/overlay-v1.yaml` describes the HTTP API implemented at
+  `/api/overlay/v1` and `/api/internal/overlay/v1`.
+- `api/schemas/overlay/signed-config-v1.schema.json` describes the signed
+  device configuration that the controller will project for clients.
+- `api/schemas/overlay/gateway-snapshot-v1.schema.json` describes the complete
+  desired state projected for a gateway.
+- `internal/overlay/domain` contains the transport-neutral Go representation
+  and validation rules used by controller code.
+- `tests/fixtures/overlay` contains stable examples consumed by contract tests
+  and downstream client/gateway implementations.
+
+The existing unversioned Overlay routes remain available during migration.
+New generated clients must use the explicit v1 paths. This baseline does not
+change the production configuration response yet; SignedConfig and
+GatewaySnapshot are introduced as versioned projection contracts for the next
+implementation batches.
+
+## Runtime boundary
+
+XConnect-One v1 supports only Xray-core/libXray. The signed contracts therefore
+use the closed value `proxy_core: xray`. A different core identifier, including
+`sing-box`, fails validation instead of triggering fallback behavior.
+
+## Compatibility rules
+
+- `schema_version` is exactly `1`.
+- `generation` is positive and monotonically increases per network projection.
+- `expires_at` is later than `issued_at`.
+- signatures use Ed25519 and carry an explicit `key_id`.
+- private WireGuard keys and unsealed credentials never appear in controller
+  persistence or API requests.
+- schema additions must be backward compatible; breaking changes require a new
+  versioned path and schema identifier.

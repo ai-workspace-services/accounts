@@ -535,6 +535,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup.GET("/policy/:accountUUID", h.internalAccountPolicy)
 	internalGroup.POST("/nodes/heartbeat", h.internalNodeHeartbeat)
 	internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
+	internalOverlayV1Group := r.Group("/api/internal/overlay/v1")
+	internalOverlayV1Group.Use(auth.InternalAuthMiddleware())
+	internalOverlayV1Group.POST("/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
 
 	// Public /api routes for admin/management (expected by frontend at /api/admin/...)
 	apiGroup := r.Group("/api")
@@ -555,6 +558,16 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		overlayGroup.Use(auth.RequireActiveUser(h.store))
 	}
 	h.registerOverlayRoutes(overlayGroup)
+
+	// /api/overlay/v1 is the stable XConnect-One contract boundary. Keep the
+	// unversioned routes above during migration so existing clients continue to
+	// work while generated clients move to the explicit versioned base path.
+	overlayV1Group := r.Group("/api/overlay/v1")
+	if h.tokenService != nil {
+		overlayV1Group.Use(h.tokenService.AuthMiddleware())
+		overlayV1Group.Use(auth.RequireActiveUser(h.store))
+	}
+	h.registerOverlayRoutes(overlayV1Group)
 
 	// Canonical user-facing agent routes.
 	// These endpoints use session-based auth in handler logic and intentionally

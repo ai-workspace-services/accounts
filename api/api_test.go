@@ -1617,6 +1617,24 @@ func TestOverlayNetworksReturnsDefaultNetwork(t *testing.T) {
 	}
 }
 
+func TestOverlayV1NetworksRouteMatchesCompatibilityRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router, _, token := newAuthenticatedSyncHarness(t)
+	for _, path := range []string{"/api/overlay/networks", "/api/overlay/v1/networks"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected %s success, got %d: %s", path, rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), `"id":"xworkmate-private"`) {
+			t.Fatalf("expected %s to return the default network, got %s", path, rr.Body.String())
+		}
+	}
+}
+
 func TestOverlayConfigAckPersistsReceipt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
