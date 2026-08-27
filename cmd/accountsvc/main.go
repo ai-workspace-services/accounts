@@ -1471,6 +1471,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}
 
 	api.RegisterRoutes(r, options...)
+	api.StartAnnualQuotaReconciler(ctx, st, logger.With("component", "annual-quota"))
 
 	addr := strings.TrimSpace(cfg.Server.Addr)
 	if addr == "" {

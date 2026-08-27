@@ -77,6 +77,7 @@ type stripeSubscription struct {
 	CancelAtPeriodEnd  bool              `json:"cancel_at_period_end"`
 	CurrentPeriodEnd   int64             `json:"current_period_end"`
 	CurrentPeriodStart int64             `json:"current_period_start"`
+	LatestInvoice      any               `json:"latest_invoice"`
 	Items              struct {
 		Data []struct {
 			Price struct {
@@ -111,10 +112,11 @@ type stripeCheckoutSession struct {
 }
 
 type stripeInvoice struct {
-	ID           string `json:"id"`
-	Customer     any    `json:"customer"`
-	Subscription any    `json:"subscription"`
-	Status       string `json:"status"`
+	ID            string `json:"id"`
+	Customer      any    `json:"customer"`
+	Subscription  any    `json:"subscription"`
+	Status        string `json:"status"`
+	PaymentIntent any    `json:"payment_intent"`
 }
 
 func newStripeClient(cfg StripeConfig) *stripeClient {
@@ -269,6 +271,56 @@ func (h *handler) validCheckoutPrice(ctx context.Context, priceID string) bool {
 		}
 	}
 	return h.stripe.validPriceID(trimmed)
+}
+
+// validateCheckoutPlan binds all client-supplied checkout fields to one
+// catalog row. A Stripe price alone is not sufficient: without this check a
+// caller could submit a subscription price using mode=payment, which would
+// make a recurring purchase look like a PAYG top-up when its webhook arrives.
+//
+// The legacy allowlist remains usable only while the catalog is completely
+// empty. Once a catalog exists, it is the sole authority for a plan's price
+// and commercial shape.
+func (h *handler) validateCheckoutPlan(ctx context.Context, req stripeCheckoutRequest) bool {
+	planID := strings.TrimSpace(req.PlanID)
+	priceID := strings.TrimSpace(req.StripePriceID)
+	mode := h.stripe.normalizeMode(req.Mode)
+	if planID == "" || priceID == "" {
+		return false
+	}
+
+	plan, err := h.store.GetBillingPlan(ctx, planID)
+	if err == nil {
+		if !plan.Active || strings.TrimSpace(plan.StripePriceID) != priceID {
+			return false
+		}
+		switch strings.ToLower(strings.TrimSpace(plan.Kind)) {
+		case "paygo_topup":
+			return mode == "payment"
+		case "subscription":
+			return mode == "subscription"
+		default:
+			return false
+		}
+	}
+	if !errors.Is(err, store.ErrBillingPlanNotFound) {
+		slog.Warn("billing plan lookup failed during checkout validation", "err", err, "planID", planID)
+		return false
+	}
+
+	// Bootstrap compatibility for installations upgraded before their plan
+	// catalog was seeded. It deliberately does not infer PAYG eligibility:
+	// a one-time payment must have an explicit paygo_topup catalog record
+	// before it can ever credit a balance.
+	plans, listErr := h.store.ListBillingPlans(ctx, false)
+	if listErr != nil {
+		slog.Warn("billing plan list failed during checkout validation", "err", listErr)
+		return false
+	}
+	if len(plans) != 0 {
+		return false
+	}
+	return mode == "subscription" && h.stripe.validPriceID(priceID)
 }
 
 func (c *stripeClient) normalizeMode(mode string) string {
@@ -440,6 +492,43 @@ func (c *stripeClient) fetchSubscription(ctx context.Context, subscriptionID str
 	return &sub, nil
 }
 
+func (c *stripeClient) fetchInvoice(ctx context.Context, invoiceID string) (*stripeInvoice, error) {
+	var invoice stripeInvoice
+	if err := c.doJSON(ctx, http.MethodGet, "/invoices/"+url.PathEscape(strings.TrimSpace(invoiceID)), &invoice); err != nil {
+		return nil, err
+	}
+	return &invoice, nil
+}
+
+func (c *stripeClient) refundPaymentIntent(ctx context.Context, paymentIntentID, idempotencyKey string) error {
+	form := url.Values{"payment_intent": []string{strings.TrimSpace(paymentIntentID)}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, stripeAPIBaseURL+"/refunds", strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.secretKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// A retry after Stripe accepted the refund but before Accounts persisted its
+	// local cancellation must return the original refund, never create another.
+	if key := strings.TrimSpace(idempotencyKey); key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("stripe refund failed: %s", strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 func (c *stripeClient) verifyWebhook(payload []byte, signatureHeader string) bool {
 	if c.webhookSecret == "" {
 		return false
@@ -542,7 +631,7 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 	req.SourcePath = strings.TrimSpace(req.SourcePath)
 	req.Mode = h.stripe.normalizeMode(req.Mode)
 
-	if req.PlanID == "" || req.ProductSlug == "" || !h.validCheckoutPrice(c.Request.Context(), req.StripePriceID) {
+	if req.ProductSlug == "" || !h.validateCheckoutPlan(c.Request.Context(), req) {
 		respondError(c, http.StatusBadRequest, "invalid_billing_plan", "billing plan is invalid or unavailable")
 		return
 	}
@@ -808,7 +897,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
-		periodStart, periodEnd := subscriptionPeriod(sub)
+		periodStart, periodEnd := subscriptionQuotaPeriod(plan, sub, time.Now())
 		if err := h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd); err != nil {
 			return err
 		}
@@ -868,7 +957,7 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		return err
 	}
 	if created {
-		periodStart, periodEnd := subscriptionPeriod(source)
+		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
 		if err := h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd); err != nil {
 			return err
 		}
