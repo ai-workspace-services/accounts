@@ -152,6 +152,23 @@ func TestCreditTopUpSkipsNonPayingSessions(t *testing.T) {
 	}
 }
 
+func TestCreditTopUpSkipsNonPaygoPayment(t *testing.T) {
+	h, st, user := topupHandler(t)
+	session := paidSession("pi_not_paygo", 5000)
+	session.Metadata["kind"] = "subscription"
+
+	if err := h.creditTopUpBalance(context.Background(), user.ID, session); err != nil {
+		t.Fatalf("expected a clean skip, got %v", err)
+	}
+	ledger, err := st.ListBillingLedgerByAccount(context.Background(), user.ID, 10)
+	if err != nil {
+		t.Fatalf("list ledger: %v", err)
+	}
+	if len(ledger) != 0 {
+		t.Fatalf("expected no ledger entry for a non-PAYG payment, got %+v", ledger)
+	}
+}
+
 // Paying settles the arrears episode; leaving the flag set would keep the
 // customer throttled after they have paid.
 func TestCreditTopUpClearsArrears(t *testing.T) {

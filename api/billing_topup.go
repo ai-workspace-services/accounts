@@ -51,6 +51,16 @@ func (h *handler) creditTopUpBalance(ctx context.Context, userID string, session
 	if session == nil || strings.TrimSpace(userID) == "" {
 		return nil
 	}
+	// Do not derive a wallet credit from a checkout session explicitly marked
+	// as another product. The checkout endpoint writes this server-controlled
+	// metadata for every catalog plan. An absent value remains accepted for
+	// legacy Stripe Payment Links, which cannot attach per-session metadata and
+	// are still reconciled through the signed client reference.
+	if kind := strings.TrimSpace(session.Metadata["kind"]); kind != "" && !strings.EqualFold(kind, "paygo") {
+		slog.Warn("skipping balance credit for non-PAYG checkout session",
+			"userID", userID, "sessionID", session.ID)
+		return nil
+	}
 
 	// Stripe reports `paid` for a completed one-time payment. Anything else
 	// (unpaid, no_payment_required) must not move money.
