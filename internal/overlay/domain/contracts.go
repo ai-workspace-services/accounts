@@ -127,7 +127,7 @@ type SignedConfig struct {
 }
 
 func DecodeSignedConfig(raw []byte) (SignedConfig, error) {
-	if err := rejectForbiddenSecretFields(raw); err != nil {
+	if err := ValidateNoSecretFields(raw); err != nil {
 		return SignedConfig{}, err
 	}
 	config, err := strictDecode[SignedConfig](raw)
@@ -138,6 +138,35 @@ func DecodeSignedConfig(raw []byte) (SignedConfig, error) {
 		return SignedConfig{}, err
 	}
 	return config, nil
+}
+
+// SigningBytes returns the deterministic JSON payload covered by the
+// SignedConfig Ed25519 signature. Signature is intentionally excluded.
+func (c SignedConfig) SigningBytes() ([]byte, error) {
+	payload := struct {
+		SchemaVersion int             `json:"schema_version"`
+		ConfigID      string          `json:"config_id"`
+		NetworkID     string          `json:"network_id"`
+		DeviceID      string          `json:"device_id"`
+		Generation    uint64          `json:"generation"`
+		IssuedAt      time.Time       `json:"issued_at"`
+		ExpiresAt     time.Time       `json:"expires_at"`
+		ProxyCore     string          `json:"proxy_core"`
+		Transport     ClientTransport `json:"transport"`
+		WireGuard     ClientWireGuard `json:"wireguard"`
+	}{
+		SchemaVersion: c.SchemaVersion,
+		ConfigID:      c.ConfigID,
+		NetworkID:     c.NetworkID,
+		DeviceID:      c.DeviceID,
+		Generation:    c.Generation,
+		IssuedAt:      c.IssuedAt,
+		ExpiresAt:     c.ExpiresAt,
+		ProxyCore:     c.ProxyCore,
+		Transport:     c.Transport,
+		WireGuard:     c.WireGuard,
+	}
+	return json.Marshal(payload)
 }
 
 func (c SignedConfig) Validate() error {
@@ -158,6 +187,9 @@ func (c SignedConfig) Validate() error {
 	}
 	if c.IssuedAt.IsZero() || !c.ExpiresAt.After(c.IssuedAt) {
 		return errors.New("expires_at must be after issued_at")
+	}
+	if !isCanonicalContractTime(c.IssuedAt) || !isCanonicalContractTime(c.ExpiresAt) {
+		return errors.New("issued_at and expires_at must be UTC RFC3339 timestamps with whole-second precision")
 	}
 	if c.ProxyCore != ProxyCoreXray {
 		return fmt.Errorf("proxy_core must be %q", ProxyCoreXray)
@@ -255,7 +287,7 @@ type GatewaySnapshot struct {
 }
 
 func DecodeGatewaySnapshot(raw []byte) (GatewaySnapshot, error) {
-	if err := rejectForbiddenSecretFields(raw); err != nil {
+	if err := ValidateNoSecretFields(raw); err != nil {
 		return GatewaySnapshot{}, err
 	}
 	snapshot, err := strictDecode[GatewaySnapshot](raw)
@@ -283,6 +315,9 @@ func (s GatewaySnapshot) Validate() error {
 	}
 	if s.IssuedAt.IsZero() || !s.ExpiresAt.After(s.IssuedAt) {
 		return errors.New("expires_at must be after issued_at")
+	}
+	if !isCanonicalContractTime(s.IssuedAt) || !isCanonicalContractTime(s.ExpiresAt) {
+		return errors.New("issued_at and expires_at must be UTC RFC3339 timestamps with whole-second precision")
 	}
 	if s.ProxyCore != ProxyCoreXray {
 		return fmt.Errorf("proxy_core must be %q", ProxyCoreXray)
@@ -408,7 +443,9 @@ func strictDecode[T any](raw []byte) (T, error) {
 	return value, nil
 }
 
-func rejectForbiddenSecretFields(raw []byte) error {
+// ValidateNoSecretFields rejects credentials that must never cross the
+// controller projection boundary, including when nested in an unknown object.
+func ValidateNoSecretFields(raw []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var document any
@@ -493,4 +530,9 @@ func validateUniqueStrings(label string, values []string) error {
 		seen[value] = struct{}{}
 	}
 	return nil
+}
+
+func isCanonicalContractTime(value time.Time) bool {
+	_, offset := value.Zone()
+	return offset == 0 && value.Nanosecond() == 0
 }

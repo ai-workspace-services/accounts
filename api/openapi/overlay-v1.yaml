@@ -126,6 +126,64 @@ paths:
                   revision: {type: string}
                   received_at: {type: string, format: date-time}
         default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/signed-config:
+    get:
+      tags: [Overlay]
+      operationId: getOverlaySignedConfigV1
+      description: >-
+        Returns the canonical Ed25519-signed XConnect-One client projection.
+        This endpoint is additive; /api/overlay/v1/config retains its legacy
+        response during migration.
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: device_id
+          in: query
+          required: true
+          schema: {type: string, minLength: 1}
+        - name: network_id
+          in: query
+          schema: {type: string}
+        - name: node_id
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: Canonical SignedConfig projection.
+          headers:
+            ETag:
+              schema: {type: string}
+            Cache-Control:
+              schema: {const: "private, no-store"}
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SignedConfig"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/signed-config/{generation}/ack:
+    post:
+      tags: [Overlay]
+      operationId: acknowledgeOverlaySignedConfigV1
+      description: >-
+        Idempotently acknowledges the current signed generation. A generation
+        older than the latest projection is rejected as stale.
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: generation
+          in: path
+          required: true
+          schema: {type: integer, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SignedConfigAckRequest"}
+      responses:
+        "200":
+          description: ACK persisted, or the original receipt returned for a retry.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SignedConfigAckResponse"}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
   /api/internal/overlay/v1/nodes/heartbeat:
     post:
       tags: [Internal Overlay]
@@ -214,6 +272,31 @@ components:
         revision: {type: string, minLength: 1}
         digest: {type: string}
         applied_at: {type: string, format: date-time}
+    SignedConfigAckRequest:
+      type: object
+      additionalProperties: false
+      required: [config_id, device_id]
+      properties:
+        config_id: {type: string, minLength: 1}
+        device_id: {type: string, minLength: 1}
+        applied_at: {type: string, format: date-time}
+    SignedConfigAckResponse:
+      type: object
+      additionalProperties: false
+      required: [acked, duplicate, ack]
+      properties:
+        acked: {const: true}
+        duplicate: {type: boolean}
+        ack:
+          type: object
+          additionalProperties: false
+          required: [device_id, config_id, generation, applied_at, received_at]
+          properties:
+            device_id: {type: string}
+            config_id: {type: string}
+            generation: {type: integer, minimum: 1}
+            applied_at: {type: string, format: date-time}
+            received_at: {type: string, format: date-time}
     OverlayNode:
       type: object
       required: [id, network_id, wireguard_public_key, wireguard_address, endpoint_host, endpoint_port, transport_type, transport_security, transport_uuid, healthy]

@@ -18,9 +18,14 @@ XConnect-One clients, gateways, and `accounts.svc.plus`.
 
 The existing unversioned Overlay routes remain available during migration.
 New generated clients must use the explicit v1 paths. This baseline does not
-change the production configuration response yet; SignedConfig and
-GatewaySnapshot are introduced as versioned projection contracts for the next
-implementation batches.
+change the legacy configuration response; SignedConfig and GatewaySnapshot are
+separate versioned projection contracts so migration does not reinterpret an
+existing response shape.
+
+Canonical SignedConfig projection is available as an additive endpoint without
+changing the legacy config response. See
+[`signed-config-projection.md`](signed-config-projection.md) for enablement,
+migration, ACK semantics, rollback, and the durable repository requirement.
 
 ## Runtime boundary
 

@@ -51,6 +51,8 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		"/api/overlay/v1/devices/register",
 		"/api/overlay/v1/config",
 		"/api/overlay/v1/config/ack",
+		"/api/overlay/v1/signed-config",
+		"/api/overlay/v1/signed-config/{generation}/ack",
 		"/api/internal/overlay/v1/nodes/heartbeat",
 	} {
 		if _, exists := paths[path]; !exists {

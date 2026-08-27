@@ -29,6 +29,7 @@ import (
 	"account/internal/agentproto"
 	"account/internal/agentserver"
 	"account/internal/auth"
+	"account/internal/overlay/projection"
 	"account/internal/service"
 	"account/internal/store"
 	"account/internal/tasksession"
@@ -98,6 +99,7 @@ type handler struct {
 	stripe                    *stripeClient
 	bridgeCredentials         map[string]memoryBridgeCredential
 	taskSessions              tasksession.Store
+	overlayProjection         *projection.Service
 }
 
 type memoryBridgeCredential struct {
@@ -154,6 +156,17 @@ func WithStore(st store.Store) Option {
 	return func(h *handler) {
 		if st != nil {
 			h.store = st
+		}
+	}
+}
+
+// WithOverlayProjectionService provides the canonical SignedConfig projection
+// service. Production can supply a durable repository implementation; tests
+// and local development use the in-memory repository explicitly.
+func WithOverlayProjectionService(service *projection.Service) Option {
+	return func(h *handler) {
+		if service != nil {
+			h.overlayProjection = service
 		}
 	}
 }
@@ -348,6 +361,14 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	for _, opt := range opts {
 		opt(h)
+	}
+	if h.overlayProjection == nil {
+		service, err := newOverlayProjectionServiceFromEnvironment()
+		if err != nil {
+			slog.Error("overlay_projection_disabled", "error", err)
+		} else {
+			h.overlayProjection = service
+		}
 	}
 
 	if h.tokenService != nil && h.store != nil {
@@ -568,6 +589,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		overlayV1Group.Use(auth.RequireActiveUser(h.store))
 	}
 	h.registerOverlayRoutes(overlayV1Group)
+	overlayV1Group.GET("/signed-config", h.overlaySignedConfig)
+	overlayV1Group.POST("/signed-config/:generation/ack", h.overlaySignedConfigAck)
 
 	// Canonical user-facing agent routes.
 	// These endpoints use session-based auth in handler logic and intentionally
