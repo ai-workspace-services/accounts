@@ -57,43 +57,78 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 			t.Errorf("OpenAPI missing %s", path)
 		}
 	}
+	components := document["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+	refs := map[string]string{
+		"SignedConfig":    "../schemas/overlay/signed-config.schema.json",
+		"GatewaySnapshot": "../schemas/overlay/gateway-snapshot.schema.json",
+	}
+	for name, want := range refs {
+		schema := schemas[name].(map[string]any)
+		if got := schema["$ref"]; got != want {
+			t.Errorf("OpenAPI %s ref = %#v, want %q", name, got, want)
+		}
+	}
 }
 
 func TestOverlaySchemasLockProxyCoreToXray(t *testing.T) {
-	for _, relativePath := range []string{
-		"api/schemas/overlay/signed-config-v1.schema.json",
-		"api/schemas/overlay/gateway-snapshot-v1.schema.json",
-	} {
+	tests := []struct {
+		path string
+		id   string
+	}{
+		{
+			path: "api/schemas/overlay/signed-config.schema.json",
+			id:   "https://accounts.svc.plus/schemas/overlay/v1/signed-config.schema.json",
+		},
+		{
+			path: "api/schemas/overlay/gateway-snapshot.schema.json",
+			id:   "https://accounts.svc.plus/schemas/overlay/v1/gateway-snapshot.schema.json",
+		},
+	}
+	for _, test := range tests {
 		var schema map[string]any
-		if err := json.Unmarshal(readFile(t, relativePath), &schema); err != nil {
-			t.Fatalf("parse %s: %v", relativePath, err)
+		if err := json.Unmarshal(readFile(t, test.path), &schema); err != nil {
+			t.Fatalf("parse %s: %v", test.path, err)
+		}
+		if got := schema["$id"]; got != test.id {
+			t.Errorf("%s $id = %#v, want %q", test.path, got, test.id)
 		}
 		properties := schema["properties"].(map[string]any)
-		transport := properties["transport"].(map[string]any)
-		transportProperties := transport["properties"].(map[string]any)
-		proxyCore := transportProperties["proxy_core"].(map[string]any)
+		proxyCore := properties["proxy_core"].(map[string]any)
 		if got := proxyCore["const"]; got != domain.ProxyCoreXray {
-			t.Errorf("%s proxy_core const = %#v, want %q", relativePath, got, domain.ProxyCoreXray)
+			t.Errorf("%s proxy_core const = %#v, want %q", test.path, got, domain.ProxyCoreXray)
+		}
+	}
+}
+
+func TestGatewaySchemaRequiresGenerationAndEmptyPeerSafety(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(readFile(t, "api/schemas/overlay/gateway-snapshot.schema.json"), &schema); err != nil {
+		t.Fatalf("parse gateway schema: %v", err)
+	}
+	requiredValues := schema["required"].([]any)
+	required := make(map[string]bool, len(requiredValues))
+	for _, value := range requiredValues {
+		required[value.(string)] = true
+	}
+	for _, field := range []string{
+		"expected_previous_generation",
+		"safety",
+	} {
+		if !required[field] {
+			t.Errorf("gateway schema does not require %s", field)
 		}
 	}
 }
 
 func TestSignedConfigFixtureMatchesDomainContract(t *testing.T) {
-	var config domain.SignedConfig
-	if err := json.Unmarshal(readFile(t, "tests/fixtures/overlay/signed-config-v1.json"), &config); err != nil {
-		t.Fatalf("decode signed config fixture: %v", err)
-	}
-	if err := config.Validate(); err != nil {
+	if _, err := domain.DecodeSignedConfig(readFile(t, "tests/fixtures/overlay/signed-config.json")); err != nil {
 		t.Fatalf("signed config fixture invalid: %v", err)
 	}
 }
 
 func TestGatewaySnapshotFixtureMatchesDomainContract(t *testing.T) {
-	var snapshot domain.GatewaySnapshot
-	if err := json.Unmarshal(readFile(t, "tests/fixtures/overlay/gateway-snapshot-v1.json"), &snapshot); err != nil {
-		t.Fatalf("decode gateway snapshot fixture: %v", err)
-	}
-	if err := snapshot.Validate(); err != nil {
+	if _, err := domain.DecodeGatewaySnapshot(readFile(t, "tests/fixtures/overlay/gateway-snapshot.json")); err != nil {
 		t.Fatalf("gateway snapshot fixture invalid: %v", err)
 	}
 }

@@ -163,6 +163,10 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
   schemas:
+    SignedConfig:
+      $ref: ../schemas/overlay/signed-config.schema.json
+    GatewaySnapshot:
+      $ref: ../schemas/overlay/gateway-snapshot.schema.json
     Error:
       type: object
       required: [error, message]

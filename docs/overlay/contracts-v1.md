@@ -7,9 +7,9 @@ XConnect-One clients, gateways, and `accounts.svc.plus`.
 
 - `api/openapi/overlay-v1.yaml` describes the HTTP API implemented at
   `/api/overlay/v1` and `/api/internal/overlay/v1`.
-- `api/schemas/overlay/signed-config-v1.schema.json` describes the signed
+- `api/schemas/overlay/signed-config.schema.json` describes the signed
   device configuration that the controller will project for clients.
-- `api/schemas/overlay/gateway-snapshot-v1.schema.json` describes the complete
+- `api/schemas/overlay/gateway-snapshot.schema.json` describes the complete
   desired state projected for a gateway.
 - `internal/overlay/domain` contains the transport-neutral Go representation
   and validation rules used by controller code.
@@ -32,8 +32,14 @@ use the closed value `proxy_core: xray`. A different core identifier, including
 
 - `schema_version` is exactly `1`.
 - `generation` is positive and monotonically increases per network projection.
+- a gateway snapshot advances `expected_previous_generation`; stale or replayed
+  snapshots are rejected.
+- an empty gateway peer set requires `safety.allow_empty_peers: true`, and peer
+  removal is bounded by `safety.max_peer_removal_percent`.
 - `expires_at` is later than `issued_at`.
 - signatures use Ed25519 and carry an explicit `key_id`.
+- interface addresses and allowed IPs are valid IPv4 CIDRs; WireGuard public
+  keys and Ed25519 signatures have their exact encoded lengths.
 - private WireGuard keys and unsealed credentials never appear in controller
   persistence or API requests.
 - schema additions must be backward compatible; breaking changes require a new
