@@ -188,3 +188,86 @@ func TestGatewayDiffSummaryRejectsInconsistentEvidence(t *testing.T) {
 		t.Fatal("Agent unavailable diff rejected")
 	}
 }
+
+func TestGatewayApplyModeRequiresTrustedNodeAuthorizationAndKnownSuccess(t *testing.T) {
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-test")
+	router, st := gatewayAPIHarness(t)
+	_, shadowBearer := createGatewayCredential(t, router)
+	shadowApply := `{"node_id":"gw_test_01","snapshot_id":"unknown","observed_generation":1,"applied_generation":1,"runtime_applied":true,"result":"applied","diff":{"status":"available","equal":true,"projected_peers":1,"current_peers":1,"missing_peers":0,"unexpected_peers":0,"route_mismatches":0}}`
+	shadowRequest := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/v1/nodes/gw_test_01/apply-result", strings.NewReader(shadowApply))
+	shadowRequest.Header.Set("Authorization", "Bearer "+shadowBearer)
+	shadowRequest.Header.Set("Content-Type", "application/json")
+	shadowResponse := httptest.NewRecorder()
+	router.ServeHTTP(shadowResponse, shadowRequest)
+	if shadowResponse.Code != http.StatusBadRequest {
+		t.Fatalf("shadow node forged apply: %d %s", shadowResponse.Code, shadowResponse.Body.String())
+	}
+	node, err := st.GetOverlayNode(t.Context(), "gw_test_01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.GatewayMode = "apply"
+	if err = st.UpsertOverlayNode(t.Context(), node); err != nil {
+		t.Fatal(err)
+	}
+	_, bearer := createGatewayCredential(t, router)
+	snapshotRequest := httptest.NewRequest(http.MethodGet, "/api/internal/overlay/v1/nodes/gw_test_01/snapshot", nil)
+	snapshotRequest.Header.Set("Authorization", "Bearer "+bearer)
+	snapshotResponse := httptest.NewRecorder()
+	router.ServeHTTP(snapshotResponse, snapshotRequest)
+	if snapshotResponse.Code != http.StatusOK {
+		t.Fatalf("snapshot=%d %s", snapshotResponse.Code, snapshotResponse.Body.String())
+	}
+	snapshot, err := domain.DecodeGatewaySnapshot(snapshotResponse.Body.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"node_id": node.ID, "snapshot_id": snapshot.SnapshotID, "observed_generation": snapshot.Generation, "applied_generation": snapshot.Generation, "runtime_applied": true, "result": "applied", "diff": map[string]any{"status": "available", "equal": true, "projected_peers": 1, "current_peers": 1, "missing_peers": 0, "unexpected_peers": 0, "route_mismatches": 0}})
+	resultRequest := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/v1/nodes/gw_test_01/apply-result", bytes.NewReader(body))
+	resultRequest.Header.Set("Authorization", "Bearer "+bearer)
+	resultRequest.Header.Set("Content-Type", "application/json")
+	resultResponse := httptest.NewRecorder()
+	router.ServeHTTP(resultResponse, resultRequest)
+	if resultResponse.Code != http.StatusOK {
+		t.Fatalf("apply result=%d %s", resultResponse.Code, resultResponse.Body.String())
+	}
+	heartbeat := `{"node_id":"gw_test_01","agent_version":"0.2.0","mode":"apply","proxy_core":"xray","observed_generation":1,"applied_generation":1}`
+	heartbeatRequest := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/v1/nodes/heartbeat", strings.NewReader(heartbeat))
+	heartbeatRequest.Header.Set("Authorization", "Bearer "+bearer)
+	heartbeatRequest.Header.Set("Content-Type", "application/json")
+	heartbeatResponse := httptest.NewRecorder()
+	router.ServeHTTP(heartbeatResponse, heartbeatRequest)
+	if heartbeatResponse.Code != http.StatusNoContent {
+		t.Fatalf("apply heartbeat=%d %s", heartbeatResponse.Code, heartbeatResponse.Body.String())
+	}
+	owner := "11111111-1111-4111-8111-111111111111"
+	if _, _, err = st.RotateOverlayDeviceKey(t.Context(), owner, "network-test", "dev_test_01", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{3}, 32)), 1, &store.AuditLog{Action: store.AuditActionOverlayDeviceKeyRotate}); err != nil {
+		t.Fatal(err)
+	}
+	snapshotResponse = httptest.NewRecorder()
+	router.ServeHTTP(snapshotResponse, snapshotRequest)
+	snapshot2, err := domain.DecodeGatewaySnapshot(snapshotResponse.Body.Bytes())
+	if err != nil || snapshot2.Generation != 2 {
+		t.Fatalf("second snapshot=%+v err=%v", snapshot2, err)
+	}
+	postResult := func(value map[string]any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(value)
+		req := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/v1/nodes/gw_test_01/apply-result", bytes.NewReader(raw))
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+	failure := map[string]any{"node_id": node.ID, "snapshot_id": snapshot2.SnapshotID, "observed_generation": 2, "applied_generation": 1, "runtime_applied": false, "result": "apply_rejected", "diff": map[string]any{"status": "unavailable", "equal": false, "projected_peers": 1, "current_peers": 0, "missing_peers": 0, "unexpected_peers": 0, "route_mismatches": 0}}
+	if rec := postResult(failure); rec.Code != http.StatusOK {
+		t.Fatalf("failure evidence=%d %s", rec.Code, rec.Body.String())
+	}
+	success := map[string]any{"node_id": node.ID, "snapshot_id": snapshot2.SnapshotID, "observed_generation": 2, "applied_generation": 2, "runtime_applied": true, "result": "applied", "diff": map[string]any{"status": "available", "equal": true, "projected_peers": 1, "current_peers": 1, "missing_peers": 0, "unexpected_peers": 0, "route_mismatches": 0}}
+	if rec := postResult(success); rec.Code != http.StatusOK {
+		t.Fatalf("failure-to-success transition=%d %s", rec.Code, rec.Body.String())
+	}
+	if rec := postResult(failure); rec.Code != http.StatusConflict {
+		t.Fatalf("successful result regressed=%d %s", rec.Code, rec.Body.String())
+	}
+}

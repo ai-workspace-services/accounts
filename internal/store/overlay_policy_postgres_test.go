@@ -30,11 +30,15 @@ func TestPostgresGetActiveOverlayPolicy(t *testing.T) {
 	defer db.Close()
 	st := &postgresStore{db: db}
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
-	columns := []string{"network_id", "revision", "owner_user_uuid", "name", "source", "artifact", "artifact_sha256", "compiler_version", "warnings", "status", "generation", "created_at", "validated_at", "activated_at"}
-	mock.ExpectQuery("FROM public.overlay_policy_revisions WHERE network_id=\\$1 AND status='active'").WithArgs("net").WillReturnRows(sqlmock.NewRows(columns).AddRow("net", uint64(1), "owner", "p", []byte(`{}`), []byte(`{}`), strings.Repeat("a", 64), "v", []byte(`[]`), "active", uint64(1), now, now, now))
+	columns := []string{"network_id", "revision", "owner_user_uuid", "name", "source", "artifact_canonical", "artifact_sha256", "compiler_version", "warnings", "status", "generation", "created_at", "validated_at", "activated_at"}
+	canonical := []byte(`{"a":1,"b":2}`)
+	mock.ExpectQuery("FROM public.overlay_policy_revisions WHERE network_id=\\$1 AND status='active'").WithArgs("net").WillReturnRows(sqlmock.NewRows(columns).AddRow("net", uint64(1), "owner", "p", []byte(`{}`), canonical, strings.Repeat("a", 64), "v", []byte(`[]`), "active", uint64(1), now, now, now))
 	p, err := st.GetActiveOverlayPolicy(context.Background(), "net")
 	if err != nil || p.Generation != 1 {
 		t.Fatalf("p=%#v err=%v", p, err)
+	}
+	if string(p.Artifact) != string(canonical) {
+		t.Fatalf("canonical artifact bytes changed: %q", p.Artifact)
 	}
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

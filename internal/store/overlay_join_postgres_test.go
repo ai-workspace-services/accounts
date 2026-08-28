@@ -92,15 +92,18 @@ func TestPostgresExchangeLocksLastUseAndAtomicallyRegisters(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM public.overlay_enrollment_sessions").
 		WithArgs("join-1", exchange.Device.ID).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs("net").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT network_id, platform, wireguard_public_key, wireguard_address").
+	mock.ExpectQuery("SELECT network_id, platform, wireguard_public_key, wireguard_address, status").
 		WithArgs(userID, exchange.Device.ID).
-		WillReturnRows(sqlmock.NewRows([]string{"network_id", "platform", "wireguard_public_key", "wireguard_address"}))
+		WillReturnRows(sqlmock.NewRows([]string{"network_id", "platform", "wireguard_public_key", "wireguard_address", "status"}))
 	mock.ExpectQuery("SELECT wireguard_address FROM public.overlay_devices").WithArgs("net").
 		WillReturnRows(sqlmock.NewRows([]string{"wireguard_address"}))
 	mock.ExpectQuery("INSERT INTO public.overlay_devices").
 		WithArgs(exchange.Device.ID, userID, "net", exchange.Device.Name, exchange.Device.Platform, exchange.Device.Hostname,
 			exchange.Device.WireGuardPublicKey, sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"created_at", "updated_at"}).AddRow(now, now))
+	mock.ExpectQuery("INSERT INTO public.overlay_device_events").
+		WithArgs(userID, "net", exchange.Device.ID, "registered", OverlayDeviceActive, uint64(1), uint64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"sequence", "created_at"}).AddRow(1, now))
 	mock.ExpectExec("UPDATE public.overlay_join_tokens").WithArgs("join-1", now).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO public.overlay_enrollment_sessions").
 		WithArgs(exchange.Enrollment.ID, exchange.Enrollment.TokenHash, "join-1", userID, "net", exchange.Device.ID,

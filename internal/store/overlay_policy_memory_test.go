@@ -19,11 +19,11 @@ func TestOverlayPolicyMemoryRevisionActivationAndOwnership(t *testing.T) {
 		t.Fatalf("concurrent revision: %v", err)
 	}
 	active, err := st.ActivateOverlayPolicyRevision(ctx, "net", 1, "owner", &AuditLog{Action: AuditActionOverlayPolicyActivate})
-	if err != nil || active.Generation != 1 {
+	if err != nil || active.Generation != 2 {
 		t.Fatalf("active=%#v err=%v", active, err)
 	}
 	again, err := st.ActivateOverlayPolicyRevision(ctx, "net", 1, "owner", &AuditLog{Action: AuditActionOverlayPolicyActivate})
-	if err != nil || again.Generation != 1 {
+	if err != nil || again.Generation != 2 {
 		t.Fatal("activation not idempotent")
 	}
 	if _, err = st.ActivateOverlayPolicyRevision(ctx, "net", 1, "admin-b", &AuditLog{Action: AuditActionOverlayPolicyActivate}); err != nil {

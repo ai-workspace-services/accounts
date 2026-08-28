@@ -244,6 +244,10 @@ func (h *handler) overlaySignedConfig(c *gin.Context) {
 		respondError(c, http.StatusNotFound, "overlay_device_not_found", "overlay device is not registered")
 		return
 	}
+	if device.Status != "" && device.Status != store.OverlayDeviceActive {
+		respondError(c, http.StatusGone, "overlay_device_inactive", "overlay device is inactive or revoked")
+		return
+	}
 	networkID := normalizeOverlayNetworkID(device.NetworkID)
 	if requested := strings.TrimSpace(c.Query("network_id")); requested != "" && normalizeOverlayNetworkID(requested) != networkID {
 		respondError(c, http.StatusBadRequest, "network_mismatch", "device is registered to a different network")
@@ -308,6 +312,15 @@ func (h *handler) overlaySignedConfigAck(c *gin.Context) {
 	request, err := decodeOverlaySignedConfigAck(c)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, "invalid_ack", err.Error())
+		return
+	}
+	device, err := h.store.GetOverlayDevice(c.Request.Context(), user.ID, sanitizeOverlayID(request.DeviceID))
+	if err != nil {
+		respondError(c, http.StatusNotFound, "overlay_device_not_found", "overlay device is not registered")
+		return
+	}
+	if device.Status != "" && device.Status != store.OverlayDeviceActive {
+		respondError(c, http.StatusGone, "overlay_device_inactive", "overlay device is inactive or revoked")
 		return
 	}
 	appliedAt := time.Time{}

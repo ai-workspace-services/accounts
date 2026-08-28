@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const overlayPolicyColumns = `network_id,revision,owner_user_uuid,name,source,artifact,artifact_sha256,compiler_version,warnings,status,generation,created_at,validated_at,activated_at`
+const overlayPolicyColumns = `network_id,revision,owner_user_uuid,name,source,artifact_canonical,artifact_sha256,compiler_version,warnings,status,generation,created_at,validated_at,activated_at`
 
 func scanOverlayPolicy(row interface{ Scan(...any) error }) (*OverlayPolicyRevision, error) {
 	var p OverlayPolicyRevision
@@ -47,7 +47,7 @@ func (s *postgresStore) CreateOverlayPolicyRevision(ctx context.Context, p *Over
 	if next != p.Revision {
 		return ErrOverlayPolicyConflict
 	}
-	err = tx.QueryRowContext(ctx, `INSERT INTO public.overlay_policy_revisions (network_id,revision,owner_user_uuid,name,source,artifact,artifact_sha256,compiler_version,warnings,status,generation) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9::jsonb,'draft',0) RETURNING created_at,validated_at`, p.NetworkID, p.Revision, p.OwnerUserID, p.Name, string(p.Source), string(p.Artifact), p.ArtifactSHA256, p.CompilerVersion, string(p.Warnings)).Scan(&p.CreatedAt, &p.ValidatedAt)
+	err = tx.QueryRowContext(ctx, `INSERT INTO public.overlay_policy_revisions (network_id,revision,owner_user_uuid,name,source,artifact,artifact_canonical,artifact_sha256,compiler_version,warnings,status,generation) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10::jsonb,'draft',0) RETURNING created_at,validated_at`, p.NetworkID, p.Revision, p.OwnerUserID, p.Name, string(p.Source), string(p.Artifact), p.Artifact, p.ArtifactSHA256, p.CompilerVersion, string(p.Warnings)).Scan(&p.CreatedAt, &p.ValidatedAt)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (s *postgresStore) ActivateOverlayPolicyRevision(ctx context.Context, netwo
 	_, _ = owner, actor
 	if status != "active" {
 		var generation uint64
-		if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(generation),0)+1 FROM public.overlay_policy_revisions WHERE network_id=$1`, networkID).Scan(&generation); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT GREATEST(COALESCE(MAX(generation),0),1)+1 FROM public.overlay_policy_revisions WHERE network_id=$1`, networkID).Scan(&generation); err != nil {
 			return nil, err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE public.overlay_policy_revisions SET status='superseded' WHERE network_id=$1 AND status='active'`, networkID); err != nil {
@@ -98,8 +98,12 @@ func (s *postgresStore) ActivateOverlayPolicyRevision(ctx context.Context, netwo
 		if _, err = tx.ExecContext(ctx, `UPDATE public.overlay_policy_revisions SET status='active',generation=$3,activated_at=now() WHERE network_id=$1 AND revision=$2`, networkID, revision, generation); err != nil {
 			return nil, err
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO public.overlay_policy_builds(network_id,generation,revision,artifact,artifact_sha256,compiler_version) SELECT network_id,generation,revision,artifact,artifact_sha256,compiler_version FROM public.overlay_policy_revisions WHERE network_id=$1 AND revision=$2`, networkID, revision); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO public.overlay_policy_builds(network_id,generation,revision,artifact,artifact_canonical,artifact_sha256,compiler_version) SELECT network_id,generation,revision,artifact,artifact_canonical,artifact_sha256,compiler_version FROM public.overlay_policy_revisions WHERE network_id=$1 AND revision=$2 AND artifact_canonical IS NOT NULL`, networkID, revision); err != nil {
 			return nil, err
+		}
+		var canonicalReady bool
+		if err = tx.QueryRowContext(ctx, `SELECT artifact_canonical IS NOT NULL FROM public.overlay_policy_revisions WHERE network_id=$1 AND revision=$2`, networkID, revision).Scan(&canonicalReady); err != nil || !canonicalReady {
+			return nil, errors.New("policy canonical artifact must be recompiled before activation")
 		}
 		if err = insertOverlayJoinAuditTx(ctx, tx, audit); err != nil {
 			return nil, err
@@ -136,20 +140,20 @@ func (s *postgresStore) RefreshOverlayPolicyBuild(ctx context.Context, networkID
 	} else if err != nil {
 		return nil, false, err
 	}
-	if p.ArtifactSHA256 == digest {
+	if p.ArtifactSHA256 == digest && len(p.Artifact) > 0 {
 		return p, false, tx.Commit()
 	}
 	if p.ArtifactSHA256 != expected {
 		return nil, false, ErrOverlayPolicyConflict
 	}
 	var generation uint64
-	if err = tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(generation),0)+1 FROM public.overlay_policy_builds WHERE network_id=$1`, networkID).Scan(&generation); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT GREATEST(COALESCE((SELECT MAX(generation) FROM public.overlay_policy_revisions WHERE network_id=$1),0),COALESCE((SELECT MAX(generation) FROM public.overlay_policy_builds WHERE network_id=$1),0),1)+1`, networkID).Scan(&generation); err != nil {
 		return nil, false, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO public.overlay_policy_builds(network_id,generation,revision,artifact,artifact_sha256,compiler_version) VALUES($1,$2,$3,$4::jsonb,$5,$6)`, networkID, generation, revision, string(artifact), digest, compiler); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO public.overlay_policy_builds(network_id,generation,revision,artifact,artifact_canonical,artifact_sha256,compiler_version) VALUES($1,$2,$3,$4::jsonb,$5,$6,$7)`, networkID, generation, revision, string(artifact), artifact, digest, compiler); err != nil {
 		return nil, false, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE public.overlay_policy_revisions SET artifact=$3::jsonb,artifact_sha256=$4,compiler_version=$5,generation=$6,validated_at=now() WHERE network_id=$1 AND revision=$2`, networkID, revision, string(artifact), digest, compiler, generation); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE public.overlay_policy_revisions SET artifact=$3::jsonb,artifact_canonical=$4,artifact_sha256=$5,compiler_version=$6,generation=$7,validated_at=now() WHERE network_id=$1 AND revision=$2`, networkID, revision, string(artifact), artifact, digest, compiler, generation); err != nil {
 		return nil, false, err
 	}
 	if err = insertOverlayJoinAuditTx(ctx, tx, audit); err != nil {

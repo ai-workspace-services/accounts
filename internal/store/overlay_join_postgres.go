@@ -130,12 +130,18 @@ SELECT EXISTS(SELECT 1 FROM public.overlay_enrollment_sessions WHERE join_token_
 
 	var existing OverlayDevice
 	err = tx.QueryRowContext(ctx, `
-SELECT network_id, platform, wireguard_public_key, wireguard_address
+SELECT network_id, platform, wireguard_public_key, wireguard_address, status
 FROM public.overlay_devices WHERE user_uuid = $1 AND id = $2 FOR UPDATE`, token.UserID, exchange.Device.ID).Scan(
-		&existing.NetworkID, &existing.Platform, &existing.WireGuardPublicKey, &existing.WireGuardAddress,
+		&existing.NetworkID, &existing.Platform, &existing.WireGuardPublicKey, &existing.WireGuardAddress, &existing.Status,
 	)
 	switch {
 	case err == nil:
+		if existing.Status == OverlayDeviceRevoked {
+			return ErrOverlayDeviceRevoked
+		}
+		if existing.Status != OverlayDeviceActive {
+			return ErrOverlayJoinDeviceConflict
+		}
 		if existing.NetworkID != token.NetworkID || existing.Platform != exchange.Device.Platform || existing.WireGuardPublicKey != exchange.Device.WireGuardPublicKey {
 			return ErrOverlayJoinDeviceConflict
 		}
@@ -179,6 +185,7 @@ ON CONFLICT (user_uuid, id) DO UPDATE SET
 WHERE overlay_devices.network_id = EXCLUDED.network_id
   AND overlay_devices.platform = EXCLUDED.platform
   AND overlay_devices.wireguard_public_key = EXCLUDED.wireguard_public_key
+  AND overlay_devices.status <> 'revoked'
 RETURNING created_at, updated_at`, exchange.Device.ID, token.UserID, token.NetworkID,
 		exchange.Device.Name, exchange.Device.Platform, exchange.Device.Hostname, exchange.Device.WireGuardPublicKey,
 		exchange.Device.WireGuardAddress, exchange.Device.LastSeenAt).Scan(&exchange.Device.CreatedAt, &exchange.Device.UpdatedAt)
@@ -189,6 +196,10 @@ RETURNING created_at, updated_at`, exchange.Device.ID, token.UserID, token.Netwo
 		return ErrOverlayJoinDeviceConflict
 	}
 	if err != nil {
+		return err
+	}
+	exchange.Device.Status, exchange.Device.StateVersion, exchange.Device.KeyVersion = OverlayDeviceActive, 1, 1
+	if err = insertOverlayDeviceEventTx(ctx, tx, &exchange.Device, "registered"); err != nil {
 		return err
 	}
 
@@ -234,8 +245,10 @@ func (s *postgresStore) GetOverlayEnrollmentSession(ctx context.Context, tokenHa
 	var session OverlayEnrollmentSession
 	var lastUsed sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-UPDATE public.overlay_enrollment_sessions SET last_used_at = $2
-WHERE token_hash = $1 AND expires_at > $2
+UPDATE public.overlay_enrollment_sessions e SET last_used_at = $2
+WHERE e.token_hash = $1 AND e.expires_at > $2 AND EXISTS (
+ SELECT 1 FROM public.overlay_devices d WHERE d.user_uuid=e.user_uuid AND d.id=e.device_id
+  AND d.network_id=e.network_id AND d.status='active' AND d.wireguard_public_key=e.wireguard_public_key)
 RETURNING id, join_token_id, user_uuid::text, network_id, device_id, platform,
           wireguard_public_key, expires_at, created_at, last_used_at`, tokenHash, now.UTC()).Scan(
 		&session.ID, &session.JoinTokenID, &session.UserID, &session.NetworkID, &session.DeviceID,

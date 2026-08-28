@@ -1,10 +1,12 @@
-# Gateway Agent shadow control plane
+# Gateway Agent control plane
 
-Batch 05 closes the control-plane loop for the XConnect-One Gateway Agent. It
-does not enable or invoke WireGuard, Xray, nftables, Ansible, or any other
-runtime mutation. The only accepted mode is `shadow`; every heartbeat and
-apply-result must report `proxy_core=xray`, `applied_generation=0`, and
-`runtime_applied=false`.
+The original Batch 05 contract remains shadow by default. The device lifecycle
+extension adds a trusted `overlay_nodes.gateway_mode` authorization. A shared
+service-token bootstrap may set it to `apply`; an `xgn_` bearer cannot promote
+itself. Apply reports use `applied`, `apply_rejected`,
+`apply_failed_rolled_back`, or `apply_failed_rollback_failed`; only `applied`
+advances the controller-known generation. See
+[device-lifecycle.md](device-lifecycle.md) for admission and rollback rules.
 
 ## Authentication and bootstrap
 
@@ -59,16 +61,22 @@ removal ceiling; either missing gate fails closed.
 Relay output is fixed to `proxy_core=xray` and `transport=vless-tls-xudp`.
 Snapshots contain only a `credential_refs` identifier; legacy transport UUIDs,
 auth IDs, bearer values, private keys, refresh tokens, and vault tokens never
-cross this projection. The policy is intentionally a versioned
-deny-default placeholder digest (`xconnect-policy/v1:deny-default:placeholder-not-applied`)
-with nftables metadata. It is not an implemented ACL and must not be described
-as applied policy. A later ACL batch replaces it.
+cross this projection. The snapshot binds the active sanitized ACL enforcement
+artifact generation and SHA-256 digest. The Agent fetches the exact canonical
+bytes from the node-bound policy-artifact endpoint. Accounts projects policy
+only; it does not claim the runtime has applied it until an apply-authorized
+Agent reports success.
 
 Apply results are accepted only when `(node_id, snapshot_id,
 observed_generation)` identifies a persisted snapshot. Exact retries are
 idempotent; the same identity with a different body conflicts. Diff counts and
 the `equal` flag are checked for logical consistency. The controller persists
-observed and applied generations separately; Batch 05 requires applied zero.
+observed and applied generations separately. Shadow nodes require applied zero.
+Apply nodes advance only with an `applied` result for the exact snapshot. Safe
+failures retain the prior successful checkpoint and may transition one-way to
+`applied` on retry; `apply_failed_rollback_failed` is terminal pending manual
+recovery. Immutable attempt history preserves failure evidence even when the
+current snapshot result advances to success.
 
 ## Ed25519 interoperability protocol
 
@@ -110,7 +118,8 @@ closed. Import never invokes a runtime.
 
 ## Rollout and rollback
 
-Apply `2026082803_overlay_gateway_projection.up.sql` before the application.
+Apply migrations through `2026082805_overlay_device_lifecycle.up.sql` before
+the application; this includes the original Gateway projection schema.
 Create a short-lived credential, start one Agent in shadow mode, and verify:
 heartbeat 204, signed snapshot verification, stable generation retry, stored
 shadow result, and duplicate-result receipt. Then exercise concurrent snapshot

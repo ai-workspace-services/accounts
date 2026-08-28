@@ -197,8 +197,18 @@ func (h *handler) gatewayNodeHeartbeat(c *gin.Context) {
 	if !strictGatewayJSON(c, &request) {
 		return
 	}
-	if request.NodeID != credential.NodeID || request.Mode != "shadow" || request.ProxyCore != "xray" || request.AppliedGeneration != 0 || strings.TrimSpace(request.AgentVersion) == "" || len(request.AgentVersion) > 128 {
-		respondError(c, http.StatusForbidden, "node_scope_mismatch", "heartbeat violates node-bound shadow scope")
+	node, err := h.store.GetOverlayNode(c.Request.Context(), credential.NodeID)
+	if err != nil {
+		respondError(c, http.StatusForbidden, "node_scope_mismatch", "node authorization is unavailable")
+		return
+	}
+	authorizedMode := firstNonEmpty(strings.TrimSpace(node.GatewayMode), "shadow")
+	if request.NodeID != credential.NodeID || request.Mode != authorizedMode || request.ProxyCore != "xray" || strings.TrimSpace(request.AgentVersion) == "" || len(request.AgentVersion) > 128 {
+		respondError(c, http.StatusForbidden, "node_scope_mismatch", "heartbeat violates the node-bound runtime mode")
+		return
+	}
+	if request.AppliedGeneration > request.ObservedGeneration || (authorizedMode == "shadow" && request.AppliedGeneration != 0) {
+		respondError(c, http.StatusConflict, "invalid_applied_generation", "applied generation is inconsistent with the authorized mode")
 		return
 	}
 	if latest, err := h.store.GetLatestOverlayGatewaySnapshot(c.Request.Context(), credential.NodeID); err == nil && request.ObservedGeneration > latest.Generation {
@@ -207,6 +217,17 @@ func (h *handler) gatewayNodeHeartbeat(c *gin.Context) {
 	} else if err != nil && !errors.Is(err, store.ErrOverlayGatewaySnapshotNotFound) {
 		respondError(c, http.StatusServiceUnavailable, "gateway_state_unavailable", "gateway state is unavailable")
 		return
+	}
+	if authorizedMode == "apply" && request.AppliedGeneration > 0 {
+		known, err := h.store.IsOverlayGatewayGenerationApplied(c.Request.Context(), credential.NodeID, request.AppliedGeneration)
+		if err != nil {
+			respondError(c, http.StatusServiceUnavailable, "gateway_state_unavailable", "gateway applied state is unavailable")
+			return
+		}
+		if !known {
+			respondError(c, http.StatusConflict, "generation_unknown", "applied generation has no successful controller result")
+			return
+		}
 	}
 	heartbeat := &store.OverlayGatewayHeartbeat{NodeID: request.NodeID, AgentVersion: request.AgentVersion, Mode: request.Mode, ProxyCore: request.ProxyCore, ObservedGeneration: request.ObservedGeneration, AppliedGeneration: request.AppliedGeneration}
 	if err := h.store.RecordOverlayGatewayHeartbeat(c.Request.Context(), heartbeat); err != nil {
@@ -275,6 +296,20 @@ func validGatewayResult(value string) bool {
 	return value == "shadow_validated" || value == "shadow_validated_wg_unavailable" || value == "shadow_rejected"
 }
 
+func validGatewayApplyModeResult(request gatewayApplyResultRequest) bool {
+	if !validGatewayDiff(request.Diff) || request.ObservedGeneration == 0 {
+		return false
+	}
+	switch request.Result {
+	case "applied":
+		return request.RuntimeApplied && request.AppliedGeneration == request.ObservedGeneration && request.Diff.Status == "available" && request.Diff.Equal
+	case "apply_rejected", "apply_failed_rolled_back", "apply_failed_rollback_failed":
+		return !request.RuntimeApplied && request.AppliedGeneration < request.ObservedGeneration
+	default:
+		return false
+	}
+}
+
 func gatewayResultMatchesDiff(result string, diff gatewayDiffSummary) bool {
 	if result == "shadow_validated" {
 		return diff.Status == "available"
@@ -297,16 +332,37 @@ func (h *handler) gatewayNodeApplyResult(c *gin.Context) {
 		respondError(c, http.StatusForbidden, "node_scope_mismatch", "credential and payload must match path node")
 		return
 	}
-	if request.ObservedGeneration == 0 || request.AppliedGeneration != 0 || request.RuntimeApplied || !validGatewayResult(request.Result) || !validGatewayDiff(request.Diff) || !gatewayResultMatchesDiff(request.Result, request.Diff) {
-		respondError(c, http.StatusBadRequest, "invalid_apply_result", "only valid shadow evidence is accepted")
+	node, err := h.store.GetOverlayNode(c.Request.Context(), nodeID)
+	if err != nil {
+		respondError(c, http.StatusForbidden, "node_scope_mismatch", "node authorization is unavailable")
 		return
+	}
+	authorizedMode := firstNonEmpty(strings.TrimSpace(node.GatewayMode), "shadow")
+	valid := authorizedMode == "shadow" && request.ObservedGeneration > 0 && request.AppliedGeneration == 0 && !request.RuntimeApplied && validGatewayResult(request.Result) && validGatewayDiff(request.Diff) && gatewayResultMatchesDiff(request.Result, request.Diff)
+	if authorizedMode == "apply" {
+		valid = validGatewayApplyModeResult(request)
+	}
+	if !valid {
+		respondError(c, http.StatusBadRequest, "invalid_apply_result", "result is inconsistent with the node-bound runtime mode")
+		return
+	}
+	if authorizedMode == "apply" && request.AppliedGeneration > 0 && request.Result != "applied" {
+		known, err := h.store.IsOverlayGatewayGenerationApplied(c.Request.Context(), nodeID, request.AppliedGeneration)
+		if err != nil {
+			respondError(c, http.StatusServiceUnavailable, "gateway_state_unavailable", "gateway applied state is unavailable")
+			return
+		}
+		if !known {
+			respondError(c, http.StatusConflict, "generation_unknown", "rollback checkpoint has no successful controller result")
+			return
+		}
 	}
 	diff, err := json.Marshal(request.Diff)
 	if err != nil {
 		respondError(c, http.StatusBadRequest, "invalid_apply_result", "invalid shadow evidence")
 		return
 	}
-	result := &store.OverlayGatewayApplyResult{NodeID: nodeID, SnapshotID: request.SnapshotID, ObservedGeneration: request.ObservedGeneration, AppliedGeneration: 0, RuntimeApplied: false, Result: request.Result, Diff: diff}
+	result := &store.OverlayGatewayApplyResult{NodeID: nodeID, SnapshotID: request.SnapshotID, ObservedGeneration: request.ObservedGeneration, AppliedGeneration: request.AppliedGeneration, RuntimeApplied: request.RuntimeApplied, Result: request.Result, Diff: diff}
 	duplicate, err := h.store.RecordOverlayGatewayApplyResult(c.Request.Context(), result)
 	if err != nil {
 		if errors.Is(err, store.ErrOverlayGatewayReportStale) {

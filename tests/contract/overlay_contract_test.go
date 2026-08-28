@@ -88,7 +88,7 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 	}
 }
 
-func TestGatewayOpenAPILocksAuthenticationAndShadowBoundaries(t *testing.T) {
+func TestGatewayOpenAPILocksAuthenticationAndAuthorizedRuntimeBoundaries(t *testing.T) {
 	var document map[string]any
 	if err := yaml.Unmarshal(readFile(t, "api/openapi/overlay-v1.yaml"), &document); err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestGatewayOpenAPILocksAuthenticationAndShadowBoundaries(t *testing.T) {
 			}
 		}
 	}
-	for _, path := range []string{"/api/internal/overlay/v1/nodes/{node_id}/credentials", "/api/internal/overlay/v1/imports/static-clients"} {
+	for _, path := range []string{"/api/internal/overlay/v1/nodes/{node_id}/credentials", "/api/internal/overlay/v1/imports/static-clients", "/api/internal/overlay/v1/reconcile-pending"} {
 		operation := paths[path].(map[string]any)["post"].(map[string]any)
 		if !strings.Contains(fmt.Sprint(operation["security"]), "serviceToken") {
 			t.Fatalf("management path %s escaped service boundary", path)
@@ -111,12 +111,15 @@ func TestGatewayOpenAPILocksAuthenticationAndShadowBoundaries(t *testing.T) {
 	components := document["components"].(map[string]any)
 	schemas := components["schemas"].(map[string]any)
 	heartbeat := schemas["GatewayHeartbeatRequest"].(map[string]any)["properties"].(map[string]any)
-	if heartbeat["mode"].(map[string]any)["const"] != "shadow" || heartbeat["proxy_core"].(map[string]any)["const"] != "xray" {
-		t.Fatal("heartbeat is not shadow/Xray locked")
+	if !strings.Contains(fmt.Sprint(heartbeat["mode"].(map[string]any)["enum"]), "shadow") || !strings.Contains(fmt.Sprint(heartbeat["mode"].(map[string]any)["enum"]), "apply") || heartbeat["proxy_core"].(map[string]any)["const"] != "xray" {
+		t.Fatal("heartbeat modes or Xray-only boundary drifted")
 	}
 	apply := schemas["GatewayApplyResultRequest"].(map[string]any)["properties"].(map[string]any)
-	if apply["applied_generation"].(map[string]any)["const"] != 0 || apply["runtime_applied"].(map[string]any)["const"] != false {
-		t.Fatal("apply result can claim runtime mutation")
+	results := fmt.Sprint(apply["result"].(map[string]any)["enum"])
+	for _, want := range []string{"applied", "apply_rejected", "apply_failed_rolled_back", "apply_failed_rollback_failed"} {
+		if !strings.Contains(results, want) {
+			t.Fatalf("apply result enum missing %s: %s", want, results)
+		}
 	}
 	credential := schemas["CreateNodeCredentialResponse"].(map[string]any)["properties"].(map[string]any)["credential"].(map[string]any)["properties"].(map[string]any)["bearer_token"].(map[string]any)
 	if credential["writeOnly"] != true {

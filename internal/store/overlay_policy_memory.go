@@ -87,7 +87,8 @@ func (s *memoryStore) ActivateOverlayPolicyRevision(_ context.Context, networkID
 	if old := s.overlayActivePolicies[networkID]; old > 0 {
 		records[old-1].Status = "superseded"
 	}
-	generation := uint64(1)
+	// Generation 1 is the compiler-owned bootstrap default-deny artifact.
+	generation := uint64(2)
 	for _, record := range records {
 		if record.Generation >= generation {
 			generation = record.Generation + 1
@@ -130,7 +131,7 @@ func (s *memoryStore) RefreshOverlayPolicyBuild(_ context.Context, networkID str
 	if p.ArtifactSHA256 != expected {
 		return nil, false, ErrOverlayPolicyConflict
 	}
-	generation := uint64(1)
+	generation := uint64(2)
 	for _, record := range s.overlayPolicies[networkID] {
 		if record.Generation >= generation {
 			generation = record.Generation + 1

@@ -90,6 +90,36 @@ type OverlayDevice struct {
 	CreatedAt          time.Time  `json:"createdAt"`
 	UpdatedAt          time.Time  `json:"updatedAt"`
 	LastSeenAt         *time.Time `json:"lastSeenAt,omitempty"`
+	Status             string     `json:"status"`
+	StateVersion       uint64     `json:"stateVersion"`
+	KeyVersion         uint64     `json:"keyVersion"`
+	RevokedAt          *time.Time `json:"revokedAt,omitempty"`
+	RevokedReason      string     `json:"revokedReason,omitempty"`
+}
+
+const (
+	OverlayDeviceActive   = "active"
+	OverlayDeviceInactive = "inactive"
+	OverlayDeviceRevoked  = "revoked"
+)
+
+type OverlayDeviceEvent struct {
+	Sequence     uint64    `json:"sequence"`
+	UserID       string    `json:"user_id"`
+	NetworkID    string    `json:"network_id"`
+	DeviceID     string    `json:"device_id"`
+	Type         string    `json:"type"`
+	Status       string    `json:"status"`
+	StateVersion uint64    `json:"state_version"`
+	KeyVersion   uint64    `json:"key_version"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type OverlayPolicyReconcilePending struct {
+	NetworkID string    `json:"network_id"`
+	Attempts  uint64    `json:"attempts"`
+	LastError string    `json:"last_error"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // OverlayNode is a gateway/relay/exit-node that can terminate the
@@ -109,6 +139,7 @@ type OverlayNode struct {
 	TransportPath      string     `json:"transportPath"`
 	TransportMode      string     `json:"transportMode"`
 	TransportUUID      string     `json:"transportUuid"`
+	GatewayMode        string     `json:"gatewayMode"`
 	Healthy            bool       `json:"healthy"`
 	CreatedAt          time.Time  `json:"createdAt"`
 	UpdatedAt          time.Time  `json:"updatedAt"`
@@ -223,6 +254,9 @@ const (
 	AuditActionOverlayPolicyActivate       = "overlay.policy.activate"
 	AuditActionOverlayPolicyRecompile      = "overlay.policy.recompile"
 	AuditActionOverlayDeviceTagsUpdate     = "overlay.device_tags.update"
+	AuditActionOverlayDeviceKeyRotate      = "overlay.device.key_rotate"
+	AuditActionOverlayDeviceStateUpdate    = "overlay.device.state_update"
+	AuditActionOverlayDeviceRevoke         = "overlay.device.revoke"
 )
 
 type AccountQuotaState struct {
@@ -490,6 +524,12 @@ type Store interface {
 	GetOverlayDevice(ctx context.Context, userID, deviceID string) (*OverlayDevice, error)
 	ListOverlayDevicesByUser(ctx context.Context, userID string) ([]OverlayDevice, error)
 	ListOverlayDevicesByNetwork(ctx context.Context, networkID string) ([]OverlayDevice, error)
+	RotateOverlayDeviceKey(ctx context.Context, userID, networkID, deviceID, newPublicKey string, expectedKeyVersion uint64, audit *AuditLog) (*OverlayDevice, bool, error)
+	SetOverlayDeviceStatus(ctx context.Context, userID, networkID, deviceID, status string, expectedStateVersion uint64, reason string, audit *AuditLog) (*OverlayDevice, bool, error)
+	ListOverlayDeviceEvents(ctx context.Context, userID, networkID string, after uint64, limit int) ([]OverlayDeviceEvent, error)
+	MarkOverlayPolicyReconcilePending(ctx context.Context, networkID, lastError string) error
+	ClearOverlayPolicyReconcilePending(ctx context.Context, networkID string) error
+	ListOverlayPolicyReconcilePending(ctx context.Context, limit int) ([]OverlayPolicyReconcilePending, error)
 	UpsertOverlayNode(ctx context.Context, node *OverlayNode) error
 	ListOverlayNodes(ctx context.Context, networkID string) ([]OverlayNode, error)
 	UpsertOverlayConfigAck(ctx context.Context, ack *OverlayConfigAck) error
@@ -510,6 +550,7 @@ type Store interface {
 	GetLatestOverlayGatewaySnapshot(ctx context.Context, nodeID string) (*OverlayGatewaySnapshotRecord, error)
 	SaveOverlayGatewaySnapshot(ctx context.Context, record *OverlayGatewaySnapshotRecord) error
 	RecordOverlayGatewayApplyResult(ctx context.Context, result *OverlayGatewayApplyResult) (bool, error)
+	IsOverlayGatewayGenerationApplied(ctx context.Context, nodeID string, generation uint64) (bool, error)
 	ListOverlayProjectionDevicesByNetwork(ctx context.Context, networkID string) ([]OverlayProjectionDevice, error)
 	ImportOverlayStaticClients(ctx context.Context, input *OverlayStaticImport, audit *AuditLog) (*OverlayStaticImportReceipt, bool, error)
 	CreateOverlayPolicyRevision(ctx context.Context, policy *OverlayPolicyRevision, audit *AuditLog) error
@@ -610,6 +651,9 @@ var (
 	ErrOverlayStaticImportIdempotency = errors.New("overlay static import idempotency key is bound to another body")
 	ErrOverlayPolicyNotFound          = errors.New("overlay policy revision not found")
 	ErrOverlayPolicyConflict          = errors.New("overlay policy revision conflict")
+	ErrOverlayDeviceRevoked           = errors.New("overlay device is revoked")
+	ErrOverlayDeviceVersionConflict   = errors.New("overlay device version conflict")
+	ErrOverlayDeviceKeyConflict       = errors.New("overlay device public key conflict")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for
@@ -625,6 +669,8 @@ type memoryStore struct {
 	identities                  map[string]*Identity
 	agents                      map[string]*Agent
 	overlayDevices              map[string]*OverlayDevice
+	overlayDeviceEvents         []OverlayDeviceEvent
+	overlayDeviceEventSequence  uint64
 	overlayNodes                map[string]*OverlayNode
 	overlayConfigAcks           map[string]*OverlayConfigAck
 	overlaySignedConfigs        map[string]*OverlaySignedConfigRecord
@@ -636,6 +682,8 @@ type memoryStore struct {
 	overlayGatewayHeartbeats    map[string]*OverlayGatewayHeartbeat
 	overlayGatewaySnapshots     map[string][]*OverlayGatewaySnapshotRecord
 	overlayGatewayResults       map[string]*OverlayGatewayApplyResult
+	overlayGatewayAttempts      []OverlayGatewayApplyResult
+	overlayPolicyPending        map[string]OverlayPolicyReconcilePending
 	overlayProjectionDevices    map[string]*OverlayProjectionDevice
 	overlayStaticImports        map[string]*OverlayStaticImportReceipt
 	overlayStaticImportHashes   map[string]string
@@ -704,6 +752,8 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		overlayGatewayHeartbeats:    make(map[string]*OverlayGatewayHeartbeat),
 		overlayGatewaySnapshots:     make(map[string][]*OverlayGatewaySnapshotRecord),
 		overlayGatewayResults:       make(map[string]*OverlayGatewayApplyResult),
+		overlayGatewayAttempts:      make([]OverlayGatewayApplyResult, 0),
+		overlayPolicyPending:        make(map[string]OverlayPolicyReconcilePending),
 		overlayProjectionDevices:    make(map[string]*OverlayProjectionDevice),
 		overlayStaticImports:        make(map[string]*OverlayStaticImportReceipt),
 		overlayStaticImportHashes:   make(map[string]string),

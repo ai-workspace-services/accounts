@@ -31,7 +31,7 @@ func (s *Service) inventory(ctx context.Context, networkID string) (Inventory, e
 	if err != nil {
 		return Inventory{}, err
 	}
-	inv := Inventory{Users: map[string]string{}, Devices: map[string][]string{}, DeviceOwners: map[string]string{}}
+	inv := Inventory{Users: map[string]string{}, Devices: map[string][]string{}, DeviceOwners: map[string]string{}, EligibleDevices: map[string]bool{}}
 	emails := map[string]string{}
 	for _, u := range users {
 		email := strings.ToLower(strings.TrimSpace(u.Email))
@@ -41,10 +41,14 @@ func (s *Service) inventory(ctx context.Context, networkID string) (Inventory, e
 		}
 	}
 	for _, d := range devices {
+		inv.Devices[d.Device.ID] = append([]string(nil), d.Tags...)
+		if d.Device.Status != "" && d.Device.Status != store.OverlayDeviceActive {
+			continue
+		}
 		if emails[d.Device.UserID] == "" {
 			continue
 		}
-		inv.Devices[d.Device.ID] = append([]string(nil), d.Tags...)
+		inv.EligibleDevices[d.Device.ID] = true
 		if email := emails[d.Device.UserID]; email != "" {
 			inv.DeviceOwners[d.Device.ID] = d.Device.UserID
 		}
@@ -212,10 +216,10 @@ func ResolveActive(ctx context.Context, st store.Store, networkID string) (Activ
 	if err != nil {
 		return ActiveArtifact{}, fmt.Errorf("recompile active policy: %w", err)
 	}
-	if sha256Hex(p.Artifact) != p.ArtifactSHA256 {
+	if len(p.Artifact) > 0 && sha256Hex(p.Artifact) != p.ArtifactSHA256 {
 		return ActiveArtifact{}, errors.New("stored active policy artifact digest mismatch")
 	}
-	if build.Digest != p.ArtifactSHA256 {
+	if len(p.Artifact) == 0 || build.Digest != p.ArtifactSHA256 {
 		audit := &store.AuditLog{Action: store.AuditActionOverlayPolicyRecompile, ActorUUID: "system", Details: map[string]any{"network_id": networkID, "revision": p.Revision, "previous_digest": p.ArtifactSHA256, "artifact_sha256": build.Digest}}
 		refreshed, _, refreshErr := st.RefreshOverlayPolicyBuild(ctx, networkID, p.Revision, p.ArtifactSHA256, build.Canonical, build.Digest, CompilerVersion, audit)
 		if refreshErr == nil {

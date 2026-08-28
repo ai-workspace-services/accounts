@@ -23,6 +23,10 @@ func cloneOverlayDevice(src *OverlayDevice) *OverlayDevice {
 		lastSeen := src.LastSeenAt.UTC()
 		clone.LastSeenAt = &lastSeen
 	}
+	if src.RevokedAt != nil {
+		v := src.RevokedAt.UTC()
+		clone.RevokedAt = &v
+	}
 	return &clone
 }
 
@@ -68,8 +72,19 @@ func (s *memoryStore) UpsertOverlayDevice(ctx context.Context, device *OverlayDe
 			ID:        deviceID,
 			UserID:    userID,
 			CreatedAt: now,
+			Status:    OverlayDeviceActive, StateVersion: 1, KeyVersion: 1,
 		}
 		s.overlayDevices[key] = stored
+	} else {
+		if stored.Status == OverlayDeviceRevoked {
+			return ErrOverlayDeviceRevoked
+		}
+		if stored.NetworkID != "" && strings.TrimSpace(device.NetworkID) != stored.NetworkID {
+			return ErrOverlayJoinConstraint
+		}
+		if stored.WireGuardPublicKey != "" && strings.TrimSpace(device.WireGuardPublicKey) != stored.WireGuardPublicKey {
+			return ErrOverlayDeviceKeyConflict
+		}
 	}
 
 	stored.NetworkID = strings.TrimSpace(device.NetworkID)
@@ -83,9 +98,17 @@ func (s *memoryStore) UpsertOverlayDevice(ctx context.Context, device *OverlayDe
 		stored.LastSeenAt = &lastSeen
 	}
 	stored.UpdatedAt = now
+	if !exists {
+		s.appendOverlayDeviceEventLocked(stored, "registered", now)
+	}
 
 	*device = *cloneOverlayDevice(stored)
 	return nil
+}
+
+func (s *memoryStore) appendOverlayDeviceEventLocked(device *OverlayDevice, eventType string, now time.Time) {
+	s.overlayDeviceEventSequence++
+	s.overlayDeviceEvents = append(s.overlayDeviceEvents, OverlayDeviceEvent{Sequence: s.overlayDeviceEventSequence, UserID: device.UserID, NetworkID: device.NetworkID, DeviceID: device.ID, Type: eventType, Status: device.Status, StateVersion: device.StateVersion, KeyVersion: device.KeyVersion, CreatedAt: now.UTC()})
 }
 
 func (s *memoryStore) GetOverlayDevice(ctx context.Context, userID, deviceID string) (*OverlayDevice, error) {
@@ -150,6 +173,10 @@ func (s *memoryStore) UpsertOverlayNode(ctx context.Context, node *OverlayNode) 
 	if nodeID == "" {
 		return errors.New("overlay node id is required")
 	}
+	mode := strings.TrimSpace(node.GatewayMode)
+	if mode != "" && mode != "shadow" && mode != "apply" {
+		return errors.New("overlay node gateway mode must be shadow or apply")
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -177,6 +204,10 @@ func (s *memoryStore) UpsertOverlayNode(ctx context.Context, node *OverlayNode) 
 	stored.TransportPath = strings.TrimSpace(node.TransportPath)
 	stored.TransportMode = strings.TrimSpace(node.TransportMode)
 	stored.TransportUUID = strings.TrimSpace(node.TransportUUID)
+	stored.GatewayMode = mode
+	if stored.GatewayMode == "" {
+		stored.GatewayMode = "shadow"
+	}
 	stored.Healthy = node.Healthy
 	if node.LastHeartbeat != nil {
 		lastHeartbeat := node.LastHeartbeat.UTC()

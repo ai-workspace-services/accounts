@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,11 +66,11 @@ func TestPolicyManagementLifecycleAndFailClosedPermission(t *testing.T) {
 		t.Fatalf("create=%d %s", rec.Code, rec.Body.String())
 	}
 	rec = policyRequest(t, r, token, http.MethodPost, "/api/overlay/v1/policies/1/activate", `{"network_id":"net"}`)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"generation":1`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"generation":2`) {
 		t.Fatalf("activate=%d %s", rec.Code, rec.Body.String())
 	}
 	rec = policyRequest(t, r, token, http.MethodPut, "/api/overlay/v1/devices/dev-a/tags", `{"network_id":"net","tags":["TAG:self"]}`)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"policy_generation":2`) || !strings.Contains(rec.Body.String(), `"tags":["tag:self"]`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"policy_generation":3`) || !strings.Contains(rec.Body.String(), `"tags":["tag:self"]`) {
 		t.Fatalf("tag=%d %s", rec.Code, rec.Body.String())
 	}
 	rec = policyRequest(t, r, token, http.MethodPost, "/api/overlay/v1/policies/1/explain", `{"network_id":"net","source":"device:dev-a","destination":"device:dev-a","protocol":"tcp","port":443}`)
@@ -90,7 +91,7 @@ func TestGatewayPolicyArtifactBindingAndNoPII(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, bearer := createGatewayCredential(t, r)
-	path := "/api/internal/overlay/v1/nodes/gw_test_01/policy-artifacts/1/" + p.ArtifactSHA256
+	path := "/api/internal/overlay/v1/nodes/gw_test_01/policy-artifacts/" + strconv.FormatUint(p.Generation, 10) + "/" + p.ArtifactSHA256
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	rec := httptest.NewRecorder()
@@ -98,7 +99,7 @@ func TestGatewayPolicyArtifactBindingAndNoPII(t *testing.T) {
 	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Content-Type") != gatewayPolicyMediaType || !bytes.Equal(rec.Body.Bytes(), p.Artifact) {
 		t.Fatalf("artifact=%d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
-	bad := httptest.NewRequest(http.MethodGet, "/api/internal/overlay/v1/nodes/other/policy-artifacts/1/"+p.ArtifactSHA256, nil)
+	bad := httptest.NewRequest(http.MethodGet, "/api/internal/overlay/v1/nodes/other/policy-artifacts/"+strconv.FormatUint(p.Generation, 10)+"/"+p.ArtifactSHA256, nil)
 	bad.Header.Set("Authorization", "Bearer "+bearer)
 	badRec := httptest.NewRecorder()
 	r.ServeHTTP(badRec, bad)

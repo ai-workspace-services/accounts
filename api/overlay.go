@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -55,6 +56,12 @@ func (h *handler) registerOverlayRoutes(r gin.IRoutes) {
 	r.GET("/networks", h.listOverlayNetworks)
 	r.POST("/devices/register", h.registerOverlayDevice)
 	r.GET("/devices", h.listOverlayDevices)
+	r.GET("/devices/:device_id", h.getOverlayDeviceDetail)
+	r.POST("/devices/:device_id/rotate-key", h.rotateOverlayDeviceKey)
+	r.PUT("/devices/:device_id/state", h.updateOverlayDeviceState)
+	r.POST("/devices/:device_id/revoke", h.revokeOverlayDevice)
+	r.DELETE("/devices/:device_id", h.revokeOverlayDevice)
+	r.GET("/events", h.listOverlayDeviceEvents)
 	r.GET("/config", h.overlayConfig)
 	r.POST("/config/ack", h.overlayConfigAck)
 }
@@ -76,8 +83,7 @@ func (h *handler) registerOverlayDevice(c *gin.Context) {
 	}
 
 	var req overlayDeviceRegisterRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
+	if !strictGatewayJSON(c, &req) {
 		return
 	}
 
@@ -118,7 +124,13 @@ func (h *handler) registerOverlayDevice(c *gin.Context) {
 		device.Name = deviceID
 	}
 
-	if err := h.store.UpsertOverlayDevice(c.Request.Context(), device); err != nil {
+	if err := h.store.UpsertOverlayDevice(c.Request.Context(), device); errors.Is(err, store.ErrOverlayDeviceRevoked) {
+		respondError(c, http.StatusGone, "overlay_device_revoked", "revoked device identifiers cannot be registered again")
+		return
+	} else if errors.Is(err, store.ErrOverlayDeviceKeyConflict) {
+		respondError(c, http.StatusConflict, "overlay_device_conflict", "existing devices require the key rotation endpoint")
+		return
+	} else if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_device_register_failed", "failed to register overlay device")
 		return
 	}
@@ -172,7 +184,7 @@ func (h *handler) assignOverlayDeviceAddress(c *gin.Context, userID, deviceID, n
 }
 
 func (h *handler) listOverlayDevices(c *gin.Context) {
-	user, ok := h.requireActiveOverlayUser(c)
+	_, user, ok := h.overlayDeviceOwner(c, c.Query("owner_user_id"), permissionAdminSettingsRead)
 	if !ok {
 		return
 	}
@@ -183,6 +195,12 @@ func (h *handler) listOverlayDevices(c *gin.Context) {
 	}
 	payload := make([]gin.H, 0, len(devices))
 	for i := range devices {
+		if networkID := strings.TrimSpace(c.Query("network_id")); networkID != "" && devices[i].NetworkID != normalizeOverlayNetworkID(networkID) {
+			continue
+		}
+		if status := strings.ToLower(strings.TrimSpace(c.Query("status"))); status != "" && devices[i].Status != status {
+			continue
+		}
 		payload = append(payload, overlayDevicePayload(&devices[i]))
 	}
 	c.JSON(http.StatusOK, gin.H{"devices": payload})
@@ -204,6 +222,10 @@ func (h *handler) overlayConfig(c *gin.Context) {
 	device, err := h.store.GetOverlayDevice(c.Request.Context(), user.ID, deviceID)
 	if err != nil {
 		respondError(c, http.StatusNotFound, "overlay_device_not_found", "overlay device is not registered")
+		return
+	}
+	if device.Status != "" && device.Status != store.OverlayDeviceActive {
+		respondError(c, http.StatusGone, "overlay_device_inactive", "overlay device is inactive or revoked")
 		return
 	}
 	if networkID != "" && device.NetworkID != networkID {
@@ -300,12 +322,20 @@ func (h *handler) overlayConfigAck(c *gin.Context) {
 	}
 
 	var req overlayConfigAckRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
+	if !strictGatewayJSON(c, &req) {
 		return
 	}
 	if sanitizeOverlayID(req.DeviceID) == "" || strings.TrimSpace(req.Revision) == "" {
 		respondError(c, http.StatusBadRequest, "invalid_ack", "device_id and revision are required")
+		return
+	}
+	device, err := h.store.GetOverlayDevice(c.Request.Context(), user.ID, sanitizeOverlayID(req.DeviceID))
+	if err != nil || (strings.TrimSpace(req.NetworkID) != "" && device.NetworkID != normalizeOverlayNetworkID(req.NetworkID)) {
+		respondError(c, http.StatusNotFound, "overlay_device_not_found", "overlay device is not registered in this network")
+		return
+	}
+	if device.Status != "" && device.Status != store.OverlayDeviceActive {
+		respondError(c, http.StatusGone, "overlay_device_inactive", "overlay device is inactive or revoked")
 		return
 	}
 
@@ -322,7 +352,7 @@ func (h *handler) overlayConfigAck(c *gin.Context) {
 	ack := &store.OverlayConfigAck{
 		DeviceID:  sanitizeOverlayID(req.DeviceID),
 		UserID:    user.ID,
-		NetworkID: normalizeOverlayNetworkID(req.NetworkID),
+		NetworkID: normalizeOverlayNetworkID(device.NetworkID),
 		Revision:  strings.TrimSpace(req.Revision),
 		Digest:    strings.TrimSpace(req.Digest),
 		AppliedAt: appliedAt,
@@ -456,6 +486,11 @@ func overlayDevicePayload(device *store.OverlayDevice) gin.H {
 		"created_at":           device.CreatedAt,
 		"updated_at":           device.UpdatedAt,
 		"last_seen_at":         device.LastSeenAt,
+		"status":               device.Status,
+		"state_version":        device.StateVersion,
+		"key_version":          device.KeyVersion,
+		"revoked_at":           device.RevokedAt,
+		"revoked_reason":       device.RevokedReason,
 	}
 }
 
@@ -475,6 +510,7 @@ func overlayNodePayload(node *store.OverlayNode) gin.H {
 		"transport_path":       node.TransportPath,
 		"transport_mode":       node.TransportMode,
 		"transport_uuid_set":   strings.TrimSpace(node.TransportUUID) != "",
+		"gateway_mode":         node.GatewayMode,
 		"healthy":              node.Healthy,
 	}
 }

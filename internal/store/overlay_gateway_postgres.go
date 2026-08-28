@@ -16,7 +16,7 @@ func (s *postgresStore) GetOverlayNode(ctx context.Context, nodeID string) (*Ove
 SELECT id, network_id, name, role, region, wireguard_public_key,
        wireguard_address, endpoint_host, endpoint_port, transport_type,
        transport_security, transport_path, transport_mode, transport_uuid,
-       healthy, created_at, updated_at, last_heartbeat
+       gateway_mode, healthy, created_at, updated_at, last_heartbeat
 FROM public.overlay_nodes WHERE id = $1`, strings.TrimSpace(nodeID))
 	node, err := scanOverlayNode(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -195,6 +195,15 @@ func (s *postgresStore) RecordOverlayGatewayApplyResult(ctx context.Context, res
 			result.ReceivedAt = previous.ReceivedAt.UTC()
 			return true, tx.Commit()
 		}
+		if strings.HasPrefix(previous.Result, "apply_") && previous.Result != "apply_failed_rollback_failed" && result.Result == "applied" && result.RuntimeApplied && result.AppliedGeneration == result.ObservedGeneration {
+			if err = tx.QueryRowContext(ctx, `UPDATE public.overlay_gateway_apply_results SET applied_generation=$3,runtime_applied=$4,result=$5,diff=$6::jsonb,received_at=now() WHERE node_id=$1 AND snapshot_id=$2 RETURNING received_at`, result.NodeID, result.SnapshotID, result.AppliedGeneration, result.RuntimeApplied, result.Result, string(diff)).Scan(&result.ReceivedAt); err != nil {
+				return false, err
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO public.overlay_gateway_apply_attempts(node_id,snapshot_id,observed_generation,applied_generation,runtime_applied,result,diff) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`, result.NodeID, result.SnapshotID, result.ObservedGeneration, result.AppliedGeneration, result.RuntimeApplied, result.Result, string(diff)); err != nil {
+				return false, err
+			}
+			return false, tx.Commit()
+		}
 		return false, ErrOverlayGatewayReportStale
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -204,12 +213,26 @@ func (s *postgresStore) RecordOverlayGatewayApplyResult(ctx context.Context, res
 	if err != nil {
 		return false, err
 	}
+	if strings.HasPrefix(result.Result, "apply_") || result.Result == "applied" {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO public.overlay_gateway_apply_attempts(node_id,snapshot_id,observed_generation,applied_generation,runtime_applied,result,diff) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`, result.NodeID, result.SnapshotID, result.ObservedGeneration, result.AppliedGeneration, result.RuntimeApplied, result.Result, string(diff)); err != nil {
+			return false, err
+		}
+	}
 	return false, tx.Commit()
+}
+
+func (s *postgresStore) IsOverlayGatewayGenerationApplied(ctx context.Context, nodeID string, generation uint64) (bool, error) {
+	if generation == 0 {
+		return true, nil
+	}
+	var applied bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.overlay_gateway_apply_results WHERE node_id=$1 AND observed_generation=$2 AND applied_generation=$2 AND runtime_applied=true AND result='applied')`, strings.TrimSpace(nodeID), generation).Scan(&applied)
+	return applied, err
 }
 
 func (s *postgresStore) ListOverlayProjectionDevicesByNetwork(ctx context.Context, networkID string) ([]OverlayProjectionDevice, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT d.id,d.user_uuid,d.network_id,d.name,d.platform,d.hostname,d.wireguard_public_key,d.wireguard_address,d.created_at,d.updated_at,d.last_seen_at,
+SELECT d.id,d.user_uuid,d.network_id,d.name,d.platform,d.hostname,d.wireguard_public_key,d.wireguard_address,d.created_at,d.updated_at,d.last_seen_at,d.status,d.state_version,d.key_version,d.revoked_at,d.revoked_reason,
  COALESCE(m.tags,'[]'::jsonb),COALESCE(m.attachments,'[]'::jsonb)
 FROM public.overlay_devices d LEFT JOIN public.overlay_device_projection_metadata m ON m.user_uuid=d.user_uuid AND m.device_id=d.id
 WHERE d.network_id=$1 ORDER BY d.id,d.user_uuid`, networkID)
@@ -220,10 +243,14 @@ WHERE d.network_id=$1 ORDER BY d.id,d.user_uuid`, networkID)
 	var result []OverlayProjectionDevice
 	for rows.Next() {
 		var item OverlayProjectionDevice
-		var lastSeen sql.NullTime
+		var lastSeen, revokedAt sql.NullTime
 		var tagsRaw, attachmentsRaw []byte
-		if err := rows.Scan(&item.Device.ID, &item.Device.UserID, &item.Device.NetworkID, &item.Device.Name, &item.Device.Platform, &item.Device.Hostname, &item.Device.WireGuardPublicKey, &item.Device.WireGuardAddress, &item.Device.CreatedAt, &item.Device.UpdatedAt, &lastSeen, &tagsRaw, &attachmentsRaw); err != nil {
+		if err := rows.Scan(&item.Device.ID, &item.Device.UserID, &item.Device.NetworkID, &item.Device.Name, &item.Device.Platform, &item.Device.Hostname, &item.Device.WireGuardPublicKey, &item.Device.WireGuardAddress, &item.Device.CreatedAt, &item.Device.UpdatedAt, &lastSeen, &item.Device.Status, &item.Device.StateVersion, &item.Device.KeyVersion, &revokedAt, &item.Device.RevokedReason, &tagsRaw, &attachmentsRaw); err != nil {
 			return nil, err
+		}
+		if revokedAt.Valid {
+			value := revokedAt.Time.UTC()
+			item.Device.RevokedAt = &value
 		}
 		if lastSeen.Valid {
 			value := lastSeen.Time.UTC()

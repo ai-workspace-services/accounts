@@ -144,6 +144,12 @@ func (s *memoryStore) ExchangeOverlayJoinToken(_ context.Context, exchange *Over
 	}
 	deviceKey := overlayDeviceKey(token.UserID, exchange.Device.ID)
 	if existing := s.overlayDevices[deviceKey]; existing != nil {
+		if existing.Status == OverlayDeviceRevoked {
+			return ErrOverlayDeviceRevoked
+		}
+		if existing.Status != "" && existing.Status != OverlayDeviceActive {
+			return ErrOverlayJoinDeviceConflict
+		}
 		if existing.NetworkID != token.NetworkID || existing.WireGuardPublicKey != exchange.Device.WireGuardPublicKey || existing.Platform != exchange.Device.Platform {
 			return ErrOverlayJoinDeviceConflict
 		}
@@ -167,7 +173,11 @@ func (s *memoryStore) ExchangeOverlayJoinToken(_ context.Context, exchange *Over
 	exchange.Device.UpdatedAt = now
 	lastSeen := now
 	exchange.Device.LastSeenAt = &lastSeen
+	exchange.Device.Status = OverlayDeviceActive
+	exchange.Device.StateVersion = 1
+	exchange.Device.KeyVersion = 1
 	s.overlayDevices[deviceKey] = cloneOverlayDevice(&exchange.Device)
+	s.appendOverlayDeviceEventLocked(&exchange.Device, "registered", now)
 
 	token.RemainingUses--
 	token.LastExchangedAt = &now
@@ -198,6 +208,10 @@ func (s *memoryStore) GetOverlayEnrollmentSession(_ context.Context, tokenHash [
 	}
 	if !session.ExpiresAt.After(now.UTC()) {
 		return nil, ErrOverlayEnrollmentExpired
+	}
+	device := s.overlayDevices[overlayDeviceKey(session.UserID, session.DeviceID)]
+	if device == nil || device.Status != OverlayDeviceActive || device.WireGuardPublicKey != session.WireGuardPublicKey {
+		return nil, ErrOverlayEnrollmentNotFound
 	}
 	used := now.UTC()
 	session.LastUsedAt = &used

@@ -120,6 +120,9 @@ func TestOverlayJoinExchangeAtomicallyRegistersAndScopesEnrollment(t *testing.T)
 	if recorder.Code != http.StatusOK || exchange.EnrollmentToken == "" || exchange.Device.ID != "joined-device" {
 		t.Fatalf("exchange: %d %s", recorder.Code, recorder.Body.String())
 	}
+	if !strings.Contains(recorder.Body.String(), `"overlay:device:revoke"`) {
+		t.Fatalf("enrollment revoke scope missing: %s", recorder.Body.String())
+	}
 	if recorder.Header().Get("Cache-Control") != "no-store" || strings.Contains(recorder.Body.String(), secret) {
 		t.Fatalf("exchange leaked/cached join secret: %#v %s", recorder.Header(), recorder.Body.String())
 	}
@@ -195,6 +198,28 @@ func TestOverlayJoinExchangeAtomicallyRegistersAndScopesEnrollment(t *testing.T)
 	router.ServeHTTP(legacyRecorder, legacy)
 	if legacyRecorder.Code != http.StatusOK {
 		t.Fatalf("legacy account session regressed: %d %s", legacyRecorder.Code, legacyRecorder.Body.String())
+	}
+	leave := httptest.NewRequest(http.MethodPost, "/api/overlay/v1/enrollment/device/revoke", strings.NewReader(`{}`))
+	leave.Header.Set("Authorization", "Bearer "+exchange.EnrollmentToken)
+	leave.Header.Set("Content-Type", "application/json")
+	leaveRecorder := httptest.NewRecorder()
+	router.ServeHTTP(leaveRecorder, leave)
+	if leaveRecorder.Code != http.StatusOK || leaveRecorder.Header().Get("Cache-Control") != "no-store" || !strings.Contains(leaveRecorder.Body.String(), `"status":"revoked"`) {
+		t.Fatalf("enrollment leave=%d %s", leaveRecorder.Code, leaveRecorder.Body.String())
+	}
+	detail := httptest.NewRequest(http.MethodGet, "/api/overlay/v1/devices/joined-device?network_id=xworkmate-private", nil)
+	detail.Header.Set("Authorization", "Bearer "+accountToken)
+	detailRecorder := httptest.NewRecorder()
+	router.ServeHTTP(detailRecorder, detail)
+	if detailRecorder.Code != http.StatusOK || !strings.Contains(detailRecorder.Body.String(), `"status":"revoked"`) {
+		t.Fatalf("left device detail=%d %s", detailRecorder.Code, detailRecorder.Body.String())
+	}
+	afterLeave := httptest.NewRequest(http.MethodGet, "/api/overlay/v1/enrollment/config", nil)
+	afterLeave.Header.Set("Authorization", "Bearer "+exchange.EnrollmentToken)
+	afterLeaveRecorder := httptest.NewRecorder()
+	router.ServeHTTP(afterLeaveRecorder, afterLeave)
+	if afterLeaveRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked enrollment reused=%d %s", afterLeaveRecorder.Code, afterLeaveRecorder.Body.String())
 	}
 }
 

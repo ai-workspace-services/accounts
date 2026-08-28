@@ -25,6 +25,7 @@ type internalOverlayNodeHeartbeatRequest struct {
 	TransportPath      string `json:"transport_path"`
 	TransportMode      string `json:"transport_mode"`
 	TransportUUID      string `json:"transport_uuid"`
+	GatewayMode        string `json:"gateway_mode,omitempty"`
 	Healthy            *bool  `json:"healthy"`
 	SampledAt          string `json:"sampled_at"`
 }
@@ -101,6 +102,11 @@ func (h *handler) internalOverlayNodeHeartbeat(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "unsupported_transport_security", "transport_security must be tls")
 		return
 	}
+	gatewayMode := firstNonEmpty(strings.ToLower(strings.TrimSpace(req.GatewayMode)), "shadow")
+	if gatewayMode != "shadow" && gatewayMode != "apply" {
+		respondError(c, http.StatusBadRequest, "invalid_gateway_mode", "gateway_mode must be shadow or apply")
+		return
+	}
 
 	node := &store.OverlayNode{
 		ID:                 nodeID,
@@ -117,6 +123,7 @@ func (h *handler) internalOverlayNodeHeartbeat(c *gin.Context) {
 		TransportPath:      strings.TrimSpace(req.TransportPath),
 		TransportMode:      strings.TrimSpace(req.TransportMode),
 		TransportUUID:      strings.TrimSpace(req.TransportUUID),
+		GatewayMode:        gatewayMode,
 		Healthy:            healthy,
 		LastHeartbeat:      &sampledAt,
 	}

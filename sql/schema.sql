@@ -150,9 +150,15 @@ CREATE TABLE IF NOT EXISTS public.overlay_devices (
   wireguard_public_key TEXT NOT NULL,
   wireguard_address TEXT NOT NULL,
   last_seen_at TIMESTAMPTZ,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive','revoked')),
+  state_version BIGINT NOT NULL DEFAULT 1 CHECK(state_version>0),
+  key_version BIGINT NOT NULL DEFAULT 1 CHECK(key_version>0),
+  revoked_at TIMESTAMPTZ,
+  revoked_reason TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_uuid, id)
+  PRIMARY KEY (user_uuid, id),
+  CONSTRAINT overlay_devices_revoked_state_ck CHECK((status='revoked' AND revoked_at IS NOT NULL) OR (status<>'revoked' AND revoked_at IS NULL AND revoked_reason=''))
 );
 
 CREATE TABLE IF NOT EXISTS public.overlay_nodes (
@@ -170,6 +176,7 @@ CREATE TABLE IF NOT EXISTS public.overlay_nodes (
   transport_path TEXT NOT NULL DEFAULT '',
   transport_mode TEXT NOT NULL DEFAULT '',
   transport_uuid TEXT NOT NULL DEFAULT '',
+  gateway_mode TEXT NOT NULL DEFAULT 'shadow' CHECK(gateway_mode IN ('shadow','apply')),
   healthy BOOLEAN NOT NULL DEFAULT FALSE,
   last_heartbeat TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -294,15 +301,15 @@ CREATE TABLE IF NOT EXISTS public.overlay_node_credentials (
 );
 CREATE INDEX IF NOT EXISTS overlay_node_credentials_active_idx ON public.overlay_node_credentials(node_id,expires_at) WHERE revoked_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS overlay_devices_network_device_id_uk ON public.overlay_devices(network_id,id);
-CREATE UNIQUE INDEX IF NOT EXISTS overlay_devices_network_public_key_uk ON public.overlay_devices(network_id,wireguard_public_key);
+CREATE UNIQUE INDEX IF NOT EXISTS overlay_devices_network_active_public_key_uk ON public.overlay_devices(network_id,wireguard_public_key) WHERE status<>'revoked';
 
 CREATE TABLE IF NOT EXISTS public.overlay_gateway_node_status (
   node_id TEXT PRIMARY KEY REFERENCES public.overlay_nodes(id) ON DELETE CASCADE,
   agent_version TEXT NOT NULL CHECK (btrim(agent_version)<>''),
-  mode TEXT NOT NULL CHECK (mode='shadow'),
+  mode TEXT NOT NULL CHECK (mode IN ('shadow','apply')),
   proxy_core TEXT NOT NULL CHECK (proxy_core='xray'),
   observed_generation BIGINT NOT NULL CHECK (observed_generation>=0),
-  applied_generation BIGINT NOT NULL CHECK (applied_generation=0),
+  applied_generation BIGINT NOT NULL CHECK (applied_generation>=0 AND applied_generation<=observed_generation AND (mode='apply' OR applied_generation=0)),
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -330,15 +337,45 @@ CREATE TABLE IF NOT EXISTS public.overlay_gateway_apply_results (
   node_id TEXT NOT NULL,
   snapshot_id TEXT NOT NULL,
   observed_generation BIGINT NOT NULL CHECK (observed_generation>0),
-  applied_generation BIGINT NOT NULL CHECK (applied_generation=0),
-  runtime_applied BOOLEAN NOT NULL CHECK (runtime_applied=FALSE),
-  result TEXT NOT NULL CHECK (result IN ('shadow_validated','shadow_validated_wg_unavailable','shadow_rejected')),
+  applied_generation BIGINT NOT NULL CHECK (applied_generation>=0 AND applied_generation<=observed_generation),
+  runtime_applied BOOLEAN NOT NULL,
+  result TEXT NOT NULL CHECK (result IN ('shadow_validated','shadow_validated_wg_unavailable','shadow_rejected','applied','apply_rejected','apply_failed_rolled_back','apply_failed_rollback_failed')),
   diff JSONB NOT NULL,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (node_id,snapshot_id),
   CONSTRAINT overlay_gateway_apply_results_snapshot_fk FOREIGN KEY (node_id,snapshot_id)
-    REFERENCES public.overlay_gateway_snapshots(node_id,snapshot_id) ON DELETE CASCADE
+    REFERENCES public.overlay_gateway_snapshots(node_id,snapshot_id) ON DELETE CASCADE,
+  CONSTRAINT overlay_gateway_apply_results_semantics_ck CHECK((result='applied' AND runtime_applied AND applied_generation=observed_generation) OR (result<>'applied' AND NOT runtime_applied))
 );
+
+CREATE TABLE IF NOT EXISTS public.overlay_device_events (
+  sequence BIGSERIAL PRIMARY KEY,
+  user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
+  network_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  event_type TEXT NOT NULL CHECK(event_type IN ('registered','key_rotated','status_changed','revoked')),
+  status TEXT NOT NULL CHECK(status IN ('active','inactive','revoked')),
+  state_version BIGINT NOT NULL,
+  key_version BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY(user_uuid,device_id) REFERENCES public.overlay_devices(user_uuid,id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS overlay_device_events_sync_idx ON public.overlay_device_events(user_uuid,network_id,sequence);
+
+CREATE TABLE IF NOT EXISTS public.overlay_gateway_apply_attempts (
+  attempt_id BIGSERIAL PRIMARY KEY,
+  node_id TEXT NOT NULL,
+  snapshot_id TEXT NOT NULL,
+  observed_generation BIGINT NOT NULL CHECK(observed_generation>0),
+  applied_generation BIGINT NOT NULL CHECK(applied_generation>=0 AND applied_generation<=observed_generation),
+  runtime_applied BOOLEAN NOT NULL,
+  result TEXT NOT NULL CHECK(result IN ('applied','apply_rejected','apply_failed_rolled_back','apply_failed_rollback_failed')),
+  diff JSONB NOT NULL,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY(node_id,snapshot_id) REFERENCES public.overlay_gateway_snapshots(node_id,snapshot_id) ON DELETE CASCADE,
+  CONSTRAINT overlay_gateway_apply_attempts_semantics_ck CHECK((result='applied' AND runtime_applied AND applied_generation=observed_generation) OR (result<>'applied' AND NOT runtime_applied AND applied_generation<observed_generation))
+);
+CREATE INDEX IF NOT EXISTS overlay_gateway_apply_attempts_node_idx ON public.overlay_gateway_apply_attempts(node_id,attempt_id);
 
 CREATE TABLE IF NOT EXISTS public.overlay_device_projection_metadata (
   user_uuid UUID NOT NULL,
@@ -365,6 +402,47 @@ CREATE TABLE IF NOT EXISTS public.overlay_static_import_receipts (
   baseline_sha256 TEXT NOT NULL CHECK (baseline_sha256~'^[a-f0-9]{64}$'),
   device_count INTEGER NOT NULL CHECK (device_count>0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.overlay_policy_revisions (
+  network_id TEXT NOT NULL,
+  revision BIGINT NOT NULL CHECK(revision>0),
+  owner_user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE RESTRICT,
+  name TEXT NOT NULL CHECK(btrim(name)<>''),
+  source JSONB NOT NULL,
+  artifact JSONB NOT NULL,
+  artifact_canonical BYTEA NOT NULL,
+  artifact_sha256 TEXT NOT NULL CHECK(artifact_sha256~'^[a-f0-9]{64}$'),
+  compiler_version TEXT NOT NULL CHECK(btrim(compiler_version)<>''),
+  warnings JSONB NOT NULL DEFAULT '[]'::jsonb CHECK(jsonb_typeof(warnings)='array'),
+  status TEXT NOT NULL CHECK(status IN ('draft','active','superseded')),
+  generation BIGINT NOT NULL CHECK(generation>=0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  validated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  activated_at TIMESTAMPTZ,
+  PRIMARY KEY(network_id,revision),
+  CONSTRAINT overlay_policy_revision_state_ck CHECK((status='draft' AND generation=0 AND activated_at IS NULL) OR (status IN ('active','superseded') AND generation>0 AND activated_at IS NOT NULL)),
+  CONSTRAINT overlay_policy_revision_artifact_ck CHECK(artifact->>'compiler_version'=compiler_version AND artifact->>'network_id'=network_id AND (artifact->>'revision')::bigint=revision AND artifact->>'default_action'='deny')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS overlay_policy_one_active_per_network_uk ON public.overlay_policy_revisions(network_id) WHERE status='active';
+CREATE UNIQUE INDEX IF NOT EXISTS overlay_policy_generation_uk ON public.overlay_policy_revisions(network_id,generation) WHERE generation>0;
+CREATE TABLE IF NOT EXISTS public.overlay_policy_builds (
+  network_id TEXT NOT NULL,
+  generation BIGINT NOT NULL CHECK(generation>0),
+  revision BIGINT NOT NULL,
+  artifact JSONB NOT NULL,
+  artifact_canonical BYTEA NOT NULL,
+  artifact_sha256 TEXT NOT NULL CHECK(artifact_sha256~'^[a-f0-9]{64}$'),
+  compiler_version TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY(network_id,generation),
+  FOREIGN KEY(network_id,revision) REFERENCES public.overlay_policy_revisions(network_id,revision) ON DELETE RESTRICT
+);
+CREATE TABLE IF NOT EXISTS public.overlay_policy_reconcile_pending (
+  network_id TEXT PRIMARY KEY,
+  attempts BIGINT NOT NULL DEFAULT 0 CHECK(attempts>=0),
+  last_error TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_overlay_devices_network ON public.overlay_devices(network_id);

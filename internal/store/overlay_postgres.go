@@ -19,16 +19,16 @@ func (s *postgresStore) UpsertOverlayDevice(ctx context.Context, device *Overlay
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
 		ON CONFLICT (user_uuid, id) DO UPDATE SET
-			network_id = EXCLUDED.network_id,
 			name = EXCLUDED.name,
 			platform = EXCLUDED.platform,
 			hostname = EXCLUDED.hostname,
-			wireguard_public_key = EXCLUDED.wireguard_public_key,
 			wireguard_address = EXCLUDED.wireguard_address,
 			last_seen_at = EXCLUDED.last_seen_at,
 			updated_at = now()
-		RETURNING created_at, updated_at`
+		WHERE overlay_devices.status <> 'revoked' AND overlay_devices.network_id=EXCLUDED.network_id AND overlay_devices.wireguard_public_key=EXCLUDED.wireguard_public_key
+		RETURNING created_at, updated_at, status, state_version, key_version, revoked_at, revoked_reason`
 
+	var revokedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, query,
 		strings.TrimSpace(device.ID),
 		strings.TrimSpace(device.UserID),
@@ -39,19 +39,26 @@ func (s *postgresStore) UpsertOverlayDevice(ctx context.Context, device *Overlay
 		strings.TrimSpace(device.WireGuardPublicKey),
 		strings.TrimSpace(device.WireGuardAddress),
 		device.LastSeenAt,
-	).Scan(&device.CreatedAt, &device.UpdatedAt)
+	).Scan(&device.CreatedAt, &device.UpdatedAt, &device.Status, &device.StateVersion, &device.KeyVersion, &revokedAt, &device.RevokedReason)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrOverlayDeviceKeyConflict
+		}
 		return err
 	}
 	device.ID = strings.TrimSpace(device.ID)
 	device.UserID = strings.TrimSpace(device.UserID)
+	if revokedAt.Valid {
+		v := revokedAt.Time.UTC()
+		device.RevokedAt = &v
+	}
 	return nil
 }
 
 func (s *postgresStore) GetOverlayDevice(ctx context.Context, userID, deviceID string) (*OverlayDevice, error) {
 	const query = `
 		SELECT id, user_uuid, network_id, name, platform, hostname,
-		       wireguard_public_key, wireguard_address, created_at, updated_at, last_seen_at
+		       wireguard_public_key, wireguard_address, created_at, updated_at, last_seen_at,status,state_version,key_version,revoked_at,revoked_reason
 		FROM overlay_devices
 		WHERE user_uuid = $1 AND id = $2`
 	row := s.db.QueryRowContext(ctx, query, strings.TrimSpace(userID), strings.TrimSpace(deviceID))
@@ -61,7 +68,7 @@ func (s *postgresStore) GetOverlayDevice(ctx context.Context, userID, deviceID s
 func (s *postgresStore) ListOverlayDevicesByUser(ctx context.Context, userID string) ([]OverlayDevice, error) {
 	const query = `
 		SELECT id, user_uuid, network_id, name, platform, hostname,
-		       wireguard_public_key, wireguard_address, created_at, updated_at, last_seen_at
+		       wireguard_public_key, wireguard_address, created_at, updated_at, last_seen_at,status,state_version,key_version,revoked_at,revoked_reason
 		FROM overlay_devices
 		WHERE user_uuid = $1
 		ORDER BY id ASC`
@@ -86,7 +93,7 @@ func (s *postgresStore) ListOverlayDevicesByNetwork(ctx context.Context, network
 	args := []any{}
 	query := `
 		SELECT id, user_uuid, network_id, name, platform, hostname,
-		       wireguard_public_key, wireguard_address, created_at, updated_at, last_seen_at
+		       wireguard_public_key, wireguard_address, created_at, updated_at, last_seen_at,status,state_version,key_version,revoked_at,revoked_reason
 		FROM overlay_devices`
 	if strings.TrimSpace(networkID) != "" {
 		query += " WHERE network_id = $1"
@@ -113,7 +120,7 @@ func (s *postgresStore) ListOverlayDevicesByNetwork(ctx context.Context, network
 
 func scanOverlayDevice(row rowScanner) (*OverlayDevice, error) {
 	var device OverlayDevice
-	var lastSeen sql.NullTime
+	var lastSeen, revokedAt sql.NullTime
 	err := row.Scan(
 		&device.ID,
 		&device.UserID,
@@ -126,6 +133,7 @@ func scanOverlayDevice(row rowScanner) (*OverlayDevice, error) {
 		&device.CreatedAt,
 		&device.UpdatedAt,
 		&lastSeen,
+		&device.Status, &device.StateVersion, &device.KeyVersion, &revokedAt, &device.RevokedReason,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -137,6 +145,10 @@ func scanOverlayDevice(row rowScanner) (*OverlayDevice, error) {
 		t := lastSeen.Time.UTC()
 		device.LastSeenAt = &t
 	}
+	if revokedAt.Valid {
+		v := revokedAt.Time.UTC()
+		device.RevokedAt = &v
+	}
 	device.CreatedAt = device.CreatedAt.UTC()
 	device.UpdatedAt = device.UpdatedAt.UTC()
 	return &device, nil
@@ -146,14 +158,20 @@ func (s *postgresStore) UpsertOverlayNode(ctx context.Context, node *OverlayNode
 	if node == nil {
 		return errors.New("overlay node is required")
 	}
+	if strings.TrimSpace(node.GatewayMode) == "" {
+		node.GatewayMode = "shadow"
+	}
+	if node.GatewayMode != "shadow" && node.GatewayMode != "apply" {
+		return errors.New("overlay node gateway mode must be shadow or apply")
+	}
 	const query = `
 		INSERT INTO overlay_nodes (
 			id, network_id, name, role, region, wireguard_public_key,
 			wireguard_address, endpoint_host, endpoint_port, transport_type,
 			transport_security, transport_path, transport_mode, transport_uuid,
-			healthy, last_heartbeat, updated_at
+			gateway_mode, healthy, last_heartbeat, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
 		ON CONFLICT (id) DO UPDATE SET
 			network_id = EXCLUDED.network_id,
 			name = EXCLUDED.name,
@@ -168,6 +186,7 @@ func (s *postgresStore) UpsertOverlayNode(ctx context.Context, node *OverlayNode
 			transport_path = EXCLUDED.transport_path,
 			transport_mode = EXCLUDED.transport_mode,
 			transport_uuid = EXCLUDED.transport_uuid,
+			gateway_mode = EXCLUDED.gateway_mode,
 			healthy = EXCLUDED.healthy,
 			last_heartbeat = EXCLUDED.last_heartbeat,
 			updated_at = now()
@@ -188,6 +207,7 @@ func (s *postgresStore) UpsertOverlayNode(ctx context.Context, node *OverlayNode
 		strings.TrimSpace(node.TransportPath),
 		strings.TrimSpace(node.TransportMode),
 		strings.TrimSpace(node.TransportUUID),
+		strings.TrimSpace(node.GatewayMode),
 		node.Healthy,
 		node.LastHeartbeat,
 	).Scan(&node.CreatedAt, &node.UpdatedAt)
@@ -198,7 +218,7 @@ func (s *postgresStore) ListOverlayNodes(ctx context.Context, networkID string) 
 	query := `
 		SELECT id, network_id, name, role, region, wireguard_public_key,
 		       wireguard_address, endpoint_host, endpoint_port, transport_type,
-		       transport_security, transport_path, transport_mode, transport_uuid, healthy,
+		       transport_security, transport_path, transport_mode, transport_uuid, gateway_mode, healthy,
 		       created_at, updated_at, last_heartbeat
 		FROM overlay_nodes`
 	if strings.TrimSpace(networkID) != "" {
@@ -242,6 +262,7 @@ func scanOverlayNode(row rowScanner) (*OverlayNode, error) {
 		&node.TransportPath,
 		&node.TransportMode,
 		&node.TransportUUID,
+		&node.GatewayMode,
 		&node.Healthy,
 		&node.CreatedAt,
 		&node.UpdatedAt,

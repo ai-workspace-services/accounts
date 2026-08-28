@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -107,8 +108,7 @@ func TestProjectSafetyRejectsRemovalBeyondSignedLimit(t *testing.T) {
 	if _, err := service.Project(context.Background(), "gw_test_01"); err != nil {
 		t.Fatal(err)
 	}
-	device := &store.OverlayDevice{ID: "dev_test_01", UserID: "11111111-1111-4111-8111-111111111111", NetworkID: "other", Name: "device", Platform: "linux", WireGuardPublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32)), WireGuardAddress: "10.77.0.10/32"}
-	if err := st.UpsertOverlayDevice(context.Background(), device); err != nil {
+	if _, _, err := st.SetOverlayDeviceStatus(context.Background(), "11111111-1111-4111-8111-111111111111", "network-test", "dev_test_01", store.OverlayDeviceInactive, 1, "", &store.AuditLog{Action: store.AuditActionOverlayDeviceStateUpdate}); err != nil {
 		t.Fatal(err)
 	}
 	service.config.AllowEmptyPeers = true
@@ -141,5 +141,29 @@ func TestInactiveUserIsRemovedFromGatewayPeers(t *testing.T) {
 	}
 	if second.Generation != first.Generation+1 || len(second.WireGuard.Peers) != 0 {
 		t.Fatalf("inactive principal remained projected: %#v", second)
+	}
+}
+
+func TestRevokedDeviceAdvancesSnapshotAndRemovesOldPeer(t *testing.T) {
+	st := store.NewMemoryStore()
+	gatewayFixture(t, st)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	service := testService(t, st, now, 100)
+	service.config.AllowEmptyPeers = true
+	first, err := service.Project(context.Background(), "gw_test_01")
+	if err != nil || first.Generation != 1 || len(first.WireGuard.Peers) != 1 {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	oldKey := first.WireGuard.Peers[0].PublicKey
+	if _, _, err = st.SetOverlayDeviceStatus(context.Background(), "11111111-1111-4111-8111-111111111111", "network-test", "dev_test_01", store.OverlayDeviceRevoked, 1, "leave", &store.AuditLog{Action: store.AuditActionOverlayDeviceRevoke}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Project(context.Background(), "gw_test_01")
+	if err != nil || second.Generation != 2 || second.ExpectedPreviousGeneration != 1 || len(second.WireGuard.Peers) != 0 {
+		t.Fatalf("second=%+v err=%v", second, err)
+	}
+	raw, _ := json.Marshal(second)
+	if strings.Contains(string(raw), oldKey) {
+		t.Fatalf("revoked key remained in snapshot: %s", raw)
 	}
 }

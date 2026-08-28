@@ -199,13 +199,39 @@ func (s *memoryStore) RecordOverlayGatewayApplyResult(_ context.Context, result 
 			result.Diff = append([]byte(nil), previous.Diff...)
 			return true, nil
 		}
+		if strings.HasPrefix(previous.Result, "apply_") && previous.Result != "apply_failed_rollback_failed" && result.Result == "applied" && result.RuntimeApplied && result.AppliedGeneration == result.ObservedGeneration {
+			clone := *result
+			clone.Diff = append([]byte(nil), result.Diff...)
+			clone.ReceivedAt = time.Now().UTC()
+			s.overlayGatewayResults[key] = &clone
+			s.overlayGatewayAttempts = append(s.overlayGatewayAttempts, clone)
+			*result = clone
+			return false, nil
+		}
 		return false, ErrOverlayGatewayReportStale
 	}
 	clone := *result
 	clone.Diff = append([]byte(nil), result.Diff...)
 	clone.ReceivedAt = time.Now().UTC()
 	s.overlayGatewayResults[key] = &clone
+	if strings.HasPrefix(clone.Result, "apply_") || clone.Result == "applied" {
+		s.overlayGatewayAttempts = append(s.overlayGatewayAttempts, clone)
+	}
 	*result = clone
+	return false, nil
+}
+
+func (s *memoryStore) IsOverlayGatewayGenerationApplied(_ context.Context, nodeID string, generation uint64) (bool, error) {
+	if generation == 0 {
+		return true, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, result := range s.overlayGatewayResults {
+		if result.NodeID == strings.TrimSpace(nodeID) && result.ObservedGeneration == generation && result.AppliedGeneration == generation && result.RuntimeApplied && result.Result == "applied" {
+			return true, nil
+		}
+	}
 	return false, nil
 }
 
@@ -267,6 +293,11 @@ func (s *memoryStore) ImportOverlayStaticClients(_ context.Context, input *Overl
 	for _, projected := range input.Devices {
 		device := cloneOverlayDevice(&projected.Device)
 		device.UserID, device.NetworkID = input.OwnerUserID, input.NetworkID
+		if device.Status == "" {
+			device.Status = OverlayDeviceActive
+			device.StateVersion = 1
+			device.KeyVersion = 1
+		}
 		if device.Name == "" {
 			device.Name = device.ID
 		}

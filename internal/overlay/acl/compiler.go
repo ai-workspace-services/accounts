@@ -60,6 +60,10 @@ type Inventory struct {
 	Users        map[string]string   `json:"users"`
 	Devices      map[string][]string `json:"devices"`
 	DeviceOwners map[string]string   `json:"device_owners"`
+	// EligibleDevices separates known lifecycle identities from principals that
+	// may currently receive traffic. A nil map preserves legacy test fixtures
+	// where every known device is eligible.
+	EligibleDevices map[string]bool `json:"eligible_devices,omitempty"`
 }
 
 type Warning struct{ Code, RuleID, Message string }
@@ -178,7 +182,13 @@ func Compile(doc Document, networkID string, revision uint64, inv Inventory) (Bu
 		return Build{}, errors.New("network and revision are required")
 	}
 	users := normalizedMap(inv.Users)
-	devices := normalizedSliceMap(inv.Devices)
+	knownDevices := normalizedSliceMap(inv.Devices)
+	devices := map[string][]string{}
+	for deviceID, tags := range knownDevices {
+		if inv.EligibleDevices == nil || inv.EligibleDevices[deviceID] {
+			devices[deviceID] = tags
+		}
+	}
 	deviceOwners := map[string]string{}
 	principals := map[string]DevicePrincipal{}
 	emailByID := map[string]string{}
@@ -263,7 +273,7 @@ func Compile(doc Document, networkID string, revision uint64, inv Inventory) (Bu
 			if strings.HasPrefix(selector, "service:") {
 				return Build{}, fmt.Errorf("service %s cannot reference another service", name)
 			}
-			if err := validateSelector(selector, true, users, groups, devices, tags, services); err != nil {
+			if err := validateSelector(selector, true, users, groups, knownDevices, tags, services); err != nil {
 				return Build{}, fmt.Errorf("service %s: %w", name, err)
 			}
 		}
@@ -286,12 +296,12 @@ func Compile(doc Document, networkID string, revision uint64, inv Inventory) (Bu
 		}
 		src, dst := normalizedSelectors(input.Sources), normalizedSelectors(input.Destinations)
 		for _, s := range src {
-			if err := validateSelector(s, false, users, groups, devices, tags, services); err != nil {
+			if err := validateSelector(s, false, users, groups, knownDevices, tags, services); err != nil {
 				return Build{}, fmt.Errorf("rule %s: %w", input.ID, err)
 			}
 		}
 		for _, s := range dst {
-			if err := validateSelector(s, true, users, groups, devices, tags, services); err != nil {
+			if err := validateSelector(s, true, users, groups, knownDevices, tags, services); err != nil {
 				return Build{}, fmt.Errorf("rule %s: %w", input.ID, err)
 			}
 		}

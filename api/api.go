@@ -596,6 +596,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalOverlayV1Management.POST("/nodes/:node_id/credentials", h.createOverlayNodeCredential)
 	internalOverlayV1Management.DELETE("/nodes/:node_id/credentials/:credential_id", h.revokeOverlayNodeCredential)
 	internalOverlayV1Management.POST("/imports/static-clients", h.importOverlayStaticClients)
+	internalOverlayV1Management.POST("/reconcile-pending", h.retryOverlayPolicyReconciles)
 	// Gateway Agent v1 uses a node-bound, hash-only bearer. It deliberately
 	// does not inherit the shared X-Service-Token middleware.
 	r.POST("/api/internal/overlay/v1/nodes/heartbeat", h.gatewayNodeHeartbeat)
@@ -652,6 +653,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	r.GET("/api/overlay/v1/enrollment/signed-config", h.enrollmentOverlaySignedConfig)
 	r.POST("/api/overlay/v1/enrollment/config/ack", h.enrollmentOverlayConfigAck)
 	r.POST("/api/overlay/v1/enrollment/signed-config/:generation/ack", h.enrollmentOverlaySignedConfigAck)
+	r.POST("/api/overlay/v1/enrollment/device/revoke", h.enrollmentRevokeOverlayDevice)
 
 	// Canonical user-facing agent routes.
 	// These endpoints use session-based auth in handler logic and intentionally

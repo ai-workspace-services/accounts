@@ -1,0 +1,30 @@
+BEGIN;
+ALTER TABLE public.overlay_devices ADD COLUMN status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive','revoked'));
+ALTER TABLE public.overlay_devices ADD COLUMN state_version BIGINT NOT NULL DEFAULT 1 CHECK(state_version>0);
+ALTER TABLE public.overlay_devices ADD COLUMN key_version BIGINT NOT NULL DEFAULT 1 CHECK(key_version>0);
+ALTER TABLE public.overlay_devices ADD COLUMN revoked_at TIMESTAMPTZ;
+ALTER TABLE public.overlay_devices ADD COLUMN revoked_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE public.overlay_devices ADD CONSTRAINT overlay_devices_revoked_state_ck CHECK((status='revoked' AND revoked_at IS NOT NULL) OR (status<>'revoked' AND revoked_at IS NULL AND revoked_reason=''));
+DROP INDEX IF EXISTS public.overlay_devices_network_public_key_uk;
+CREATE UNIQUE INDEX overlay_devices_network_active_public_key_uk ON public.overlay_devices(network_id,wireguard_public_key) WHERE status<>'revoked';
+CREATE TABLE public.overlay_device_events(sequence BIGSERIAL PRIMARY KEY,user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,network_id TEXT NOT NULL,device_id TEXT NOT NULL,event_type TEXT NOT NULL CHECK(event_type IN ('registered','key_rotated','status_changed','revoked')),status TEXT NOT NULL CHECK(status IN ('active','inactive','revoked')),state_version BIGINT NOT NULL,key_version BIGINT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),FOREIGN KEY(user_uuid,device_id) REFERENCES public.overlay_devices(user_uuid,id) ON DELETE CASCADE);
+CREATE INDEX overlay_device_events_sync_idx ON public.overlay_device_events(user_uuid,network_id,sequence);
+ALTER TABLE public.overlay_nodes ADD COLUMN gateway_mode TEXT NOT NULL DEFAULT 'shadow' CHECK(gateway_mode IN ('shadow','apply'));
+ALTER TABLE public.overlay_gateway_node_status DROP CONSTRAINT IF EXISTS overlay_gateway_node_status_mode_check;
+ALTER TABLE public.overlay_gateway_node_status DROP CONSTRAINT IF EXISTS overlay_gateway_node_status_applied_generation_check;
+ALTER TABLE public.overlay_gateway_node_status ADD CONSTRAINT overlay_gateway_node_status_mode_check CHECK(mode IN ('shadow','apply'));
+ALTER TABLE public.overlay_gateway_node_status ADD CONSTRAINT overlay_gateway_node_status_generation_ck CHECK(applied_generation>=0 AND applied_generation<=observed_generation AND (mode='apply' OR applied_generation=0));
+ALTER TABLE public.overlay_gateway_apply_results DROP CONSTRAINT IF EXISTS overlay_gateway_apply_results_applied_generation_check;
+ALTER TABLE public.overlay_gateway_apply_results DROP CONSTRAINT IF EXISTS overlay_gateway_apply_results_runtime_applied_check;
+ALTER TABLE public.overlay_gateway_apply_results DROP CONSTRAINT IF EXISTS overlay_gateway_apply_results_result_check;
+ALTER TABLE public.overlay_gateway_apply_results ADD CONSTRAINT overlay_gateway_apply_results_generation_ck CHECK(applied_generation>=0 AND applied_generation<=observed_generation);
+ALTER TABLE public.overlay_gateway_apply_results ADD CONSTRAINT overlay_gateway_apply_results_result_check CHECK(result IN ('shadow_validated','shadow_validated_wg_unavailable','shadow_rejected','applied','apply_rejected','apply_failed_rolled_back','apply_failed_rollback_failed'));
+ALTER TABLE public.overlay_gateway_apply_results ADD CONSTRAINT overlay_gateway_apply_results_semantics_ck CHECK((result='applied' AND runtime_applied AND applied_generation=observed_generation) OR (result<>'applied' AND NOT runtime_applied));
+-- JSONB is not byte preserving. Existing rows stay NULL and ResolveActive
+-- recompiles their source before publishing canonical bytes.
+ALTER TABLE public.overlay_policy_revisions ADD COLUMN artifact_canonical BYTEA;
+ALTER TABLE public.overlay_policy_builds ADD COLUMN artifact_canonical BYTEA;
+CREATE TABLE public.overlay_gateway_apply_attempts(attempt_id BIGSERIAL PRIMARY KEY,node_id TEXT NOT NULL,snapshot_id TEXT NOT NULL,observed_generation BIGINT NOT NULL CHECK(observed_generation>0),applied_generation BIGINT NOT NULL CHECK(applied_generation>=0 AND applied_generation<=observed_generation),runtime_applied BOOLEAN NOT NULL,result TEXT NOT NULL CHECK(result IN ('applied','apply_rejected','apply_failed_rolled_back','apply_failed_rollback_failed')),diff JSONB NOT NULL,received_at TIMESTAMPTZ NOT NULL DEFAULT now(),FOREIGN KEY(node_id,snapshot_id) REFERENCES public.overlay_gateway_snapshots(node_id,snapshot_id) ON DELETE CASCADE,CONSTRAINT overlay_gateway_apply_attempts_semantics_ck CHECK((result='applied' AND runtime_applied AND applied_generation=observed_generation) OR (result<>'applied' AND NOT runtime_applied AND applied_generation<observed_generation)));
+CREATE INDEX overlay_gateway_apply_attempts_node_idx ON public.overlay_gateway_apply_attempts(node_id,attempt_id);
+CREATE TABLE public.overlay_policy_reconcile_pending(network_id TEXT PRIMARY KEY,attempts BIGINT NOT NULL DEFAULT 0 CHECK(attempts>=0),last_error TEXT NOT NULL DEFAULT '',updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+COMMIT;

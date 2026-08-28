@@ -109,6 +109,9 @@ func (s *Service) Project(ctx context.Context, nodeID string) (domain.GatewaySna
 		peers := make([]domain.GatewayPeer, 0, len(devices))
 		seenIDs, seenKeys, seenAddresses := map[string]bool{}, map[string]bool{}, map[string]bool{}
 		for _, item := range devices {
+			if item.Device.Status != "" && item.Device.Status != store.OverlayDeviceActive {
+				continue
+			}
 			if !eligible[item.Device.UserID] {
 				continue
 			}

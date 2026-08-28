@@ -53,6 +53,65 @@ paths:
                     type: array
                     items: {$ref: "#/components/schemas/OverlayDevice"}
         default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/devices/{device_id}:
+    get:
+      tags: [Overlay]
+      summary: Read one device in the authenticated owner or administrator scope.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: device_id, in: path, required: true, schema: {type: string}}
+        - {name: network_id, in: query, schema: {type: string}}
+        - {name: owner_user_id, in: query, schema: {type: string, format: uuid}}
+      responses: {"200": {description: Device detail}, default: {$ref: "#/components/responses/Error"}}
+    delete:
+      tags: [Overlay]
+      summary: Idempotently leave the overlay by permanently revoking the device.
+      security: [{bearerAuth: []}]
+      parameters: [{name: device_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DeviceScopeRequest"}}}}
+      responses: {"200": {description: Device revoked and active policy reconciled}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/devices/{device_id}/rotate-key:
+    post:
+      tags: [Overlay]
+      summary: Rotate a device WireGuard public key using optimistic concurrency.
+      security: [{bearerAuth: []}]
+      parameters: [{name: device_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/RotateDeviceKeyRequest"}}}}
+      responses: {"200": {description: Key rotated or identical retry acknowledged}, "409": {$ref: "#/components/responses/Error"}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/devices/{device_id}/state:
+    put:
+      tags: [Overlay]
+      summary: Set active/inactive/revoked state; revoked is terminal.
+      security: [{bearerAuth: []}]
+      parameters: [{name: device_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DeviceStateRequest"}}}}
+      responses: {"200": {description: State updated and active policy reconciled}, "409": {$ref: "#/components/responses/Error"}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/devices/{device_id}/revoke:
+    post:
+      tags: [Overlay]
+      summary: Idempotently and permanently revoke a device.
+      security: [{bearerAuth: []}]
+      parameters: [{name: device_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DeviceScopeRequest"}}}}
+      responses: {"200": {description: Device revoked}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/events:
+    get:
+      tags: [Overlay]
+      summary: Incremental, ordered device lifecycle event stream.
+      security: [{bearerAuth: []}]
+      parameters:
+        - {name: network_id, in: query, schema: {type: string}}
+        - {name: owner_user_id, in: query, schema: {type: string, format: uuid}}
+        - {name: after, in: query, schema: {type: integer, minimum: 0}}
+      responses: {"200": {description: Events and next_after cursor}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/enrollment/device/revoke:
+    post:
+      tags: [Overlay]
+      summary: Revoke the exact device bound to a still-valid short-lived enrollment bearer.
+      description: This is the join-window leave path, not a durable device refresh credential.
+      security: [{enrollmentBearer: []}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false}}}}
+      responses: {"200": {description: Bound device revoked; response is no-store}, default: {$ref: "#/components/responses/Error"}}
   /api/overlay/v1/devices/register:
     post:
       tags: [Overlay]
@@ -316,7 +375,7 @@ paths:
     post:
       tags: [Internal Overlay]
       operationId: heartbeatOverlayNodeV1
-      description: Node-bound shadow heartbeat. X-Service-Token is not accepted.
+      description: Node-bound heartbeat. Apply mode is accepted only when the trusted node record explicitly authorizes it; X-Service-Token is not accepted here.
       security: [{nodeBearer: []}]
       requestBody:
         required: true
@@ -334,7 +393,7 @@ paths:
       parameters: [{$ref: "#/components/parameters/NodeID"}]
       responses:
         "200":
-          description: Signed, node-bound Xray shadow snapshot.
+          description: Signed, node-bound Xray snapshot for the node's authorized runtime mode.
           headers: {Cache-Control: {schema: {const: no-store}}}
           content:
             application/vnd.xconnect.gateway.v1+json:
@@ -349,7 +408,7 @@ paths:
       parameters: [{$ref: "#/components/parameters/NodeID"}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/GatewayApplyResultRequest"}}}}
       responses:
-        "200": {description: Shadow evidence accepted idempotently.}
+        "200": {description: Node-mode-bound evidence accepted idempotently.}
         "409": {$ref: "#/components/responses/Error"}
         default: {$ref: "#/components/responses/Error"}
   /api/internal/overlay/v1/nodes/{node_id}/credentials:
@@ -396,6 +455,16 @@ paths:
       responses:
         "200": {description: Stable import receipt., content: {application/json: {schema: {$ref: "#/components/schemas/StaticClientImportReceipt"}}}}
         "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/internal/overlay/v1/reconcile-pending:
+    post:
+      tags: [Internal Overlay Management]
+      summary: Retry durable policy-reconcile outbox entries after lifecycle commits.
+      security: [{serviceToken: []}]
+      responses:
+        "200":
+          description: Reconcile retry counts; processed equals completed plus failed.
+          headers: {Cache-Control: {schema: {const: no-store}}}
         default: {$ref: "#/components/responses/Error"}
   /api/overlay/v1/policies/validate:
     post:
@@ -527,6 +596,38 @@ components:
         wireguard_public_key: {type: string}
         wireguard_address: {type: string}
         last_seen_at: {type: [string, "null"], format: date-time}
+        status: {type: string, enum: [active, inactive, revoked]}
+        state_version: {type: integer, minimum: 1}
+        key_version: {type: integer, minimum: 1}
+        revoked_at: {type: [string, "null"], format: date-time}
+        revoked_reason: {type: string}
+    DeviceScopeRequest:
+      type: object
+      additionalProperties: false
+      required: [network_id, expected_state_version]
+      properties:
+        network_id: {type: string, minLength: 1}
+        owner_user_id: {type: string, format: uuid}
+        expected_state_version: {type: integer, minimum: 1}
+    RotateDeviceKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [network_id, wireguard_public_key, expected_key_version]
+      properties:
+        network_id: {type: string, minLength: 1}
+        owner_user_id: {type: string, format: uuid}
+        wireguard_public_key: {type: string, pattern: '^[A-Za-z0-9+/]{43}=$'}
+        expected_key_version: {type: integer, minimum: 1}
+    DeviceStateRequest:
+      type: object
+      additionalProperties: false
+      required: [network_id, status, expected_state_version]
+      properties:
+        network_id: {type: string, minLength: 1}
+        owner_user_id: {type: string, format: uuid}
+        status: {type: string, enum: [active, inactive, revoked]}
+        expected_state_version: {type: integer, minimum: 1}
+        reason: {type: string, maxLength: 512}
     RegisterDeviceRequest:
       type: object
       additionalProperties: false
@@ -584,7 +685,7 @@ components:
         enrollment_token: {type: string, writeOnly: true, pattern: '^xenr_'}
         token_type: {const: Bearer}
         expires_at: {type: string, format: date-time}
-        scope: {type: array, items: {type: string, enum: ['overlay:config:read', 'overlay:config:ack']}}
+        scope: {type: array, items: {type: string, enum: ['overlay:config:read', 'overlay:config:ack', 'overlay:device:revoke']}}
         device: {$ref: "#/components/schemas/OverlayDevice"}
         network: {$ref: "#/components/schemas/OverlayNetwork"}
         signing_keys: {type: array, items: {$ref: "#/components/schemas/OverlaySigningKey"}}
@@ -641,6 +742,7 @@ components:
         transport_path: {type: string}
         transport_mode: {type: string}
         transport_uuid: {type: string, format: uuid}
+        gateway_mode: {type: string, enum: [shadow, apply], default: shadow}
         healthy: {type: boolean}
         last_heartbeat: {type: [string, "null"], format: date-time}
     GatewayHeartbeatRequest:
@@ -650,10 +752,10 @@ components:
       properties:
         node_id: {type: string}
         agent_version: {type: string, minLength: 1, maxLength: 128}
-        mode: {const: shadow}
+        mode: {type: string, enum: [shadow, apply]}
         proxy_core: {const: xray}
         observed_generation: {type: integer, minimum: 0}
-        applied_generation: {const: 0}
+        applied_generation: {type: integer, minimum: 0}
     GatewayDiffSummary:
       type: object
       additionalProperties: false
@@ -674,9 +776,9 @@ components:
         node_id: {type: string}
         snapshot_id: {type: string}
         observed_generation: {type: integer, minimum: 1}
-        applied_generation: {const: 0}
-        runtime_applied: {const: false}
-        result: {type: string, enum: [shadow_validated, shadow_validated_wg_unavailable, shadow_rejected]}
+        applied_generation: {type: integer, minimum: 0}
+        runtime_applied: {type: boolean}
+        result: {type: string, enum: [shadow_validated, shadow_validated_wg_unavailable, shadow_rejected, applied, apply_rejected, apply_failed_rolled_back, apply_failed_rollback_failed]}
         diff: {$ref: "#/components/schemas/GatewayDiffSummary"}
     CreateNodeCredentialRequest:
       type: object

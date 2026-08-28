@@ -356,7 +356,7 @@ func (h *handler) exchangeOverlayJoinToken(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
 		"enrollment_token": enrollmentSecret, "token_type": "Bearer", "expires_at": exchange.Enrollment.ExpiresAt,
-		"scope":  []string{"overlay:config:read", "overlay:config:ack"},
+		"scope":  []string{"overlay:config:read", "overlay:config:ack", "overlay:device:revoke"},
 		"device": overlayDevicePayload(&exchange.Device), "network": overlayNetworkPayload(exchange.Device.NetworkID),
 		"signing_keys": h.overlayProjectionPublicKeys(),
 	})
@@ -390,7 +390,7 @@ func (h *handler) requireOverlayEnrollment(c *gin.Context) (*store.OverlayEnroll
 		return nil, false
 	}
 	device, err := h.store.GetOverlayDevice(c.Request.Context(), session.UserID, session.DeviceID)
-	if err != nil || device.NetworkID != session.NetworkID || device.Platform != session.Platform || device.WireGuardPublicKey != session.WireGuardPublicKey {
+	if err != nil || (device.Status != "" && device.Status != store.OverlayDeviceActive) || device.NetworkID != session.NetworkID || device.Platform != session.Platform || device.WireGuardPublicKey != session.WireGuardPublicKey {
 		respondError(c, http.StatusUnauthorized, "invalid_enrollment", "enrollment token is invalid or expired")
 		return nil, false
 	}
