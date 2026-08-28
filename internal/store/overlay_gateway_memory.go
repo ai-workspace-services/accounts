@@ -280,13 +280,21 @@ func (s *memoryStore) ImportOverlayStaticClients(_ context.Context, input *Overl
 	if s.byID[input.OwnerUserID] == nil {
 		return nil, false, ErrUserNotFound
 	}
+	pendingKeys := map[string]bool{}
 	for _, projected := range input.Devices {
 		for _, existing := range s.overlayDevices {
-			identityMismatch := existing.ID == projected.Device.ID && (existing.UserID != input.OwnerUserID || existing.NetworkID != input.NetworkID || existing.WireGuardPublicKey != projected.Device.WireGuardPublicKey || existing.WireGuardAddress != projected.Device.WireGuardAddress)
+			identityMismatch := existing.ID == projected.Device.ID && (existing.UserID != input.OwnerUserID || existing.NetworkID != input.NetworkID || existing.WireGuardPublicKey != projected.Device.WireGuardPublicKey || existing.WireGuardAddress != projected.Device.WireGuardAddress || existing.Status != OverlayDeviceActive)
 			networkCollision := existing.NetworkID == input.NetworkID && existing.ID != projected.Device.ID && (existing.WireGuardPublicKey == projected.Device.WireGuardPublicKey || existing.WireGuardAddress == projected.Device.WireGuardAddress)
 			if identityMismatch || networkCollision {
 				return nil, false, ErrOverlayStaticImportConflict
 			}
+		}
+		if s.overlayDevices[overlayDeviceKey(input.OwnerUserID, projected.Device.ID)] == nil {
+			historyKey := overlayDeviceHistoryKey(input.NetworkID, projected.Device.WireGuardPublicKey)
+			if _, claimed := s.overlayDeviceKeyHistory[historyKey]; claimed || pendingKeys[historyKey] {
+				return nil, false, ErrOverlayStaticImportConflict
+			}
+			pendingKeys[historyKey] = true
 		}
 	}
 	now := time.Now().UTC()
@@ -305,6 +313,9 @@ func (s *memoryStore) ImportOverlayStaticClients(_ context.Context, input *Overl
 		if previous := s.overlayDevices[key]; previous != nil {
 			device.CreatedAt = previous.CreatedAt
 		} else {
+			if err := s.claimOverlayDeviceKeyLocked(device.NetworkID, device.WireGuardPublicKey, device.UserID, device.ID, device.KeyVersion, now); err != nil {
+				return nil, false, ErrOverlayStaticImportConflict
+			}
 			device.CreatedAt = now
 		}
 		device.UpdatedAt = now

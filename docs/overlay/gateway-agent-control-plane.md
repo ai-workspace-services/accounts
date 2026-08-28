@@ -118,7 +118,7 @@ closed. Import never invokes a runtime.
 
 ## Rollout and rollback
 
-Apply migrations through `2026082805_overlay_device_lifecycle.up.sql` before
+Apply migrations through `2026082806_overlay_device_key_history.up.sql` before
 the application; this includes the original Gateway projection schema.
 Create a short-lived credential, start one Agent in shadow mode, and verify:
 heartbeat 204, signed snapshot verification, stable generation retry, stored

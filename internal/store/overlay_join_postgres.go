@@ -129,6 +129,7 @@ SELECT EXISTS(SELECT 1 FROM public.overlay_enrollment_sessions WHERE join_token_
 	}
 
 	var existing OverlayDevice
+	newDevice := false
 	err = tx.QueryRowContext(ctx, `
 SELECT network_id, platform, wireguard_public_key, wireguard_address, status
 FROM public.overlay_devices WHERE user_uuid = $1 AND id = $2 FOR UPDATE`, token.UserID, exchange.Device.ID).Scan(
@@ -147,6 +148,7 @@ FROM public.overlay_devices WHERE user_uuid = $1 AND id = $2 FOR UPDATE`, token.
 		}
 		exchange.Device.WireGuardAddress = existing.WireGuardAddress
 	case errors.Is(err, sql.ErrNoRows):
+		newDevice = true
 		rows, err := tx.QueryContext(ctx, `SELECT wireguard_address FROM public.overlay_devices WHERE network_id = $1`, token.NetworkID)
 		if err != nil {
 			return err
@@ -176,6 +178,14 @@ FROM public.overlay_devices WHERE user_uuid = $1 AND id = $2 FOR UPDATE`, token.
 	exchange.Device.NetworkID = token.NetworkID
 	lastSeen := now
 	exchange.Device.LastSeenAt = &lastSeen
+	if newDevice {
+		if err = claimOverlayDeviceKeyTx(ctx, tx, token.NetworkID, exchange.Device.WireGuardPublicKey, token.UserID, exchange.Device.ID, 1); err != nil {
+			if errors.Is(err, ErrOverlayDeviceKeyConflict) {
+				return ErrOverlayJoinDeviceConflict
+			}
+			return err
+		}
+	}
 	err = tx.QueryRowContext(ctx, `
 INSERT INTO public.overlay_devices
   (id, user_uuid, network_id, name, platform, hostname, wireguard_public_key, wireguard_address, last_seen_at)

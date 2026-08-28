@@ -35,12 +35,8 @@ func (s *postgresStore) RotateOverlayDeviceKey(ctx context.Context, userID, netw
 	if expected == 0 || d.KeyVersion != expected {
 		return nil, false, ErrOverlayDeviceVersionConflict
 	}
-	var collision bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.overlay_devices WHERE network_id=$1 AND id<>$2 AND status<>'revoked' AND wireguard_public_key=$3)`, networkID, deviceID, newKey).Scan(&collision); err != nil {
+	if err = claimOverlayDeviceKeyTx(ctx, tx, networkID, newKey, userID, deviceID, d.KeyVersion+1); err != nil {
 		return nil, false, err
-	}
-	if collision {
-		return nil, false, ErrOverlayDeviceKeyConflict
 	}
 	row := tx.QueryRowContext(ctx, `UPDATE public.overlay_devices SET wireguard_public_key=$4,key_version=key_version+1,state_version=state_version+1,updated_at=now() WHERE user_uuid=$1 AND network_id=$2 AND id=$3 RETURNING id,user_uuid,network_id,name,platform,hostname,wireguard_public_key,wireguard_address,created_at,updated_at,last_seen_at,status,state_version,key_version,revoked_at,revoked_reason`, userID, networkID, deviceID, newKey)
 	if d, err = scanOverlayDevice(row); err != nil {

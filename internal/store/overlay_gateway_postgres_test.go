@@ -77,3 +77,43 @@ func TestPostgresGatewaySnapshotGenerationUsesTransactionLock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPostgresStaticImportClaimsWireGuardKeyInSameTransaction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &postgresStore{db: db}
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	input := &OverlayStaticImport{
+		IdempotencyKey: "sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		BodySHA256:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		OwnerUserID:    "11111111-1111-4111-8111-111111111111",
+		NetworkID:      "net",
+		SourceKind:     "ansible-group-vars",
+		SourceVariable: "clients",
+		BaselineSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Devices:        []OverlayProjectionDevice{{Device: OverlayDevice{ID: "imported", Name: "imported", Platform: "legacy-import", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", WireGuardAddress: "10.77.0.10/32"}}},
+	}
+	audit := &AuditLog{Action: AuditActionOverlayStaticImport}
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM public.overlay_static_import_receipts WHERE idempotency_key=\\$1").WithArgs(input.IdempotencyKey).WillReturnRows(sqlmock.NewRows([]string{"import_id", "idempotency_key", "body_sha256", "owner_user_uuid", "network_id", "baseline_sha256", "device_count", "created_at"}))
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM public.users").WithArgs(input.OwnerUserID).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery("SELECT user_uuid::text,network_id,wireguard_public_key,wireguard_address,status FROM public.overlay_devices WHERE id=\\$1 FOR UPDATE").WithArgs(input.Devices[0].Device.ID).WillReturnRows(sqlmock.NewRows([]string{"user_uuid", "network_id", "wireguard_public_key", "wireguard_address", "status"}))
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM public.overlay_devices").WithArgs(input.NetworkID, input.Devices[0].Device.ID, input.Devices[0].Device.WireGuardPublicKey, input.Devices[0].Device.WireGuardAddress).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery("INSERT INTO public.overlay_device_key_history").WithArgs(input.NetworkID, input.Devices[0].Device.WireGuardPublicKey, input.OwnerUserID, input.Devices[0].Device.ID, uint64(1)).WillReturnRows(sqlmock.NewRows([]string{"wireguard_public_key"}).AddRow(input.Devices[0].Device.WireGuardPublicKey))
+	mock.ExpectExec("INSERT INTO public.overlay_devices").WithArgs(input.Devices[0].Device.ID, input.OwnerUserID, input.NetworkID, input.Devices[0].Device.Name, input.Devices[0].Device.Platform, "", input.Devices[0].Device.WireGuardPublicKey, input.Devices[0].Device.WireGuardAddress).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("INSERT INTO public.overlay_device_projection_metadata").WithArgs(input.OwnerUserID, input.Devices[0].Device.ID, "null", "null", input.SourceKind, input.SourceVariable, input.BaselineSHA256).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("INSERT INTO public.overlay_static_import_receipts").WithArgs("import_"+input.BodySHA256[:24], input.IdempotencyKey, input.BodySHA256, input.OwnerUserID, input.NetworkID, input.SourceKind, input.SourceVariable, input.BaselineSHA256, 1).WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(now))
+	mock.ExpectQuery("INSERT INTO public.audit_logs").WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(now))
+	mock.ExpectCommit()
+	receipt, duplicate, err := st.ImportOverlayStaticClients(context.Background(), input, audit)
+	if err != nil || duplicate || receipt == nil || receipt.DeviceCount != 1 {
+		t.Fatalf("receipt=%+v duplicate=%v err=%v", receipt, duplicate, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -97,6 +98,9 @@ func TestPostgresExchangeLocksLastUseAndAtomicallyRegisters(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"network_id", "platform", "wireguard_public_key", "wireguard_address", "status"}))
 	mock.ExpectQuery("SELECT wireguard_address FROM public.overlay_devices").WithArgs("net").
 		WillReturnRows(sqlmock.NewRows([]string{"wireguard_address"}))
+	mock.ExpectQuery("INSERT INTO public.overlay_device_key_history").
+		WithArgs("net", exchange.Device.WireGuardPublicKey, userID, exchange.Device.ID, uint64(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"wireguard_public_key"}).AddRow(exchange.Device.WireGuardPublicKey))
 	mock.ExpectQuery("INSERT INTO public.overlay_devices").
 		WithArgs(exchange.Device.ID, userID, "net", exchange.Device.Name, exchange.Device.Platform, exchange.Device.Hostname,
 			exchange.Device.WireGuardPublicKey, sqlmock.AnyArg(), sqlmock.AnyArg()).
@@ -115,6 +119,34 @@ func TestPostgresExchangeLocksLastUseAndAtomicallyRegisters(t *testing.T) {
 	mock.ExpectCommit()
 	if err := st.ExchangeOverlayJoinToken(context.Background(), exchange, audit); err != nil {
 		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresExchangeRejectsHistoricalWireGuardKey(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &postgresStore{db: db}
+	now := time.Date(2026, 8, 28, 6, 0, 0, 0, time.UTC)
+	joinHash := sha256.Sum256([]byte("xjt_historical"))
+	sessionHash := sha256.Sum256([]byte("xenr_historical"))
+	userID := "11111111-1111-1111-1111-111111111111"
+	exchange := &OverlayJoinExchange{JoinTokenHash: joinHash[:], Enrollment: OverlayEnrollmentSession{ID: "enr-historical", TokenHash: sessionHash[:], CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute)}, Device: OverlayDevice{ID: "replacement", Name: "replacement", Platform: "linux", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}, AddressPrefix: "172.29.10", AddressStartHost: 100, AddressEndHost: 254}
+	mock.ExpectBegin()
+	mock.ExpectQuery("FROM public.overlay_join_tokens WHERE token_hash = \\$1 FOR UPDATE").WithArgs(exchange.JoinTokenHash).WillReturnRows(sqlmock.NewRows([]string{"id", "user_uuid", "network_id", "device_id", "platform", "remaining_uses", "expires_at", "revoked_at", "created_at", "last_exchanged_at"}).AddRow("join-historical", userID, "net", nil, nil, 1, now.Add(time.Hour), nil, now.Add(-time.Minute), nil))
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM public.overlay_enrollment_sessions").WithArgs("join-historical", exchange.Device.ID).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs("net").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT network_id, platform, wireguard_public_key, wireguard_address, status").WithArgs(userID, exchange.Device.ID).WillReturnRows(sqlmock.NewRows([]string{"network_id", "platform", "wireguard_public_key", "wireguard_address", "status"}))
+	mock.ExpectQuery("SELECT wireguard_address FROM public.overlay_devices").WithArgs("net").WillReturnRows(sqlmock.NewRows([]string{"wireguard_address"}))
+	mock.ExpectQuery("INSERT INTO public.overlay_device_key_history").WithArgs("net", exchange.Device.WireGuardPublicKey, userID, exchange.Device.ID, uint64(1)).WillReturnRows(sqlmock.NewRows([]string{"wireguard_public_key"}))
+	mock.ExpectRollback()
+	if err := st.ExchangeOverlayJoinToken(context.Background(), exchange, &AuditLog{Action: AuditActionOverlayJoinExchange}); !errors.Is(err, ErrOverlayJoinDeviceConflict) {
+		t.Fatalf("historical key exchange err=%v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

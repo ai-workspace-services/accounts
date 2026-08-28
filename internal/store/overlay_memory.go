@@ -68,6 +68,9 @@ func (s *memoryStore) UpsertOverlayDevice(ctx context.Context, device *OverlayDe
 	key := overlayDeviceKey(userID, deviceID)
 	stored, exists := s.overlayDevices[key]
 	if !exists {
+		if err := s.claimOverlayDeviceKeyLocked(strings.TrimSpace(device.NetworkID), strings.TrimSpace(device.WireGuardPublicKey), userID, deviceID, 1, now); err != nil {
+			return err
+		}
 		stored = &OverlayDevice{
 			ID:        deviceID,
 			UserID:    userID,
@@ -103,6 +106,19 @@ func (s *memoryStore) UpsertOverlayDevice(ctx context.Context, device *OverlayDe
 	}
 
 	*device = *cloneOverlayDevice(stored)
+	return nil
+}
+
+func overlayDeviceHistoryKey(networkID, publicKey string) string {
+	return strings.TrimSpace(networkID) + "\x00" + strings.TrimSpace(publicKey)
+}
+
+func (s *memoryStore) claimOverlayDeviceKeyLocked(networkID, publicKey, userID, deviceID string, keyVersion uint64, now time.Time) error {
+	historyKey := overlayDeviceHistoryKey(networkID, publicKey)
+	if _, exists := s.overlayDeviceKeyHistory[historyKey]; exists {
+		return ErrOverlayDeviceKeyConflict
+	}
+	s.overlayDeviceKeyHistory[historyKey] = OverlayDeviceKeyHistory{NetworkID: strings.TrimSpace(networkID), PublicKey: strings.TrimSpace(publicKey), UserID: strings.TrimSpace(userID), DeviceID: strings.TrimSpace(deviceID), KeyVersion: keyVersion, ClaimedAt: now.UTC()}
 	return nil
 }
 

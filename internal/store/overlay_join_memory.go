@@ -166,6 +166,9 @@ func (s *memoryStore) ExchangeOverlayJoinToken(_ context.Context, exchange *Over
 			return err
 		}
 		exchange.Device.WireGuardAddress = address
+		if err := s.claimOverlayDeviceKeyLocked(token.NetworkID, exchange.Device.WireGuardPublicKey, token.UserID, exchange.Device.ID, 1, now); err != nil {
+			return ErrOverlayJoinDeviceConflict
+		}
 	}
 	exchange.Device.UserID = token.UserID
 	exchange.Device.NetworkID = token.NetworkID

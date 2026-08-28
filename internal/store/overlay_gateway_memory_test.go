@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -90,6 +91,27 @@ func TestMemoryStaticImportConcurrentReceiptAndConflict(t *testing.T) {
 	conflict := staticImportFixture(other, key, "sha256-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
 	if _, _, err := st.ImportOverlayStaticClients(context.Background(), conflict, &AuditLog{Action: AuditActionOverlayStaticImport}); !errors.Is(err, ErrOverlayStaticImportConflict) {
 		t.Fatalf("cross-owner conflict err=%v", err)
+	}
+}
+
+func TestMemoryStaticImportRejectsRotatedAwayWireGuardKey(t *testing.T) {
+	st := newMemoryStore(false).(*memoryStore)
+	owner := "11111111-1111-4111-8111-111111111111"
+	if err := st.CreateUser(context.Background(), &User{ID: owner, Name: "owner", Email: "retired-import@example.test", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	oldKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	device := &OverlayDevice{ID: "retired-key-owner", UserID: owner, NetworkID: "network-test", Platform: "linux", WireGuardPublicKey: oldKey, WireGuardAddress: "10.77.0.9/32"}
+	if err := st.UpsertOverlayDevice(context.Background(), device); err != nil {
+		t.Fatal(err)
+	}
+	newKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
+	if _, _, err := st.RotateOverlayDeviceKey(context.Background(), owner, device.NetworkID, device.ID, newKey, 1, &AuditLog{Action: AuditActionOverlayDeviceKeyRotate}); err != nil {
+		t.Fatal(err)
+	}
+	input := staticImportFixture(owner, oldKey, "sha256-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+	if _, _, err := st.ImportOverlayStaticClients(context.Background(), input, &AuditLog{Action: AuditActionOverlayStaticImport}); !errors.Is(err, ErrOverlayStaticImportConflict) {
+		t.Fatalf("static import accepted rotated-away key: %v", err)
 	}
 }
 

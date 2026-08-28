@@ -164,3 +164,21 @@ func TestMemoryJoinOneTimeTokenCannotExchangeAnotherDevice(t *testing.T) {
 		t.Fatalf("different-device replay error=%v", err)
 	}
 }
+
+func TestMemoryJoinRejectsRotatedAwayWireGuardKey(t *testing.T) {
+	now := time.Now().UTC()
+	st := newMemoryStore(false).(*memoryStore)
+	device := &OverlayDevice{ID: "retired-key-owner", UserID: "user-test", NetworkID: "network-test", Platform: "linux", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+	if err := st.UpsertOverlayDevice(context.Background(), device); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.RotateOverlayDeviceKey(context.Background(), device.UserID, device.NetworkID, device.ID, "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=", 1, &AuditLog{Action: AuditActionOverlayDeviceKeyRotate}); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "xjt_retired-key"
+	memoryJoinFixture(t, st, secret, 1, now.Add(time.Hour))
+	exchange := memoryJoinExchange(secret, "xenr_retired-key", "replacement-device", now)
+	if err := st.ExchangeOverlayJoinToken(context.Background(), exchange, &AuditLog{Action: AuditActionOverlayJoinExchange}); !errors.Is(err, ErrOverlayJoinDeviceConflict) {
+		t.Fatalf("join accepted rotated-away key: %v", err)
+	}
+}

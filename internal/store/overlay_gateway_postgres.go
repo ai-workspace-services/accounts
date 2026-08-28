@@ -299,11 +299,15 @@ func (s *postgresStore) ImportOverlayStaticClients(ctx context.Context, input *O
 	if !ownerExists {
 		return nil, false, ErrUserNotFound
 	}
+	existingDevices := make(map[string]bool, len(input.Devices))
 	for _, projected := range input.Devices {
-		var userID, networkID, key, address string
-		err := tx.QueryRowContext(ctx, `SELECT user_uuid::text,network_id,wireguard_public_key,wireguard_address FROM public.overlay_devices WHERE id=$1 FOR UPDATE`, projected.Device.ID).Scan(&userID, &networkID, &key, &address)
-		if err == nil && (userID != input.OwnerUserID || networkID != input.NetworkID || key != projected.Device.WireGuardPublicKey || address != projected.Device.WireGuardAddress) {
+		var userID, networkID, key, address, status string
+		err := tx.QueryRowContext(ctx, `SELECT user_uuid::text,network_id,wireguard_public_key,wireguard_address,status FROM public.overlay_devices WHERE id=$1 FOR UPDATE`, projected.Device.ID).Scan(&userID, &networkID, &key, &address, &status)
+		if err == nil && (userID != input.OwnerUserID || networkID != input.NetworkID || key != projected.Device.WireGuardPublicKey || address != projected.Device.WireGuardAddress || status != OverlayDeviceActive) {
 			return nil, false, ErrOverlayStaticImportConflict
+		}
+		if err == nil {
+			existingDevices[projected.Device.ID] = true
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return nil, false, err
@@ -320,6 +324,14 @@ func (s *postgresStore) ImportOverlayStaticClients(ctx context.Context, input *O
 		device := projected.Device
 		if device.Name == "" {
 			device.Name = device.ID
+		}
+		if !existingDevices[device.ID] {
+			if err := claimOverlayDeviceKeyTx(ctx, tx, input.NetworkID, device.WireGuardPublicKey, input.OwnerUserID, device.ID, 1); err != nil {
+				if errors.Is(err, ErrOverlayDeviceKeyConflict) {
+					return nil, false, ErrOverlayStaticImportConflict
+				}
+				return nil, false, err
+			}
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO public.overlay_devices (id,user_uuid,network_id,name,platform,hostname,wireguard_public_key,wireguard_address) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (user_uuid,id) DO UPDATE SET name=EXCLUDED.name,platform=EXCLUDED.platform,hostname=EXCLUDED.hostname,updated_at=now() WHERE overlay_devices.network_id=EXCLUDED.network_id AND overlay_devices.wireguard_public_key=EXCLUDED.wireguard_public_key`, device.ID, input.OwnerUserID, input.NetworkID, device.Name, device.Platform, device.Hostname, device.WireGuardPublicKey, device.WireGuardAddress)
 		if err != nil {

@@ -115,6 +115,15 @@ type OverlayDeviceEvent struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+type OverlayDeviceKeyHistory struct {
+	NetworkID  string
+	PublicKey  string
+	UserID     string
+	DeviceID   string
+	KeyVersion uint64
+	ClaimedAt  time.Time
+}
+
 type OverlayPolicyReconcilePending struct {
 	NetworkID string    `json:"network_id"`
 	Attempts  uint64    `json:"attempts"`
@@ -671,6 +680,7 @@ type memoryStore struct {
 	overlayDevices              map[string]*OverlayDevice
 	overlayDeviceEvents         []OverlayDeviceEvent
 	overlayDeviceEventSequence  uint64
+	overlayDeviceKeyHistory     map[string]OverlayDeviceKeyHistory
 	overlayNodes                map[string]*OverlayNode
 	overlayConfigAcks           map[string]*OverlayConfigAck
 	overlaySignedConfigs        map[string]*OverlaySignedConfigRecord
@@ -741,6 +751,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		identities:                  make(map[string]*Identity),
 		agents:                      make(map[string]*Agent),
 		overlayDevices:              make(map[string]*OverlayDevice),
+		overlayDeviceKeyHistory:     make(map[string]OverlayDeviceKeyHistory),
 		overlayNodes:                make(map[string]*OverlayNode),
 		overlayConfigAcks:           make(map[string]*OverlayConfigAck),
 		overlaySignedConfigs:        make(map[string]*OverlaySignedConfigRecord),

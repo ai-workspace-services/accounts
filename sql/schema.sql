@@ -161,6 +161,17 @@ CREATE TABLE IF NOT EXISTS public.overlay_devices (
   CONSTRAINT overlay_devices_revoked_state_ck CHECK((status='revoked' AND revoked_at IS NOT NULL) OR (status<>'revoked' AND revoked_at IS NULL AND revoked_reason=''))
 );
 
+CREATE TABLE IF NOT EXISTS public.overlay_device_key_history (
+  network_id TEXT NOT NULL,
+  wireguard_public_key TEXT NOT NULL CHECK(btrim(wireguard_public_key)<>''),
+  user_uuid UUID NOT NULL,
+  device_id TEXT NOT NULL CHECK(btrim(device_id)<>''),
+  key_version BIGINT NOT NULL CHECK(key_version>0),
+  claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY(network_id,wireguard_public_key)
+);
+CREATE INDEX IF NOT EXISTS overlay_device_key_history_device_idx ON public.overlay_device_key_history(network_id,user_uuid,device_id,key_version);
+
 CREATE TABLE IF NOT EXISTS public.overlay_nodes (
   id TEXT PRIMARY KEY,
   network_id TEXT NOT NULL DEFAULT 'xworkmate-private',
@@ -301,7 +312,7 @@ CREATE TABLE IF NOT EXISTS public.overlay_node_credentials (
 );
 CREATE INDEX IF NOT EXISTS overlay_node_credentials_active_idx ON public.overlay_node_credentials(node_id,expires_at) WHERE revoked_at IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS overlay_devices_network_device_id_uk ON public.overlay_devices(network_id,id);
-CREATE UNIQUE INDEX IF NOT EXISTS overlay_devices_network_active_public_key_uk ON public.overlay_devices(network_id,wireguard_public_key) WHERE status<>'revoked';
+CREATE UNIQUE INDEX IF NOT EXISTS overlay_devices_network_public_key_uk ON public.overlay_devices(network_id,wireguard_public_key);
 
 CREATE TABLE IF NOT EXISTS public.overlay_gateway_node_status (
   node_id TEXT PRIMARY KEY REFERENCES public.overlay_nodes(id) ON DELETE CASCADE,

@@ -12,47 +12,62 @@ func (s *postgresStore) UpsertOverlayDevice(ctx context.Context, device *Overlay
 	if device == nil {
 		return errors.New("overlay device is required")
 	}
-	const query = `
-		INSERT INTO overlay_devices (
-			id, user_uuid, network_id, name, platform, hostname,
-			wireguard_public_key, wireguard_address, last_seen_at, updated_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
-		ON CONFLICT (user_uuid, id) DO UPDATE SET
-			name = EXCLUDED.name,
-			platform = EXCLUDED.platform,
-			hostname = EXCLUDED.hostname,
-			wireguard_address = EXCLUDED.wireguard_address,
-			last_seen_at = EXCLUDED.last_seen_at,
-			updated_at = now()
-		WHERE overlay_devices.status <> 'revoked' AND overlay_devices.network_id=EXCLUDED.network_id AND overlay_devices.wireguard_public_key=EXCLUDED.wireguard_public_key
-		RETURNING created_at, updated_at, status, state_version, key_version, revoked_at, revoked_reason`
-
-	var revokedAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, query,
-		strings.TrimSpace(device.ID),
-		strings.TrimSpace(device.UserID),
-		strings.TrimSpace(device.NetworkID),
-		strings.TrimSpace(device.Name),
-		strings.TrimSpace(device.Platform),
-		strings.TrimSpace(device.Hostname),
-		strings.TrimSpace(device.WireGuardPublicKey),
-		strings.TrimSpace(device.WireGuardAddress),
-		device.LastSeenAt,
-	).Scan(&device.CreatedAt, &device.UpdatedAt, &device.Status, &device.StateVersion, &device.KeyVersion, &revokedAt, &device.RevokedReason)
+	device.ID, device.UserID, device.NetworkID, device.WireGuardPublicKey = strings.TrimSpace(device.ID), strings.TrimSpace(device.UserID), strings.TrimSpace(device.NetworkID), strings.TrimSpace(device.WireGuardPublicKey)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrOverlayDeviceKeyConflict
-		}
 		return err
 	}
-	device.ID = strings.TrimSpace(device.ID)
-	device.UserID = strings.TrimSpace(device.UserID)
-	if revokedAt.Valid {
-		v := revokedAt.Time.UTC()
-		device.RevokedAt = &v
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('overlay-device-key:' || $1,0))`, device.NetworkID); err != nil {
+		return err
 	}
+	existing, lookup := scanOverlayDevice(tx.QueryRowContext(ctx, `SELECT id,user_uuid,network_id,name,platform,hostname,wireguard_public_key,wireguard_address,created_at,updated_at,last_seen_at,status,state_version,key_version,revoked_at,revoked_reason FROM public.overlay_devices WHERE user_uuid=$1 AND id=$2 FOR UPDATE`, device.UserID, device.ID))
+	if lookup == nil {
+		if existing.Status == OverlayDeviceRevoked {
+			return ErrOverlayDeviceRevoked
+		}
+		if existing.NetworkID != device.NetworkID {
+			return ErrOverlayJoinConstraint
+		}
+		if existing.WireGuardPublicKey != device.WireGuardPublicKey {
+			return ErrOverlayDeviceKeyConflict
+		}
+		row := tx.QueryRowContext(ctx, `UPDATE public.overlay_devices SET name=$3,platform=$4,hostname=$5,wireguard_address=$6,last_seen_at=$7,updated_at=now() WHERE user_uuid=$1 AND id=$2 RETURNING id,user_uuid,network_id,name,platform,hostname,wireguard_public_key,wireguard_address,created_at,updated_at,last_seen_at,status,state_version,key_version,revoked_at,revoked_reason`, device.UserID, device.ID, strings.TrimSpace(device.Name), strings.TrimSpace(device.Platform), strings.TrimSpace(device.Hostname), strings.TrimSpace(device.WireGuardAddress), device.LastSeenAt)
+		stored, err := scanOverlayDevice(row)
+		if err != nil {
+			return err
+		}
+		*device = *stored
+		return tx.Commit()
+	}
+	if !errors.Is(lookup, ErrOverlayDeviceNotFound) {
+		return lookup
+	}
+	if err = claimOverlayDeviceKeyTx(ctx, tx, device.NetworkID, device.WireGuardPublicKey, device.UserID, device.ID, 1); err != nil {
+		return err
+	}
+	row := tx.QueryRowContext(ctx, `INSERT INTO public.overlay_devices(id,user_uuid,network_id,name,platform,hostname,wireguard_public_key,wireguard_address,last_seen_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,user_uuid,network_id,name,platform,hostname,wireguard_public_key,wireguard_address,created_at,updated_at,last_seen_at,status,state_version,key_version,revoked_at,revoked_reason`, device.ID, device.UserID, device.NetworkID, strings.TrimSpace(device.Name), strings.TrimSpace(device.Platform), strings.TrimSpace(device.Hostname), device.WireGuardPublicKey, strings.TrimSpace(device.WireGuardAddress), device.LastSeenAt)
+	stored, err := scanOverlayDevice(row)
+	if err != nil {
+		return err
+	}
+	if err = insertOverlayDeviceEventTx(ctx, tx, stored, "registered"); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	*device = *stored
 	return nil
+}
+
+func claimOverlayDeviceKeyTx(ctx context.Context, tx *sql.Tx, networkID, publicKey, userID, deviceID string, keyVersion uint64) error {
+	var claimed string
+	err := tx.QueryRowContext(ctx, `INSERT INTO public.overlay_device_key_history(network_id,wireguard_public_key,user_uuid,device_id,key_version) VALUES($1,$2,$3,$4,$5) ON CONFLICT(network_id,wireguard_public_key) DO NOTHING RETURNING wireguard_public_key`, strings.TrimSpace(networkID), strings.TrimSpace(publicKey), strings.TrimSpace(userID), strings.TrimSpace(deviceID), keyVersion).Scan(&claimed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrOverlayDeviceKeyConflict
+	}
+	return err
 }
 
 func (s *postgresStore) GetOverlayDevice(ctx context.Context, userID, deviceID string) (*OverlayDevice, error) {

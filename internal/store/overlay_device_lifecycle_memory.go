@@ -32,10 +32,13 @@ func (s *memoryStore) RotateOverlayDeviceKey(_ context.Context, userID, networkI
 			return nil, false, ErrOverlayDeviceKeyConflict
 		}
 	}
+	now := time.Now().UTC()
+	if err := s.claimOverlayDeviceKeyLocked(networkID, strings.TrimSpace(newKey), userID, deviceID, device.KeyVersion+1, now); err != nil {
+		return nil, false, err
+	}
 	device.WireGuardPublicKey = strings.TrimSpace(newKey)
 	device.KeyVersion++
 	device.StateVersion++
-	now := time.Now().UTC()
 	device.UpdatedAt = now
 	s.appendOverlayDeviceEventLocked(device, "key_rotated", now)
 	audit.CreatedAt = now
