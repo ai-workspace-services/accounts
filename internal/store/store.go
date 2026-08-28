@@ -219,6 +219,10 @@ const (
 	AuditActionOverlayNodeCredentialCreate = "overlay.node_credential.create"
 	AuditActionOverlayNodeCredentialRevoke = "overlay.node_credential.revoke"
 	AuditActionOverlayStaticImport         = "overlay.static_client.import"
+	AuditActionOverlayPolicyCreate         = "overlay.policy.create"
+	AuditActionOverlayPolicyActivate       = "overlay.policy.activate"
+	AuditActionOverlayPolicyRecompile      = "overlay.policy.recompile"
+	AuditActionOverlayDeviceTagsUpdate     = "overlay.device_tags.update"
 )
 
 type AccountQuotaState struct {
@@ -432,6 +436,23 @@ type OverlayStaticImportReceipt struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+type OverlayPolicyRevision struct {
+	NetworkID       string
+	Revision        uint64
+	OwnerUserID     string
+	Name            string
+	Source          []byte
+	Artifact        []byte
+	ArtifactSHA256  string
+	CompilerVersion string
+	Warnings        []byte
+	Status          string
+	Generation      uint64
+	CreatedAt       time.Time
+	ValidatedAt     time.Time
+	ActivatedAt     *time.Time
+}
+
 // Store provides persistence operations for users.
 type Store interface {
 	CreateUser(ctx context.Context, user *User) error
@@ -491,6 +512,13 @@ type Store interface {
 	RecordOverlayGatewayApplyResult(ctx context.Context, result *OverlayGatewayApplyResult) (bool, error)
 	ListOverlayProjectionDevicesByNetwork(ctx context.Context, networkID string) ([]OverlayProjectionDevice, error)
 	ImportOverlayStaticClients(ctx context.Context, input *OverlayStaticImport, audit *AuditLog) (*OverlayStaticImportReceipt, bool, error)
+	CreateOverlayPolicyRevision(ctx context.Context, policy *OverlayPolicyRevision, audit *AuditLog) error
+	GetOverlayPolicyRevision(ctx context.Context, networkID string, revision uint64) (*OverlayPolicyRevision, error)
+	GetLatestOverlayPolicyRevision(ctx context.Context, networkID string) (*OverlayPolicyRevision, error)
+	ActivateOverlayPolicyRevision(ctx context.Context, networkID string, revision uint64, actorUserID string, audit *AuditLog) (*OverlayPolicyRevision, error)
+	GetActiveOverlayPolicy(ctx context.Context, networkID string) (*OverlayPolicyRevision, error)
+	RefreshOverlayPolicyBuild(ctx context.Context, networkID string, revision uint64, expectedDigest string, artifact []byte, digest, compilerVersion string, audit *AuditLog) (*OverlayPolicyRevision, bool, error)
+	UpdateOverlayDeviceTags(ctx context.Context, userID, networkID, deviceID string, tags []string, audit *AuditLog) error
 
 	UpsertTrafficStatCheckpoint(ctx context.Context, checkpoint *TrafficStatCheckpoint) error
 	GetTrafficStatCheckpoint(ctx context.Context, nodeID, accountUUID string) (*TrafficStatCheckpoint, error)
@@ -580,6 +608,8 @@ var (
 	ErrOverlayGatewayReportStale      = errors.New("overlay gateway report is stale or replayed")
 	ErrOverlayStaticImportConflict    = errors.New("overlay static import conflicts with existing device")
 	ErrOverlayStaticImportIdempotency = errors.New("overlay static import idempotency key is bound to another body")
+	ErrOverlayPolicyNotFound          = errors.New("overlay policy revision not found")
+	ErrOverlayPolicyConflict          = errors.New("overlay policy revision conflict")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for
@@ -609,6 +639,8 @@ type memoryStore struct {
 	overlayProjectionDevices    map[string]*OverlayProjectionDevice
 	overlayStaticImports        map[string]*OverlayStaticImportReceipt
 	overlayStaticImportHashes   map[string]string
+	overlayPolicies             map[string][]*OverlayPolicyRevision
+	overlayActivePolicies       map[string]uint64
 	sessions                    map[string]*sessionRecord
 	tenants                     map[string]*Tenant
 	tenantDomains               map[string]*TenantDomain
@@ -675,6 +707,8 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		overlayProjectionDevices:    make(map[string]*OverlayProjectionDevice),
 		overlayStaticImports:        make(map[string]*OverlayStaticImportReceipt),
 		overlayStaticImportHashes:   make(map[string]string),
+		overlayPolicies:             make(map[string][]*OverlayPolicyRevision),
+		overlayActivePolicies:       make(map[string]uint64),
 		sessions:                    make(map[string]*sessionRecord),
 		tenants:                     make(map[string]*Tenant),
 		tenantDomains:               make(map[string]*TenantDomain),

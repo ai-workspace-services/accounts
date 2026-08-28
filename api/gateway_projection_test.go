@@ -23,6 +23,10 @@ func gatewayAPIHarness(t *testing.T) (http.Handler, store.Store) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	st := store.NewMemoryStore()
+	user := &store.User{ID: "11111111-1111-4111-8111-111111111111", Name: "Gateway Device Owner", Email: "gateway-owner@example.com", Active: true}
+	if err := st.CreateUser(t.Context(), user); err != nil {
+		t.Fatal(err)
+	}
 	node := &store.OverlayNode{ID: "gw_test_01", NetworkID: "network-test", Name: "gateway", Role: "gateway", WireGuardPublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32)), WireGuardAddress: "10.77.0.1/32", EndpointHost: "gateway.example", EndpointPort: 443, TransportType: "vless-tls", TransportSecurity: "tls", TransportUUID: "11111111-1111-4111-8111-111111111111", Healthy: true}
 	if err := st.UpsertOverlayNode(t.Context(), node); err != nil {
 		t.Fatal(err)

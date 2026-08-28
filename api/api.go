@@ -29,6 +29,7 @@ import (
 	"account/internal/agentproto"
 	"account/internal/agentserver"
 	"account/internal/auth"
+	"account/internal/overlay/acl"
 	"account/internal/overlay/gatewayprojection"
 	"account/internal/overlay/projection"
 	"account/internal/service"
@@ -102,6 +103,7 @@ type handler struct {
 	taskSessions              tasksession.Store
 	overlayProjection         *projection.Service
 	overlayGatewayProjection  *gatewayprojection.Service
+	overlayACL                *acl.Service
 	overlayJoinRateLimiter    OverlayJoinRateLimiter
 }
 
@@ -176,6 +178,10 @@ func WithOverlayProjectionService(service *projection.Service) Option {
 
 func WithOverlayGatewayProjectionService(service *gatewayprojection.Service) Option {
 	return func(h *handler) { h.overlayGatewayProjection = service }
+}
+
+func WithOverlayACLService(service *acl.Service) Option {
+	return func(h *handler) { h.overlayACL = service }
 }
 
 // WithOverlayJoinRateLimiter replaces the per-process public exchange limiter.
@@ -396,6 +402,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 			h.overlayGatewayProjection = service
 		}
 	}
+	if h.overlayACL == nil {
+		h.overlayACL, _ = acl.NewService(h.store)
+	}
 
 	if h.tokenService != nil && h.store != nil {
 		h.tokenService.SetStore(h.store)
@@ -592,6 +601,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	r.POST("/api/internal/overlay/v1/nodes/heartbeat", h.gatewayNodeHeartbeat)
 	r.GET("/api/internal/overlay/v1/nodes/:node_id/snapshot", h.gatewayNodeSnapshot)
 	r.POST("/api/internal/overlay/v1/nodes/:node_id/apply-result", h.gatewayNodeApplyResult)
+	r.GET("/api/internal/overlay/v1/nodes/:node_id/policy-artifacts/:generation/:digest", h.gatewayNodePolicyArtifact)
 
 	// Public /api routes for admin/management (expected by frontend at /api/admin/...)
 	apiGroup := r.Group("/api")
@@ -627,6 +637,12 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	overlayV1Group.GET("/signed-config", h.overlaySignedConfig)
 	overlayV1Group.GET("/signing-keys", h.overlaySigningKeys)
 	overlayV1Group.POST("/signed-config/:generation/ack", h.overlaySignedConfigAck)
+	overlayV1Group.POST("/policies/validate", h.validateOverlayPolicy)
+	overlayV1Group.POST("/policies", h.createOverlayPolicy)
+	overlayV1Group.GET("/policies/:revision", h.getOverlayPolicy)
+	overlayV1Group.POST("/policies/:revision/activate", h.activateOverlayPolicy)
+	overlayV1Group.POST("/policies/:revision/explain", h.explainOverlayPolicy)
+	overlayV1Group.PUT("/devices/:device_id/tags", h.updateOverlayDeviceTags)
 
 	// Join exchange and enrollment routes intentionally stay outside the normal
 	// account auth middleware. Exchange authenticates the one-time invite;

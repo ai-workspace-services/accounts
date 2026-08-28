@@ -37,6 +37,10 @@ func testService(t *testing.T, st store.Store, now time.Time, maxRemoval float64
 
 func gatewayFixture(t *testing.T, st store.Store) {
 	t.Helper()
+	user := &store.User{ID: "11111111-1111-4111-8111-111111111111", Name: "Gateway Device Owner", Email: "gateway-owner@example.com", Active: true}
+	if err := st.CreateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
 	node := &store.OverlayNode{ID: "gw_test_01", NetworkID: "network-test", Name: "Gateway", Role: "gateway", WireGuardPublicKey: base64.StdEncoding.EncodeToString(make([]byte, 32)), WireGuardAddress: "10.77.0.1/32", EndpointHost: "gateway.example", EndpointPort: 443, TransportType: "vless-tls", TransportSecurity: "tls", TransportUUID: "11111111-1111-4111-8111-111111111111", Healthy: true}
 	if err := st.UpsertOverlayNode(context.Background(), node); err != nil {
 		t.Fatal(err)
@@ -110,5 +114,32 @@ func TestProjectSafetyRejectsRemovalBeyondSignedLimit(t *testing.T) {
 	service.config.AllowEmptyPeers = true
 	if _, err := service.Project(context.Background(), "gw_test_01"); err == nil || !strings.Contains(err.Error(), "exceeds safety limit") {
 		t.Fatalf("unsafe full removal accepted: %v", err)
+	}
+}
+
+func TestInactiveUserIsRemovedFromGatewayPeers(t *testing.T) {
+	st := store.NewMemoryStore()
+	gatewayFixture(t, st)
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	service := testService(t, st, now, 100)
+	first, err := service.Project(context.Background(), "gw_test_01")
+	if err != nil || len(first.WireGuard.Peers) != 1 {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	user, err := st.GetUserByID(context.Background(), "11111111-1111-4111-8111-111111111111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.Active = false
+	if err = st.UpdateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	service.config.AllowEmptyPeers = true
+	second, err := service.Project(context.Background(), "gw_test_01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Generation != first.Generation+1 || len(second.WireGuard.Peers) != 0 {
+		t.Fatalf("inactive principal remained projected: %#v", second)
 	}
 }

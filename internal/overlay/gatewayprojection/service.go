@@ -11,12 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"account/internal/overlay/acl"
 	"account/internal/overlay/domain"
 	"account/internal/overlay/projection"
 	"account/internal/store"
 )
-
-const policyPlaceholder = "xconnect-policy/v1:deny-default:placeholder-not-applied"
 
 var ErrEmptyPeerProjection = errors.New("empty gateway peer projection requires explicit override")
 
@@ -97,9 +96,22 @@ func (s *Service) Project(ctx context.Context, nodeID string) (domain.GatewaySna
 		if err != nil {
 			return domain.GatewaySnapshot{}, err
 		}
+		users, err := s.store.ListUsers(ctx)
+		if err != nil {
+			return domain.GatewaySnapshot{}, err
+		}
+		eligible := map[string]bool{}
+		for _, user := range users {
+			if user.Active {
+				eligible[user.ID] = true
+			}
+		}
 		peers := make([]domain.GatewayPeer, 0, len(devices))
 		seenIDs, seenKeys, seenAddresses := map[string]bool{}, map[string]bool{}, map[string]bool{}
 		for _, item := range devices {
+			if !eligible[item.Device.UserID] {
+				continue
+			}
 			if !attachedToNode(item.Attachments, node.ID, node.EndpointHost) {
 				continue
 			}
@@ -114,7 +126,11 @@ func (s *Service) Project(ctx context.Context, nodeID string) (domain.GatewaySna
 			return domain.GatewaySnapshot{}, ErrEmptyPeerProjection
 		}
 		safety := domain.GatewaySafety{AllowEmptyPeers: s.config.AllowEmptyPeers, MaxPeerRemovalPercent: s.config.MaxPeerRemovalPercent}
-		source := sourceDocument{Version: 1, RenewalEpoch: now.Unix() / int64(s.config.RenewalInterval/time.Second), Node: sourceNode{ID: node.ID, NetworkID: node.NetworkID, Address: node.WireGuardAddress, Host: node.EndpointHost, Port: node.EndpointPort}, Peers: peers, Safety: safety, Policy: policyPlaceholder}
+		policy, err := acl.ResolveActive(ctx, s.store, node.NetworkID)
+		if err != nil {
+			return domain.GatewaySnapshot{}, fmt.Errorf("resolve active gateway policy: %w", err)
+		}
+		source := sourceDocument{Version: 1, RenewalEpoch: now.Unix() / int64(s.config.RenewalInterval/time.Second), Node: sourceNode{ID: node.ID, NetworkID: node.NetworkID, Address: node.WireGuardAddress, Host: node.EndpointHost, Port: node.EndpointPort}, Peers: peers, Safety: safety, Policy: fmt.Sprintf("%d:%s", policy.Generation, policy.Digest)}
 		sourceRaw, _ := json.Marshal(source)
 		sourceSum := sha256.Sum256(sourceRaw)
 		sourceRevision := "sha256:" + hex.EncodeToString(sourceSum[:])
@@ -136,8 +152,7 @@ func (s *Service) Project(ctx context.Context, nodeID string) (domain.GatewaySna
 				return domain.GatewaySnapshot{}, err
 			}
 		}
-		policySum := sha256.Sum256([]byte(policyPlaceholder))
-		snapshot := domain.GatewaySnapshot{SchemaVersion: 1, SnapshotID: deriveSnapshotID(node.ID, generation, sourceRevision), NodeID: node.ID, Generation: generation, ExpectedPreviousGeneration: previousGeneration, IssuedAt: now, ExpiresAt: now.Add(s.config.Lifetime).UTC().Truncate(time.Second), ProxyCore: domain.ProxyCoreXray, Safety: safety, WireGuard: domain.GatewayWireGuard{InterfaceName: s.config.InterfaceName, ListenPort: s.config.WireGuardListenPort, Addresses: []string{node.WireGuardAddress}, Peers: peers}, Relay: domain.GatewayRelay{Transport: "vless-tls-xudp", ListenHost: s.config.RelayListenHost, ListenPort: node.EndpointPort, ServerNames: []string{node.EndpointHost}, CredentialRefs: []string{relayCredentialRef(node.ID)}}, Policy: domain.GatewayPolicy{Generation: 1, Backend: "nftables", RulesetSHA256: hex.EncodeToString(policySum[:])}}
+		snapshot := domain.GatewaySnapshot{SchemaVersion: 1, SnapshotID: deriveSnapshotID(node.ID, generation, sourceRevision), NodeID: node.ID, Generation: generation, ExpectedPreviousGeneration: previousGeneration, IssuedAt: now, ExpiresAt: now.Add(s.config.Lifetime).UTC().Truncate(time.Second), ProxyCore: domain.ProxyCoreXray, Safety: safety, WireGuard: domain.GatewayWireGuard{InterfaceName: s.config.InterfaceName, ListenPort: s.config.WireGuardListenPort, Addresses: []string{node.WireGuardAddress}, Peers: peers}, Relay: domain.GatewayRelay{Transport: "vless-tls-xudp", ListenHost: s.config.RelayListenHost, ListenPort: node.EndpointPort, ServerNames: []string{node.EndpointHost}, CredentialRefs: []string{relayCredentialRef(node.ID)}}, Policy: domain.GatewayPolicy{Generation: policy.Generation, Backend: "nftables", RulesetSHA256: policy.Digest}}
 		payload, err := snapshot.SigningBytes()
 		if err != nil {
 			return domain.GatewaySnapshot{}, err

@@ -397,6 +397,57 @@ paths:
         "200": {description: Stable import receipt., content: {application/json: {schema: {$ref: "#/components/schemas/StaticClientImportReceipt"}}}}
         "409": {$ref: "#/components/responses/Error"}
         default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/policies/validate:
+    post:
+      tags: [Overlay]
+      summary: Strictly validate and compile a NetworkPolicy without storing it.
+      security: [{bearerAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/PolicyDocumentRequest"}}}}
+      responses: {"200": {description: Deterministic validation result}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/policies:
+    post:
+      tags: [Overlay]
+      summary: Create an immutable validated draft revision.
+      security: [{bearerAuth: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/PolicyDocumentRequest"}}}}
+      responses: {"201": {description: Draft created}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/policies/{revision}:
+    get:
+      tags: [Overlay]
+      security: [{bearerAuth: []}]
+      parameters: [{name: revision, in: path, required: true, schema: {type: integer, minimum: 1}}, {name: network_id, in: query, required: true, schema: {type: string}}]
+      responses: {"200": {description: Policy revision metadata}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/policies/{revision}/activate:
+    post:
+      tags: [Overlay]
+      security: [{bearerAuth: []}]
+      parameters: [{name: revision, in: path, required: true, schema: {type: integer, minimum: 1}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [network_id], properties: {network_id: {type: string}}}}}}
+      responses: {"200": {description: Activated generation}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/policies/{revision}/explain:
+    post:
+      tags: [Overlay]
+      security: [{bearerAuth: []}]
+      parameters: [{name: revision, in: path, required: true, schema: {type: integer, minimum: 1}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [network_id, source, destination, protocol, port], properties: {network_id: {type: string}, source: {type: string}, destination: {type: string}, protocol: {enum: [tcp, udp, icmp]}, port: {type: integer, minimum: 0, maximum: 65535}}}}}}
+      responses: {"200": {description: Final action, matched rule and resolved device sets}, default: {$ref: "#/components/responses/Error"}}
+  /api/overlay/v1/devices/{device_id}/tags:
+    put:
+      tags: [Overlay]
+      summary: Replace device tags under active tagOwners authorization.
+      security: [{bearerAuth: []}]
+      parameters: [{name: device_id, in: path, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, required: [network_id, tags], properties: {network_id: {type: string}, tags: {type: array, maxItems: 64, uniqueItems: true, items: {type: string, pattern: "^tag:[A-Za-z0-9_.-]+$"}}}}}}}
+      responses: {"200": {description: Normalized tags and recompiled policy identity}, default: {$ref: "#/components/responses/Error"}}
+  /api/internal/overlay/v1/nodes/{node_id}/policy-artifacts/{generation}/{digest}:
+    get:
+      tags: [Internal Overlay]
+      summary: Fetch exact canonical enforcement bytes bound by GatewaySnapshot policy fields.
+      security: [{nodeBearer: []}]
+      parameters: [{name: node_id, in: path, required: true, schema: {type: string}}, {name: generation, in: path, required: true, schema: {type: integer, minimum: 1}}, {name: digest, in: path, required: true, schema: {type: string, pattern: "^[a-f0-9]{64}$"}}]
+      responses:
+        "200": {description: Sanitized enforcement artifact; Cache-Control is no-store., content: {application/vnd.xconnect.gateway-policy.v1+json: {schema: {$ref: "#/components/schemas/PolicyEnforcementArtifact"}}}}
+        default: {$ref: "#/components/responses/Error"}
 components:
   parameters:
     NodeID: {name: node_id, in: path, required: true, schema: {type: string}}
@@ -423,6 +474,16 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
   schemas:
+    PolicyDocumentRequest:
+      type: object
+      additionalProperties: false
+      required: [network_id, source, source_format]
+      properties: {network_id: {type: string}, source: {type: string, maxLength: 1048576}, source_format: {enum: [json, yaml]}}
+    PolicyEnforcementArtifact:
+      type: object
+      additionalProperties: false
+      required: [schema_version, compiler_version, network_id, revision, default_action, protected_flows, rules]
+      properties: {schema_version: {const: 1}, compiler_version: {const: xconnect-acl-v1alpha1.1}, network_id: {type: string}, revision: {type: integer, minimum: 0}, default_action: {const: deny}, protected_flows: {type: array, items: {type: string}}, rules: {type: array, items: {type: object}}}
     SignedConfig:
       $ref: ../schemas/overlay/signed-config.schema.json
     GatewaySnapshot:
