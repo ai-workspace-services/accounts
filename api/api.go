@@ -29,6 +29,7 @@ import (
 	"account/internal/agentproto"
 	"account/internal/agentserver"
 	"account/internal/auth"
+	"account/internal/overlay/gatewayprojection"
 	"account/internal/overlay/projection"
 	"account/internal/service"
 	"account/internal/store"
@@ -100,6 +101,7 @@ type handler struct {
 	bridgeCredentials         map[string]memoryBridgeCredential
 	taskSessions              tasksession.Store
 	overlayProjection         *projection.Service
+	overlayGatewayProjection  *gatewayprojection.Service
 	overlayJoinRateLimiter    OverlayJoinRateLimiter
 }
 
@@ -170,6 +172,10 @@ func WithOverlayProjectionService(service *projection.Service) Option {
 			h.overlayProjection = service
 		}
 	}
+}
+
+func WithOverlayGatewayProjectionService(service *gatewayprojection.Service) Option {
+	return func(h *handler) { h.overlayGatewayProjection = service }
 }
 
 // WithOverlayJoinRateLimiter replaces the per-process public exchange limiter.
@@ -382,6 +388,14 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 			h.overlayProjection = service
 		}
 	}
+	if h.overlayGatewayProjection == nil && h.overlayProjection != nil {
+		service, err := newOverlayGatewayProjectionServiceFromEnvironment(h.store, h.overlayProjection)
+		if err != nil {
+			slog.Error("overlay_gateway_projection_disabled", "error", err)
+		} else {
+			h.overlayGatewayProjection = service
+		}
+	}
 
 	if h.tokenService != nil && h.store != nil {
 		h.tokenService.SetStore(h.store)
@@ -568,9 +582,16 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup.GET("/policy/:accountUUID", h.internalAccountPolicy)
 	internalGroup.POST("/nodes/heartbeat", h.internalNodeHeartbeat)
 	internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
-	internalOverlayV1Group := r.Group("/api/internal/overlay/v1")
-	internalOverlayV1Group.Use(auth.InternalAuthMiddleware())
-	internalOverlayV1Group.POST("/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
+	internalOverlayV1Management := r.Group("/api/internal/overlay/v1")
+	internalOverlayV1Management.Use(auth.InternalAuthMiddleware())
+	internalOverlayV1Management.POST("/nodes/:node_id/credentials", h.createOverlayNodeCredential)
+	internalOverlayV1Management.DELETE("/nodes/:node_id/credentials/:credential_id", h.revokeOverlayNodeCredential)
+	internalOverlayV1Management.POST("/imports/static-clients", h.importOverlayStaticClients)
+	// Gateway Agent v1 uses a node-bound, hash-only bearer. It deliberately
+	// does not inherit the shared X-Service-Token middleware.
+	r.POST("/api/internal/overlay/v1/nodes/heartbeat", h.gatewayNodeHeartbeat)
+	r.GET("/api/internal/overlay/v1/nodes/:node_id/snapshot", h.gatewayNodeSnapshot)
+	r.POST("/api/internal/overlay/v1/nodes/:node_id/apply-result", h.gatewayNodeApplyResult)
 
 	// Public /api routes for admin/management (expected by frontend at /api/admin/...)
 	apiGroup := r.Group("/api")

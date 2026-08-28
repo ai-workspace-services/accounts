@@ -286,6 +286,27 @@ type GatewaySnapshot struct {
 	Signature                  Signature        `json:"signature"`
 }
 
+// SigningBytes is the cross-language Gateway Agent verification protocol.
+// The field order is fixed, JSON is UTF-8, time.Time uses canonical RFC3339,
+// and signature is deliberately excluded.
+func (s GatewaySnapshot) SigningBytes() ([]byte, error) {
+	payload := struct {
+		SchemaVersion              int              `json:"schema_version"`
+		SnapshotID                 string           `json:"snapshot_id"`
+		NodeID                     string           `json:"node_id"`
+		Generation                 uint64           `json:"generation"`
+		ExpectedPreviousGeneration uint64           `json:"expected_previous_generation"`
+		IssuedAt                   time.Time        `json:"issued_at"`
+		ExpiresAt                  time.Time        `json:"expires_at"`
+		ProxyCore                  string           `json:"proxy_core"`
+		Safety                     GatewaySafety    `json:"safety"`
+		WireGuard                  GatewayWireGuard `json:"wireguard"`
+		Relay                      GatewayRelay     `json:"relay"`
+		Policy                     GatewayPolicy    `json:"policy"`
+	}{s.SchemaVersion, s.SnapshotID, s.NodeID, s.Generation, s.ExpectedPreviousGeneration, s.IssuedAt, s.ExpiresAt, s.ProxyCore, s.Safety, s.WireGuard, s.Relay, s.Policy}
+	return json.Marshal(payload)
+}
+
 func DecodeGatewaySnapshot(raw []byte) (GatewaySnapshot, error) {
 	if err := ValidateNoSecretFields(raw); err != nil {
 		return GatewaySnapshot{}, err

@@ -52,7 +52,7 @@ func TestPostgresOverlaySigningKeyMaxExpiryUsesPersistedHistory(t *testing.T) {
 	defer db.Close()
 	st := &postgresStore{db: db}
 	want := time.Date(2026, 8, 30, 1, 0, 0, 0, time.UTC)
-	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(expires_at\\)").WithArgs("key-old").
+	mock.ExpectQuery("(?s)SELECT COALESCE\\(MAX\\(expires_at\\).*overlay_gateway_snapshots").WithArgs("key-old").
 		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(want))
 	got, err := st.GetOverlaySigningKeyMaxExpiresAt(context.Background(), "key-old")
 	if err != nil || !got.Equal(want) {

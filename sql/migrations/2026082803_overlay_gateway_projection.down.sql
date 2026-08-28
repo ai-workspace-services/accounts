@@ -1,0 +1,10 @@
+BEGIN;
+DROP TABLE IF EXISTS public.overlay_static_import_receipts;
+DROP TABLE IF EXISTS public.overlay_device_projection_metadata;
+DROP TABLE IF EXISTS public.overlay_gateway_apply_results;
+DROP TABLE IF EXISTS public.overlay_gateway_snapshots;
+DROP TABLE IF EXISTS public.overlay_gateway_node_status;
+DROP TABLE IF EXISTS public.overlay_node_credentials;
+DROP INDEX IF EXISTS public.overlay_devices_network_public_key_uk;
+DROP INDEX IF EXISTS public.overlay_devices_network_device_id_uk;
+COMMIT;

@@ -64,6 +64,11 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		"/api/overlay/v1/enrollment/signed-config/{generation}/ack",
 		"/api/overlay/v1/signed-config/{generation}/ack",
 		"/api/internal/overlay/v1/nodes/heartbeat",
+		"/api/internal/overlay/v1/nodes/{node_id}/snapshot",
+		"/api/internal/overlay/v1/nodes/{node_id}/apply-result",
+		"/api/internal/overlay/v1/nodes/{node_id}/credentials",
+		"/api/internal/overlay/v1/nodes/{node_id}/credentials/{credential_id}",
+		"/api/internal/overlay/v1/imports/static-clients",
 	} {
 		if _, exists := paths[path]; !exists {
 			t.Errorf("OpenAPI missing %s", path)
@@ -80,6 +85,42 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		if got := schema["$ref"]; got != want {
 			t.Errorf("OpenAPI %s ref = %#v, want %q", name, got, want)
 		}
+	}
+}
+
+func TestGatewayOpenAPILocksAuthenticationAndShadowBoundaries(t *testing.T) {
+	var document map[string]any
+	if err := yaml.Unmarshal(readFile(t, "api/openapi/overlay-v1.yaml"), &document); err != nil {
+		t.Fatal(err)
+	}
+	paths := document["paths"].(map[string]any)
+	for _, path := range []string{"/api/internal/overlay/v1/nodes/heartbeat", "/api/internal/overlay/v1/nodes/{node_id}/snapshot", "/api/internal/overlay/v1/nodes/{node_id}/apply-result"} {
+		methods := paths[path].(map[string]any)
+		for _, operation := range methods {
+			if !strings.Contains(fmt.Sprint(operation.(map[string]any)["security"]), "nodeBearer") {
+				t.Fatalf("Agent path %s is not node-bound", path)
+			}
+		}
+	}
+	for _, path := range []string{"/api/internal/overlay/v1/nodes/{node_id}/credentials", "/api/internal/overlay/v1/imports/static-clients"} {
+		operation := paths[path].(map[string]any)["post"].(map[string]any)
+		if !strings.Contains(fmt.Sprint(operation["security"]), "serviceToken") {
+			t.Fatalf("management path %s escaped service boundary", path)
+		}
+	}
+	components := document["components"].(map[string]any)
+	schemas := components["schemas"].(map[string]any)
+	heartbeat := schemas["GatewayHeartbeatRequest"].(map[string]any)["properties"].(map[string]any)
+	if heartbeat["mode"].(map[string]any)["const"] != "shadow" || heartbeat["proxy_core"].(map[string]any)["const"] != "xray" {
+		t.Fatal("heartbeat is not shadow/Xray locked")
+	}
+	apply := schemas["GatewayApplyResultRequest"].(map[string]any)["properties"].(map[string]any)
+	if apply["applied_generation"].(map[string]any)["const"] != 0 || apply["runtime_applied"].(map[string]any)["const"] != false {
+		t.Fatal("apply result can claim runtime mutation")
+	}
+	credential := schemas["CreateNodeCredentialResponse"].(map[string]any)["properties"].(map[string]any)["credential"].(map[string]any)["properties"].(map[string]any)["bearer_token"].(map[string]any)
+	if credential["writeOnly"] != true {
+		t.Fatal("node raw credential is not writeOnly")
 	}
 }
 

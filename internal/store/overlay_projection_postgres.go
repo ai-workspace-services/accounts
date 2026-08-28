@@ -14,7 +14,11 @@ func (s *postgresStore) GetOverlaySigningKeyMaxExpiresAt(ctx context.Context, ke
 	var expiresAt time.Time
 	err := s.db.QueryRowContext(ctx, `
 SELECT COALESCE(MAX(expires_at), 'epoch'::timestamptz)
-FROM public.overlay_signed_configs WHERE signing_key_id = $1`, keyID).Scan(&expiresAt)
+FROM (
+  SELECT expires_at FROM public.overlay_signed_configs WHERE signing_key_id = $1
+  UNION ALL
+  SELECT expires_at FROM public.overlay_gateway_snapshots WHERE signing_key_id = $1
+) signing_windows`, keyID).Scan(&expiresAt)
 	return expiresAt.UTC(), err
 }
 

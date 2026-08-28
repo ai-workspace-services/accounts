@@ -143,6 +143,22 @@ func (s *Service) PublicSigningKeys() []PublicSigningKey {
 	return provider.PublicSigningKeys()
 }
 
+// SignControlPlanePayload shares the configured Ed25519 key ring with other
+// versioned overlay projections without exposing private key material.
+func (s *Service) SignControlPlanePayload(payload []byte) (domain.Signature, error) {
+	if s == nil || s.signer == nil {
+		return domain.Signature{}, errors.New("overlay signing service is unavailable")
+	}
+	return s.signer.Sign(payload)
+}
+
+func (s *Service) VerifyControlPlanePayload(payload []byte, signature domain.Signature) error {
+	if s == nil || s.signer == nil {
+		return errors.New("overlay signing service is unavailable")
+	}
+	return s.signer.Verify(payload, signature)
+}
+
 func deriveConfigID(userID, deviceID, networkID string, generation uint64) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%s\x00%d", userID, deviceID, networkID, generation)))
 	return "cfg_" + hex.EncodeToString(sum[:12])

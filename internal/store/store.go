@@ -203,19 +203,22 @@ type AuditLogFilter struct {
 // Audit action names. Kept as constants so a typo cannot silently create a
 // second, unqueryable action stream.
 const (
-	AuditActionPlanUpsert          = "billing.plan.upsert"
-	AuditActionPlanDelete          = "billing.plan.delete"
-	AuditActionQuotaAdjust         = "billing.quota.adjust"
-	AuditActionBalanceAdjust       = "billing.balance.adjust"
-	AuditActionEntitlementGrant    = "billing.entitlement.grant"
-	AuditActionTrialGrant          = "billing.trial.grant"
-	AuditActionArrearsClear        = "billing.arrears.clear"
-	AuditActionSubscriptionCancel  = "billing.subscription.cancel"
-	AuditActionSegmentUpdate       = "account.segment.update"
-	AuditActionRoleUpdate          = "account.role.update"
-	AuditActionOverlayJoinCreate   = "overlay.join_token.create"
-	AuditActionOverlayJoinRevoke   = "overlay.join_token.revoke"
-	AuditActionOverlayJoinExchange = "overlay.join_token.exchange"
+	AuditActionPlanUpsert                  = "billing.plan.upsert"
+	AuditActionPlanDelete                  = "billing.plan.delete"
+	AuditActionQuotaAdjust                 = "billing.quota.adjust"
+	AuditActionBalanceAdjust               = "billing.balance.adjust"
+	AuditActionEntitlementGrant            = "billing.entitlement.grant"
+	AuditActionTrialGrant                  = "billing.trial.grant"
+	AuditActionArrearsClear                = "billing.arrears.clear"
+	AuditActionSubscriptionCancel          = "billing.subscription.cancel"
+	AuditActionSegmentUpdate               = "account.segment.update"
+	AuditActionRoleUpdate                  = "account.role.update"
+	AuditActionOverlayJoinCreate           = "overlay.join_token.create"
+	AuditActionOverlayJoinRevoke           = "overlay.join_token.revoke"
+	AuditActionOverlayJoinExchange         = "overlay.join_token.exchange"
+	AuditActionOverlayNodeCredentialCreate = "overlay.node_credential.create"
+	AuditActionOverlayNodeCredentialRevoke = "overlay.node_credential.revoke"
+	AuditActionOverlayStaticImport         = "overlay.static_client.import"
 )
 
 type AccountQuotaState struct {
@@ -358,6 +361,77 @@ type OverlayJoinExchange struct {
 	AddressEndHost   int
 }
 
+type OverlayNodeCredential struct {
+	ID         string
+	NodeID     string
+	TokenHash  []byte `json:"-"`
+	ExpiresAt  time.Time
+	RevokedAt  *time.Time
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+}
+
+type OverlayGatewayHeartbeat struct {
+	NodeID             string
+	AgentVersion       string
+	Mode               string
+	ProxyCore          string
+	ObservedGeneration uint64
+	AppliedGeneration  uint64
+	ReceivedAt         time.Time
+}
+
+type OverlayGatewaySnapshotRecord struct {
+	NodeID                     string
+	SnapshotID                 string
+	Generation                 uint64
+	ExpectedPreviousGeneration uint64
+	SourceRevision             string
+	SigningKeyID               string
+	SignedPayload              []byte
+	IssuedAt                   time.Time
+	ExpiresAt                  time.Time
+	CreatedAt                  time.Time
+}
+
+type OverlayGatewayApplyResult struct {
+	NodeID             string
+	SnapshotID         string
+	ObservedGeneration uint64
+	AppliedGeneration  uint64
+	RuntimeApplied     bool
+	Result             string
+	Diff               []byte
+	ReceivedAt         time.Time
+}
+
+type OverlayProjectionDevice struct {
+	Device      OverlayDevice
+	Tags        []string
+	Attachments []string
+}
+
+type OverlayStaticImport struct {
+	IdempotencyKey string
+	BodySHA256     string
+	OwnerUserID    string
+	NetworkID      string
+	SourceKind     string
+	SourceVariable string
+	BaselineSHA256 string
+	Devices        []OverlayProjectionDevice
+}
+
+type OverlayStaticImportReceipt struct {
+	ImportID       string    `json:"import_id"`
+	IdempotencyKey string    `json:"idempotency_key"`
+	OwnerUserID    string    `json:"owner_user_id"`
+	NetworkID      string    `json:"network_id"`
+	BaselineSHA256 string    `json:"baseline_sha256"`
+	DeviceCount    int       `json:"device_count"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 // Store provides persistence operations for users.
 type Store interface {
 	CreateUser(ctx context.Context, user *User) error
@@ -407,6 +481,16 @@ type Store interface {
 	RevokeOverlayJoinToken(ctx context.Context, userID, tokenID string, revokedAt time.Time, audit *AuditLog) error
 	ExchangeOverlayJoinToken(ctx context.Context, exchange *OverlayJoinExchange, audit *AuditLog) error
 	GetOverlayEnrollmentSession(ctx context.Context, tokenHash []byte, now time.Time) (*OverlayEnrollmentSession, error)
+	GetOverlayNode(ctx context.Context, nodeID string) (*OverlayNode, error)
+	CreateOverlayNodeCredential(ctx context.Context, credential *OverlayNodeCredential, audit *AuditLog) error
+	RevokeOverlayNodeCredential(ctx context.Context, nodeID, credentialID string, revokedAt time.Time, audit *AuditLog) error
+	AuthenticateOverlayNodeCredential(ctx context.Context, tokenHash []byte, now time.Time) (*OverlayNodeCredential, error)
+	RecordOverlayGatewayHeartbeat(ctx context.Context, heartbeat *OverlayGatewayHeartbeat) error
+	GetLatestOverlayGatewaySnapshot(ctx context.Context, nodeID string) (*OverlayGatewaySnapshotRecord, error)
+	SaveOverlayGatewaySnapshot(ctx context.Context, record *OverlayGatewaySnapshotRecord) error
+	RecordOverlayGatewayApplyResult(ctx context.Context, result *OverlayGatewayApplyResult) (bool, error)
+	ListOverlayProjectionDevicesByNetwork(ctx context.Context, networkID string) ([]OverlayProjectionDevice, error)
+	ImportOverlayStaticClients(ctx context.Context, input *OverlayStaticImport, audit *AuditLog) (*OverlayStaticImportReceipt, bool, error)
 
 	UpsertTrafficStatCheckpoint(ctx context.Context, checkpoint *TrafficStatCheckpoint) error
 	GetTrafficStatCheckpoint(ctx context.Context, nodeID, accountUUID string) (*TrafficStatCheckpoint, error)
@@ -466,65 +550,83 @@ type Store interface {
 
 // Domain level errors returned by the store implementation.
 var (
-	ErrEmailExists                 = errors.New("email already exists")
-	ErrNameExists                  = errors.New("name already exists")
-	ErrInvalidName                 = errors.New("invalid user name")
-	ErrUserNotFound                = errors.New("user not found")
-	ErrMFANotSupported             = errors.New("mfa is not supported by the current store schema")
-	ErrSuperAdminCountingDisabled  = errors.New("super administrator counting is disabled")
-	ErrSubscriptionNotFound        = errors.New("subscription not found")
-	ErrOverlaySignedConfigNotFound = errors.New("overlay signed config not found")
-	ErrOverlaySignedConfigMismatch = errors.New("overlay signed config mismatch")
-	ErrOverlaySignedConfigStale    = errors.New("overlay signed config generation is stale")
-	ErrOverlaySignedConfigGap      = errors.New("overlay signed config generation must advance by one")
-	ErrOverlayJoinTokenNotFound    = errors.New("overlay join token not found")
-	ErrOverlayJoinTokenExpired     = errors.New("overlay join token expired")
-	ErrOverlayJoinTokenRevoked     = errors.New("overlay join token revoked")
-	ErrOverlayJoinTokenExhausted   = errors.New("overlay join token exhausted")
-	ErrOverlayJoinConstraint       = errors.New("overlay join constraint mismatch")
-	ErrOverlayJoinDeviceConflict   = errors.New("overlay join device conflicts with existing registration")
-	ErrOverlayJoinReplay           = errors.New("overlay join device already exchanged this token")
-	ErrOverlayEnrollmentNotFound   = errors.New("overlay enrollment session not found")
-	ErrOverlayEnrollmentExpired    = errors.New("overlay enrollment session expired")
+	ErrEmailExists                    = errors.New("email already exists")
+	ErrNameExists                     = errors.New("name already exists")
+	ErrInvalidName                    = errors.New("invalid user name")
+	ErrUserNotFound                   = errors.New("user not found")
+	ErrMFANotSupported                = errors.New("mfa is not supported by the current store schema")
+	ErrSuperAdminCountingDisabled     = errors.New("super administrator counting is disabled")
+	ErrSubscriptionNotFound           = errors.New("subscription not found")
+	ErrOverlaySignedConfigNotFound    = errors.New("overlay signed config not found")
+	ErrOverlaySignedConfigMismatch    = errors.New("overlay signed config mismatch")
+	ErrOverlaySignedConfigStale       = errors.New("overlay signed config generation is stale")
+	ErrOverlaySignedConfigGap         = errors.New("overlay signed config generation must advance by one")
+	ErrOverlayJoinTokenNotFound       = errors.New("overlay join token not found")
+	ErrOverlayJoinTokenExpired        = errors.New("overlay join token expired")
+	ErrOverlayJoinTokenRevoked        = errors.New("overlay join token revoked")
+	ErrOverlayJoinTokenExhausted      = errors.New("overlay join token exhausted")
+	ErrOverlayJoinConstraint          = errors.New("overlay join constraint mismatch")
+	ErrOverlayJoinDeviceConflict      = errors.New("overlay join device conflicts with existing registration")
+	ErrOverlayJoinReplay              = errors.New("overlay join device already exchanged this token")
+	ErrOverlayEnrollmentNotFound      = errors.New("overlay enrollment session not found")
+	ErrOverlayEnrollmentExpired       = errors.New("overlay enrollment session expired")
+	ErrOverlayNodeNotFound            = errors.New("overlay node not found")
+	ErrOverlayNodeCredentialNotFound  = errors.New("overlay node credential not found")
+	ErrOverlayNodeCredentialExpired   = errors.New("overlay node credential expired")
+	ErrOverlayNodeCredentialRevoked   = errors.New("overlay node credential revoked")
+	ErrOverlayGatewaySnapshotNotFound = errors.New("overlay gateway snapshot not found")
+	ErrOverlayGatewayGenerationStale  = errors.New("overlay gateway generation is stale")
+	ErrOverlayGatewaySourceExists     = errors.New("overlay gateway source revision already exists")
+	ErrOverlayGatewayReportStale      = errors.New("overlay gateway report is stale or replayed")
+	ErrOverlayStaticImportConflict    = errors.New("overlay static import conflicts with existing device")
+	ErrOverlayStaticImportIdempotency = errors.New("overlay static import idempotency key is bound to another body")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for
 // unit tests and local development where a persistent database is not yet
 // configured.
 type memoryStore struct {
-	mu                      sync.RWMutex
-	allowSuperAdminCounting bool
-	byID                    map[string]*User
-	byEmail                 map[string]*User
-	byName                  map[string]*User
-	subscriptions           map[string]map[string]*Subscription
-	identities              map[string]*Identity
-	agents                  map[string]*Agent
-	overlayDevices          map[string]*OverlayDevice
-	overlayNodes            map[string]*OverlayNode
-	overlayConfigAcks       map[string]*OverlayConfigAck
-	overlaySignedConfigs    map[string]*OverlaySignedConfigRecord
-	overlayJoinTokens       map[string]*OverlayJoinToken
-	overlayJoinTokenHashes  map[string]string
-	overlayEnrollments      map[string]*OverlayEnrollmentSession
-	sessions                map[string]*sessionRecord
-	tenants                 map[string]*Tenant
-	tenantDomains           map[string]*TenantDomain
-	tenantMemberships       map[string]map[string]*TenantMembership
-	xworkmateProfiles       map[string]*XWorkmateProfile
-	trafficStatCheckpoints  map[string]*TrafficStatCheckpoint
-	trafficMinuteBuckets    map[string]*TrafficMinuteBucket
-	billingLedgerEntries    map[string]*BillingLedgerEntry
-	auditLogs               []*AuditLog
-	accountQuotaStates      map[string]*AccountQuotaState
-	accountBillingProfiles  map[string]*AccountBillingProfile
-	accountPolicySnapshots  map[string]*AccountPolicySnapshot
-	nodeHealthSnapshots     map[string]*NodeHealthSnapshot
-	schedulerDecisions      map[string]*SchedulerDecision
-	blacklistedEmails       map[string]bool
-	billingPlans            map[string]*BillingPlan
-	stripeWebhookEvents     map[string]*StripeWebhookEvent
-	billingEvents           []BillingEvent
+	mu                          sync.RWMutex
+	allowSuperAdminCounting     bool
+	byID                        map[string]*User
+	byEmail                     map[string]*User
+	byName                      map[string]*User
+	subscriptions               map[string]map[string]*Subscription
+	identities                  map[string]*Identity
+	agents                      map[string]*Agent
+	overlayDevices              map[string]*OverlayDevice
+	overlayNodes                map[string]*OverlayNode
+	overlayConfigAcks           map[string]*OverlayConfigAck
+	overlaySignedConfigs        map[string]*OverlaySignedConfigRecord
+	overlayJoinTokens           map[string]*OverlayJoinToken
+	overlayJoinTokenHashes      map[string]string
+	overlayEnrollments          map[string]*OverlayEnrollmentSession
+	overlayNodeCredentials      map[string]*OverlayNodeCredential
+	overlayNodeCredentialHashes map[string]string
+	overlayGatewayHeartbeats    map[string]*OverlayGatewayHeartbeat
+	overlayGatewaySnapshots     map[string][]*OverlayGatewaySnapshotRecord
+	overlayGatewayResults       map[string]*OverlayGatewayApplyResult
+	overlayProjectionDevices    map[string]*OverlayProjectionDevice
+	overlayStaticImports        map[string]*OverlayStaticImportReceipt
+	overlayStaticImportHashes   map[string]string
+	sessions                    map[string]*sessionRecord
+	tenants                     map[string]*Tenant
+	tenantDomains               map[string]*TenantDomain
+	tenantMemberships           map[string]map[string]*TenantMembership
+	xworkmateProfiles           map[string]*XWorkmateProfile
+	trafficStatCheckpoints      map[string]*TrafficStatCheckpoint
+	trafficMinuteBuckets        map[string]*TrafficMinuteBucket
+	billingLedgerEntries        map[string]*BillingLedgerEntry
+	auditLogs                   []*AuditLog
+	accountQuotaStates          map[string]*AccountQuotaState
+	accountBillingProfiles      map[string]*AccountBillingProfile
+	accountPolicySnapshots      map[string]*AccountPolicySnapshot
+	nodeHealthSnapshots         map[string]*NodeHealthSnapshot
+	schedulerDecisions          map[string]*SchedulerDecision
+	blacklistedEmails           map[string]bool
+	billingPlans                map[string]*BillingPlan
+	stripeWebhookEvents         map[string]*StripeWebhookEvent
+	billingEvents               []BillingEvent
 }
 
 type sessionRecord struct {
@@ -551,37 +653,45 @@ func NewMemoryStoreWithSuperAdminCounting() Store {
 
 func newMemoryStore(allowSuperAdminCounting bool) Store {
 	return &memoryStore{
-		allowSuperAdminCounting: allowSuperAdminCounting,
-		byID:                    make(map[string]*User),
-		byEmail:                 make(map[string]*User),
-		byName:                  make(map[string]*User),
-		subscriptions:           make(map[string]map[string]*Subscription),
-		identities:              make(map[string]*Identity),
-		agents:                  make(map[string]*Agent),
-		overlayDevices:          make(map[string]*OverlayDevice),
-		overlayNodes:            make(map[string]*OverlayNode),
-		overlayConfigAcks:       make(map[string]*OverlayConfigAck),
-		overlaySignedConfigs:    make(map[string]*OverlaySignedConfigRecord),
-		overlayJoinTokens:       make(map[string]*OverlayJoinToken),
-		overlayJoinTokenHashes:  make(map[string]string),
-		overlayEnrollments:      make(map[string]*OverlayEnrollmentSession),
-		sessions:                make(map[string]*sessionRecord),
-		tenants:                 make(map[string]*Tenant),
-		tenantDomains:           make(map[string]*TenantDomain),
-		tenantMemberships:       make(map[string]map[string]*TenantMembership),
-		xworkmateProfiles:       make(map[string]*XWorkmateProfile),
-		trafficStatCheckpoints:  make(map[string]*TrafficStatCheckpoint),
-		trafficMinuteBuckets:    make(map[string]*TrafficMinuteBucket),
-		billingLedgerEntries:    make(map[string]*BillingLedgerEntry),
-		auditLogs:               make([]*AuditLog, 0),
-		accountQuotaStates:      make(map[string]*AccountQuotaState),
-		accountBillingProfiles:  make(map[string]*AccountBillingProfile),
-		accountPolicySnapshots:  make(map[string]*AccountPolicySnapshot),
-		nodeHealthSnapshots:     make(map[string]*NodeHealthSnapshot),
-		schedulerDecisions:      make(map[string]*SchedulerDecision),
-		blacklistedEmails:       make(map[string]bool),
-		billingPlans:            make(map[string]*BillingPlan),
-		stripeWebhookEvents:     make(map[string]*StripeWebhookEvent),
+		allowSuperAdminCounting:     allowSuperAdminCounting,
+		byID:                        make(map[string]*User),
+		byEmail:                     make(map[string]*User),
+		byName:                      make(map[string]*User),
+		subscriptions:               make(map[string]map[string]*Subscription),
+		identities:                  make(map[string]*Identity),
+		agents:                      make(map[string]*Agent),
+		overlayDevices:              make(map[string]*OverlayDevice),
+		overlayNodes:                make(map[string]*OverlayNode),
+		overlayConfigAcks:           make(map[string]*OverlayConfigAck),
+		overlaySignedConfigs:        make(map[string]*OverlaySignedConfigRecord),
+		overlayJoinTokens:           make(map[string]*OverlayJoinToken),
+		overlayJoinTokenHashes:      make(map[string]string),
+		overlayEnrollments:          make(map[string]*OverlayEnrollmentSession),
+		overlayNodeCredentials:      make(map[string]*OverlayNodeCredential),
+		overlayNodeCredentialHashes: make(map[string]string),
+		overlayGatewayHeartbeats:    make(map[string]*OverlayGatewayHeartbeat),
+		overlayGatewaySnapshots:     make(map[string][]*OverlayGatewaySnapshotRecord),
+		overlayGatewayResults:       make(map[string]*OverlayGatewayApplyResult),
+		overlayProjectionDevices:    make(map[string]*OverlayProjectionDevice),
+		overlayStaticImports:        make(map[string]*OverlayStaticImportReceipt),
+		overlayStaticImportHashes:   make(map[string]string),
+		sessions:                    make(map[string]*sessionRecord),
+		tenants:                     make(map[string]*Tenant),
+		tenantDomains:               make(map[string]*TenantDomain),
+		tenantMemberships:           make(map[string]map[string]*TenantMembership),
+		xworkmateProfiles:           make(map[string]*XWorkmateProfile),
+		trafficStatCheckpoints:      make(map[string]*TrafficStatCheckpoint),
+		trafficMinuteBuckets:        make(map[string]*TrafficMinuteBucket),
+		billingLedgerEntries:        make(map[string]*BillingLedgerEntry),
+		auditLogs:                   make([]*AuditLog, 0),
+		accountQuotaStates:          make(map[string]*AccountQuotaState),
+		accountBillingProfiles:      make(map[string]*AccountBillingProfile),
+		accountPolicySnapshots:      make(map[string]*AccountPolicySnapshot),
+		nodeHealthSnapshots:         make(map[string]*NodeHealthSnapshot),
+		schedulerDecisions:          make(map[string]*SchedulerDecision),
+		blacklistedEmails:           make(map[string]bool),
+		billingPlans:                make(map[string]*BillingPlan),
+		stripeWebhookEvents:         make(map[string]*StripeWebhookEvent),
 	}
 }
 

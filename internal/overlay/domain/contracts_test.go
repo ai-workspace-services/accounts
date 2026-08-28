@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +40,36 @@ func validSignedConfig() SignedConfig {
 			}},
 		},
 		Signature: Signature{Algorithm: SignatureEd25519, KeyID: "signing_key_01", Value: validSignature},
+	}
+}
+
+func TestGatewaySnapshotSigningGoldenVectorMatchesAgent(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	for index := range seed {
+		seed[index] = byte(index)
+	}
+	snapshot := validGatewaySnapshot()
+	snapshot.SnapshotID = "snap_vector_42"
+	snapshot.NodeID = "gw_test_01"
+	snapshot.Generation = 42
+	snapshot.ExpectedPreviousGeneration = 41
+	snapshot.IssuedAt = time.Date(2026, 8, 28, 11, 59, 0, 0, time.UTC)
+	snapshot.ExpiresAt = time.Date(2026, 8, 28, 13, 0, 0, 0, time.UTC)
+	snapshot.Safety.MaxPeerRemovalPercent = 100
+	snapshot.WireGuard.Peers = []GatewayPeer{{DeviceID: "dev_test_01", PublicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=", AllowedIPs: []string{"10.77.0.10/32"}, PersistentKeepaliveSeconds: 25}}
+	snapshot.Relay = GatewayRelay{Transport: "vless-tls-xudp", ListenHost: "0.0.0.0", ListenPort: 443, ServerNames: []string{"gateway.example"}, CredentialRefs: []string{"vault_test_01"}}
+	snapshot.Policy = GatewayPolicy{Generation: 1, Backend: "nftables", RulesetSHA256: strings.Repeat("b", 64)}
+	payload, err := snapshot.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"schema_version":1,"snapshot_id":"snap_vector_42","node_id":"gw_test_01","generation":42,"expected_previous_generation":41,"issued_at":"2026-08-28T11:59:00Z","expires_at":"2026-08-28T13:00:00Z","proxy_core":"xray","safety":{"allow_empty_peers":false,"max_peer_removal_percent":100},"wireguard":{"interface_name":"wg-xco","listen_port":51820,"addresses":["10.77.0.1/32"],"peers":[{"device_id":"dev_test_01","public_key":"AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=","allowed_ips":["10.77.0.10/32"],"persistent_keepalive_seconds":25}]},"relay":{"transport":"vless-tls-xudp","listen_host":"0.0.0.0","listen_port":443,"server_names":["gateway.example"],"credential_refs":["vault_test_01"]},"policy":{"generation":1,"backend":"nftables","ruleset_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`
+	if string(payload) != want {
+		t.Fatalf("gateway signing bytes drifted\ngot:  %s\nwant: %s", payload, want)
+	}
+	signature := base64.StdEncoding.EncodeToString(ed25519.Sign(ed25519.NewKeyFromSeed(seed), payload))
+	if signature != "6ntypTf83jAGH4aTxIsmkPvGnBiI+3d+YLmAtRLi2G6d/BZW/PPB00ANbMH/yVrg+cOOpDDQMSDtKB8WUeIyBw==" {
+		t.Fatalf("gateway signature vector drifted: %s", signature)
 	}
 }
 

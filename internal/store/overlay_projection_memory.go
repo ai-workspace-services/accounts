@@ -18,6 +18,13 @@ func (s *memoryStore) GetOverlaySigningKeyMaxExpiresAt(_ context.Context, keyID 
 			latest = record.ExpiresAt
 		}
 	}
+	for _, records := range s.overlayGatewaySnapshots {
+		for _, record := range records {
+			if record.SigningKeyID == keyID && record.ExpiresAt.After(latest) {
+				latest = record.ExpiresAt
+			}
+		}
+	}
 	return latest.UTC(), nil
 }
 

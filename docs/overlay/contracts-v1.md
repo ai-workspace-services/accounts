@@ -28,6 +28,9 @@ changing the legacy config response. See
 migration, ACK semantics, rollback, and the durable repository requirement.
 The one-command invite and short-lived enrollment flow is documented in
 [`join-enrollment.md`](join-enrollment.md).
+Gateway Agent shadow projection, node credentials, signed snapshot generation,
+and static client import are documented in
+[`gateway-agent-control-plane.md`](gateway-agent-control-plane.md).
 
 ## Runtime boundary
 
