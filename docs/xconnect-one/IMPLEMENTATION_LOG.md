@@ -1,6 +1,7 @@
 # XConnect-One Accounts 实施更新记录
 
-状态日期：2026-08-28  
+状态日期：2026-08-28
+
 本仓职责：设备与网络事实源、邀请/凭据、签名配置、Gateway 投影、动态 ACL 和切换授权
 
 ## 不变量
@@ -67,4 +68,3 @@
 - 本仓没有真实 PostgreSQL 并发/回滚烟测，也没有 Accounts + Gateway + 五平台 live E2E。
 - 当前批次仍在特性分支，未创建新的 PR；后续 PR base 为
   `codex/xconnect-overlay-productization`，创建前需再次取得用户确认。
-
