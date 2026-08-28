@@ -32,11 +32,17 @@ func memoryJoinExchange(secret, enrollmentSecret, deviceID string, now time.Time
 	joinHash := sha256.Sum256([]byte(secret))
 	enrollmentHash := sha256.Sum256([]byte(enrollmentSecret))
 	return &OverlayJoinExchange{
-		JoinTokenHash: joinHash[:],
-		Enrollment:    OverlayEnrollmentSession{ID: "enrollment-" + deviceID, TokenHash: enrollmentHash[:], CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute)},
-		Device:        OverlayDevice{ID: deviceID, Name: deviceID, Platform: "linux", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-		AddressPrefix: "172.29.10", AddressStartHost: 100, AddressEndHost: 254,
+		JoinTokenHash:    joinHash[:],
+		Enrollment:       OverlayEnrollmentSession{ID: "enrollment-" + deviceID, TokenHash: enrollmentHash[:], CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute)},
+		Device:           OverlayDevice{ID: deviceID, Name: deviceID, Platform: "linux", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+		DeviceCredential: testOverlayDeviceCredential("xdcid_0123456789abcdef0123456789abcdef", now),
+		AddressPrefix:    "172.29.10", AddressStartHost: 100, AddressEndHost: 254,
 	}
+}
+
+func testOverlayDeviceCredential(id string, now time.Time) OverlayDeviceCredential {
+	verifier := sha256.Sum256([]byte("xdc_0123456789abcdef0123456789abcdef.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
+	return OverlayDeviceCredential{ID: id, Verifier: verifier[:], Scopes: append([]string(nil), overlayDeviceCredentialScopes...), IssuedAt: now.UTC(), ExpiresAt: now.UTC().Add(30 * 24 * time.Hour)}
 }
 
 func TestMemoryJoinStoresOnlyHashesAndEnrollmentSurvivesLookup(t *testing.T) {
@@ -57,6 +63,11 @@ func TestMemoryJoinStoresOnlyHashesAndEnrollmentSurvivesLookup(t *testing.T) {
 	audit := &AuditLog{Action: AuditActionOverlayJoinExchange, Details: map[string]any{}}
 	if err := concrete.ExchangeOverlayJoinToken(context.Background(), exchange, audit); err != nil {
 		t.Fatal(err)
+	}
+	storedCredential := concrete.overlayDeviceCredentials[exchange.DeviceCredential.ID]
+	credentialJSON, err := json.Marshal(storedCredential)
+	if err != nil || strings.Contains(string(credentialJSON), "xdc_") || strings.Contains(string(credentialJSON), hex.EncodeToString(storedCredential.Verifier)) {
+		t.Fatalf("device credential storage JSON leaked raw/verifier material: %s err=%v", credentialJSON, err)
 	}
 	if _, exists := concrete.overlayEnrollments["xenr_raw-session-secret"]; exists {
 		t.Fatal("raw enrollment secret was used as storage key")

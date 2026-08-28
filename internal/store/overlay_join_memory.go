@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net"
@@ -35,6 +36,7 @@ func cloneOverlayEnrollment(src *OverlayEnrollmentSession) *OverlayEnrollmentSes
 	}
 	clone := *src
 	clone.TokenHash = append([]byte(nil), src.TokenHash...)
+	clone.Scopes = append([]string(nil), src.Scopes...)
 	if src.LastUsedAt != nil {
 		value := src.LastUsedAt.UTC()
 		clone.LastUsedAt = &value
@@ -120,7 +122,7 @@ func validateJoinTokenForExchange(token *OverlayJoinToken, exchange *OverlayJoin
 }
 
 func (s *memoryStore) ExchangeOverlayJoinToken(_ context.Context, exchange *OverlayJoinExchange, audit *AuditLog) error {
-	if exchange == nil || len(exchange.JoinTokenHash) != sha256.Size || len(exchange.Enrollment.TokenHash) != sha256.Size || exchange.Device.ID == "" || exchange.Device.Platform == "" {
+	if exchange == nil || len(exchange.JoinTokenHash) != sha256.Size || len(exchange.Enrollment.TokenHash) != sha256.Size || len(exchange.DeviceCredential.Verifier) != sha256.Size || !overlayDeviceCredentialIDStorePattern.MatchString(exchange.DeviceCredential.ID) || !exchange.DeviceCredential.ExpiresAt.After(exchange.Enrollment.CreatedAt.UTC()) || exchange.DeviceCredential.ExpiresAt.Sub(exchange.Enrollment.CreatedAt.UTC()) > maxOverlayDeviceCredentialTTL || exchange.Device.ID == "" || exchange.Device.Platform == "" || !exactScopes(exchange.DeviceCredential.Scopes, overlayDeviceCredentialScopes) {
 		return errors.New("valid overlay join exchange is required")
 	}
 	if err := validateJoinAudit(audit); err != nil {
@@ -141,6 +143,17 @@ func (s *memoryStore) ExchangeOverlayJoinToken(_ context.Context, exchange *Over
 		if enrollment.JoinTokenID == token.ID && enrollment.DeviceID == exchange.Device.ID {
 			return ErrOverlayJoinReplay
 		}
+	}
+	for _, credential := range s.overlayDeviceCredentials {
+		if len(credential.Verifier) == sha256.Size && subtle.ConstantTimeCompare(credential.Verifier, exchange.DeviceCredential.Verifier) == 1 {
+			return ErrOverlayJoinDeviceConflict
+		}
+		if credential.UserID == token.UserID && credential.DeviceID == exchange.Device.ID && credential.Status == OverlayDeviceCredentialActive {
+			return ErrOverlayJoinDeviceConflict
+		}
+	}
+	if s.overlayDeviceCredentials[exchange.DeviceCredential.ID] != nil {
+		return ErrOverlayJoinDeviceConflict
 	}
 	deviceKey := overlayDeviceKey(token.UserID, exchange.Device.ID)
 	if existing := s.overlayDevices[deviceKey]; existing != nil {
@@ -190,15 +203,29 @@ func (s *memoryStore) ExchangeOverlayJoinToken(_ context.Context, exchange *Over
 	exchange.Enrollment.DeviceID = exchange.Device.ID
 	exchange.Enrollment.Platform = exchange.Device.Platform
 	exchange.Enrollment.WireGuardPublicKey = exchange.Device.WireGuardPublicKey
+	exchange.Enrollment.Scopes = []string{"overlay:config:read", "overlay:config:ack", "overlay:device:revoke"}
 	s.overlayEnrollments[string(exchange.Enrollment.TokenHash)] = cloneOverlayEnrollment(&exchange.Enrollment)
+	exchange.DeviceCredential.UserID = token.UserID
+	exchange.DeviceCredential.NetworkID = token.NetworkID
+	exchange.DeviceCredential.DeviceID = exchange.Device.ID
+	exchange.DeviceCredential.Status = OverlayDeviceCredentialActive
+	exchange.DeviceCredential.IssuedAt = now
+	exchange.DeviceCredential.CreatedAt = now
+	s.overlayDeviceCredentials[exchange.DeviceCredential.ID] = cloneOverlayDeviceCredential(&exchange.DeviceCredential)
 	if audit.Details == nil {
 		audit.Details = map[string]any{}
 	}
 	audit.Details["target_uuid"] = token.UserID
 	audit.Details["join_token_id"] = token.ID
 	audit.Details["enrollment_id"] = exchange.Enrollment.ID
+	audit.Details["credential_id"] = exchange.DeviceCredential.ID
 	audit.CreatedAt = now
 	s.auditLogs = append(s.auditLogs, cloneAuditLog(audit))
+	issueAudit := &AuditLog{Action: AuditActionOverlayDeviceCredentialIssue, ActorUUID: token.UserID, CreatedAt: now, Details: map[string]any{"credential_id": exchange.DeviceCredential.ID, "device_id": exchange.Device.ID, "network_id": token.NetworkID}}
+	if err := validateJoinAudit(issueAudit); err != nil {
+		return err
+	}
+	s.auditLogs = append(s.auditLogs, cloneAuditLog(issueAudit))
 	return nil
 }
 
@@ -218,7 +245,11 @@ func (s *memoryStore) GetOverlayEnrollmentSession(_ context.Context, tokenHash [
 	}
 	used := now.UTC()
 	session.LastUsedAt = &used
-	return cloneOverlayEnrollment(session), nil
+	clone := cloneOverlayEnrollment(session)
+	if len(clone.Scopes) == 0 {
+		clone.Scopes = []string{"overlay:config:read", "overlay:config:ack", "overlay:device:revoke"}
+	}
+	return clone, nil
 }
 
 func allocateOverlayJoinAddress(userID, deviceID, prefix string, startHost, endHost int, used map[string]bool) (string, error) {

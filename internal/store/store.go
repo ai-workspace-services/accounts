@@ -243,29 +243,32 @@ type AuditLogFilter struct {
 // Audit action names. Kept as constants so a typo cannot silently create a
 // second, unqueryable action stream.
 const (
-	AuditActionPlanUpsert                  = "billing.plan.upsert"
-	AuditActionPlanDelete                  = "billing.plan.delete"
-	AuditActionQuotaAdjust                 = "billing.quota.adjust"
-	AuditActionBalanceAdjust               = "billing.balance.adjust"
-	AuditActionEntitlementGrant            = "billing.entitlement.grant"
-	AuditActionTrialGrant                  = "billing.trial.grant"
-	AuditActionArrearsClear                = "billing.arrears.clear"
-	AuditActionSubscriptionCancel          = "billing.subscription.cancel"
-	AuditActionSegmentUpdate               = "account.segment.update"
-	AuditActionRoleUpdate                  = "account.role.update"
-	AuditActionOverlayJoinCreate           = "overlay.join_token.create"
-	AuditActionOverlayJoinRevoke           = "overlay.join_token.revoke"
-	AuditActionOverlayJoinExchange         = "overlay.join_token.exchange"
-	AuditActionOverlayNodeCredentialCreate = "overlay.node_credential.create"
-	AuditActionOverlayNodeCredentialRevoke = "overlay.node_credential.revoke"
-	AuditActionOverlayStaticImport         = "overlay.static_client.import"
-	AuditActionOverlayPolicyCreate         = "overlay.policy.create"
-	AuditActionOverlayPolicyActivate       = "overlay.policy.activate"
-	AuditActionOverlayPolicyRecompile      = "overlay.policy.recompile"
-	AuditActionOverlayDeviceTagsUpdate     = "overlay.device_tags.update"
-	AuditActionOverlayDeviceKeyRotate      = "overlay.device.key_rotate"
-	AuditActionOverlayDeviceStateUpdate    = "overlay.device.state_update"
-	AuditActionOverlayDeviceRevoke         = "overlay.device.revoke"
+	AuditActionPlanUpsert                    = "billing.plan.upsert"
+	AuditActionPlanDelete                    = "billing.plan.delete"
+	AuditActionQuotaAdjust                   = "billing.quota.adjust"
+	AuditActionBalanceAdjust                 = "billing.balance.adjust"
+	AuditActionEntitlementGrant              = "billing.entitlement.grant"
+	AuditActionTrialGrant                    = "billing.trial.grant"
+	AuditActionArrearsClear                  = "billing.arrears.clear"
+	AuditActionSubscriptionCancel            = "billing.subscription.cancel"
+	AuditActionSegmentUpdate                 = "account.segment.update"
+	AuditActionRoleUpdate                    = "account.role.update"
+	AuditActionOverlayJoinCreate             = "overlay.join_token.create"
+	AuditActionOverlayJoinRevoke             = "overlay.join_token.revoke"
+	AuditActionOverlayJoinExchange           = "overlay.join_token.exchange"
+	AuditActionOverlayNodeCredentialCreate   = "overlay.node_credential.create"
+	AuditActionOverlayNodeCredentialRevoke   = "overlay.node_credential.revoke"
+	AuditActionOverlayStaticImport           = "overlay.static_client.import"
+	AuditActionOverlayPolicyCreate           = "overlay.policy.create"
+	AuditActionOverlayPolicyActivate         = "overlay.policy.activate"
+	AuditActionOverlayPolicyRecompile        = "overlay.policy.recompile"
+	AuditActionOverlayDeviceTagsUpdate       = "overlay.device_tags.update"
+	AuditActionOverlayDeviceKeyRotate        = "overlay.device.key_rotate"
+	AuditActionOverlayDeviceStateUpdate      = "overlay.device.state_update"
+	AuditActionOverlayDeviceRevoke           = "overlay.device.revoke"
+	AuditActionOverlayDeviceCredentialIssue  = "overlay.device_credential.issue"
+	AuditActionOverlayDeviceCredentialRotate = "overlay.device_credential.rotate"
+	AuditActionOverlayDeviceSessionMint      = "overlay.device_session.mint"
 )
 
 type AccountQuotaState struct {
@@ -389,19 +392,56 @@ type OverlayEnrollmentSession struct {
 	ID                 string
 	TokenHash          []byte `json:"-"`
 	JoinTokenID        string
+	CredentialID       string
 	UserID             string
 	NetworkID          string
 	DeviceID           string
 	Platform           string
 	WireGuardPublicKey string
+	Scopes             []string
 	ExpiresAt          time.Time
 	CreatedAt          time.Time
 	LastUsedAt         *time.Time
 }
 
+type OverlayDeviceCredential struct {
+	ID                     string
+	Verifier               []byte `json:"-"`
+	UserID                 string
+	NetworkID              string
+	DeviceID               string
+	Status                 string
+	Scopes                 []string
+	ReplacesCredentialID   string
+	ReplacedByCredentialID string
+	RotationRequestSHA256  string
+	IssuedAt               time.Time
+	ExpiresAt              time.Time
+	RevokedAt              *time.Time
+	CreatedAt              time.Time
+}
+
+const (
+	OverlayDeviceCredentialActive   = "active"
+	OverlayDeviceCredentialReplaced = "replaced"
+	OverlayDeviceCredentialRevoked  = "revoked"
+)
+
+type OverlayDeviceRevokeReceipt struct {
+	UserID        string
+	NetworkID     string
+	DeviceID      string
+	CredentialID  string
+	RequestSHA256 string
+	ClientNonce   string
+	Device        OverlayDevice
+	CreatedAt     time.Time
+}
+
 type OverlayJoinExchange struct {
 	JoinTokenHash    []byte `json:"-"`
 	Enrollment       OverlayEnrollmentSession
+	DeviceCredential OverlayDeviceCredential
 	Device           OverlayDevice
 	AddressPrefix    string
 	AddressStartHost int
@@ -551,6 +591,11 @@ type Store interface {
 	RevokeOverlayJoinToken(ctx context.Context, userID, tokenID string, revokedAt time.Time, audit *AuditLog) error
 	ExchangeOverlayJoinToken(ctx context.Context, exchange *OverlayJoinExchange, audit *AuditLog) error
 	GetOverlayEnrollmentSession(ctx context.Context, tokenHash []byte, now time.Time) (*OverlayEnrollmentSession, error)
+	GetOverlayDeviceSession(ctx context.Context, tokenHash []byte, now time.Time) (*OverlayEnrollmentSession, error)
+	AuthenticateOverlayDeviceCredential(ctx context.Context, credentialID string, verifier []byte, now time.Time) (*OverlayDeviceCredential, error)
+	MintOverlayDeviceSession(ctx context.Context, credentialID string, session *OverlayEnrollmentSession, now time.Time, audit *AuditLog) error
+	RotateOverlayDeviceCredential(ctx context.Context, currentCredentialID string, successor *OverlayDeviceCredential, requestSHA256 string, now time.Time, audit *AuditLog) (*OverlayDeviceCredential, bool, error)
+	RevokeOverlayDeviceWithCredential(ctx context.Context, credentialID string, verifier []byte, requestSHA256, clientNonce string, now time.Time, audit *AuditLog) (*OverlayDeviceRevokeReceipt, bool, error)
 	GetOverlayNode(ctx context.Context, nodeID string) (*OverlayNode, error)
 	CreateOverlayNodeCredential(ctx context.Context, credential *OverlayNodeCredential, audit *AuditLog) error
 	RevokeOverlayNodeCredential(ctx context.Context, nodeID, credentialID string, revokedAt time.Time, audit *AuditLog) error
@@ -628,41 +673,44 @@ type Store interface {
 
 // Domain level errors returned by the store implementation.
 var (
-	ErrEmailExists                    = errors.New("email already exists")
-	ErrNameExists                     = errors.New("name already exists")
-	ErrInvalidName                    = errors.New("invalid user name")
-	ErrUserNotFound                   = errors.New("user not found")
-	ErrMFANotSupported                = errors.New("mfa is not supported by the current store schema")
-	ErrSuperAdminCountingDisabled     = errors.New("super administrator counting is disabled")
-	ErrSubscriptionNotFound           = errors.New("subscription not found")
-	ErrOverlaySignedConfigNotFound    = errors.New("overlay signed config not found")
-	ErrOverlaySignedConfigMismatch    = errors.New("overlay signed config mismatch")
-	ErrOverlaySignedConfigStale       = errors.New("overlay signed config generation is stale")
-	ErrOverlaySignedConfigGap         = errors.New("overlay signed config generation must advance by one")
-	ErrOverlayJoinTokenNotFound       = errors.New("overlay join token not found")
-	ErrOverlayJoinTokenExpired        = errors.New("overlay join token expired")
-	ErrOverlayJoinTokenRevoked        = errors.New("overlay join token revoked")
-	ErrOverlayJoinTokenExhausted      = errors.New("overlay join token exhausted")
-	ErrOverlayJoinConstraint          = errors.New("overlay join constraint mismatch")
-	ErrOverlayJoinDeviceConflict      = errors.New("overlay join device conflicts with existing registration")
-	ErrOverlayJoinReplay              = errors.New("overlay join device already exchanged this token")
-	ErrOverlayEnrollmentNotFound      = errors.New("overlay enrollment session not found")
-	ErrOverlayEnrollmentExpired       = errors.New("overlay enrollment session expired")
-	ErrOverlayNodeNotFound            = errors.New("overlay node not found")
-	ErrOverlayNodeCredentialNotFound  = errors.New("overlay node credential not found")
-	ErrOverlayNodeCredentialExpired   = errors.New("overlay node credential expired")
-	ErrOverlayNodeCredentialRevoked   = errors.New("overlay node credential revoked")
-	ErrOverlayGatewaySnapshotNotFound = errors.New("overlay gateway snapshot not found")
-	ErrOverlayGatewayGenerationStale  = errors.New("overlay gateway generation is stale")
-	ErrOverlayGatewaySourceExists     = errors.New("overlay gateway source revision already exists")
-	ErrOverlayGatewayReportStale      = errors.New("overlay gateway report is stale or replayed")
-	ErrOverlayStaticImportConflict    = errors.New("overlay static import conflicts with existing device")
-	ErrOverlayStaticImportIdempotency = errors.New("overlay static import idempotency key is bound to another body")
-	ErrOverlayPolicyNotFound          = errors.New("overlay policy revision not found")
-	ErrOverlayPolicyConflict          = errors.New("overlay policy revision conflict")
-	ErrOverlayDeviceRevoked           = errors.New("overlay device is revoked")
-	ErrOverlayDeviceVersionConflict   = errors.New("overlay device version conflict")
-	ErrOverlayDeviceKeyConflict       = errors.New("overlay device public key conflict")
+	ErrEmailExists                         = errors.New("email already exists")
+	ErrNameExists                          = errors.New("name already exists")
+	ErrInvalidName                         = errors.New("invalid user name")
+	ErrUserNotFound                        = errors.New("user not found")
+	ErrMFANotSupported                     = errors.New("mfa is not supported by the current store schema")
+	ErrSuperAdminCountingDisabled          = errors.New("super administrator counting is disabled")
+	ErrSubscriptionNotFound                = errors.New("subscription not found")
+	ErrOverlaySignedConfigNotFound         = errors.New("overlay signed config not found")
+	ErrOverlaySignedConfigMismatch         = errors.New("overlay signed config mismatch")
+	ErrOverlaySignedConfigStale            = errors.New("overlay signed config generation is stale")
+	ErrOverlaySignedConfigGap              = errors.New("overlay signed config generation must advance by one")
+	ErrOverlayJoinTokenNotFound            = errors.New("overlay join token not found")
+	ErrOverlayJoinTokenExpired             = errors.New("overlay join token expired")
+	ErrOverlayJoinTokenRevoked             = errors.New("overlay join token revoked")
+	ErrOverlayJoinTokenExhausted           = errors.New("overlay join token exhausted")
+	ErrOverlayJoinConstraint               = errors.New("overlay join constraint mismatch")
+	ErrOverlayJoinDeviceConflict           = errors.New("overlay join device conflicts with existing registration")
+	ErrOverlayJoinReplay                   = errors.New("overlay join device already exchanged this token")
+	ErrOverlayEnrollmentNotFound           = errors.New("overlay enrollment session not found")
+	ErrOverlayEnrollmentExpired            = errors.New("overlay enrollment session expired")
+	ErrOverlayDeviceCredentialUnauthorized = errors.New("overlay device credential is unauthorized")
+	ErrOverlayDeviceCredentialConflict     = errors.New("overlay device credential conflicts with persisted state")
+	ErrOverlayDeviceCredentialIdempotency  = errors.New("overlay device credential idempotency key is bound to another request")
+	ErrOverlayNodeNotFound                 = errors.New("overlay node not found")
+	ErrOverlayNodeCredentialNotFound       = errors.New("overlay node credential not found")
+	ErrOverlayNodeCredentialExpired        = errors.New("overlay node credential expired")
+	ErrOverlayNodeCredentialRevoked        = errors.New("overlay node credential revoked")
+	ErrOverlayGatewaySnapshotNotFound      = errors.New("overlay gateway snapshot not found")
+	ErrOverlayGatewayGenerationStale       = errors.New("overlay gateway generation is stale")
+	ErrOverlayGatewaySourceExists          = errors.New("overlay gateway source revision already exists")
+	ErrOverlayGatewayReportStale           = errors.New("overlay gateway report is stale or replayed")
+	ErrOverlayStaticImportConflict         = errors.New("overlay static import conflicts with existing device")
+	ErrOverlayStaticImportIdempotency      = errors.New("overlay static import idempotency key is bound to another body")
+	ErrOverlayPolicyNotFound               = errors.New("overlay policy revision not found")
+	ErrOverlayPolicyConflict               = errors.New("overlay policy revision conflict")
+	ErrOverlayDeviceRevoked                = errors.New("overlay device is revoked")
+	ErrOverlayDeviceVersionConflict        = errors.New("overlay device version conflict")
+	ErrOverlayDeviceKeyConflict            = errors.New("overlay device public key conflict")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for
@@ -687,6 +735,9 @@ type memoryStore struct {
 	overlayJoinTokens           map[string]*OverlayJoinToken
 	overlayJoinTokenHashes      map[string]string
 	overlayEnrollments          map[string]*OverlayEnrollmentSession
+	overlayDeviceSessions       map[string]*OverlayEnrollmentSession
+	overlayDeviceCredentials    map[string]*OverlayDeviceCredential
+	overlayDeviceRevokeReceipts map[string]*OverlayDeviceRevokeReceipt
 	overlayNodeCredentials      map[string]*OverlayNodeCredential
 	overlayNodeCredentialHashes map[string]string
 	overlayGatewayHeartbeats    map[string]*OverlayGatewayHeartbeat
@@ -758,6 +809,9 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		overlayJoinTokens:           make(map[string]*OverlayJoinToken),
 		overlayJoinTokenHashes:      make(map[string]string),
 		overlayEnrollments:          make(map[string]*OverlayEnrollmentSession),
+		overlayDeviceSessions:       make(map[string]*OverlayEnrollmentSession),
+		overlayDeviceCredentials:    make(map[string]*OverlayDeviceCredential),
+		overlayDeviceRevokeReceipts: make(map[string]*OverlayDeviceRevokeReceipt),
 		overlayNodeCredentials:      make(map[string]*OverlayNodeCredential),
 		overlayNodeCredentialHashes: make(map[string]string),
 		overlayGatewayHeartbeats:    make(map[string]*OverlayGatewayHeartbeat),

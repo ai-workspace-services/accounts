@@ -79,7 +79,7 @@ WHERE id = $1 AND user_uuid = $2`, tokenID, userID, revokedAt)
 }
 
 func (s *postgresStore) ExchangeOverlayJoinToken(ctx context.Context, exchange *OverlayJoinExchange, audit *AuditLog) error {
-	if exchange == nil || len(exchange.JoinTokenHash) != sha256.Size || len(exchange.Enrollment.TokenHash) != sha256.Size {
+	if exchange == nil || len(exchange.JoinTokenHash) != sha256.Size || len(exchange.Enrollment.TokenHash) != sha256.Size || len(exchange.DeviceCredential.Verifier) != sha256.Size || !overlayDeviceCredentialIDStorePattern.MatchString(exchange.DeviceCredential.ID) || !exchange.DeviceCredential.ExpiresAt.After(exchange.Enrollment.CreatedAt.UTC()) || exchange.DeviceCredential.ExpiresAt.Sub(exchange.Enrollment.CreatedAt.UTC()) > maxOverlayDeviceCredentialTTL || !exactScopes(exchange.DeviceCredential.Scopes, overlayDeviceCredentialScopes) {
 		return errors.New("valid overlay join exchange is required")
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -229,6 +229,7 @@ WHERE id = $1 AND remaining_uses > 0`, token.ID, now)
 	exchange.Enrollment.DeviceID = exchange.Device.ID
 	exchange.Enrollment.Platform = exchange.Device.Platform
 	exchange.Enrollment.WireGuardPublicKey = exchange.Device.WireGuardPublicKey
+	exchange.Enrollment.Scopes = []string{"overlay:config:read", "overlay:config:ack", "overlay:device:revoke"}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO public.overlay_enrollment_sessions
   (id, token_hash, join_token_id, user_uuid, network_id, device_id, platform,
@@ -239,13 +240,32 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, exchange.Enrollment.ID,
 	if err != nil {
 		return err
 	}
+	scopeRaw, _ := json.Marshal(exchange.DeviceCredential.Scopes)
+	exchange.DeviceCredential.UserID = token.UserID
+	exchange.DeviceCredential.NetworkID = token.NetworkID
+	exchange.DeviceCredential.DeviceID = exchange.Device.ID
+	exchange.DeviceCredential.Status = OverlayDeviceCredentialActive
+	exchange.DeviceCredential.IssuedAt = now
+	exchange.DeviceCredential.CreatedAt = now
+	err = tx.QueryRowContext(ctx, `INSERT INTO public.overlay_device_credentials(credential_id,verifier_sha256,user_uuid,network_id,device_id,status,scope,issued_at,expires_at,created_at) VALUES($1,$2,$3,$4,$5,'active',$6::jsonb,$7,$8,$7) RETURNING created_at`, exchange.DeviceCredential.ID, exchange.DeviceCredential.Verifier, token.UserID, token.NetworkID, exchange.Device.ID, string(scopeRaw), now, exchange.DeviceCredential.ExpiresAt).Scan(&exchange.DeviceCredential.CreatedAt)
+	if err != nil {
+		return ErrOverlayJoinDeviceConflict
+	}
 	if audit.Details == nil {
 		audit.Details = map[string]any{}
 	}
 	audit.Details["target_uuid"] = token.UserID
 	audit.Details["join_token_id"] = token.ID
 	audit.Details["enrollment_id"] = exchange.Enrollment.ID
+	audit.Details["credential_id"] = exchange.DeviceCredential.ID
 	if err := insertOverlayJoinAuditTx(ctx, tx, audit); err != nil {
+		return err
+	}
+	issueAudit := &AuditLog{Action: AuditActionOverlayDeviceCredentialIssue, ActorUUID: token.UserID, Details: map[string]any{"credential_id": exchange.DeviceCredential.ID, "device_id": exchange.Device.ID, "network_id": token.NetworkID}}
+	if err := validateJoinAudit(issueAudit); err != nil {
+		return err
+	}
+	if err := insertOverlayJoinAuditTx(ctx, tx, issueAudit); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -275,6 +295,7 @@ RETURNING id, join_token_id, user_uuid::text, network_id, device_id, platform,
 		value := lastUsed.Time.UTC()
 		session.LastUsedAt = &value
 	}
+	session.Scopes = []string{"overlay:config:read", "overlay:config:ack", "overlay:device:revoke"}
 	return &session, nil
 }
 

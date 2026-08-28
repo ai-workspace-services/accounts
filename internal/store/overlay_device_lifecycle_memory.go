@@ -90,6 +90,18 @@ func (s *memoryStore) SetOverlayDeviceStatus(_ context.Context, userID, networkI
 				delete(s.overlayEnrollments, hash)
 			}
 		}
+		for hash, session := range s.overlayDeviceSessions {
+			if session.UserID == userID && session.NetworkID == networkID && session.DeviceID == deviceID {
+				delete(s.overlayDeviceSessions, hash)
+			}
+		}
+		for _, credential := range s.overlayDeviceCredentials {
+			if credential.UserID == userID && credential.NetworkID == networkID && credential.DeviceID == deviceID && credential.Status == OverlayDeviceCredentialActive {
+				v := now
+				credential.Status = OverlayDeviceCredentialRevoked
+				credential.RevokedAt = &v
+			}
+		}
 	}
 	s.appendOverlayDeviceEventLocked(device, eventType, now)
 	audit.CreatedAt = now

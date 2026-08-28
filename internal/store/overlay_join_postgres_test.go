@@ -79,10 +79,11 @@ func TestPostgresExchangeLocksLastUseAndAtomicallyRegisters(t *testing.T) {
 	sessionHash := sha256.Sum256([]byte("xenr_secret"))
 	userID := "11111111-1111-1111-1111-111111111111"
 	exchange := &OverlayJoinExchange{
-		JoinTokenHash: joinHash[:],
-		Enrollment:    OverlayEnrollmentSession{ID: "enr-1", TokenHash: sessionHash[:], CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute)},
-		Device:        OverlayDevice{ID: "dev-1", Name: "dev-1", Platform: "linux", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-		AddressPrefix: "172.29.10", AddressStartHost: 100, AddressEndHost: 254,
+		JoinTokenHash:    joinHash[:],
+		Enrollment:       OverlayEnrollmentSession{ID: "enr-1", TokenHash: sessionHash[:], CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute)},
+		Device:           OverlayDevice{ID: "dev-1", Name: "dev-1", Platform: "linux", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+		DeviceCredential: testOverlayDeviceCredential("xdcid_0123456789abcdef0123456789abcdef", now),
+		AddressPrefix:    "172.29.10", AddressStartHost: 100, AddressEndHost: 254,
 	}
 	audit := &AuditLog{Action: AuditActionOverlayJoinExchange, Details: map[string]any{}}
 	mock.ExpectBegin()
@@ -113,8 +114,12 @@ func TestPostgresExchangeLocksLastUseAndAtomicallyRegisters(t *testing.T) {
 		WithArgs(exchange.Enrollment.ID, exchange.Enrollment.TokenHash, "join-1", userID, "net", exchange.Device.ID,
 			exchange.Device.Platform, exchange.Device.WireGuardPublicKey, exchange.Enrollment.ExpiresAt, now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("INSERT INTO public.overlay_device_credentials").WithArgs(exchange.DeviceCredential.ID, exchange.DeviceCredential.Verifier, userID, "net", exchange.Device.ID, `["overlay:session:mint","overlay:credential:rotate","overlay:device:revoke"]`, now, exchange.DeviceCredential.ExpiresAt).WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(now))
 	mock.ExpectQuery("INSERT INTO public.audit_logs").
 		WithArgs(sqlmock.AnyArg(), audit.Action, nil, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(now))
+	mock.ExpectQuery("INSERT INTO public.audit_logs").
+		WithArgs(sqlmock.AnyArg(), AuditActionOverlayDeviceCredentialIssue, userID, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(now))
 	mock.ExpectCommit()
 	if err := st.ExchangeOverlayJoinToken(context.Background(), exchange, audit); err != nil {
@@ -136,7 +141,7 @@ func TestPostgresExchangeRejectsHistoricalWireGuardKey(t *testing.T) {
 	joinHash := sha256.Sum256([]byte("xjt_historical"))
 	sessionHash := sha256.Sum256([]byte("xenr_historical"))
 	userID := "11111111-1111-1111-1111-111111111111"
-	exchange := &OverlayJoinExchange{JoinTokenHash: joinHash[:], Enrollment: OverlayEnrollmentSession{ID: "enr-historical", TokenHash: sessionHash[:], CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute)}, Device: OverlayDevice{ID: "replacement", Name: "replacement", Platform: "linux", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}, AddressPrefix: "172.29.10", AddressStartHost: 100, AddressEndHost: 254}
+	exchange := &OverlayJoinExchange{JoinTokenHash: joinHash[:], Enrollment: OverlayEnrollmentSession{ID: "enr-historical", TokenHash: sessionHash[:], CreatedAt: now, ExpiresAt: now.Add(10 * time.Minute)}, DeviceCredential: testOverlayDeviceCredential("xdcid_0123456789abcdef0123456789abcdef", now), Device: OverlayDevice{ID: "replacement", Name: "replacement", Platform: "linux", WireGuardPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}, AddressPrefix: "172.29.10", AddressStartHost: 100, AddressEndHost: 254}
 	mock.ExpectBegin()
 	mock.ExpectQuery("FROM public.overlay_join_tokens WHERE token_hash = \\$1 FOR UPDATE").WithArgs(exchange.JoinTokenHash).WillReturnRows(sqlmock.NewRows([]string{"id", "user_uuid", "network_id", "device_id", "platform", "remaining_uses", "expires_at", "revoked_at", "created_at", "last_exchanged_at"}).AddRow("join-historical", userID, "net", nil, nil, 1, now.Add(time.Hour), nil, now.Add(-time.Minute), nil))
 	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM public.overlay_enrollment_sessions").WithArgs("join-historical", exchange.Device.ID).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))

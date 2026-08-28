@@ -96,6 +96,12 @@ func (s *postgresStore) SetOverlayDeviceStatus(ctx context.Context, userID, netw
 		if _, err = tx.ExecContext(ctx, `DELETE FROM public.overlay_enrollment_sessions WHERE user_uuid=$1 AND network_id=$2 AND device_id=$3`, userID, networkID, deviceID); err != nil {
 			return nil, false, err
 		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM public.overlay_device_sessions WHERE user_uuid=$1 AND network_id=$2 AND device_id=$3`, userID, networkID, deviceID); err != nil {
+			return nil, false, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE public.overlay_device_credentials SET status='revoked',revoked_at=COALESCE(revoked_at,now()) WHERE user_uuid=$1 AND network_id=$2 AND device_id=$3 AND status='active'`, userID, networkID, deviceID); err != nil {
+			return nil, false, err
+		}
 	}
 	if err = insertOverlayDeviceEventTx(ctx, tx, d, eventType); err != nil {
 		return nil, false, err
