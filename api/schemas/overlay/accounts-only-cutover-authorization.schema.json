@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accounts.svc.plus/schemas/overlay/v1/accounts-only-cutover-authorization.schema.json",
+  "title": "XConnect-One Accounts-only cutover authorization v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "requested_mode", "node_id", "network_id", "generation", "snapshot_id", "baseline_sha256", "projection_sha256", "policy_sha256", "reconcile", "issued_at", "expires_at", "signature"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "xconnect.accounts-only-cutover-authorization" },
+    "requested_mode": { "const": "accounts-only" },
+    "node_id": { "$ref": "#/$defs/id" },
+    "network_id": { "$ref": "#/$defs/id" },
+    "generation": { "type": "integer", "minimum": 1 },
+    "snapshot_id": { "$ref": "#/$defs/id" },
+    "baseline_sha256": { "$ref": "#/$defs/sha256" },
+    "projection_sha256": { "$ref": "#/$defs/sha256" },
+    "policy_sha256": { "$ref": "#/$defs/sha256" },
+    "reconcile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["processed", "completed", "failed", "pending"],
+      "properties": {
+        "processed": { "type": "integer", "minimum": 0 },
+        "completed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "pending": { "const": 0 }
+      }
+    },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "signature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["algorithm", "key_id", "value"],
+      "properties": {
+        "algorithm": { "const": "Ed25519" },
+        "key_id": { "$ref": "#/$defs/id" },
+        "value": { "type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{2,127}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

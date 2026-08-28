@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.overlay_static_import_receipts_network_created_idx;

@@ -117,3 +117,32 @@ func TestPostgresStaticImportClaimsWireGuardKeyInSameTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPostgresReadsLatestStaticImportReceiptByNetwork(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &postgresStore{db: db}
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("SELECT import_id,idempotency_key,owner_user_uuid::text,network_id,baseline_sha256,device_count,created_at FROM public.overlay_static_import_receipts").WithArgs("network-test").WillReturnRows(sqlmock.NewRows([]string{"import_id", "idempotency_key", "owner_user_uuid", "network_id", "baseline_sha256", "device_count", "created_at"}).AddRow("import_test_01", "sha256-"+strings.Repeat("a", 64), "11111111-1111-4111-8111-111111111111", "network-test", strings.Repeat("b", 64), 1, now))
+	receipt, err := st.GetLatestOverlayStaticImportReceipt(context.Background(), "network-test")
+	if err != nil || receipt == nil || receipt.ImportID != "import_test_01" || !receipt.CreatedAt.Equal(now) {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCutoverAuthorizationMigrationIndexesBaselineLookup(t *testing.T) {
+	_, filename, _, _ := runtime.Caller(0)
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "..", "..", "sql", "migrations", "2026082808_overlay_cutover_authorization.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "overlay_static_import_receipts_network_created_idx") || !strings.Contains(string(raw), "network_id, created_at DESC, import_id DESC") {
+		t.Fatal("cutover authorization migration does not index latest baseline lookup")
+	}
+}

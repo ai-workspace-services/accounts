@@ -361,3 +361,16 @@ func (s *postgresStore) ImportOverlayStaticClients(ctx context.Context, input *O
 	}
 	return &receipt, false, nil
 }
+
+func (s *postgresStore) GetLatestOverlayStaticImportReceipt(ctx context.Context, networkID string) (*OverlayStaticImportReceipt, error) {
+	var receipt OverlayStaticImportReceipt
+	err := s.db.QueryRowContext(ctx, `SELECT import_id,idempotency_key,owner_user_uuid::text,network_id,baseline_sha256,device_count,created_at FROM public.overlay_static_import_receipts WHERE network_id=$1 ORDER BY created_at DESC, import_id DESC LIMIT 1`, strings.TrimSpace(networkID)).Scan(&receipt.ImportID, &receipt.IdempotencyKey, &receipt.OwnerUserID, &receipt.NetworkID, &receipt.BaselineSHA256, &receipt.DeviceCount, &receipt.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrOverlayStaticImportNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	receipt.CreatedAt = receipt.CreatedAt.UTC()
+	return &receipt, nil
+}

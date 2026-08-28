@@ -533,6 +533,28 @@ paths:
           description: Reconcile retry counts; processed equals completed plus failed.
           headers: {Cache-Control: {schema: {const: no-store}}}
         default: {$ref: "#/components/responses/Error"}
+  /api/internal/overlay/v1/nodes/{node_id}/cutover-authorizations:
+    post:
+      tags: [Internal Overlay Management]
+      operationId: issueAccountsOnlyCutoverAuthorizationV1
+      summary: Issue a short-lived controller-signed authorization for one exact Accounts-only cutover evidence set.
+      description: >-
+        Requires the service token and a separately configured Accounts Ed25519
+        key. The controller derives baseline, snapshot, policy, projection and
+        reconcile facts from durable state; it refuses incomplete or pending
+        evidence and never accepts caller-supplied digests.
+      security: [{serviceToken: []}]
+      parameters: [{$ref: "#/components/parameters/NodeID"}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "#/components/schemas/CutoverAuthorizationRequest"}}}
+      responses:
+        "200":
+          description: Short-lived Ed25519-signed authorization; response is no-store.
+          headers: {Cache-Control: {schema: {const: no-store}}}
+          content: {application/json: {schema: {$ref: "#/components/schemas/CutoverAuthorization"}}}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
   /api/overlay/v1/policies/validate:
     post:
       tags: [Overlay]
@@ -617,6 +639,15 @@ components:
         application/json:
           schema: {$ref: "#/components/schemas/Error"}
   schemas:
+    CutoverAuthorizationRequest:
+      type: object
+      additionalProperties: false
+      required: [requested_mode]
+      properties:
+        requested_mode: {const: accounts-only}
+        expires_in_seconds: {type: integer, minimum: 1, maximum: 900}
+    CutoverAuthorization:
+      $ref: ../schemas/overlay/accounts-only-cutover-authorization.schema.json
     PolicyDocumentRequest:
       type: object
       additionalProperties: false

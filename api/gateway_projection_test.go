@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"account/internal/overlay/cutoverauth"
 	"account/internal/overlay/domain"
 	"account/internal/overlay/gatewayprojection"
 	"account/internal/overlay/projection"
@@ -53,9 +54,124 @@ func gatewayAPIHarness(t *testing.T) (http.Handler, store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cutoverSeed := make([]byte, ed25519.SeedSize)
+	for i := range cutoverSeed {
+		cutoverSeed[i] = byte(255 - i)
+	}
+	cutoverSigner, err := cutoverauth.NewSigner(ed25519.NewKeyFromSeed(cutoverSeed), "cutover_key_01")
+	if err != nil {
+		t.Fatal(err)
+	}
 	router := gin.New()
-	RegisterRoutes(router, WithStore(st), WithOverlayProjectionService(signed), WithOverlayGatewayProjectionService(gateway))
+	RegisterRoutes(router, WithStore(st), WithOverlayProjectionService(signed), WithOverlayGatewayProjectionService(gateway), WithOverlayCutoverAuthorizationSigner(cutoverSigner))
 	return router, st
+}
+
+func TestGatewayCutoverAuthorizationIsInternalSignedAndFailClosed(t *testing.T) {
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-test")
+	router, st := gatewayAPIHarness(t)
+	node, err := st.GetOverlayNode(t.Context(), "gw_test_01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.GatewayMode = "apply"
+	if err := st.UpsertOverlayNode(t.Context(), node); err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
+	_, _, err = st.ImportOverlayStaticClients(t.Context(), &store.OverlayStaticImport{IdempotencyKey: "sha256-" + strings.Repeat("a", 64), BodySHA256: strings.Repeat("a", 64), OwnerUserID: "11111111-1111-4111-8111-111111111111", NetworkID: "network-test", SourceKind: "ansible-group-vars", SourceVariable: "xworkmate_bridge_distributed_vpn_clients", BaselineSHA256: strings.Repeat("b", 64), Devices: []store.OverlayProjectionDevice{{Device: store.OverlayDevice{ID: "dev_test_01", UserID: "11111111-1111-4111-8111-111111111111", NetworkID: "network-test", Name: "device", Platform: "legacy-import", WireGuardPublicKey: key, WireGuardAddress: "10.77.0.10/32"}, Tags: []string{"migration:static-group-vars"}, Attachments: []string{"gw_test_01"}}}}, &store.AuditLog{Action: store.AuditActionOverlayStaticImport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, bearer := createGatewayCredential(t, router)
+	snapshotRequest := httptest.NewRequest(http.MethodGet, "/api/internal/overlay/v1/nodes/gw_test_01/snapshot", nil)
+	snapshotRequest.Header.Set("Authorization", "Bearer "+bearer)
+	snapshotRequest.Header.Set("Accept", gatewayMediaType)
+	snapshotResponse := httptest.NewRecorder()
+	router.ServeHTTP(snapshotResponse, snapshotRequest)
+	if snapshotResponse.Code != http.StatusOK {
+		t.Fatalf("snapshot=%d %s", snapshotResponse.Code, snapshotResponse.Body.String())
+	}
+	snapshot, err := domain.DecodeGatewaySnapshot(snapshotResponse.Body.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RecordOverlayGatewayApplyResult(t.Context(), &store.OverlayGatewayApplyResult{NodeID: "gw_test_01", SnapshotID: snapshot.SnapshotID, ObservedGeneration: snapshot.Generation, AppliedGeneration: snapshot.Generation, RuntimeApplied: true, Result: "applied", Diff: []byte(`{"status":"available","equal":true,"projected_peers":1,"current_peers":1,"missing_peers":0,"unexpected_peers":0,"route_mismatches":0}`)}); err != nil {
+		t.Fatal(err)
+	}
+	unauthorized := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/v1/nodes/gw_test_01/cutover-authorizations", strings.NewReader(`{"requested_mode":"accounts-only"}`))
+	unauthorized.Header.Set("Content-Type", "application/json")
+	unauthorizedResponse := httptest.NewRecorder()
+	router.ServeHTTP(unauthorizedResponse, unauthorized)
+	if unauthorizedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("missing service auth=%d", unauthorizedResponse.Code)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/v1/nodes/gw_test_01/cutover-authorizations", strings.NewReader(`{"requested_mode":"accounts-only","expires_in_seconds":120}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Service-Token", "internal-test")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("issue authorization=%d %s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Vary") != "X-Service-Token" {
+		t.Fatalf("unsafe cache headers %#v", response.Header())
+	}
+	var authorization cutoverauth.Authorization
+	if err := json.Unmarshal(response.Body.Bytes(), &authorization); err != nil {
+		t.Fatal(err)
+	}
+	if authorization.Kind != cutoverauth.Kind || authorization.NodeID != "gw_test_01" || authorization.NetworkID != "network-test" || authorization.Reconcile.Pending != 0 || authorization.Signature.KeyID != "cutover_key_01" {
+		t.Fatalf("unexpected authorization %#v", authorization)
+	}
+	payload, err := authorization.SigningBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(255 - i)
+	}
+	signature, err := base64.StdEncoding.DecodeString(authorization.Signature.Value)
+	if err != nil || !ed25519.Verify(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey), payload, signature) {
+		t.Fatal("authorization signature does not verify")
+	}
+	if err := st.MarkOverlayPolicyReconcilePending(t.Context(), "network-test", "test"); err != nil {
+		t.Fatal(err)
+	}
+	blocked := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/v1/nodes/gw_test_01/cutover-authorizations", strings.NewReader(`{"requested_mode":"accounts-only"}`))
+	blocked.Header.Set("Content-Type", "application/json")
+	blocked.Header.Set("X-Service-Token", "internal-test")
+	blockedResponse := httptest.NewRecorder()
+	router.ServeHTTP(blockedResponse, blocked)
+	if blockedResponse.Code != http.StatusConflict {
+		t.Fatalf("pending reconcile signed=%d %s", blockedResponse.Code, blockedResponse.Body.String())
+	}
+}
+
+func TestGatewayCutoverAuthorizationFailsClosedWithoutDedicatedSigner(t *testing.T) {
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "internal-test")
+	t.Setenv("OVERLAY_CUTOVER_AUTHORIZATION_PRIVATE_KEY", "")
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterRoutes(router, WithStore(store.NewMemoryStore()))
+	request := httptest.NewRequest(http.MethodPost, "/api/internal/overlay/v1/nodes/gw_test_01/cutover-authorizations", strings.NewReader(`{"requested_mode":"accounts-only"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Service-Token", "internal-test")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "cutover_authorization_unavailable") {
+		t.Fatalf("missing dedicated signer did not fail closed: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCutoverAuthorizationEnvironmentRejectsMemoryStore(t *testing.T) {
+	seed := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	t.Setenv("OVERLAY_CUTOVER_AUTHORIZATION_PRIVATE_KEY", seed)
+	t.Setenv("OVERLAY_CUTOVER_AUTHORIZATION_KEY_ID", "cutover_key_01")
+	if signer, err := newOverlayCutoverAuthorizationSignerFromEnvironment(store.NewMemoryStore()); err == nil || signer != nil {
+		t.Fatalf("memory-backed environment signer was enabled: signer=%v err=%v", signer, err)
+	}
 }
 
 func createGatewayCredential(t *testing.T, router http.Handler) (string, string) {

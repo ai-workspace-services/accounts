@@ -336,3 +336,19 @@ func (s *memoryStore) ImportOverlayStaticClients(_ context.Context, input *Overl
 	clone := *receipt
 	return &clone, false, nil
 }
+
+func (s *memoryStore) GetLatestOverlayStaticImportReceipt(_ context.Context, networkID string) (*OverlayStaticImportReceipt, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest *OverlayStaticImportReceipt
+	for _, receipt := range s.overlayStaticImports {
+		if receipt.NetworkID == strings.TrimSpace(networkID) && (latest == nil || receipt.CreatedAt.After(latest.CreatedAt)) {
+			copy := *receipt
+			latest = &copy
+		}
+	}
+	if latest == nil {
+		return nil, ErrOverlayStaticImportNotFound
+	}
+	return latest, nil
+}

@@ -30,6 +30,7 @@ import (
 	"account/internal/agentserver"
 	"account/internal/auth"
 	"account/internal/overlay/acl"
+	"account/internal/overlay/cutoverauth"
 	"account/internal/overlay/gatewayprojection"
 	"account/internal/overlay/projection"
 	"account/internal/service"
@@ -67,44 +68,45 @@ type oauthExchangeCode struct {
 }
 
 type handler struct {
-	store                     store.Store
-	mu                        sync.RWMutex
-	sessionTTL                time.Duration
-	mfaChallenges             map[string]mfaChallenge
-	mfaMu                     sync.RWMutex
-	mfaChallengeTTL           time.Duration
-	totpIssuer                string
-	emailSender               EmailSender
-	emailVerificationEnabled  bool
-	verificationTTL           time.Duration
-	verifications             map[string]emailVerification
-	verificationMu            sync.RWMutex
-	registrationVerifications map[string]registrationVerification
-	registrationMu            sync.RWMutex
-	resetTTL                  time.Duration
-	passwordResets            map[string]passwordReset
-	resetMu                   sync.RWMutex
-	oauthExchangeCodes        map[string]oauthExchangeCode
-	oauthExchangeMu           sync.RWMutex
-	oauthExchangeTTL          time.Duration
-	metricsProvider           service.UserMetricsProvider
-	agentStatusReader         agentStatusReader
-	tokenService              *auth.TokenService
-	oauthProviders            map[string]auth.OAuthProvider
-	oauthFrontendURL          string
-	publicURL                 string
-	xworkmateVaultService     xworkmateVaultService
-	xrayConfigRenderer        func(*store.User) (string, string, []string, error)
-	agentRegistry             agentRegistry
-	db                        *gorm.DB
-	dbHealth                  func(context.Context) error
-	stripe                    *stripeClient
-	bridgeCredentials         map[string]memoryBridgeCredential
-	taskSessions              tasksession.Store
-	overlayProjection         *projection.Service
-	overlayGatewayProjection  *gatewayprojection.Service
-	overlayACL                *acl.Service
-	overlayJoinRateLimiter    OverlayJoinRateLimiter
+	store                       store.Store
+	mu                          sync.RWMutex
+	sessionTTL                  time.Duration
+	mfaChallenges               map[string]mfaChallenge
+	mfaMu                       sync.RWMutex
+	mfaChallengeTTL             time.Duration
+	totpIssuer                  string
+	emailSender                 EmailSender
+	emailVerificationEnabled    bool
+	verificationTTL             time.Duration
+	verifications               map[string]emailVerification
+	verificationMu              sync.RWMutex
+	registrationVerifications   map[string]registrationVerification
+	registrationMu              sync.RWMutex
+	resetTTL                    time.Duration
+	passwordResets              map[string]passwordReset
+	resetMu                     sync.RWMutex
+	oauthExchangeCodes          map[string]oauthExchangeCode
+	oauthExchangeMu             sync.RWMutex
+	oauthExchangeTTL            time.Duration
+	metricsProvider             service.UserMetricsProvider
+	agentStatusReader           agentStatusReader
+	tokenService                *auth.TokenService
+	oauthProviders              map[string]auth.OAuthProvider
+	oauthFrontendURL            string
+	publicURL                   string
+	xworkmateVaultService       xworkmateVaultService
+	xrayConfigRenderer          func(*store.User) (string, string, []string, error)
+	agentRegistry               agentRegistry
+	db                          *gorm.DB
+	dbHealth                    func(context.Context) error
+	stripe                      *stripeClient
+	bridgeCredentials           map[string]memoryBridgeCredential
+	taskSessions                tasksession.Store
+	overlayProjection           *projection.Service
+	overlayGatewayProjection    *gatewayprojection.Service
+	overlayCutoverAuthorization *cutoverauth.Signer
+	overlayACL                  *acl.Service
+	overlayJoinRateLimiter      OverlayJoinRateLimiter
 }
 
 type memoryBridgeCredential struct {
@@ -178,6 +180,12 @@ func WithOverlayProjectionService(service *projection.Service) Option {
 
 func WithOverlayGatewayProjectionService(service *gatewayprojection.Service) Option {
 	return func(h *handler) { h.overlayGatewayProjection = service }
+}
+
+// WithOverlayCutoverAuthorizationSigner injects the dedicated Accounts-only
+// cutover signer. It must never reuse the client or GatewaySnapshot signer.
+func WithOverlayCutoverAuthorizationSigner(signer *cutoverauth.Signer) Option {
+	return func(h *handler) { h.overlayCutoverAuthorization = signer }
 }
 
 func WithOverlayACLService(service *acl.Service) Option {
@@ -402,6 +410,14 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 			h.overlayGatewayProjection = service
 		}
 	}
+	if h.overlayCutoverAuthorization == nil {
+		signer, err := newOverlayCutoverAuthorizationSignerFromEnvironment(h.store)
+		if err != nil {
+			slog.Error("overlay_cutover_authorization_disabled", "error", err)
+		} else {
+			h.overlayCutoverAuthorization = signer
+		}
+	}
 	if h.overlayACL == nil {
 		h.overlayACL, _ = acl.NewService(h.store)
 	}
@@ -597,6 +613,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalOverlayV1Management.DELETE("/nodes/:node_id/credentials/:credential_id", h.revokeOverlayNodeCredential)
 	internalOverlayV1Management.POST("/imports/static-clients", h.importOverlayStaticClients)
 	internalOverlayV1Management.POST("/reconcile-pending", h.retryOverlayPolicyReconciles)
+	internalOverlayV1Management.POST("/nodes/:node_id/cutover-authorizations", h.issueOverlayCutoverAuthorization)
 	// Gateway Agent v1 uses a node-bound, hash-only bearer. It deliberately
 	// does not inherit the shared X-Service-Token middleware.
 	r.POST("/api/internal/overlay/v1/nodes/heartbeat", h.gatewayNodeHeartbeat)

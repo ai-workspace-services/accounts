@@ -269,6 +269,7 @@ const (
 	AuditActionOverlayDeviceCredentialIssue  = "overlay.device_credential.issue"
 	AuditActionOverlayDeviceCredentialRotate = "overlay.device_credential.rotate"
 	AuditActionOverlayDeviceSessionMint      = "overlay.device_session.mint"
+	AuditActionOverlayCutoverAuthorization   = "overlay.cutover_authorization.issue"
 )
 
 type AccountQuotaState struct {
@@ -607,6 +608,7 @@ type Store interface {
 	IsOverlayGatewayGenerationApplied(ctx context.Context, nodeID string, generation uint64) (bool, error)
 	ListOverlayProjectionDevicesByNetwork(ctx context.Context, networkID string) ([]OverlayProjectionDevice, error)
 	ImportOverlayStaticClients(ctx context.Context, input *OverlayStaticImport, audit *AuditLog) (*OverlayStaticImportReceipt, bool, error)
+	GetLatestOverlayStaticImportReceipt(ctx context.Context, networkID string) (*OverlayStaticImportReceipt, error)
 	CreateOverlayPolicyRevision(ctx context.Context, policy *OverlayPolicyRevision, audit *AuditLog) error
 	GetOverlayPolicyRevision(ctx context.Context, networkID string, revision uint64) (*OverlayPolicyRevision, error)
 	GetLatestOverlayPolicyRevision(ctx context.Context, networkID string) (*OverlayPolicyRevision, error)
@@ -706,6 +708,7 @@ var (
 	ErrOverlayGatewayReportStale           = errors.New("overlay gateway report is stale or replayed")
 	ErrOverlayStaticImportConflict         = errors.New("overlay static import conflicts with existing device")
 	ErrOverlayStaticImportIdempotency      = errors.New("overlay static import idempotency key is bound to another body")
+	ErrOverlayStaticImportNotFound         = errors.New("overlay static import receipt not found")
 	ErrOverlayPolicyNotFound               = errors.New("overlay policy revision not found")
 	ErrOverlayPolicyConflict               = errors.New("overlay policy revision conflict")
 	ErrOverlayDeviceRevoked                = errors.New("overlay device is revoked")

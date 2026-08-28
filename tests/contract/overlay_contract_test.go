@@ -71,6 +71,7 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		"/api/internal/overlay/v1/nodes/{node_id}/apply-result",
 		"/api/internal/overlay/v1/nodes/{node_id}/credentials",
 		"/api/internal/overlay/v1/nodes/{node_id}/credentials/{credential_id}",
+		"/api/internal/overlay/v1/nodes/{node_id}/cutover-authorizations",
 		"/api/internal/overlay/v1/imports/static-clients",
 	} {
 		if _, exists := paths[path]; !exists {
@@ -87,6 +88,7 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		"DeviceCredentialRotateRequest":  "../schemas/overlay/device-credential-rotate-request.schema.json",
 		"DeviceCredentialRotateResponse": "../schemas/overlay/device-credential-rotate-response.schema.json",
 		"DeviceBoundRevokeRequest":       "../schemas/overlay/device-bound-revoke-request.schema.json",
+		"CutoverAuthorization":           "../schemas/overlay/accounts-only-cutover-authorization.schema.json",
 	}
 	for name, want := range refs {
 		schema := schemas[name].(map[string]any)
@@ -110,7 +112,7 @@ func TestGatewayOpenAPILocksAuthenticationAndAuthorizedRuntimeBoundaries(t *test
 			}
 		}
 	}
-	for _, path := range []string{"/api/internal/overlay/v1/nodes/{node_id}/credentials", "/api/internal/overlay/v1/imports/static-clients", "/api/internal/overlay/v1/reconcile-pending"} {
+	for _, path := range []string{"/api/internal/overlay/v1/nodes/{node_id}/credentials", "/api/internal/overlay/v1/nodes/{node_id}/cutover-authorizations", "/api/internal/overlay/v1/imports/static-clients", "/api/internal/overlay/v1/reconcile-pending"} {
 		operation := paths[path].(map[string]any)["post"].(map[string]any)
 		if !strings.Contains(fmt.Sprint(operation["security"]), "serviceToken") {
 			t.Fatalf("management path %s escaped service boundary", path)
