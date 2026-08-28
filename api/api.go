@@ -654,6 +654,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	r.POST("/api/overlay/v1/enrollment/config/ack", h.enrollmentOverlayConfigAck)
 	r.POST("/api/overlay/v1/enrollment/signed-config/:generation/ack", h.enrollmentOverlaySignedConfigAck)
 	r.POST("/api/overlay/v1/enrollment/device/revoke", h.enrollmentRevokeOverlayDevice)
+	r.POST("/api/overlay/v1/device/session", h.mintOverlayDeviceSession)
+	r.POST("/api/overlay/v1/device/credential/rotate", h.rotateOverlayDeviceCredential)
+	r.POST("/api/overlay/v1/device/revoke", h.revokeOverlayDeviceWithCredential)
 
 	// Canonical user-facing agent routes.
 	// These endpoints use session-based auth in handler logic and intentionally

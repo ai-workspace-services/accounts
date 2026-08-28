@@ -183,7 +183,7 @@ func (h *handler) listOverlayDeviceEvents(c *gin.Context) {
 }
 
 func (h *handler) enrollmentRevokeOverlayDevice(c *gin.Context) {
-	session, ok := h.requireOverlayEnrollment(c)
+	session, ok := h.requireOverlayEnrollment(c, "overlay:device:revoke")
 	if !ok {
 		return
 	}

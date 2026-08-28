@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,8 +25,16 @@ type overlayJoinCreateResponse struct {
 }
 
 type overlayJoinExchangeResponse struct {
-	EnrollmentToken string `json:"enrollment_token"`
-	Device          struct {
+	EnrollmentToken  string `json:"enrollment_token"`
+	DeviceCredential struct {
+		ID         string    `json:"credential_id"`
+		Credential string    `json:"credential"`
+		TokenType  string    `json:"token_type"`
+		IssuedAt   time.Time `json:"issued_at"`
+		ExpiresAt  time.Time `json:"expires_at"`
+		Scope      []string  `json:"scope"`
+	} `json:"device_credential"`
+	Device struct {
 		ID        string `json:"id"`
 		NetworkID string `json:"network_id"`
 	} `json:"device"`
@@ -67,6 +76,7 @@ func exchangeJoinInvite(t *testing.T, router http.Handler, secret, deviceID, pla
 		"wireguard_public_key": "jfHsw1HIqRQzGvfsRfdkS7BLThDbBvWMsAlJRp1kdkw=",
 	})
 	request := httptest.NewRequest(http.MethodPost, "/api/overlay/v1/join-tokens/exchange", bytes.NewReader(body))
+	request.TLS = &tls.ConnectionState{}
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
@@ -119,6 +129,12 @@ func TestOverlayJoinExchangeAtomicallyRegistersAndScopesEnrollment(t *testing.T)
 	recorder, exchange := exchangeJoinInvite(t, router, secret, "joined-device", "linux")
 	if recorder.Code != http.StatusOK || exchange.EnrollmentToken == "" || exchange.Device.ID != "joined-device" {
 		t.Fatalf("exchange: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !overlayDeviceCredentialPattern.MatchString(exchange.DeviceCredential.Credential) || exchange.DeviceCredential.ID != "xdcid_"+strings.Split(strings.TrimPrefix(exchange.DeviceCredential.Credential, "xdc_"), ".")[0] || exchange.DeviceCredential.TokenType != "Device" {
+		t.Fatalf("invalid durable device credential response: %#v", exchange.DeviceCredential)
+	}
+	if exchange.DeviceCredential.ExpiresAt.Sub(exchange.DeviceCredential.IssuedAt) > maxOverlayDeviceCredentialTTLAPI {
+		t.Fatalf("device credential lifetime exceeds 31 days: %#v", exchange.DeviceCredential)
 	}
 	if !strings.Contains(recorder.Body.String(), `"overlay:device:revoke"`) {
 		t.Fatalf("enrollment revoke scope missing: %s", recorder.Body.String())

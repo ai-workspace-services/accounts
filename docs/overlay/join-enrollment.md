@@ -22,16 +22,25 @@ the WireGuard key locally and sends only its public key.
 3. One Store transaction locks the invite row, checks owner/network/device/
    platform/expiry/revocation/unused state, prevents replay, locks the network
    address pool, registers the device, exhausts the invite, creates a
-   short-lived enrollment session, and writes the
+   short-lived enrollment session and one active durable device credential,
+   and writes the
    exchange audit event. A one-use invite therefore cannot have two concurrent
    winners.
-4. The one-time exchange response returns a `xenr_` bearer. It is bound to the
+4. The one-time exchange response returns a `xenr_` bearer and one raw `xdc_`
+   durable credential. Both are returned once with `Cache-Control: no-store`;
+   only their SHA-256 verifiers are persisted. The client checkpoints `xdc_`
+   in protected platform storage before applying or ACKing configuration and
+   erases `xenr_` after bootstrap. The bearer is bound to the
    exact user, network, device ID, platform, and WireGuard public key. Its only
    endpoints are the `/api/overlay/v1/enrollment/{config,signed-config,...}`
    bootstrap reads and ACKs. Device registration already happened atomically
    in step 3, so there is no second registration window to replay.
 5. The response includes the current public signing-key set. SignedConfig
    remains `proxy_core: xray` only.
+
+Ongoing sync, credential rotation and durable device leave are specified in
+`device-credential-session.md`; the short enrollment bearer is never extended
+into a long-lived credential.
 
 An enrollment bearer is not accepted by account, admin, device-list, network-
 list, ordinary overlay, or management APIs. Device/network mismatches fail with

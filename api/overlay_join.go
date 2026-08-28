@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"account/internal/overlay/projection"
 	"account/internal/store"
 )
 
@@ -284,6 +285,13 @@ func overlayEnrollmentTTL() time.Duration {
 }
 
 func (h *handler) exchangeOverlayJoinToken(c *gin.Context) {
+	if !requireSecureOverlayControl(c) {
+		return
+	}
+	if strings.TrimSpace(c.GetHeader("Content-Type")) != "application/json" {
+		respondError(c, http.StatusUnsupportedMediaType, "content_type_required", "Content-Type must be application/json")
+		return
+	}
 	var request overlayJoinExchangeRequest
 	if err := decodeOverlayJoinJSON(c, &request); err != nil {
 		respondError(c, http.StatusBadRequest, "invalid_request", err.Error())
@@ -318,13 +326,22 @@ func (h *handler) exchangeOverlayJoinToken(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "join_exchange_failed", "failed to exchange join token")
 		return
 	}
+	deviceCredentialSecret, deviceCredential, err := generateOverlayDeviceCredential()
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "join_exchange_failed", "failed to exchange join token")
+		return
+	}
 	now := time.Now().UTC()
+	deviceCredential.IssuedAt = now
+	deviceCredential.CreatedAt = now
+	deviceCredential.ExpiresAt = now.Add(defaultOverlayDeviceCredentialTTL)
 	exchange := &store.OverlayJoinExchange{
 		JoinTokenHash: joinDigest[:],
 		Enrollment: store.OverlayEnrollmentSession{
 			ID: "enr_" + strings.ReplaceAll(uuid.NewString(), "-", ""), TokenHash: enrollmentDigest,
 			CreatedAt: now, ExpiresAt: now.Add(overlayEnrollmentTTL()),
 		},
+		DeviceCredential: *deviceCredential,
 		Device: store.OverlayDevice{
 			ID: deviceID, Name: strings.TrimSpace(request.Name), Platform: platform,
 			Hostname: strings.TrimSpace(request.Hostname), WireGuardPublicKey: publicKey,
@@ -356,15 +373,28 @@ func (h *handler) exchangeOverlayJoinToken(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
 		"enrollment_token": enrollmentSecret, "token_type": "Bearer", "expires_at": exchange.Enrollment.ExpiresAt,
-		"scope":  []string{"overlay:config:read", "overlay:config:ack", "overlay:device:revoke"},
-		"device": overlayDevicePayload(&exchange.Device), "network": overlayNetworkPayload(exchange.Device.NetworkID),
+		"scope":             []string{"overlay:config:read", "overlay:config:ack", "overlay:device:revoke"},
+		"device_credential": gin.H{"credential_id": exchange.DeviceCredential.ID, "credential": deviceCredentialSecret, "token_type": "Device", "issued_at": exchange.DeviceCredential.IssuedAt, "expires_at": exchange.DeviceCredential.ExpiresAt, "scope": exchange.DeviceCredential.Scopes},
+		"device":            overlayJoinDevicePayload(&exchange.Device), "network": overlayNetworkPayload(exchange.Device.NetworkID),
 		"signing_keys": h.overlayProjectionPublicKeys(),
 	})
 }
 
-func (h *handler) overlayProjectionPublicKeys() any {
+// overlayJoinDevicePayload is frozen to the strict join-exchange v1 schema.
+// Lifecycle-only fields are available from the authenticated device APIs and
+// are intentionally not added to this no-store bootstrap response.
+func overlayJoinDevicePayload(device *store.OverlayDevice) gin.H {
+	return gin.H{
+		"id": device.ID, "user_id": device.UserID, "network_id": device.NetworkID,
+		"name": device.Name, "platform": device.Platform, "hostname": device.Hostname,
+		"wireguard_public_key": device.WireGuardPublicKey, "wireguard_address": device.WireGuardAddress,
+		"created_at": device.CreatedAt, "updated_at": device.UpdatedAt, "last_seen_at": device.LastSeenAt,
+	}
+}
+
+func (h *handler) overlayProjectionPublicKeys() []projection.PublicSigningKey {
 	if h.overlayProjection == nil {
-		return []any{}
+		return []projection.PublicSigningKey{}
 	}
 	return h.overlayProjection.PublicSigningKeys()
 }
@@ -377,7 +407,7 @@ func enrollmentBearer(c *gin.Context) string {
 	return strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 }
 
-func (h *handler) requireOverlayEnrollment(c *gin.Context) (*store.OverlayEnrollmentSession, bool) {
+func (h *handler) requireOverlayEnrollment(c *gin.Context, requiredScope string) (*store.OverlayEnrollmentSession, bool) {
 	secret := enrollmentBearer(c)
 	if !strings.HasPrefix(secret, "xenr_") {
 		respondError(c, http.StatusUnauthorized, "invalid_enrollment", "enrollment token is invalid or expired")
@@ -386,11 +416,25 @@ func (h *handler) requireOverlayEnrollment(c *gin.Context) (*store.OverlayEnroll
 	digest := sha256.Sum256([]byte(secret))
 	session, err := h.store.GetOverlayEnrollmentSession(c.Request.Context(), digest[:], time.Now().UTC())
 	if err != nil {
+		session, err = h.store.GetOverlayDeviceSession(c.Request.Context(), digest[:], time.Now().UTC())
+	}
+	if err != nil {
 		respondError(c, http.StatusUnauthorized, "invalid_enrollment", "enrollment token is invalid or expired")
 		return nil, false
 	}
+	hasScope := false
+	for _, scope := range session.Scopes {
+		if scope == requiredScope {
+			hasScope = true
+			break
+		}
+	}
+	if !hasScope {
+		respondError(c, http.StatusForbidden, "enrollment_scope_denied", "enrollment token does not permit this operation")
+		return nil, false
+	}
 	device, err := h.store.GetOverlayDevice(c.Request.Context(), session.UserID, session.DeviceID)
-	if err != nil || (device.Status != "" && device.Status != store.OverlayDeviceActive) || device.NetworkID != session.NetworkID || device.Platform != session.Platform || device.WireGuardPublicKey != session.WireGuardPublicKey {
+	if err != nil || (device.Status != "" && device.Status != store.OverlayDeviceActive) || device.NetworkID != session.NetworkID || (session.Platform != "" && device.Platform != session.Platform) || (session.WireGuardPublicKey != "" && device.WireGuardPublicKey != session.WireGuardPublicKey) {
 		respondError(c, http.StatusUnauthorized, "invalid_enrollment", "enrollment token is invalid or expired")
 		return nil, false
 	}
@@ -437,28 +481,28 @@ func bindEnrollmentAckBody(c *gin.Context, session *store.OverlayEnrollmentSessi
 }
 
 func (h *handler) enrollmentOverlayConfig(c *gin.Context) {
-	session, ok := h.requireOverlayEnrollment(c)
+	session, ok := h.requireOverlayEnrollment(c, "overlay:config:read")
 	if ok && bindEnrollmentQuery(c, session) {
 		h.overlayConfig(c)
 	}
 }
 
 func (h *handler) enrollmentOverlaySignedConfig(c *gin.Context) {
-	session, ok := h.requireOverlayEnrollment(c)
+	session, ok := h.requireOverlayEnrollment(c, "overlay:config:read")
 	if ok && bindEnrollmentQuery(c, session) {
 		h.overlaySignedConfig(c)
 	}
 }
 
 func (h *handler) enrollmentOverlayConfigAck(c *gin.Context) {
-	session, ok := h.requireOverlayEnrollment(c)
+	session, ok := h.requireOverlayEnrollment(c, "overlay:config:ack")
 	if ok && bindEnrollmentAckBody(c, session) {
 		h.overlayConfigAck(c)
 	}
 }
 
 func (h *handler) enrollmentOverlaySignedConfigAck(c *gin.Context) {
-	session, ok := h.requireOverlayEnrollment(c)
+	session, ok := h.requireOverlayEnrollment(c, "overlay:config:ack")
 	if ok && bindEnrollmentAckBody(c, session) {
 		h.overlaySignedConfigAck(c)
 	}

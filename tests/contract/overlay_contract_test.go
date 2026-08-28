@@ -58,6 +58,9 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 		"/api/overlay/v1/join-tokens",
 		"/api/overlay/v1/join-tokens/{id}",
 		"/api/overlay/v1/join-tokens/exchange",
+		"/api/overlay/v1/device/session",
+		"/api/overlay/v1/device/credential/rotate",
+		"/api/overlay/v1/device/revoke",
 		"/api/overlay/v1/enrollment/config",
 		"/api/overlay/v1/enrollment/signed-config",
 		"/api/overlay/v1/enrollment/config/ack",
@@ -77,8 +80,13 @@ func TestOverlayOpenAPIExposesVersionedBaseline(t *testing.T) {
 	components := document["components"].(map[string]any)
 	schemas := components["schemas"].(map[string]any)
 	refs := map[string]string{
-		"SignedConfig":    "../schemas/overlay/signed-config.schema.json",
-		"GatewaySnapshot": "../schemas/overlay/gateway-snapshot.schema.json",
+		"SignedConfig":                   "../schemas/overlay/signed-config.schema.json",
+		"GatewaySnapshot":                "../schemas/overlay/gateway-snapshot.schema.json",
+		"DeviceSessionMintRequest":       "../schemas/overlay/device-session-mint-request.schema.json",
+		"DeviceSessionMintResponse":      "../schemas/overlay/device-session-mint-response.schema.json",
+		"DeviceCredentialRotateRequest":  "../schemas/overlay/device-credential-rotate-request.schema.json",
+		"DeviceCredentialRotateResponse": "../schemas/overlay/device-credential-rotate-response.schema.json",
+		"DeviceBoundRevokeRequest":       "../schemas/overlay/device-bound-revoke-request.schema.json",
 	}
 	for name, want := range refs {
 		schema := schemas[name].(map[string]any)
@@ -151,6 +159,48 @@ func TestOverlayOpenAPILocksJoinAndEnrollmentSecurityBoundaries(t *testing.T) {
 	exchangeResponse := schemas["ExchangeJoinTokenResponse"].(map[string]any)["properties"].(map[string]any)
 	if exchangeResponse["enrollment_token"].(map[string]any)["writeOnly"] != true {
 		t.Fatal("enrollment secret must be writeOnly")
+	}
+	deviceCredential := exchangeResponse["device_credential"].(map[string]any)["properties"].(map[string]any)
+	if deviceCredential["credential"].(map[string]any)["writeOnly"] != true {
+		t.Fatal("raw device credential must be writeOnly")
+	}
+	for _, path := range []string{"/api/overlay/v1/device/session", "/api/overlay/v1/device/credential/rotate", "/api/overlay/v1/device/revoke"} {
+		operation := paths[path].(map[string]any)["post"].(map[string]any)
+		if !strings.Contains(fmt.Sprint(operation["security"]), "deviceAuthorization") {
+			t.Fatalf("device endpoint %s escaped Device authorization", path)
+		}
+		responses := operation["responses"].(map[string]any)
+		for status, response := range responses {
+			if status == "default" || status == "409" {
+				continue
+			}
+			if !strings.Contains(fmt.Sprint(response), "no-store") {
+				t.Fatalf("device endpoint %s response %s is cacheable: %#v", path, status, response)
+			}
+		}
+	}
+}
+
+func TestDeviceCredentialSchemasAndGoldenVector(t *testing.T) {
+	for _, name := range []string{"device-session-mint-request", "device-session-mint-response", "device-credential-rotate-request", "device-credential-rotate-response", "device-bound-revoke-request"} {
+		var schema map[string]any
+		if err := json.Unmarshal(readFile(t, "api/schemas/overlay/"+name+".schema.json"), &schema); err != nil {
+			t.Fatalf("parse %s schema: %v", name, err)
+		}
+		wantID := "https://accounts.svc.plus/schemas/overlay/v1/" + name + ".schema.json"
+		if schema["$id"] != wantID || schema["additionalProperties"] != false {
+			t.Fatalf("%s schema identity/strictness drifted: %#v", name, schema)
+		}
+	}
+	var vector struct {
+		Credential string `json:"rotation_example_credential"`
+		Verifier   string `json:"rotation_example_sha256"`
+	}
+	if err := json.Unmarshal(readFile(t, "tests/fixtures/overlay/device-credential-wire.json"), &vector); err != nil {
+		t.Fatal(err)
+	}
+	if vector.Credential != "xdc_fedcba9876543210fedcba9876543210.BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" || vector.Verifier != "00bdb1b7a7203fa88c9bd01bc87ef416cafd04d3379934ad535dda1252f0ea80" {
+		t.Fatalf("IAC device credential golden drifted: %#v", vector)
 	}
 }
 

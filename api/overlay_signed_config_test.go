@@ -32,7 +32,11 @@ func newSignedConfigTestService(t *testing.T) (*projection.Service, *projection.
 		t.Fatalf("create signer: %v", err)
 	}
 	clock := func() time.Time { return now }
-	service, err := projection.NewService(projection.NewMemoryRepository(clock), signer, clock, time.Hour)
+	ring, err := projection.NewEd25519KeyRingWithCurrentSigner(signer, time.Unix(0, 0).UTC(), nil, nil, clock)
+	if err != nil {
+		t.Fatalf("create signing key ring: %v", err)
+	}
+	service, err := projection.NewService(projection.NewMemoryRepository(clock), ring, clock, time.Hour)
 	if err != nil {
 		t.Fatalf("create projection service: %v", err)
 	}

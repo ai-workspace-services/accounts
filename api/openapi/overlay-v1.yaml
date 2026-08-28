@@ -241,6 +241,73 @@ paths:
               schema: {$ref: "#/components/schemas/ExchangeJoinTokenResponse"}
         "429": {$ref: "#/components/responses/Error"}
         default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/device/session:
+    post:
+      tags: [Overlay]
+      operationId: mintOverlayDeviceSessionV1
+      description: >-
+        Exchanges the active, device-bound xdc_ credential for a short-lived
+        xenr_ bearer limited to signed-config read and ACK. HTTPS and exact
+        application/json are mandatory; the nonce is echoed exactly and the
+        current/previous public Ed25519 trust ring is returned.
+      security: [{deviceAuthorization: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DeviceSessionMintRequest"}}}}
+      responses:
+        "200":
+          description: Short session returned once; never cache.
+          headers:
+            Cache-Control: {schema: {const: no-store}}
+            Vary: {schema: {const: Authorization}}
+          content: {application/json: {schema: {$ref: "#/components/schemas/DeviceSessionMintResponse"}}}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/device/credential/rotate:
+    post:
+      tags: [Overlay]
+      operationId: rotateOverlayDeviceCredentialV1
+      description: >-
+        Atomically replaces the current device credential with a client-created
+        id and SHA-256 verifier. The raw successor is never sent to Accounts.
+        Idempotency-Key must be sha256-<hex> over the compact canonical JSON body.
+      security: [{deviceAuthorization: []}]
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, pattern: '^sha256-[a-f0-9]{64}$'}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DeviceCredentialRotateRequest"}}}}
+      responses:
+        "200":
+          description: Successor activated; response contains no raw secret or verifier.
+          headers: {Cache-Control: {schema: {const: no-store}}, Vary: {schema: {const: Authorization}}}
+          content: {application/json: {schema: {$ref: "#/components/schemas/DeviceCredentialRotateResponse"}}}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
+  /api/overlay/v1/device/revoke:
+    post:
+      tags: [Overlay]
+      operationId: revokeOverlayDeviceWithCredentialV1
+      description: >-
+        Permanently revokes the bound device and every active credential. This
+        is the only route where a replaced/revoked historical verifier can
+        replay the exact terminal receipt after a lost response or admin revoke.
+      security: [{deviceAuthorization: []}]
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, pattern: '^sha256-[a-f0-9]{64}$'}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/DeviceBoundRevokeRequest"}}}}
+      responses:
+        "202":
+          description: Revocation committed; policy reconciliation may remain pending.
+          headers: {Cache-Control: {schema: {const: no-store}}, Vary: {schema: {const: Authorization}}}
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [revoked, duplicate, device, policy_reconcile_pending]
+                properties:
+                  revoked: {const: true}
+                  duplicate: {type: boolean}
+                  device: {$ref: "#/components/schemas/OverlayDevice"}
+                  policy_reconcile_pending: {type: boolean}
+        "409": {$ref: "#/components/responses/Error"}
+        default: {$ref: "#/components/responses/Error"}
   /api/overlay/v1/enrollment/config:
     get:
       tags: [Overlay]
@@ -536,6 +603,13 @@ components:
       type: http
       scheme: bearer
       description: Hash-only, expiring and revocable xgn_ credential bound to one node.
+    deviceAuthorization:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: >-
+        Authorization: Device xdc_<32-lowercase-hex>.<43-canonical-base64url>.
+        Clients emit Device; scheme comparison is ASCII case-insensitive.
   responses:
     Error:
       description: Stable machine-readable error.
@@ -680,15 +754,36 @@ components:
     ExchangeJoinTokenResponse:
       type: object
       additionalProperties: false
-      required: [enrollment_token, token_type, expires_at, scope, device, network, signing_keys]
+      required: [enrollment_token, token_type, expires_at, scope, device_credential, device, network, signing_keys]
       properties:
         enrollment_token: {type: string, writeOnly: true, pattern: '^xenr_'}
         token_type: {const: Bearer}
         expires_at: {type: string, format: date-time}
         scope: {type: array, items: {type: string, enum: ['overlay:config:read', 'overlay:config:ack', 'overlay:device:revoke']}}
+        device_credential:
+          type: object
+          additionalProperties: false
+          required: [credential_id, credential, token_type, issued_at, expires_at, scope]
+          properties:
+            credential_id: {type: string, pattern: '^xdcid_[0-9a-f]{32}$'}
+            credential: {type: string, writeOnly: true, pattern: '^xdc_[0-9a-f]{32}\.[A-Za-z0-9_-]{43}$'}
+            token_type: {const: Device}
+            issued_at: {type: string, format: date-time}
+            expires_at: {type: string, format: date-time}
+            scope: {type: array, minItems: 3, maxItems: 3, uniqueItems: true, items: {enum: ['overlay:session:mint', 'overlay:credential:rotate', 'overlay:device:revoke']}}
         device: {$ref: "#/components/schemas/OverlayDevice"}
         network: {$ref: "#/components/schemas/OverlayNetwork"}
         signing_keys: {type: array, items: {$ref: "#/components/schemas/OverlaySigningKey"}}
+    DeviceSessionMintRequest:
+      $ref: ../schemas/overlay/device-session-mint-request.schema.json
+    DeviceSessionMintResponse:
+      $ref: ../schemas/overlay/device-session-mint-response.schema.json
+    DeviceCredentialRotateRequest:
+      $ref: ../schemas/overlay/device-credential-rotate-request.schema.json
+    DeviceCredentialRotateResponse:
+      $ref: ../schemas/overlay/device-credential-rotate-response.schema.json
+    DeviceBoundRevokeRequest:
+      $ref: ../schemas/overlay/device-bound-revoke-request.schema.json
     ConfigAckRequest:
       type: object
       additionalProperties: false
