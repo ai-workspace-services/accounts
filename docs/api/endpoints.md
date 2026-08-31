@@ -56,7 +56,6 @@
 | `POST` | `/api/auth/subscriptions` | `api/api.go` | session / Session | body:`externalId,provider,paymentMethod,paymentQr,kind,planId,status,meta` | `200 {"subscription":...}` | session store, `store.Store` |
 | `POST` | `/api/auth/subscriptions/cancel` | `api/api.go` | session / Session | body:`externalId` | `200 {"subscription":...}` | session store, `store.Store`, optional Stripe cancel |
 | `POST` | `/api/auth/stripe/checkout` | `api/stripe.go` | session / Session | body:`planId,stripePriceId,mode,productSlug,sourcePath` | `200 {"url","id"}` | session store, `store.Store`, Stripe client |
-| `GET` | `/api/auth/stripe/pay` | `api/stripe.go` | session / Session | no body | `303` to configured Stripe Payment Link | session store, Stripe Payment Link config |
 | `POST` | `/api/auth/stripe/portal` | `api/stripe.go` | session / Session | body:`returnPath` | `200 {"url","id"}` | session store, `store.Store`, Stripe client |
 | `POST` | `/api/auth/config/sync` | `api/config_sync.go` | session / Session | body ignored; optional query:`since_version` | same as `GET /api/auth/sync/config` | session store, `store.Store`, agent status reader, xray renderer |
 | `GET` | `/api/auth/admin/settings` | `api/api.go` | admin / operator permission on session | 无 / None | `200 {"version","matrix"}` | session store, `service.GetAdminSettings`, GORM DB |

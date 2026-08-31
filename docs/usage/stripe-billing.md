@@ -5,7 +5,6 @@
 It now provides:
 
 - `POST /api/auth/stripe/checkout`
-- `GET /api/auth/stripe/pay`
 - `POST /api/auth/stripe/portal`
 - `POST /api/billing/stripe/webhook`
 
@@ -16,7 +15,6 @@ Set these before starting the service:
 ```bash
 STRIPE_SECRET_KEY=sk_test_xxx
 STRIPE_WEBHOOK_SECRET=whsec_xxx
-STRIPE_XCONNECT_PAY_URL=https://buy.stripe.com/test_<payment-link-id>
 STRIPE_ALLOWED_PRICE_IDS=price_xstream_paygo,price_xstream_subscription
 ```
 
@@ -78,10 +76,8 @@ mix credentials:
 ```text
 kv/uat/billing-service/SANDBOX_STRIPE_SECRET_KEY  -> STRIPE_SECRET_KEY
 kv/uat/billing-service/SANDBOX_STRIPE_WEBHOOK_SECRET -> STRIPE_WEBHOOK_SECRET
-kv/uat/billing-service/STRIPE_XCONNECT_PAY_URL -> STRIPE_XCONNECT_PAY_URL
 kv/prod/billing-service/PROD_STRIPE_SECRET_KEY   -> STRIPE_SECRET_KEY
 kv/prod/billing-service/PROD_STRIPE_WEBHOOK_SECRET -> STRIPE_WEBHOOK_SECRET
-kv/prod/billing-service/STRIPE_XCONNECT_PAY_URL -> STRIPE_XCONNECT_PAY_URL
 ```
 
 The deployment layer performs this mapping; do not rename the runtime
@@ -98,42 +94,14 @@ stripe listen --forward-to http://127.0.0.1:8080/api/billing/stripe/webhook
 
 3. Copy the webhook secret printed by Stripe CLI into `STRIPE_WEBHOOK_SECRET`.
 4. Restart `accounts.svc.plus`.
-5. Start `console.svc.plus` with matching public `NEXT_PUBLIC_STRIPE_PRICE_*` values.
-6. Sign in through the console and start a checkout flow.
-7. Complete the payment with Stripe test card data.
-8. Verify:
+5. Sign in through the console and start a checkout flow from a plan published
+   by the Accounts billing catalog.
+6. Complete the payment with Stripe test card data.
+7. Verify:
    - checkout redirects back to the console
    - webhook delivery succeeds
    - `GET /api/auth/subscriptions` contains a `provider = stripe` record
    - Stripe portal opens for the same user
-
-## Direct Payment Link
-
-When a direct link is required:
-
-1. In [Stripe Payment Links](https://dashboard.stripe.com/test/payment-links),
-   create a link for the fixed product/price.
-2. In the link's payment method settings, enable the methods that the Sandbox
-   account should offer. Stripe Checkout can then present the eligible card,
-   Link, Apple Pay/Google Pay, and other configured methods.
-3. Configure `STRIPE_XCONNECT_PAY_URL` with the raw Payment Link URL (not
-   Markdown syntax).
-4. Configure the Payment Link's completion behavior to return to the console,
-   if the product needs a custom success page.
-
-For production, repeat these steps after switching to Live mode and store the
-Live Payment Link URL in `kv/prod/billing-service/STRIPE_XCONNECT_PAY_URL`.
-
-The authenticated route `GET /api/auth/stripe/pay`
-redirects to that link and adds Stripe's documented `client_reference_id` and
-`prefilled_email` URL parameters. The webhook uses `client_reference_id` to
-reconcile the completed Checkout Session to the logged-in account when Payment
-Link metadata is not present.
-
-The direct link is intended for a fixed Payment Link product. For per-plan
-dynamic prices, server-side metadata, or a subscription/paygo choice, continue
-using the Checkout Session endpoint above. The application does not hard-code a
-single payment method or expose Stripe secret keys to the browser.
 
 ## Webhook Notes
 
@@ -145,6 +113,7 @@ The webhook currently handles these events:
 - `customer.subscription.deleted`
 - `invoice.paid`
 - `invoice.payment_failed`
+- `charge.refunded`
 
 The webhook is the authoritative source for Stripe subscription status in the local `subscriptions` store.
 
