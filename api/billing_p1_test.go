@@ -7,10 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -253,54 +253,7 @@ func TestStripeWebhookRejectsSignaturesOutsideTimestampTolerance(t *testing.T) {
 	}
 }
 
-func TestPaymentLinkURLPreservesConfiguredParametersAndAddsAccountContext(t *testing.T) {
-	client := newStripeClient(StripeConfig{
-		PayURL:        "https://buy.stripe.com/test_example?locale=zh&client_reference_id=old",
-		WebhookSecret: testStripeWebhookSecret,
-	})
-	if client == nil {
-		t.Fatal("expected Payment Link configuration to initialize Stripe client without a Secret Key")
-	}
-	user := &store.User{ID: "user_123-abc", Email: "Buyer@Example.com"}
-
-	link, err := client.paymentLinkURL(user)
-	if err != nil {
-		t.Fatalf("decorate payment link: %v", err)
-	}
-	parsed, err := url.Parse(link)
-	if err != nil {
-		t.Fatalf("parse decorated link: %v", err)
-	}
-	query := parsed.Query()
-	if query.Get("locale") != "zh" || client.userIDFromClientReference(query.Get("client_reference_id")) != user.ID {
-		t.Fatalf("configured/payment context parameters were not preserved: %q", parsed.RawQuery)
-	}
-	if query.Get("prefilled_email") != "buyer@example.com" {
-		t.Fatalf("expected normalized prefilled email, got %q", query.Get("prefilled_email"))
-	}
-	reference := query.Get("client_reference_id")
-	tampered := reference[:len(reference)-1] + "0"
-	if tampered == reference {
-		tampered = reference[:len(reference)-1] + "1"
-	}
-	if client.userIDFromClientReference(tampered) != "" {
-		t.Fatal("expected tampered client reference to be rejected")
-	}
-}
-
-func TestPaymentLinkURLRejectsNonHTTPSLinksAndInvalidReferences(t *testing.T) {
-	client := newStripeClient(StripeConfig{SecretKey: "sk_test_x", WebhookSecret: testStripeWebhookSecret, PayURL: "http://example.com/pay"})
-	if _, err := client.paymentLinkURL(&store.User{ID: "user_123"}); err == nil {
-		t.Fatal("expected non-HTTPS payment link to be rejected")
-	}
-
-	client.payURL = "https://buy.stripe.com/test_example"
-	if _, err := client.paymentLinkURL(&store.User{ID: "user/123"}); err == nil {
-		t.Fatal("expected invalid client reference id to be rejected")
-	}
-}
-
-func TestCheckoutCompletedUsesClientReferenceIDWhenMetadataIsMissing(t *testing.T) {
+func TestCheckoutCompletedWithoutCatalogMetadataDoesNotCreditBalance(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemoryStore()
 	user := &store.User{
@@ -336,11 +289,8 @@ func TestCheckoutCompletedUsesClientReferenceIDWhenMetadataIsMissing(t *testing.
 		t.Fatalf("handle checkout event: %v", err)
 	}
 	quota, err := st.GetAccountQuotaState(ctx, user.ID)
-	if err != nil || quota == nil {
-		t.Fatalf("load credited quota, err=%v state=%+v", err, quota)
-	}
-	if quota.CurrentBalance != 12.34 {
-		t.Fatalf("expected 12.34 top-up credited through client_reference_id, got %+v", quota)
+	if !errors.Is(err, store.ErrUserNotFound) || quota != nil {
+		t.Fatalf("metadata-free checkout must not credit a balance, err=%v state=%+v", err, quota)
 	}
 }
 

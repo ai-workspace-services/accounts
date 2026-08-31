@@ -462,7 +462,6 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/subscriptions/cancel", h.cancelSubscription)
 	authProtected.POST("/subscriptions/refund", h.refundSubscription)
 	authProtected.POST("/stripe/checkout", h.stripeCheckout)
-	authProtected.GET("/stripe/pay", h.stripePay)
 	authProtected.POST("/stripe/portal", h.stripePortal)
 
 	authProtected.POST("/config/sync", h.syncConfig)

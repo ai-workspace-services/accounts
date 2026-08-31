@@ -33,7 +33,6 @@ const stripeWebhookTimestampTolerance = 5 * time.Minute
 type StripeConfig struct {
 	SecretKey       string
 	WebhookSecret   string
-	PayURL          string
 	AllowedPriceIDs []string
 	FrontendURL     string
 }
@@ -41,7 +40,6 @@ type StripeConfig struct {
 type stripeClient struct {
 	secretKey      string
 	webhookSecret  string
-	payURL         string
 	frontendURL    string
 	allowedPriceID map[string]struct{}
 	httpClient     *http.Client
@@ -121,8 +119,7 @@ type stripeInvoice struct {
 
 func newStripeClient(cfg StripeConfig) *stripeClient {
 	secretKey := strings.TrimSpace(cfg.SecretKey)
-	payURL := strings.TrimSpace(cfg.PayURL)
-	if secretKey == "" && payURL == "" {
+	if secretKey == "" {
 		return nil
 	}
 
@@ -137,7 +134,6 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 	return &stripeClient{
 		secretKey:      secretKey,
 		webhookSecret:  strings.TrimSpace(cfg.WebhookSecret),
-		payURL:         payURL,
 		frontendURL:    strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/"),
 		allowedPriceID: allowed,
 		httpClient: &http.Client{
@@ -200,34 +196,6 @@ func (c *stripeClient) userIDFromClientReference(reference string) string {
 		return ""
 	}
 	return userID
-}
-
-// paymentLinkURL decorates the configured Payment Link with Stripe's
-// documented URL parameters. Payment Link configuration remains in Stripe
-// Dashboard, where the account can enable all eligible payment methods; this
-// helper only carries the authenticated account reference and email.
-func (c *stripeClient) paymentLinkURL(user *store.User) (string, error) {
-	if c == nil || strings.TrimSpace(c.payURL) == "" {
-		return "", errors.New("stripe payment link is not configured")
-	}
-	if user == nil || !validStripeClientReferenceID(user.ID) {
-		return "", errors.New("user id is not a valid stripe client reference")
-	}
-	parsed, err := url.Parse(c.payURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return "", errors.New("stripe payment link must be an https URL")
-	}
-	query := parsed.Query()
-	clientReferenceID, err := c.signedClientReferenceID(user.ID)
-	if err != nil {
-		return "", err
-	}
-	query.Set("client_reference_id", clientReferenceID)
-	if email := strings.TrimSpace(strings.ToLower(user.Email)); email != "" {
-		query.Set("prefilled_email", email)
-	}
-	parsed.RawQuery = query.Encode()
-	return parsed.String(), nil
 }
 
 func (c *stripeClient) validPriceID(priceID string) bool {
@@ -643,36 +611,6 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"url": session.URL, "id": session.ID})
-}
-
-// stripePay redirects an authenticated user to the configured Stripe Payment
-// Link. Payment Links support multiple payment methods configured in Stripe
-// Dashboard, while client_reference_id lets the webhook reconcile the
-// resulting Checkout Session back to this account.
-func (h *handler) stripePay(c *gin.Context) {
-	user, ok := h.requireAuthenticatedUser(c)
-	if !ok {
-		return
-	}
-	if h.isReadOnlyAccount(user) {
-		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
-		return
-	}
-	if !user.MFAEnabled {
-		respondError(c, http.StatusForbidden, "mfa_required", "multi-factor authentication is required before starting a payment")
-		return
-	}
-	if h.stripe == nil || strings.TrimSpace(h.stripe.payURL) == "" {
-		respondError(c, http.StatusServiceUnavailable, "stripe_pay_link_not_configured", "stripe payment link is not configured")
-		return
-	}
-
-	link, err := h.stripe.paymentLinkURL(user)
-	if err != nil {
-		respondError(c, http.StatusServiceUnavailable, "stripe_pay_link_not_configured", "stripe payment link is not configured")
-		return
-	}
-	c.Redirect(http.StatusSeeOther, link)
 }
 
 func (h *handler) stripePortal(c *gin.Context) {
