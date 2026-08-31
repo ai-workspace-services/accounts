@@ -8,6 +8,22 @@
 
 订阅退款、到期或取消后，账户统一降级为限量 Free 用户。
 
+## 安全集成链路
+
+```text
+Portal（只提交 planId / public stripePriceId）
+  ↓ BFF 转发当前登录会话
+Accounts 服务端（Vault 注入 Stripe Secret Key）
+  ↓ 创建 Checkout Session
+Stripe
+  ↓ Webhook + 签名验证
+Accounts 更新订阅、配额、退款和 Free 降级
+```
+
+Portal 不保存 `sk_test_`、`sk_live_` 或 `whsec_`，也不直接调用 Stripe Secret API。Accounts
+必须以套餐目录为准校验 `planId`、`stripePriceId`、套餐类型和支付模式；浏览器传入的其他
+Stripe 参数不会被 BFF 转发。
+
 ## Stripe 基础配置
 
 Stripe 账户：`acct_1SvuMHLIhVa2N0n8`
@@ -139,4 +155,3 @@ POST /api/auth/subscriptions/refund
 - UAT workflow run URL；
 - Accounts 和 Portal 健康检查结果；
 - 运行镜像对应的完整 Git SHA。
-
