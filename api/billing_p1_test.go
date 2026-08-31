@@ -632,31 +632,14 @@ func TestPublicAndAdminBillingPlanEndpoints(t *testing.T) {
 	}
 }
 
-// TestOAuthGrantsTrialOnProviderVerifiedEmail asserts the funnel flow: the
-// OAuth callback already rejects a profile the provider has not verified, so
-// reaching this point is proof enough — the user lands with the TRIAL-7D
-// subscription, billing profile and quota already in place, without a second
-// email round trip.
-//
-// It also pins the quota to the catalog row rather than a literal, so lowering
-// the trial cap in the ops console actually lowers what a new signup receives.
-func TestOAuthGrantsTrialOnProviderVerifiedEmail(t *testing.T) {
+// TestOAuthProviderVerifiedEmailStartsFree asserts that verified OAuth signup
+// does not silently provision a trial; the account starts on the FREE funnel
+// and can explicitly choose a paid Pro plan later.
+func TestOAuthProviderVerifiedEmailStartsFree(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 
-	const trialQuota = 5 << 30
-
 	memStore := store.NewMemoryStore()
-	if err := memStore.UpsertBillingPlan(ctx, &store.BillingPlan{
-		PlanID:             store.BillingPlanTrial7D,
-		Kind:               "trial",
-		IncludedQuotaBytes: trialQuota,
-		PackageName:        "trial",
-		TrialDays:          7,
-		Active:             true,
-	}); err != nil {
-		t.Fatalf("seed trial plan: %v", err)
-	}
 
 	router := gin.New()
 	RegisterRoutes(
@@ -689,29 +672,22 @@ func TestOAuthGrantsTrialOnProviderVerifiedEmail(t *testing.T) {
 		t.Fatal("a provider-verified OAuth email must count as verified")
 	}
 
-	bp, err := memStore.GetAccountBillingProfile(ctx, user.ID)
-	if err != nil || bp == nil || bp.PackageName != "trial" || bp.IncludedQuotaBytes != trialQuota {
-		t.Fatalf("expected trial entitlements at signup, err=%v profile=%+v", err, bp)
+	subs, err := memStore.ListSubscriptionsByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("list subscriptions: %v", err)
 	}
-	quota, err := memStore.GetAccountQuotaState(ctx, user.ID)
-	if err != nil || quota.RemainingIncludedQuota != trialQuota {
-		t.Fatalf("expected trial quota at signup, err=%v quota=%+v", err, quota)
+	if len(subs) != 0 {
+		t.Fatalf("expected no trial subscription at signup, got %+v", subs)
 	}
 
-	// Signing in again must not re-arm the window — the grant is guarded by
-	// the EmailVerified false->true transition, which has already happened.
-	before := *quota.PeriodEnd
 	req = httptest.NewRequest(http.MethodGet, "/api/auth/oauth/callback/github?code=test-code", nil)
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusTemporaryRedirect {
 		t.Fatalf("second oauth callback failed: %d %s", rec.Code, rec.Body.String())
 	}
-	after, err := memStore.GetAccountQuotaState(ctx, user.ID)
-	if err != nil {
-		t.Fatalf("reload quota: %v", err)
-	}
-	if !after.PeriodEnd.Equal(before) {
-		t.Fatalf("repeat OAuth login extended the trial: %v -> %v", before, after.PeriodEnd)
+	subs, err = memStore.ListSubscriptionsByUser(ctx, user.ID)
+	if err != nil || len(subs) != 0 {
+		t.Fatalf("repeat OAuth login must not create a trial, err=%v subscriptions=%+v", err, subs)
 	}
 }
