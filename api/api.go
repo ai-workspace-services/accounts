@@ -767,8 +767,6 @@ func (h *handler) register(c *gin.Context) {
 		h.removeRegistrationVerification(email)
 	}
 
-	h.provisionOnboardingTrial(c.Request.Context(), user.ID)
-
 	message := "registration successful"
 
 	response := gin.H{
@@ -3090,8 +3088,6 @@ func (h *handler) oauthCallback(c *gin.Context) {
 	// internalNetworkIdentities gate on EmailVerified. That is the intended
 	// trade: the abuse ceiling is one trial per provider-verified address,
 	// and the trial is bounded by the catalog's quota and expiry.
-	grantOnboardingTrial := false
-
 	if errors.Is(err, store.ErrUserNotFound) {
 		user = &store.User{
 			Name:          profile.Name,
@@ -3106,7 +3102,6 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			respondError(c, http.StatusInternalServerError, "user_creation_failed", "failed to create user")
 			return
 		}
-		grantOnboardingTrial = true
 	} else {
 		user = existingUser
 		// Users who signed up through OAuth before this policy are still
@@ -3118,16 +3113,11 @@ func (h *handler) oauthCallback(c *gin.Context) {
 				respondError(c, http.StatusInternalServerError, "user_update_failed", "failed to verify user")
 				return
 			}
-			grantOnboardingTrial = true
 		}
 	}
 
-	// Only on the false -> true transition. provisionTrialEntitlements re-arms
-	// the quota window, so calling it on every OAuth login would hand the same
-	// account a fresh 7 days each time it signed in.
-	if grantOnboardingTrial {
-		h.provisionOnboardingTrial(ctx, user.ID)
-	}
+	// New accounts remain on the catalog FREE plan until they choose Pro or a
+	// custom team arrangement; no trial entitlement is provisioned at signup.
 
 	// Always ensure identity record exists (bind OAuth ID to User Email)
 	identity := &store.Identity{
