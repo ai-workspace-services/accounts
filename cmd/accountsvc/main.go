@@ -612,6 +612,10 @@ func containsExactValue(values []string, target string) bool {
 	return false
 }
 
+// applyRBACSchema also creates the core account tables used by Store. Keep
+// this bootstrap before any Store queries: a fresh Supabase database has no
+// public.users table yet, so checking/creating the deployment root account
+// must not happen before this step.
 func applyRBACSchema(ctx context.Context, db *gorm.DB, driver string) error {
 	if db == nil {
 		return errors.New("database is nil")
@@ -1073,6 +1077,13 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}()
 	service.SetDB(gormDB)
 
+	// The root-account check below reads public.users. Bootstrap the core
+	// account/RBAC schema first so a new environment can start without a
+	// separately pre-applied schema migration.
+	if err := applyRBACSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
+		return fmt.Errorf("apply rbac schema: %w", err)
+	}
+
 	if err := ensureRootUser(ctx, st, logger); err != nil {
 		return err
 	}
@@ -1203,10 +1214,6 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			RefreshExpiry: refreshExpiry,
 		})
 		logger.Info("token service initialized", "auth_enabled", cfg.Auth.Enable)
-	}
-
-	if err := applyRBACSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
-		return fmt.Errorf("apply rbac schema: %w", err)
 	}
 
 	if err := applyBillingSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
