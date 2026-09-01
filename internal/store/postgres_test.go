@@ -86,3 +86,10 @@ func TestSelectUserQuery(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectUserQueryUsesVerificationTimestamp(t *testing.T) {
+	query := (&postgresStore{}).selectUserQuery(schemaCapabilities{}, "WHERE uuid = $1")
+	if !strings.Contains(query, "(email_verified_at IS NOT NULL) AS email_verified") {
+		t.Fatalf("user reads must derive email verification from email_verified_at, got %q", query)
+	}
+}
