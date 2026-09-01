@@ -631,7 +631,8 @@ func applyRBACSchema(ctx context.Context, db *gorm.DB, driver string) error {
   uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   username TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL UNIQUE,
-  email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  email_verified_at TIMESTAMPTZ,
+  email_verified BOOLEAN GENERATED ALWAYS AS ((email_verified_at IS NOT NULL)) STORED,
   password TEXT NOT NULL,
   mfa_totp_secret TEXT,
   mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -647,6 +648,13 @@ func applyRBACSchema(ctx context.Context, db *gorm.DB, driver string) error {
   proxy_uuid UUID NOT NULL,
   proxy_uuid_expires_at TIMESTAMPTZ
 )`,
+		// Older production databases have the compatibility boolean but not
+		// the timestamp that the Store write path uses. Add it before the
+		// deployment root is created and preserve existing verified users.
+		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ`,
+		`UPDATE public.users
+SET email_verified_at = now()
+WHERE email_verified IS TRUE AND email_verified_at IS NULL`,
 		`ALTER TABLE public.users ADD COLUMN IF NOT EXISTS proxy_uuid UUID NOT NULL DEFAULT gen_random_uuid()`,
 		`ALTER TABLE public.users ALTER COLUMN proxy_uuid DROP DEFAULT`,
 		`ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_proxy_uuid_matches_uuid_ck`,
