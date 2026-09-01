@@ -227,7 +227,7 @@ func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 
 	query := fmt.Sprintf(`INSERT INTO users (%s)
       VALUES (%s)
-      RETURNING uuid, coalesce(created_at, now()), coalesce(updated_at, now()), email_verified`, strings.Join(columns, ", "), strings.Join(placeholders, ", "))
+      RETURNING uuid, coalesce(created_at, now()), coalesce(updated_at, now()), (email_verified_at IS NOT NULL)`, strings.Join(columns, ", "), strings.Join(placeholders, ", "))
 
 	var idValue any
 	var createdAt time.Time
@@ -1119,7 +1119,7 @@ func (s *postgresStore) selectUserQuery(caps schemaCapabilities, whereClause str
 		proxyExpiresAtExpr = "proxy_uuid_expires_at"
 	}
 
-	return fmt.Sprintf(`SELECT uuid, username, email, email_verified, password, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s FROM users %s`,
+	return fmt.Sprintf(`SELECT uuid, username, email, (email_verified_at IS NOT NULL) AS email_verified, password, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s FROM users %s`,
 		secretExpr, enabledExpr, issuedExpr, confirmedExpr, createdExpr, updatedExpr, levelExpr, roleExpr, groupsExpr, permissionsExpr, activeExpr, proxyUUIDExpr, proxyExpiresAtExpr, whereClause)
 }
 
