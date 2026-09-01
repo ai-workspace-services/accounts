@@ -31,6 +31,10 @@ jobs:
           REVISION: ${{ inputs.revision }}
         run: |
           set -euo pipefail
+          gcloud run revisions describe "${REVISION}" \
+            --region=asia-northeast1 \
+            --project=xworktech \
+            --format='yaml(metadata.name,status.conditions,status.containerStatuses)'
           gcloud logging read \
             'resource.type="cloud_run_revision" AND resource.labels.service_name="prod-accounts" AND resource.labels.revision_name="'"${REVISION}"'"' \
             --project=xworktech \
