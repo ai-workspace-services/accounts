@@ -160,7 +160,10 @@ jobs:
 
   publish_artifact_registry:
     name: Publish Cloud Run image to Artifact Registry
-    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && contains(github.ref_name, 'daily-build-') }}
+    # Production snapshots use immutable v* tags; UAT snapshots use
+    # daily-build-* tags. Both must publish the Cloud Run image consumed by
+    # platform-ops-toolkit.
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
