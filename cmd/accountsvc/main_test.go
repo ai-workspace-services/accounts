@@ -25,6 +25,7 @@ func TestBillingSchemaStatementsCoverSharedAccountingControlPlane(t *testing.T) 
 		"account_policy_snapshots",
 		"node_health_snapshots",
 		"scheduler_decisions",
+		"audit_logs",
 	} {
 		want := "create table if not exists public." + table
 		if !strings.Contains(statements, want) {
@@ -37,6 +38,7 @@ func TestBillingSchemaStatementsCoverSharedAccountingControlPlane(t *testing.T) 
 		"idx_billing_ledger_account_created",
 		"idx_node_health_snapshots_sampled",
 		"idx_scheduler_decisions_generated",
+		"idx_audit_logs_created_at",
 	} {
 		if !strings.Contains(statements, "create index if not exists "+index) {
 			t.Errorf("bootstrap schema missing idempotent index %s", index)

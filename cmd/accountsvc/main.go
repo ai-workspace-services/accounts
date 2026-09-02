@@ -920,6 +920,18 @@ func billingSchemaStatements() []string {
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )`,
+		// Billing catalog writes are audited by the admin API. Keep the audit
+		// table in the same additive startup bootstrap so partially initialized
+		// production databases cannot save a plan and then fail its audit write.
+		`CREATE TABLE IF NOT EXISTS public.audit_logs (
+  uuid UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  action TEXT NOT NULL DEFAULT '',
+  actor_uuid UUID,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
+  ON public.audit_logs (created_at DESC)`,
 		// List price for the storefront. Stripe stays the authority on what is
 		// charged; these columns are what /prices and the user center display
 		// and what the ops console records in audit_logs when a price changes.
