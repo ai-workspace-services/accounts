@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 幂等地把 scripts/stripe-catalog.yaml 同步到 Stripe：Product、Price、
-# Webhook Endpoint 全部走 API 创建，不需要在 Dashboard 里点。
+# 幂等地把 scripts/stripe-catalog.yaml 同步到 Stripe：Product、Price 走 API
+# 同步；Webhook Endpoint 必须预先由受控的 Stripe 配置流程创建。
 #
 # 幂等策略：
 #   - Product 用目录里的 key 作为 Stripe 自定义 id；已存在就更新
@@ -8,18 +8,21 @@
 #   - Price 在 Stripe 里创建后金额不可变，所以用 lookup_key 做存在性判断：
 #     已存在就跳过创建、只核对金额是否与目录一致(不一致只警告，绝不
 #     自动改价——那必须是新价格/新 key)；不存在才创建。
-#   - Webhook Endpoint 按 url 匹配；已存在就同步 enabled_events，不存在
-#     才创建。签名密钥(secret)只在创建那一刻由 Stripe 返回一次，本脚本
-#     原样打印，不写入任何文件。
+#   - Webhook Endpoint 的 URL 和 signing secret 均来自 Vault。脚本只校验
+#     该 URL 对应的 endpoint 已存在且事件集合完整；不创建、不修改，也绝
+#     不输出 signing secret。
 #
-# 换 Stripe 账号(例如现在的 sandbox 切到 Stripe US 生产账号)= 换一个
-# STRIPE_SECRET_KEY 重跑本脚本，不需要任何手工 Dashboard 操作。
+# 换 Stripe 账号时，先在该账号的受控配置流程中创建 Webhook endpoint，
+# 再把对应的 URL 与 signing secret 写入 Vault 后执行本脚本。
 #
 # 用法:
 #   STRIPE_SECRET_KEY=sk_test_... \
+#     STRIPE_WEBHOOK_URL=https://accounts-uat.example.com/api/billing/stripe/webhook \
+#     STRIPE_WEBHOOK_SECRET=whsec_... \
 #     scripts/stripe-sync-catalog.sh --env uat --domain-base onwalk.net
 #
-#   STRIPE_SECRET_KEY=sk_test_... ACCOUNTS_ADMIN_TOKEN=... \
+#   STRIPE_SECRET_KEY=sk_test_... STRIPE_WEBHOOK_URL=https://accounts-uat.example.com/api/billing/stripe/webhook \
+#     STRIPE_WEBHOOK_SECRET=whsec_... ACCOUNTS_ADMIN_TOKEN=... \
 #     ACCOUNTS_BASE_URL=https://accounts-cloudflare-uat.onwalk.net \
 #     scripts/stripe-sync-catalog.sh --env uat --domain-base onwalk.net --write-catalog
 #
@@ -34,6 +37,8 @@ WRITE_CATALOG=false
 ENV_NAME=""
 DOMAIN_BASE=""
 ACCOUNTS_BASE_URL="${ACCOUNTS_BASE_URL:-}"
+STRIPE_WEBHOOK_URL="${STRIPE_WEBHOOK_URL:-}"
+STRIPE_WEBHOOK_SECRET="${STRIPE_WEBHOOK_SECRET:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,9 +53,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 : "${STRIPE_SECRET_KEY:?STRIPE_SECRET_KEY is required (sk_test_... for sandbox, sk_live_... for a live account)}"
+: "${STRIPE_WEBHOOK_URL:?STRIPE_WEBHOOK_URL is required and must come from Vault}"
+: "${STRIPE_WEBHOOK_SECRET:?STRIPE_WEBHOOK_SECRET is required and must come from Vault}"
 [[ -n "${ENV_NAME}" ]] || { echo "::error::--env is required (e.g. uat, prod)" >&2; exit 1; }
 [[ -n "${DOMAIN_BASE}" ]] || { echo "::error::--domain-base is required (e.g. onwalk.net, svc.plus)" >&2; exit 1; }
 [[ -f "${CATALOG_FILE}" ]] || { echo "::error::catalog file not found: ${CATALOG_FILE}" >&2; exit 1; }
+[[ "${STRIPE_WEBHOOK_URL}" =~ ^https://[^[:space:]]+$ ]] || {
+  echo "::error::STRIPE_WEBHOOK_URL must be an HTTPS URL" >&2
+  exit 1
+}
 
 if [[ "${WRITE_CATALOG}" == "true" ]]; then
   : "${ACCOUNTS_ADMIN_TOKEN:?ACCOUNTS_ADMIN_TOKEN is required with --write-catalog}"
@@ -184,11 +195,7 @@ for ((pi = 0; pi < product_count; pi++)); do
 done
 
 # --- Webhook endpoint -----------------------------------------------------
-webhook_path="$(jq -r '.webhook.path' <<<"${catalog_json}")"
-webhook_url="https://accounts-${ENV_NAME}.${DOMAIN_BASE}${webhook_path}"
-# prod 沿用既有域名约定：accounts.<domain_base>，不带 env 前缀。
-[[ "${ENV_NAME}" == "prod" ]] && webhook_url="https://accounts.${DOMAIN_BASE}${webhook_path}"
-
+webhook_url="${STRIPE_WEBHOOK_URL}"
 mapfile -t events < <(jq -r '.webhook.events[]' <<<"${catalog_json}")
 
 echo
@@ -198,35 +205,22 @@ existing_endpoints="$(stripe_get "/webhook_endpoints?limit=100")"
 endpoint_id="$(jq -r --arg url "${webhook_url}" '.data[] | select(.url == $url) | .id' <<<"${existing_endpoints}" | head -1)"
 
 if [[ -n "${endpoint_id}" ]]; then
-  echo "webhook endpoint: exists -> ${endpoint_id} (signing secret unchanged, not re-printed — Stripe only returns it once, at creation)"
-  if [[ "${DRY_RUN}" == "false" ]]; then
-    args=(--data-urlencode "url=${webhook_url}")
-    for e in "${events[@]}"; do args+=(--data-urlencode "enabled_events[]=${e}"); done
-    stripe_patch "/webhook_endpoints/${endpoint_id}" "${args[@]}" >/dev/null
-    echo "webhook endpoint: enabled_events synced (${#events[@]} events)"
+  missing_events=()
+  for e in "${events[@]}"; do
+    if ! jq -e --arg event "${e}" --arg endpoint_id "${endpoint_id}" \
+      '.data[] | select(.id == $endpoint_id) | .enabled_events | index($event)' \
+      <<<"${existing_endpoints}" >/dev/null; then
+      missing_events+=("${e}")
+    fi
+  done
+  if (( ${#missing_events[@]} > 0 )); then
+    echo "::error::configured Stripe webhook endpoint ${endpoint_id} is missing required events: ${missing_events[*]}" >&2
+    exit 1
   fi
+  echo "webhook endpoint: verified -> ${endpoint_id} (${#events[@]} required events present)"
 else
-  echo "webhook endpoint: creating"
-  if [[ "${DRY_RUN}" == "false" ]]; then
-    args=(--data-urlencode "url=${webhook_url}")
-    for e in "${events[@]}"; do args+=(--data-urlencode "enabled_events[]=${e}"); done
-    created="$(stripe_post "/webhook_endpoints" "${args[@]}")"
-    secret="$(jq -r '.secret // ""' <<<"${created}")"
-    [[ -n "${secret}" ]] || {
-      echo "::error::failed to create webhook endpoint: $(jq -c . <<<"${created}")" >&2
-      exit 1
-    }
-    vault_key_prefix="SANDBOX"
-    [[ "${ENV_NAME}" == "prod" ]] && vault_key_prefix="PROD"
-    echo
-    echo "############################################################"
-    echo "# Webhook signing secret (shown once, Stripe will not show it"
-    echo "# again — store it now as ${vault_key_prefix}_STRIPE_WEBHOOK_SECRET in Vault kv/billing-service):"
-    echo "#"
-    echo "#   ${secret}"
-    echo "############################################################"
-    echo
-  fi
+  echo "::error::configured Stripe webhook endpoint does not exist: ${webhook_url}. Create or rotate it through the controlled Stripe configuration process, then update Vault." >&2
+  exit 1
 fi
 
 # --- Write catalog price snapshots --------------------------------------
