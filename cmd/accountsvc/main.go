@@ -959,6 +959,7 @@ func billingSchemaStatements() []string {
   arrears BOOLEAN NOT NULL DEFAULT false,
   throttle_state TEXT NOT NULL DEFAULT 'normal',
   suspend_state TEXT NOT NULL DEFAULT 'active',
+  proxy_access_state TEXT NOT NULL DEFAULT 'active',
   last_rated_bucket_at TIMESTAMPTZ NULL,
   effective_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -970,6 +971,7 @@ func billingSchemaStatements() []string {
 		// sync (Accounts owns quota-grant fields); Billing only consumes.
 		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS period_start TIMESTAMPTZ NULL`,
 		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS period_end TIMESTAMPTZ NULL`,
+		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS proxy_access_state TEXT NOT NULL DEFAULT 'active'`,
 	}
 
 }
@@ -998,12 +1000,17 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 			SortOrder:          0,
 		},
 		{
-			PlanID:      store.BillingPlanFree,
-			DisplayName: "Free",
-			Kind:        "subscription",
-			PackageName: "default",
-			Active:      true,
-			SortOrder:   10,
+			PlanID:             store.BillingPlanFree,
+			DisplayName:        "Free",
+			Kind:               "subscription",
+			IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, // 5 GiB per natural month, shared by all regions
+			PackageName:        "free",
+			Features: map[string]any{
+				"quota_cycle": "natural_month",
+				"fast_lane":   map[string]any{"mode": "quota"},
+			},
+			Active:    true,
+			SortOrder: 10,
 		},
 	}
 

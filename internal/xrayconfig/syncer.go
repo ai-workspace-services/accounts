@@ -153,10 +153,19 @@ func (s *PeriodicSyncer) sync(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("list clients: %w", err)
 	}
+	changed := false
 	for _, g := range s.generators {
-		if err := g.Generate(clients); err != nil {
+		written, err := g.GenerateIfChanged(clients)
+		if err != nil {
 			return 0, fmt.Errorf("generate config for %s: %w", g.OutputPath, err)
 		}
+		changed = changed || written
+	}
+	// A polling cycle with the same client list is intentionally a no-op. In
+	// particular, it must not restart Xray merely because the controller was
+	// polled again.
+	if !changed {
+		return len(clients), nil
 	}
 	if len(s.validateCommand) > 0 {
 		if err := s.runCommand(ctx, s.validateCommand, "validate config"); err != nil {

@@ -1,6 +1,7 @@
 package xrayconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,13 +49,26 @@ type Generator struct {
 // template is loaded on every invocation to ensure updates remain additive and
 // idempotent even when multiple callers trigger regeneration.
 func (g Generator) Generate(clients []Client) error {
+	_, err := g.GenerateIfChanged(clients)
+	return err
+}
+
+// GenerateIfChanged writes only when the rendered configuration differs from
+// the active file. The agent polls regularly, so avoiding identical writes
+// also avoids unnecessary Xray reloads/restarts between access changes.
+func (g Generator) GenerateIfChanged(clients []Client) (bool, error) {
 	if strings.TrimSpace(g.OutputPath) == "" {
-		return errors.New("output path is required")
+		return false, errors.New("output path is required")
 	}
 
 	buf, err := g.Render(clients)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if current, err := os.ReadFile(g.OutputPath); err == nil && bytes.Equal(current, buf) {
+		return false, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("read existing config: %w", err)
 	}
 
 	mode := g.FileMode
@@ -62,10 +76,10 @@ func (g Generator) Generate(clients []Client) error {
 		mode = 0o644
 	}
 	if err := atomicWriteFile(g.OutputPath, buf, mode); err != nil {
-		return fmt.Errorf("write config: %w", err)
+		return false, fmt.Errorf("write config: %w", err)
 	}
 
-	return nil
+	return true, nil
 }
 
 // Render returns the rendered configuration JSON without writing it to disk.

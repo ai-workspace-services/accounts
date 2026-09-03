@@ -109,6 +109,35 @@ func TestPeriodicSyncerSyncSuccess(t *testing.T) {
 	}
 }
 
+func TestPeriodicSyncerSkipsRestartWhenClientConfigIsUnchanged(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "config.json")
+	var restarts int
+	syncer, err := NewPeriodicSyncer(PeriodicOptions{
+		Interval:       time.Minute,
+		Source:         staticSource{clients: []Client{{ID: "uuid-a"}}},
+		Generators:     []Generator{{Definition: JSONDefinition{Raw: []byte(minimalTemplate)}, OutputPath: output}},
+		RestartCommand: []string{"xray", "restart"},
+		Runner: func(_ context.Context, cmd []string) ([]byte, error) {
+			if len(cmd) > 1 && cmd[1] == "restart" {
+				restarts++
+			}
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new syncer: %v", err)
+	}
+	if _, err := syncer.sync(context.Background()); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if _, err := syncer.sync(context.Background()); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if restarts != 1 {
+		t.Fatalf("expected one restart for an unchanged config, got %d", restarts)
+	}
+}
+
 func TestPeriodicSyncerSyncError(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "config.json")
 	opts := PeriodicOptions{

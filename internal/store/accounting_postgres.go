@@ -299,8 +299,8 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 
 	const query = `
 		INSERT INTO account_quota_states (
-			account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, period_start, period_end, effective_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, proxy_access_state, last_rated_bucket_at, period_start, period_end, effective_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (account_uuid) DO UPDATE SET
 			remaining_included_quota = EXCLUDED.remaining_included_quota,
 			current_balance = EXCLUDED.current_balance,
@@ -308,6 +308,7 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 			arrears_since = EXCLUDED.arrears_since,
 			throttle_state = EXCLUDED.throttle_state,
 			suspend_state = EXCLUDED.suspend_state,
+			proxy_access_state = EXCLUDED.proxy_access_state,
 			last_rated_bucket_at = EXCLUDED.last_rated_bucket_at,
 			period_start = EXCLUDED.period_start,
 			period_end = EXCLUDED.period_end,
@@ -336,6 +337,7 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 		arrearsSince,
 		strings.TrimSpace(state.ThrottleState),
 		strings.TrimSpace(state.SuspendState),
+		strings.TrimSpace(state.ProxyAccessState),
 		state.LastRatedBucketAt,
 		periodStart,
 		periodEnd,
@@ -345,7 +347,7 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 
 func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error) {
 	const query = `
-		SELECT account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, last_rated_bucket_at, period_start, period_end, effective_at, updated_at
+		SELECT account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, proxy_access_state, last_rated_bucket_at, period_start, period_end, effective_at, updated_at
 		FROM account_quota_states
 		WHERE account_uuid = $1`
 	var state AccountQuotaState
@@ -358,6 +360,7 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 		&arrearsSince,
 		&state.ThrottleState,
 		&state.SuspendState,
+		&state.ProxyAccessState,
 		&state.LastRatedBucketAt,
 		&periodStart,
 		&periodEnd,
@@ -383,6 +386,23 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 		state.PeriodEnd = &value
 	}
 	return &state, nil
+}
+
+func (s *postgresStore) ListProxyBlockedAccountUUIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT account_uuid FROM account_quota_states WHERE suspend_state = 'suspended' OR proxy_access_state = 'paused'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	blocked := make(map[string]bool)
+	for rows.Next() {
+		var accountUUID string
+		if err := rows.Scan(&accountUUID); err != nil {
+			return nil, err
+		}
+		blocked[accountUUID] = true
+	}
+	return blocked, rows.Err()
 }
 
 // ListSuspendedAccountUUIDs returns the set of accounts currently

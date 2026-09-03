@@ -223,9 +223,14 @@ type AccountQuotaState struct {
 	// ArrearsSince marks when Arrears last flipped false->true; cleared back
 	// to nil whenever Arrears clears. billing-service's SuspendSyncer reads
 	// this to decide when a prolonged arrears episode should suspend access.
-	ArrearsSince      *time.Time `json:"arrearsSince"`
-	ThrottleState     string     `json:"throttleState"`
-	SuspendState      string     `json:"suspendState"`
+	ArrearsSince  *time.Time `json:"arrearsSince"`
+	ThrottleState string     `json:"throttleState"`
+	SuspendState  string     `json:"suspendState"`
+	// ProxyAccessState is the operator-controlled VLESS gate.  It is kept
+	// separate from SuspendState, which is owned by billing dunning, so an
+	// operator can pause or resume proxy traffic without changing login or
+	// accidentally clearing an arrears suspension.
+	ProxyAccessState  string     `json:"proxyAccessState"`
 	LastRatedBucketAt *time.Time `json:"lastRatedBucketAt"`
 	// PeriodStart/PeriodEnd bound the current quota grant (the billing
 	// period RemainingIncludedQuota was reset for). Written by entitlement
@@ -346,6 +351,10 @@ type Store interface {
 	// suspend_state='suspended', so agent/xray sync endpoints can drop them
 	// in one batched lookup instead of a per-user quota-state query.
 	ListSuspendedAccountUUIDs(ctx context.Context) (map[string]bool, error)
+	// ListProxyBlockedAccountUUIDs contains both billing-suspended and
+	// operator-paused accounts. Agent/Xray config generation is the single
+	// enforcement point for every region.
+	ListProxyBlockedAccountUUIDs(ctx context.Context) (map[string]bool, error)
 	UpsertAccountBillingProfile(ctx context.Context, profile *AccountBillingProfile) error
 	GetAccountBillingProfile(ctx context.Context, accountUUID string) (*AccountBillingProfile, error)
 	UpsertAccountPolicySnapshot(ctx context.Context, snapshot *AccountPolicySnapshot) error
