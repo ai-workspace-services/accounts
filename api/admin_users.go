@@ -165,13 +165,17 @@ func (h *handler) pauseUser(c *gin.Context) {
 		return
 	}
 
-	user.Active = false
-	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
-		respondError(c, http.StatusInternalServerError, "update_failed", "failed to pause user")
+	state := &store.AccountQuotaState{AccountUUID: user.ID, ThrottleState: "normal", SuspendState: "active", ProxyAccessState: "paused"}
+	if existing, err := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); err == nil && existing != nil {
+		state = existing
+		state.ProxyAccessState = "paused"
+	}
+	if err := h.store.UpsertAccountQuotaState(c.Request.Context(), state); err != nil {
+		respondError(c, http.StatusInternalServerError, "update_failed", "failed to pause proxy access")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "user paused"})
+	c.JSON(http.StatusOK, gin.H{"message": "vless access paused"})
 }
 
 func (h *handler) resumeUser(c *gin.Context) {
@@ -190,13 +194,17 @@ func (h *handler) resumeUser(c *gin.Context) {
 		return
 	}
 
-	user.Active = true
-	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
-		respondError(c, http.StatusInternalServerError, "update_failed", "failed to resume user")
+	state := &store.AccountQuotaState{AccountUUID: user.ID, ThrottleState: "normal", SuspendState: "active", ProxyAccessState: "active"}
+	if existing, err := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); err == nil && existing != nil {
+		state = existing
+		state.ProxyAccessState = "active"
+	}
+	if err := h.store.UpsertAccountQuotaState(c.Request.Context(), state); err != nil {
+		respondError(c, http.StatusInternalServerError, "update_failed", "failed to resume proxy access")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "user resumed"})
+	c.JSON(http.StatusOK, gin.H{"message": "vless access resumed"})
 }
 
 func (h *handler) deleteUser(c *gin.Context) {

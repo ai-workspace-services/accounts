@@ -305,6 +305,20 @@ func (s *memoryStore) ListSuspendedAccountUUIDs(ctx context.Context) (map[string
 	return suspended, nil
 }
 
+func (s *memoryStore) ListProxyBlockedAccountUUIDs(ctx context.Context) (map[string]bool, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	blocked := make(map[string]bool)
+	for accountUUID, record := range s.accountQuotaStates {
+		if record != nil && (record.SuspendState == "suspended" || record.ProxyAccessState == "paused") {
+			blocked[accountUUID] = true
+		}
+	}
+	return blocked, nil
+}
+
 func (s *memoryStore) UpsertAccountBillingProfile(ctx context.Context, profile *AccountBillingProfile) error {
 	_ = ctx
 	s.mu.Lock()

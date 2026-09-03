@@ -40,6 +40,7 @@ func TestAccountingResponsesUseCamelCaseFieldNames(t *testing.T) {
 			keys: []string{
 				"accountUuid", "remainingIncludedQuota", "currentBalance",
 				"arrears", "arrearsSince", "throttleState", "suspendState",
+				"proxyAccessState",
 				"lastRatedBucketAt", "periodStart", "periodEnd", "effectiveAt",
 				"updatedAt",
 			},

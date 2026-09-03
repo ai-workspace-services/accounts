@@ -56,9 +56,9 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		return
 	}
 
-	suspended, err := h.store.ListSuspendedAccountUUIDs(c.Request.Context())
+	blocked, err := h.store.ListProxyBlockedAccountUUIDs(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "list_suspended_failed"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "list_proxy_blocked_failed"})
 		return
 	}
 
@@ -98,7 +98,7 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		// P1.5: drop accounts suspended for prolonged billing arrears
 		// (suspend_state owned by billing-service's SuspendSyncer). Removing the
 		// client here is what actually severs xray access on the next agent sync.
-		if suspended[strings.TrimSpace(u.ID)] {
+		if blocked[strings.TrimSpace(u.ID)] {
 			continue
 		}
 

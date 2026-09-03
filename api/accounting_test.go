@@ -83,6 +83,41 @@ func TestAgentUsersUseAccountEmailAsStatsEmail(t *testing.T) {
 	t.Fatalf("expected stats email %q in payload, got %#v", user.Email, payload.Clients)
 }
 
+func TestAgentUsersExcludeOperatorPausedVLESSAccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	st := store.NewMemoryStore()
+	ctx := context.Background()
+	if err := st.CreateUser(ctx, &store.User{Name: "Paused VLESS", Email: "paused-vless@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "paused-proxy-id"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	user, err := st.GetUserByEmail(ctx, "paused-vless@example.com")
+	if err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: user.ID, ProxyAccessState: "paused", SuspendState: "active", ThrottleState: "normal"}); err != nil {
+		t.Fatalf("pause vless: %v", err)
+	}
+	registry, err := agentserver.NewRegistry(agentserver.Config{Credentials: []agentserver.Credential{{ID: "*", Name: "test-agent", Token: "agent-token"}}})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithAgentRegistry(registry), WithEmailVerification(false))
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer agent-token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent users: %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "paused-proxy-id") {
+		t.Fatalf("paused VLESS client leaked into agent config: %s", rec.Body.String())
+	}
+	if !user.Active {
+		t.Fatal("pausing VLESS must not deactivate the account")
+	}
+}
+
 func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
