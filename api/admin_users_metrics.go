@@ -15,6 +15,7 @@ const (
 	permissionAdminSettingsRead   = "admin.settings.read"
 	permissionAdminSettingsWrite  = "admin.settings.write"
 	permissionAdminUsersMetrics   = "admin.users.metrics.read"
+	permissionAdminBillingLedger  = "admin.billing.ledger.read"
 	permissionAdminUsersListRead  = "admin.users.list.read"
 	permissionAdminAgentsStatus   = "admin.agents.status.read"
 	permissionAdminUsersPause     = "admin.users.pause.write"
@@ -36,6 +37,7 @@ var defaultOperatorPermissions = map[string]bool{
 	permissionAdminSettingsRead:   true,
 	permissionAdminSettingsWrite:  false,
 	permissionAdminUsersMetrics:   true,
+	permissionAdminBillingLedger:  true,
 	permissionAdminUsersListRead:  true,
 	permissionAdminAgentsStatus:   true,
 	permissionAdminUsersPause:     true,
