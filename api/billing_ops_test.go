@@ -75,6 +75,62 @@ func opsPost(t *testing.T, router *gin.Engine, token, path string, payload any) 
 	return rec
 }
 
+func opsGet(t *testing.T, router *gin.Engine, token, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestOpsCollectionEndpointsReturnCanonicalBillingData(t *testing.T) {
+	router, st, token, target := opsHarness(t)
+	ctx := context.Background()
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
+		AccountUUID: target.ID, CurrentBalance: -12.5, Arrears: true,
+	}); err != nil {
+		t.Fatalf("seed quota state: %v", err)
+	}
+	if err := st.InsertBillingLedgerEntry(ctx, &store.BillingLedgerEntry{
+		ID: "negative-balance", AccountUUID: target.ID, EntryType: "traffic_charge",
+		AmountDelta: -12.5, BalanceAfter: -12.5,
+	}); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
+
+	overview := opsGet(t, router, token, "/api/auth/admin/billing/overview")
+	if overview.Code != http.StatusOK {
+		t.Fatalf("overview: expected 200, got %d: %s", overview.Code, overview.Body.String())
+	}
+	var overviewBody struct {
+		ArrearsAmount  float64 `json:"arrearsAmount"`
+		PendingActions int     `json:"pendingActions"`
+		Trend          []any   `json:"trend"`
+	}
+	if err := json.Unmarshal(overview.Body.Bytes(), &overviewBody); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if overviewBody.ArrearsAmount != 12.5 || overviewBody.PendingActions == 0 || len(overviewBody.Trend) != 7 {
+		t.Fatalf("unexpected overview payload: %+v", overviewBody)
+	}
+
+	ledger := opsGet(t, router, token, "/api/auth/admin/billing/ledger")
+	if ledger.Code != http.StatusOK {
+		t.Fatalf("ledger: expected 200, got %d: %s", ledger.Code, ledger.Body.String())
+	}
+	var ledgerBody struct {
+		Items            []map[string]any `json:"items"`
+		PendingApprovals []map[string]any `json:"pendingApprovals"`
+	}
+	if err := json.Unmarshal(ledger.Body.Bytes(), &ledgerBody); err != nil {
+		t.Fatalf("decode ledger: %v", err)
+	}
+	if len(ledgerBody.Items) != 1 || ledgerBody.Items[0]["paymentReference"] != "negative-balance" || len(ledgerBody.PendingApprovals) != 1 {
+		t.Fatalf("unexpected ledger payload: %+v", ledgerBody)
+	}
+}
+
 // Every ops write is answerable later, so a missing reason must be rejected
 // before anything changes — not merely discouraged in the UI.
 func TestOpsWritesRejectMissingReason(t *testing.T) {
