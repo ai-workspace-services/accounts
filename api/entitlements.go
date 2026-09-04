@@ -68,6 +68,43 @@ func (h *handler) applyPlanEntitlements(ctx context.Context, userID string, plan
 	return h.store.UpsertAccountBillingProfile(ctx, profile)
 }
 
+// ensureFreeEntitlement gives an account that has never received an
+// entitlement its initial FREE allowance.  This is deliberately lazy: older
+// accounts predate the billing tables, while a database migration must never
+// overwrite an operator-assigned or Stripe-managed entitlement.  Calling this
+// from the account read models makes the first visit repair the missing state
+// and keeps the usage/quota UI truthful instead of rendering 0 B / 0 B.
+func (h *handler) ensureFreeEntitlement(ctx context.Context, userID string) error {
+	if strings.TrimSpace(userID) == "" {
+		return nil
+	}
+
+	profile, err := h.store.GetAccountBillingProfile(ctx, userID)
+	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+		return err
+	}
+	quota, err := h.store.GetAccountQuotaState(ctx, userID)
+	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+		return err
+	}
+	if profile != nil || quota != nil {
+		return nil
+	}
+
+	plan, err := h.store.GetBillingPlan(ctx, store.BillingPlanFree)
+	if err != nil {
+		return err
+	}
+	if !plan.Active {
+		return nil
+	}
+	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+		return err
+	}
+	periodStart, periodEnd := naturalMonthPeriod(time.Now())
+	return h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd)
+}
+
 // resetQuotaForPlan re-arms the quota state for a fresh billing period
 // (subscription activation or invoice.paid renewal) and clears dunning flags.
 // periodBounds bound the grant so usage/summary can report "used this period"

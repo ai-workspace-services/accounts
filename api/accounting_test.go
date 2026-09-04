@@ -407,6 +407,58 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	}
 }
 
+func TestAccountUsageSummaryInitializesMissingFreeEntitlement(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	if err := st.CreateUser(ctx, &store.User{
+		Name: "New account", Email: "new-account@example.com", PasswordHash: "hashed",
+		EmailVerified: true, Role: store.RoleUser, Level: store.LevelUser, Active: true,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	user, err := st.GetUserByEmail(ctx, "new-account@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{
+		PlanID: store.BillingPlanFree, DisplayName: "Free", Kind: "subscription",
+		PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, Active: true,
+	}); err != nil {
+		t.Fatalf("seed free plan: %v", err)
+	}
+	if err := st.CreateSession(ctx, "new-account-session", user.ID, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+	req := httptest.NewRequest(http.MethodGet, "/api/account/usage/summary", nil)
+	req.Header.Set("Authorization", "Bearer new-account-session")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("usage summary status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		IncludedQuotaBytes     int64      `json:"includedQuotaBytes"`
+		RemainingIncludedQuota int64      `json:"remainingIncludedQuota"`
+		PeriodStart            *time.Time `json:"periodStart"`
+		PeriodEnd              *time.Time `json:"periodEnd"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode usage summary: %v", err)
+	}
+	const freeQuota = int64(5 * 1024 * 1024 * 1024)
+	if payload.IncludedQuotaBytes != freeQuota || payload.RemainingIncludedQuota != freeQuota {
+		t.Fatalf("expected free quota %d, got included=%d remaining=%d", freeQuota, payload.IncludedQuotaBytes, payload.RemainingIncludedQuota)
+	}
+	if payload.PeriodStart == nil || payload.PeriodEnd == nil || !payload.PeriodEnd.After(*payload.PeriodStart) {
+		t.Fatalf("expected a valid billing period, got start=%v end=%v", payload.PeriodStart, payload.PeriodEnd)
+	}
+}
+
 func TestInternalNetworkIdentitiesEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
