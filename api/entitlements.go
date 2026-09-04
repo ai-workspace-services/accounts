@@ -180,31 +180,6 @@ func (h *handler) supersedeActiveTrials(ctx context.Context, userID string) {
 	}
 }
 
-// provisionTrialEntitlements applies the TRIAL-7D catalog entitlements right
-// after a trial subscription is created (registration / OAuth first login).
-// Missing catalog rows are non-fatal: the trial subscription still exists.
-func (h *handler) provisionTrialEntitlements(ctx context.Context, userID string) {
-	plan, err := h.store.GetBillingPlan(ctx, store.BillingPlanTrial7D)
-	if err != nil {
-		if !errors.Is(err, store.ErrBillingPlanNotFound) {
-			slog.Warn("failed to load trial plan for entitlements", "err", err, "userID", userID)
-		}
-		return
-	}
-	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
-		slog.Warn("failed to apply trial entitlements", "err", err, "userID", userID)
-		return
-	}
-	now := time.Now().UTC()
-	if err := h.resetQuotaForPlan(ctx, userID, plan, now, now.Add(7*24*time.Hour)); err != nil {
-		slog.Warn("failed to reset trial quota", "err", err, "userID", userID)
-		return
-	}
-	h.publishBillingEvent(ctx, &store.BillingEvent{
-		Type: "trial_provisioned", UserID: userID, PlanID: plan.PlanID,
-	})
-}
-
 // publishBillingEvent enqueues a lifecycle notification on the PGMQ
 // billing_events queue. Best-effort: consumers (billing-service reconcile,
 // dunning, notifications) must tolerate gaps and the webhook flow never

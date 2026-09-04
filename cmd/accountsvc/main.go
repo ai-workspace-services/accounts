@@ -976,8 +976,9 @@ func billingSchemaStatements() []string {
 
 }
 
-// ensureDefaultBillingPlans seeds the well-known catalog rows once; operator
-// edits are never overwritten (insert only when the plan id is absent).
+// ensureDefaultBillingPlans seeds the well-known catalog rows once. The only
+// exception is the retired TRIAL-7D row: product policy is Free -> Pro, so an
+// old deployment must not continue to publish that plan after an upgrade.
 //
 // Because it is insert-only, changing a default here only affects databases
 // that have never been seeded. An environment already carrying the old row
@@ -988,17 +989,18 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 		return nil
 	}
 
+	if legacyTrial, err := st.GetBillingPlan(ctx, store.BillingPlanTrial7D); err == nil {
+		if legacyTrial.Active {
+			legacyTrial.Active = false
+			if err := st.UpsertBillingPlan(ctx, legacyTrial); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, store.ErrBillingPlanNotFound) {
+		return err
+	}
+
 	defaults := []store.BillingPlan{
-		{
-			PlanID:             store.BillingPlanTrial7D,
-			DisplayName:        "7-Day Trial",
-			Kind:               "trial",
-			IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, // 5 GiB
-			PackageName:        "trial",
-			TrialDays:          7,
-			Active:             true,
-			SortOrder:          0,
-		},
 		{
 			PlanID:             store.BillingPlanFree,
 			DisplayName:        "Free",

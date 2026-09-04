@@ -57,6 +57,30 @@ func TestBillingSchemaStatementsCoverSharedAccountingControlPlane(t *testing.T) 
 	}
 }
 
+func TestEnsureDefaultBillingPlansRetiresLegacyTrial(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{
+		PlanID: store.BillingPlanTrial7D, DisplayName: "7-Day Trial", Kind: "trial", Active: true,
+	}); err != nil {
+		t.Fatalf("seed legacy trial: %v", err)
+	}
+
+	if err := ensureDefaultBillingPlans(ctx, st); err != nil {
+		t.Fatalf("ensure default billing plans: %v", err)
+	}
+	trial, err := st.GetBillingPlan(ctx, store.BillingPlanTrial7D)
+	if err != nil {
+		t.Fatalf("load legacy trial: %v", err)
+	}
+	if trial.Active {
+		t.Fatal("legacy TRIAL-7D must be inactive after startup")
+	}
+	if _, err := st.GetBillingPlan(ctx, store.BillingPlanFree); err != nil {
+		t.Fatalf("FREE plan must be seeded: %v", err)
+	}
+}
+
 func TestEnsureSharedXWorkmateProfileBootstrapsManagedBridgeContractForAllUsers(t *testing.T) {
 	t.Parallel()
 

@@ -75,22 +75,10 @@ func opsPost(t *testing.T, router *gin.Engine, token, path string, payload any) 
 	return rec
 }
 
-func seedTrialPlan(t *testing.T, st store.Store) {
-	t.Helper()
-	plan := &store.BillingPlan{
-		PlanID: store.BillingPlanTrial7D, DisplayName: "7-Day Trial", Kind: "trial",
-		IncludedQuotaBytes: 10 << 30, PackageName: "trial", TrialDays: 7, Active: true,
-	}
-	if err := st.UpsertBillingPlan(context.Background(), plan); err != nil {
-		t.Fatalf("seed trial plan: %v", err)
-	}
-}
-
 // Every ops write is answerable later, so a missing reason must be rejected
 // before anything changes — not merely discouraged in the UI.
 func TestOpsWritesRejectMissingReason(t *testing.T) {
 	router, st, token, target := opsHarness(t)
-	seedTrialPlan(t, st)
 
 	cases := []struct {
 		name    string
@@ -98,13 +86,11 @@ func TestOpsWritesRejectMissingReason(t *testing.T) {
 		payload any
 	}{
 		{"assign plan", "/api/auth/admin/billing/accounts/user-1/plan",
-			map[string]any{"planId": store.BillingPlanTrial7D}},
+			map[string]any{"planId": store.BillingPlanFree}},
 		{"adjust quota", "/api/auth/admin/billing/accounts/user-1/quota",
 			map[string]any{"remainingIncludedQuota": 1024}},
 		{"adjust balance", "/api/auth/admin/billing/accounts/user-1/balance",
 			map[string]any{"delta": 10.0}},
-		{"grant trial", "/api/auth/admin/billing/accounts/user-1/grant-trial",
-			map[string]any{}},
 	}
 
 	for _, tc := range cases {
@@ -216,41 +202,6 @@ func TestOpsAdjustBalanceWritesLedgerEntry(t *testing.T) {
 	state, _ = st.GetAccountQuotaState(context.Background(), "user-1")
 	if state.CurrentBalance != 30.0 {
 		t.Fatalf("expected balance 30 after -20, got %v", state.CurrentBalance)
-	}
-}
-
-func TestOpsGrantTrialAppliesEntitlements(t *testing.T) {
-	router, st, token, _ := opsHarness(t)
-	seedTrialPlan(t, st)
-
-	rec := opsPost(t, router, token, "/api/auth/admin/billing/accounts/user-1/grant-trial",
-		map[string]any{"reason": "sales demo account"})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	profile, err := st.GetAccountBillingProfile(context.Background(), "user-1")
-	if err != nil || profile == nil {
-		t.Fatalf("expected a billing profile after granting a trial, err=%v", err)
-	}
-	if profile.PackageName != "trial" {
-		t.Fatalf("expected package trial, got %q", profile.PackageName)
-	}
-	state, err := st.GetAccountQuotaState(context.Background(), "user-1")
-	if err != nil || state == nil {
-		t.Fatalf("expected quota state, err=%v", err)
-	}
-	if state.RemainingIncludedQuota != 10<<30 {
-		t.Fatalf("trial quota not applied, got %d", state.RemainingIncludedQuota)
-	}
-	if state.PeriodEnd == nil {
-		t.Fatal("expected the trial grant to bound the period")
-	}
-
-	entries, _ := st.ListAuditLogs(context.Background(),
-		store.AuditLogFilter{ActionPrefix: store.AuditActionTrialGrant})
-	if len(entries) != 1 {
-		t.Fatalf("expected one trial audit entry, got %d", len(entries))
 	}
 }
 

@@ -41,14 +41,6 @@ type adminAdjustBalanceRequest struct {
 	Reason string  `json:"reason"`
 }
 
-type adminGrantTrialRequest struct {
-	// PlanID defaults to the catalog trial plan when omitted.
-	PlanID string `json:"planId"`
-	// Days defaults to the plan's own trial_days, then to 7.
-	Days   int    `json:"days"`
-	Reason string `json:"reason"`
-}
-
 // resolveTargetUser loads the account an operator is acting on and rejects
 // the root account, matching the protection already applied to role and
 // group changes.
@@ -169,6 +161,10 @@ func (h *handler) adminAssignPlan(c *gin.Context) {
 			return
 		}
 		respondError(c, http.StatusInternalServerError, "plan_lookup_failed", "failed to load billing plan")
+		return
+	}
+	if !plan.Active {
+		respondError(c, http.StatusBadRequest, "plan_inactive", "billing plan is not available for assignment")
 		return
 	}
 
@@ -347,92 +343,5 @@ func (h *handler) adminAdjustBalance(c *gin.Context) {
 		"accountUuid":    user.ID,
 		"currentBalance": newBalance,
 		"ledgerEntryId":  entry.ID,
-	})
-}
-
-// adminGrantTrial provisions trial entitlements for an existing account.
-//
-// provisionTrialEntitlements already does this for newly registered users but
-// is hardcoded to TRIAL-7D and only runs at signup, which is why accounts
-// created any other way (bootstrap, import, migration) end up with no
-// entitlements at all. This is the same flow with the plan and duration made
-// explicit.
-func (h *handler) adminGrantTrial(c *gin.Context) {
-	actor, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite)
-	if !ok {
-		return
-	}
-	user, ok := h.resolveTargetUser(c)
-	if !ok {
-		return
-	}
-
-	var req adminGrantTrialRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
-		return
-	}
-	reason, ok := requireReason(c, req.Reason)
-	if !ok {
-		return
-	}
-
-	planID := strings.TrimSpace(req.PlanID)
-	if planID == "" {
-		planID = store.BillingPlanTrial7D
-	}
-
-	ctx := c.Request.Context()
-	plan, err := h.store.GetBillingPlan(ctx, planID)
-	if err != nil {
-		if errors.Is(err, store.ErrBillingPlanNotFound) {
-			respondError(c, http.StatusNotFound, "plan_not_found", "trial plan not found in the catalog")
-			return
-		}
-		respondError(c, http.StatusInternalServerError, "plan_lookup_failed", "failed to load billing plan")
-		return
-	}
-
-	days := req.Days
-	if days <= 0 {
-		days = plan.TrialDays
-	}
-	if days <= 0 {
-		days = 7
-	}
-
-	if err := h.applyPlanEntitlements(ctx, user.ID, plan); err != nil {
-		respondError(c, http.StatusInternalServerError, "entitlement_apply_failed", "failed to apply trial entitlements")
-		return
-	}
-	now := time.Now().UTC()
-	expiresAt := now.AddDate(0, 0, days)
-	if err := h.resetQuotaForPlan(ctx, user.ID, plan, now, expiresAt); err != nil {
-		respondError(c, http.StatusInternalServerError, "quota_reset_failed", "failed to reset quota for trial")
-		return
-	}
-
-	after := map[string]any{
-		"plan_id":              plan.PlanID,
-		"included_quota_bytes": plan.IncludedQuotaBytes,
-		"days":                 days,
-		"expires_at":           expiresAt.Format(time.RFC3339),
-	}
-	if err := h.recordAudit(ctx, actor.ID, store.AuditActionTrialGrant,
-		auditDetails(user.ID, reason, nil, after)); err != nil {
-		respondError(c, http.StatusInternalServerError, "audit_write_failed",
-			"trial was granted but the audit entry could not be written")
-		return
-	}
-
-	h.publishBillingEvent(ctx, &store.BillingEvent{
-		Type: "trial_provisioned", UserID: user.ID, PlanID: plan.PlanID,
-	})
-
-	c.JSON(http.StatusOK, gin.H{
-		"accountUuid": user.ID,
-		"planId":      plan.PlanID,
-		"days":        days,
-		"expiresAt":   expiresAt.Format(time.RFC3339),
 	})
 }
