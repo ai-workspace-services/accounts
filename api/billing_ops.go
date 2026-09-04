@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,6 +40,150 @@ type adminAdjustBalanceRequest struct {
 	// another, which is also what makes the ledger entry meaningful.
 	Delta  float64 `json:"delta"`
 	Reason string  `json:"reason"`
+}
+
+// adminBillingOverview collects the operational read models already held by
+// Accounts.  It deliberately does not infer revenue from traffic: only an
+// active subscription whose catalog price is known contributes to MRR.
+func (h *handler) adminBillingOverview(c *gin.Context) {
+	if _, ok := h.requireAdminPermission(c, permissionAdminUsersMetrics); !ok {
+		return
+	}
+
+	ctx := c.Request.Context()
+	users, err := h.store.ListUsers(ctx)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "users_unavailable", "failed to load accounts")
+		return
+	}
+	plans, err := h.store.ListBillingPlans(ctx, false)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "plans_unavailable", "failed to load billing plans")
+		return
+	}
+	planByID := make(map[string]store.BillingPlan, len(plans))
+	for _, plan := range plans {
+		planByID[plan.PlanID] = plan
+	}
+
+	now := time.Now().UTC()
+	trend := make([]gin.H, 0, 7)
+	for offset := 6; offset >= 0; offset-- {
+		day := now.AddDate(0, 0, -offset)
+		dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
+		dayEnd := dayStart.AddDate(0, 0, 1)
+		active, created, churned := 0, 0, 0
+		for _, user := range users {
+			if user.Active && !user.CreatedAt.After(dayEnd) {
+				active++
+			}
+			if !user.CreatedAt.Before(dayStart) && user.CreatedAt.Before(dayEnd) {
+				created++
+			}
+			if !user.Active && !user.UpdatedAt.Before(dayStart) && user.UpdatedAt.Before(dayEnd) {
+				churned++
+			}
+		}
+		trend = append(trend, gin.H{"date": dayStart.Format("2006-01-02"), "active": active, "newAccounts": created, "churned": churned})
+	}
+
+	mrr, arrearsAmount := 0.0, 0.0
+	activeSubscriptions, pendingActions := 0, 0
+	for _, user := range users {
+		if state, stateErr := h.store.GetAccountQuotaState(ctx, user.ID); stateErr == nil && state != nil {
+			if state.Arrears || state.CurrentBalance < 0 {
+				arrearsAmount += maxFloat(0, -state.CurrentBalance)
+				pendingActions++
+			}
+			if state.SuspendState == "suspended" {
+				pendingActions++
+			}
+		}
+		subscriptions, subErr := h.store.ListSubscriptionsByUser(ctx, user.ID)
+		if subErr != nil {
+			respondError(c, http.StatusInternalServerError, "subscriptions_unavailable", "failed to load subscriptions")
+			return
+		}
+		for _, subscription := range subscriptions {
+			if subscription.Status != "active" && subscription.Status != "trialing" {
+				continue
+			}
+			activeSubscriptions++
+			plan, exists := planByID[subscription.PlanID]
+			if !exists || plan.PriceAmount <= 0 {
+				continue
+			}
+			price := float64(plan.PriceAmount) / 100
+			if plan.PriceUnit == "year" {
+				price /= 12
+			}
+			mrr += price
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"mrr": mrr, "activeSubscriptions": activeSubscriptions, "arrearsAmount": arrearsAmount, "pendingActions": pendingActions, "trend": trend})
+}
+
+// adminBillingLedger derives the existing ledger page's read-only data from
+// the canonical ledger and quota state.  A ledger entry is written only after
+// the balance update succeeds, so unposted stays at zero until a payment
+// reconciliation source is added rather than being fabricated client-side.
+func (h *handler) adminBillingLedger(c *gin.Context) {
+	if _, ok := h.requireAdminPermission(c, permissionAdminBillingLedger); !ok {
+		return
+	}
+	ctx := c.Request.Context()
+	users, err := h.store.ListUsers(ctx)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "users_unavailable", "failed to load accounts")
+		return
+	}
+
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	collected, credited, refunded, chargedOut := 0.0, 0.0, 0.0, 0.0
+	items := make([]gin.H, 0)
+	pendingApprovals := make([]gin.H, 0)
+	for _, user := range users {
+		if state, stateErr := h.store.GetAccountQuotaState(ctx, user.ID); stateErr == nil && state != nil && (state.Arrears || state.SuspendState == "suspended") {
+			pendingApprovals = append(pendingApprovals, gin.H{"title": "账号账务状态需复核", "target": user.Email, "requestedBy": "billing", "createdAt": state.UpdatedAt})
+		}
+		ledger, ledgerErr := h.store.ListBillingLedgerByAccount(ctx, user.ID, 100)
+		if ledgerErr != nil {
+			respondError(c, http.StatusInternalServerError, "ledger_unavailable", "failed to load ledger")
+			return
+		}
+		for _, entry := range ledger {
+			if !entry.CreatedAt.Before(today) {
+				if entry.AmountDelta > 0 {
+					collected += entry.AmountDelta
+					credited += entry.AmountDelta
+				} else if strings.Contains(strings.ToLower(entry.EntryType), "refund") {
+					refunded += -entry.AmountDelta
+				} else if entry.AmountDelta < 0 {
+					chargedOut += -entry.AmountDelta
+				}
+			}
+			if entry.BalanceAfter < 0 {
+				items = append(items, gin.H{"paymentReference": entry.ID, "accountEmail": user.Email, "exceptionType": "余额为负", "amount": entry.AmountDelta, "ledgerStatus": "待处理", "processingStatus": "pending", "updatedAt": entry.CreatedAt})
+			}
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i]["updatedAt"].(time.Time).After(items[j]["updatedAt"].(time.Time))
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"items":            items,
+		"cashflow":         gin.H{"collected": collected, "credited": credited, "refunded": refunded, "chargedOut": chargedOut, "unposted": 0, "reconciliationRate": 100},
+		"pendingApprovals": pendingApprovals,
+		"updatedAt":        time.Now().UTC(),
+	})
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // resolveTargetUser loads the account an operator is acting on and rejects
