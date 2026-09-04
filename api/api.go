@@ -483,7 +483,6 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/admin/billing/accounts/:accountUUID/plan", h.adminAssignPlan)
 	authProtected.POST("/admin/billing/accounts/:accountUUID/quota", h.adminAdjustQuota)
 	authProtected.POST("/admin/billing/accounts/:accountUUID/balance", h.adminAdjustBalance)
-	authProtected.POST("/admin/billing/accounts/:accountUUID/grant-trial", h.adminGrantTrial)
 	authProtected.GET("/admin/audit", h.adminListAuditLogs)
 
 	// Backward-compatible auth-scoped admin routes consumed by the dashboard BFF.
@@ -775,36 +774,6 @@ func (h *handler) register(c *gin.Context) {
 	c.JSON(http.StatusCreated, response)
 }
 
-// provisionOnboardingTrial grants the new-user full-access TRIAL-7D subscription
-// and applies its catalog entitlements (billing profile + quota). It is called
-// the first time a user's email becomes verified (password registration, or
-// OAuth users completing the email-verification round trip) — the single point
-// where the 7-day trial is activated. Failures are non-fatal: the account stays
-// usable and the trial can be re-provisioned later.
-func (h *handler) provisionOnboardingTrial(ctx context.Context, userID string) {
-	trialExpiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
-	trial := &store.Subscription{
-		UserID:        userID,
-		Provider:      "trial",
-		PaymentMethod: "trial",
-		Kind:          "trial",
-		PlanID:        store.BillingPlanTrial7D,
-		ExternalID:    fmt.Sprintf("trial-%s", userID),
-		Status:        "active",
-		Meta: map[string]any{
-			"startsAt":  time.Now().UTC(),
-			"expiresAt": trialExpiresAt,
-			"note":      "new user full-access trial",
-		},
-	}
-
-	if err := h.store.UpsertSubscription(ctx, trial); err != nil {
-		slog.Warn("failed to provision onboarding trial", "err", err, "userID", userID)
-	}
-	// Apply catalog entitlements (billing profile + quota) for the trial plan.
-	h.provisionTrialEntitlements(ctx, userID)
-}
-
 func (h *handler) verifyEmail(c *gin.Context) {
 	if hasQueryParameter(c, "token", "code") {
 		respondError(c, http.StatusBadRequest, "token_in_query", "verification code must be sent in the request body")
@@ -863,10 +832,9 @@ func (h *handler) verifyEmail(c *gin.Context) {
 				respondError(c, http.StatusInternalServerError, "verification_failed", "failed to verify email")
 				return
 			}
-			// First-time verification unlocks full access: activate the 7-day
-			// trial. OAuth users register with EmailVerified=false and no trial;
-			// this round trip (verified inbox) is what grants proxy entitlement.
-			h.provisionOnboardingTrial(c.Request.Context(), user.ID)
+			// Verification authenticates the account only. New accounts remain on
+			// the limited FREE plan until they explicitly select Pro or a custom
+			// team arrangement; there is no onboarding trial.
 		}
 
 		h.removeEmailVerification(email)
