@@ -45,6 +45,10 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if err := h.ensureFreeEntitlement(c.Request.Context(), user.ID); err != nil {
+		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "failed to initialize the account entitlement")
+		return
+	}
 
 	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, time.Time{}, time.Time{})
 	if err != nil {
@@ -166,6 +170,10 @@ func (h *handler) accountUsageBuckets(c *gin.Context) {
 func (h *handler) accountBillingSummary(c *gin.Context) {
 	user, ok := h.requireAuthenticatedUser(c)
 	if !ok {
+		return
+	}
+	if err := h.ensureFreeEntitlement(c.Request.Context(), user.ID); err != nil {
+		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "failed to initialize the account entitlement")
 		return
 	}
 
