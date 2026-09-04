@@ -1,5 +1,10 @@
 d0541341127eea68dbe95e3e0e232cfcc48fe49c:dashboard-fresh/docs/LOGIN_API_GUIDE.md:generic-api-key:246
 d0541341127eea68dbe95e3e0e232cfcc48fe49c:dashboard-fresh/docs/LOGIN_API_GUIDE.md:generic-api-key:276
+# Test-only overlay credential fixtures; these values are intentionally fake
+# and predate this PR. Keep the ignores tied to their immutable fingerprints.
+14a79e74eb2a2d9cb0d00d47dab50ab233505542:tests/fixtures/overlay/device-credential-wire.json:generic-api-key:11
+14a79e74eb2a2d9cb0d00d47dab50ab233505542:api/overlay_device_session_test.go:generic-api-key:131
+5c4a6edeac870010498388e50705d66807dfd561:internal/store/overlay_gateway_memory_test.go:generic-api-key:99
 # Runbook example token, purged from the working tree; still present in Feb history commits.
 700a1db5e32ac37d17887c805af8c38bc17753e1:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:77
 700a1db5e32ac37d17887c805af8c38bc17753e1:Runbook/Fix-Agent-404-And-UUID-Change.md:curl-auth-header:357
