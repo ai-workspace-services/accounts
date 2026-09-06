@@ -84,9 +84,9 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	if changed {
 		proxyUUID := strings.TrimSpace(user.ProxyUUID)
 
-		// Collect node hosts from registered agents + publicURL fallback.
+		// Collect only explicitly configured and registered proxy node hosts.
 		registeredHosts, registeredNames := registeredNodeMetadata(h.agentStatusReader)
-		hosts := parseProxyNodeHosts(h.publicURL, registeredHosts)
+		hosts := parseProxyNodeHosts(registeredHosts)
 
 		xhttpPath := envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath)
 		xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
