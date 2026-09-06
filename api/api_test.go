@@ -775,6 +775,7 @@ func TestOAuthCallbackRejectsBlacklistedEmail(t *testing.T) {
 
 func TestSyncConfigSnapshotReturnsRenderedJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("XRAY_PROXY_NODES", "agent-proxy.test.invalid")
 
 	router, user, token := newAuthenticatedSyncHarness(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/sync/config?since_version=0", nil)
@@ -845,6 +846,7 @@ func TestSyncConfigSnapshotSkipsRenderingWhenVersionUnchanged(t *testing.T) {
 
 func TestSyncConfigSnapshotFallsBackWhenRenderFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv("XRAY_PROXY_NODES", "agent-proxy.test.invalid")
 
 	router, _, token := newAuthenticatedSyncHarness(t, WithXrayConfigRenderer(func(*store.User) (string, string, []string, error) {
 		return "", "", nil, errors.New("boom")

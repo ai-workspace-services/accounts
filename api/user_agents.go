@@ -99,7 +99,7 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 	}()
 
 	registeredHosts, registeredNames := registeredNodeMetadata(h.agentStatusReader)
-	hosts := parseProxyNodeHosts(h.publicURL, registeredHosts)
+	hosts := parseProxyNodeHosts(registeredHosts)
 
 	if len(hosts) == 0 {
 		c.JSON(http.StatusOK, []VlessNode{})
@@ -270,7 +270,7 @@ func (h *handler) resolveAgentNodeUser(c *gin.Context) (*store.User, bool) {
 	return user, true
 }
 
-func parseProxyNodeHosts(publicURL string, extraHosts []string) []string {
+func parseProxyNodeHosts(extraHosts []string) []string {
 	seen := make(map[string]struct{})
 	hosts := make([]string, 0)
 
@@ -299,10 +299,7 @@ func parseProxyNodeHosts(publicURL string, extraHosts []string) []string {
 		appendHost(host)
 	}
 
-	if len(hosts) == 0 {
-		appendHost(publicURL)
-	}
-
+	// No proxy nodes means an empty list; the account service is not a proxy.
 	return hosts
 }
 
