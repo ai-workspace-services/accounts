@@ -1,0 +1,124 @@
+openapi: 3.1.0
+info:
+  title: XConnect Zero API
+  version: 1.0.0
+  description: Central control plane for the independent XConnect-One controlled client and self-hosted XConnect Gateway relay.
+servers:
+  - url: https://accounts.example.invalid
+paths:
+  /api/overlay/v1/join-tokens/exchange:
+    post:
+      summary: Consume a one-use invite and register a One or Gateway device
+      description: role defaults to one. Gateway invitations are pre-seeded by a trusted bootstrap process and must use role gateway.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExchangeRequest'
+      responses:
+        '200': {description: Enrollment session and device credential}
+        '401': {description: Invalid, expired, or consumed invitation}
+        '403': {description: Invitation role or device constraint mismatch}
+        '409': {description: Device or generation conflict}
+  /api/overlay/v1/device/session:
+    post:
+      summary: Mint a short enrollment session
+      security: [{DeviceCredential: []}]
+      responses:
+        '200': {description: Short-lived enrollment session}
+        '401': {description: Invalid, expired, or revoked device credential}
+  /api/overlay/v1/enrollment/signed-config:
+    get:
+      summary: Fetch a centrally signed One client configuration
+      security: [{EnrollmentBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/DeviceID'}
+        - {$ref: '#/components/parameters/NetworkID'}
+      responses:
+        '200': {description: Ed25519 signed One configuration}
+  /api/overlay/v1/enrollment/signed-config/{generation}/ack:
+    post:
+      summary: Acknowledge local application of a One configuration
+      security: [{EnrollmentBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Generation'}
+      responses:
+        '200': {description: Idempotent acknowledgement}
+  /api/overlay/v1/gateway/signed-config:
+    get:
+      summary: Fetch the centrally signed Gateway relay/service snapshot
+      security: [{EnrollmentBearer: []}]
+      responses:
+        '200': {description: Ed25519 signed Gateway peer and forwarding configuration}
+  /api/overlay/v1/enrollment/policy-artifacts/{generation}/{digest}:
+    get:
+      summary: Fetch the policy artifact referenced by a signed One configuration
+      security: [{EnrollmentBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Generation'}
+        - name: digest
+          in: path
+          required: true
+          schema: {type: string, pattern: '^[a-f0-9]{64}$'}
+      responses:
+        '200': {description: Canonical policy artifact}
+  /api/overlay/v1/signing-keys:
+    get:
+      summary: Discover the Zero signing key ring for an authenticated account user
+      security: [{UserBearer: []}]
+      responses:
+        '200': {description: Current Ed25519 key ring}
+        '304': {description: Matching ETag}
+  /api/overlay/v1/signed-config:
+    get:
+      summary: Fetch a signed One configuration for an authenticated account user
+      security: [{UserBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/DeviceID'}
+        - {$ref: '#/components/parameters/NetworkID'}
+      responses:
+        '200': {description: Ed25519 signed One configuration}
+components:
+  parameters:
+    DeviceID:
+      name: device_id
+      in: query
+      required: true
+      schema: {type: string}
+    NetworkID:
+      name: network_id
+      in: query
+      required: false
+      schema: {type: string}
+    Generation:
+      name: generation
+      in: path
+      required: true
+      schema: {type: integer, minimum: 1}
+  securitySchemes:
+    EnrollmentBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: xenr
+    DeviceCredential:
+      type: http
+      scheme: XConnect-Device
+      bearerFormat: xdc
+    UserBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ExchangeRequest:
+      type: object
+      required: [join_token, device_id, platform, wireguard_public_key]
+      additionalProperties: false
+      properties:
+        join_token: {type: string}
+        device_id: {type: string}
+        name: {type: string}
+        platform: {type: string}
+        hostname: {type: string}
+        wireguard_public_key: {type: string}
+        role: {type: string, enum: [one, gateway], default: one}

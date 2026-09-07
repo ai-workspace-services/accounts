@@ -28,6 +28,7 @@ import (
 	"account/internal/agentproto"
 	"account/internal/agentserver"
 	"account/internal/auth"
+	"account/internal/overlay"
 	"account/internal/service"
 	"account/internal/store"
 )
@@ -91,6 +92,7 @@ type handler struct {
 	xworkmateVaultService     xworkmateVaultService
 	xrayConfigRenderer        func(*store.User) (string, string, []string, error)
 	agentRegistry             agentRegistry
+	overlayService            *overlay.Service
 	db                        *gorm.DB
 	stripe                    *stripeClient
 }
@@ -287,6 +289,15 @@ func WithGormDB(db *gorm.DB) Option {
 	}
 }
 
+// WithOverlayService configures the XConnect Zero control-plane service.
+// The service is deliberately opt-in so existing account deployments and
+// tests retain their current route surface until the database is provisioned.
+func WithOverlayService(service *overlay.Service) Option {
+	return func(h *handler) {
+		h.overlayService = service
+	}
+}
+
 // WithStripeConfig configures Stripe billing integration.
 func WithStripeConfig(cfg StripeConfig) Option {
 	return func(h *handler) {
@@ -463,6 +474,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	// Legacy alias kept for backward compatibility.
 	agentGroup := r.Group("/api/agent")
 	agentGroup.GET("/nodes", h.listAgentNodes)
+
+	h.registerOverlayRoutes(r)
 }
 
 type registerRequest struct {
