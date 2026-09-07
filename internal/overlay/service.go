@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -77,6 +78,139 @@ func ConfigFromEnv() (Config, error) {
 }
 
 func (s *Service) Repository() *Repository { return s.repo }
+
+func (s *Service) AdminOverview(ctx context.Context) (AdminOverview, error) {
+	var networks, devices, gateways int64
+	if err := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Count(&networks).Error; err != nil {
+		return AdminOverview{}, err
+	}
+	if err := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Where("status = ?", "active").Count(&devices).Error; err != nil {
+		return AdminOverview{}, err
+	}
+	if err := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Where("role = ? AND status = ?", RoleGateway, "active").Count(&gateways).Error; err != nil {
+		return AdminOverview{}, err
+	}
+	return AdminOverview{Status: "available", NetworkCount: networks, DeviceCount: devices, GatewayCount: gateways, SigningKeyID: s.keyID}, nil
+}
+
+func (s *Service) AdminNetworks(ctx context.Context) ([]Network, error) {
+	var records []NetworkRecord
+	if err := s.repo.DB.WithContext(ctx).Order("id ASC").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]Network, 0, len(records))
+	for _, record := range records {
+		result = append(result, toNetwork(record))
+	}
+	return result, nil
+}
+
+func (s *Service) AdminDevices(ctx context.Context) ([]Device, error) {
+	var records []DeviceRecord
+	if err := s.repo.DB.WithContext(ctx).Order("id ASC").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]Device, 0, len(records))
+	for _, record := range records {
+		result = append(result, toDevice(record))
+	}
+	return result, nil
+}
+
+func (s *Service) AdminInvites(ctx context.Context) ([]InviteSummary, error) {
+	var records []InviteRecord
+	if err := s.repo.DB.WithContext(ctx).Order("created_at DESC").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]InviteSummary, 0, len(records))
+	for _, record := range records {
+		result = append(result, InviteSummary{ID: record.ID, NetworkID: record.NetworkID, DeviceID: record.DeviceID, Platform: record.Platform, Role: record.Role, ExpiresAt: record.ExpiresAt.UTC(), RemainingUses: record.RemainingUses, ConsumedAt: record.ConsumedAt, CreatedAt: record.CreatedAt.UTC()})
+	}
+	return result, nil
+}
+
+func (s *Service) AdminBootstrap(ctx context.Context, cfg BootstrapConfig, controllerURL, joinToken string) (AdminBootstrapResult, error) {
+	joinToken, err := s.Seed(ctx, cfg, joinToken)
+	if err != nil {
+		return AdminBootstrapResult{}, err
+	}
+	var network NetworkRecord
+	if err := s.repo.DB.WithContext(ctx).Where("id = ?", cfg.Network.ID).First(&network).Error; err != nil {
+		return AdminBootstrapResult{}, err
+	}
+	var invite InviteRecord
+	if err := s.repo.DB.WithContext(ctx).Where("token_hash = ?", HashSecret(joinToken)).First(&invite).Error; err != nil {
+		return AdminBootstrapResult{}, err
+	}
+	controllerURL = strings.TrimRight(strings.TrimSpace(controllerURL), "/")
+	if controllerURL == "" {
+		return AdminBootstrapResult{}, ErrInvalidInput
+	}
+	return AdminBootstrapResult{Network: toNetwork(network), Invite: InviteSummary{ID: invite.ID, NetworkID: invite.NetworkID, DeviceID: invite.DeviceID, Platform: invite.Platform, Role: invite.Role, ExpiresAt: invite.ExpiresAt.UTC(), RemainingUses: invite.RemainingUses, CreatedAt: invite.CreatedAt.UTC()}, JoinURI: "xconnect://join/" + joinToken + "?controller=" + url.QueryEscape(controllerURL)}, nil
+}
+
+func (s *Service) AdminRevokeDevice(ctx context.Context, deviceID string) error {
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return ErrInvalidInput
+	}
+	now := s.now()
+	return s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&DeviceRecord{}).Where("id = ? AND status = ?", deviceID, "active").Updates(map[string]any{"status": "revoked", "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", deviceID).Update("revoked_at", now).Error
+	})
+}
+
+func (s *Service) AdminPolicy(ctx context.Context, networkID string) (PolicyArtifact, error) {
+	var network NetworkRecord
+	if err := s.repo.DB.WithContext(ctx).Where("id = ?", strings.TrimSpace(networkID)).First(&network).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return PolicyArtifact{}, ErrNotFound
+		}
+		return PolicyArtifact{}, err
+	}
+	return s.policyArtifact(network)
+}
+
+func (s *Service) AdminUpdatePolicy(ctx context.Context, networkID string, policy PolicyArtifact) (PolicyArtifact, error) {
+	var result PolicyArtifact
+	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var network NetworkRecord
+		if err := tx.Where("id = ?", strings.TrimSpace(networkID)).First(&network).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if policy.NetworkID != "" && policy.NetworkID != network.ID || policy.DefaultAction != "" && policy.DefaultAction != "deny" && policy.DefaultAction != "allow" {
+			return ErrInvalidInput
+		}
+		generation := network.ConfigGeneration + 1
+		policy.SchemaVersion = 1
+		policy.CompilerVersion = PolicyCompilerVersion
+		policy.NetworkID = network.ID
+		policy.Revision = generation
+		if policy.DefaultAction == "" {
+			policy.DefaultAction = "deny"
+		}
+		raw, err := json.Marshal(policy)
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(map[string]any{"policy_json": string(raw), "config_generation": generation}).Error; err != nil {
+			return err
+		}
+		result = policy
+		return nil
+	})
+	return result, err
+}
 
 func (s *Service) Seed(ctx context.Context, cfg BootstrapConfig, joinToken string) (string, error) {
 	return s.repo.Seed(ctx, cfg, joinToken)
@@ -231,7 +365,11 @@ func (s *Service) PolicyArtifact(ctx context.Context, enrollmentToken string, ge
 	if generation != network.ConfigGeneration || device.Status != "active" {
 		return nil, ErrForbidden
 	}
-	raw, err := json.Marshal(defaultPolicyArtifact(network.ID, generation))
+	policy, err := s.policyArtifact(network)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(policy)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +406,11 @@ func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, 
 		},
 	}
 	if v2 {
-		raw, err := json.Marshal(defaultPolicyArtifact(network.ID, generation))
+		policy, err := s.policyArtifact(network)
+		if err != nil {
+			return SignedConfig{}, "", err
+		}
+		raw, err := json.Marshal(policy)
 		if err != nil {
 			return SignedConfig{}, "", err
 		}
@@ -293,6 +435,20 @@ func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, 
 
 func defaultPolicyArtifact(networkID string, generation uint64) PolicyArtifact {
 	return PolicyArtifact{SchemaVersion: 1, CompilerVersion: PolicyCompilerVersion, NetworkID: networkID, Revision: generation, DefaultAction: "deny", ProtectedFlows: []string{"control:controller-session", "control:gateway-apply-result", "control:gateway-heartbeat", "control:gateway-policy-artifact", "control:gateway-snapshot"}, Rules: []PolicyRule{}}
+}
+
+func (s *Service) policyArtifact(network NetworkRecord) (PolicyArtifact, error) {
+	if strings.TrimSpace(network.PolicyJSON) == "" {
+		return defaultPolicyArtifact(network.ID, network.ConfigGeneration), nil
+	}
+	var policy PolicyArtifact
+	if err := json.Unmarshal([]byte(network.PolicyJSON), &policy); err != nil {
+		return PolicyArtifact{}, fmt.Errorf("decode stored overlay policy: %w", err)
+	}
+	if policy.NetworkID != network.ID || policy.Revision != network.ConfigGeneration {
+		return PolicyArtifact{}, ErrGenerationConflict
+	}
+	return policy, nil
 }
 
 func signingBytes(config SignedConfig) ([]byte, error) {

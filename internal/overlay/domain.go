@@ -257,6 +257,32 @@ type PolicyRule struct {
 	Ports              []int    `json:"ports"`
 }
 
+type AdminOverview struct {
+	Status       string `json:"status"`
+	NetworkCount int64  `json:"networkCount"`
+	DeviceCount  int64  `json:"deviceCount"`
+	GatewayCount int64  `json:"gatewayCount"`
+	SigningKeyID string `json:"signingKeyId"`
+}
+
+type InviteSummary struct {
+	ID            string     `json:"id"`
+	NetworkID     string     `json:"network_id"`
+	DeviceID      string     `json:"device_id,omitempty"`
+	Platform      string     `json:"platform"`
+	Role          string     `json:"role"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	RemainingUses int        `json:"remaining_uses"`
+	ConsumedAt    *time.Time `json:"consumed_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
+type AdminBootstrapResult struct {
+	Network Network       `json:"network"`
+	Invite  InviteSummary `json:"invite"`
+	JoinURI string        `json:"join_uri"`
+}
+
 type BootstrapConfig struct {
 	Network BootstrapNetwork
 	Invite  BootstrapInvite

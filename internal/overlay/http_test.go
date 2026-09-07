@@ -26,7 +26,7 @@ func newOverlayHTTPTest(t *testing.T) (*Service, *gin.Engine, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	service, err := NewService(db, Config{SigningKeyID: "zero-key-1", SigningPrivateKey: signer, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestGatewayRoleUsesCentralSignedSnapshot(t *testing.T) {
 	service, router, _ := newOverlayHTTPTest(t)
 	joinToken, err := service.Seed(t.Context(), BootstrapConfig{
 		Network: BootstrapNetwork{ID: "uat-private", DisplayName: "UAT private", CIDR: "10.88.0.0/29", GatewayID: "gw-uat-1", GatewayWireGuardKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32)), GatewayWireGuardAddress: "10.88.0.1/32", GatewayEndpointHost: "gw.uat.test", GatewayEndpointPort: 51820, TransportServerName: "gw.uat.test", TransportPort: 443, TransportAuthID: "22222222-2222-2222-2222-222222222222"},
-		Invite:  BootstrapInvite{Role: RoleGateway, Platform: "linux", ExpiresAt: time.Date(2026, 9, 7, 13, 0, 0, 0, time.UTC)},
+		Invite:  BootstrapInvite{Role: RoleGateway, Platform: "linux", ExpiresAt: time.Now().UTC().Add(time.Hour)},
 	}, "")
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS overlay_networks (
   transport_port INTEGER NOT NULL,
   transport_auth_id TEXT NOT NULL,
   owner_user_id TEXT NOT NULL DEFAULT '',
+  policy_json TEXT NOT NULL DEFAULT '',
   config_generation BIGINT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

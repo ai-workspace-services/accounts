@@ -30,6 +30,7 @@ type NetworkRecord struct {
 	TransportPort           int       `gorm:"column:transport_port;not null"`
 	TransportAuthID         string    `gorm:"column:transport_auth_id;type:text;not null"`
 	OwnerUserID             string    `gorm:"column:owner_user_id;type:text;index"`
+	PolicyJSON              string    `gorm:"column:policy_json;type:text;not null;default:''"`
 	ConfigGeneration        uint64    `gorm:"column:config_generation;not null;default:1"`
 	CreatedAt               time.Time `gorm:"column:created_at;not null;autoCreateTime"`
 	UpdatedAt               time.Time `gorm:"column:updated_at;not null;autoUpdateTime"`
@@ -153,7 +154,7 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 			GatewayWireGuardAddress: cfg.Network.GatewayWireGuardAddress,
 			GatewayEndpointHost:     cfg.Network.GatewayEndpointHost, GatewayEndpointPort: cfg.Network.GatewayEndpointPort,
 			TransportServerName: cfg.Network.TransportServerName, TransportPort: cfg.Network.TransportPort,
-			TransportAuthID: cfg.Network.TransportAuthID, OwnerUserID: cfg.Network.OwnerUserID,
+			TransportAuthID: cfg.Network.TransportAuthID, OwnerUserID: cfg.Network.OwnerUserID, PolicyJSON: "",
 			ConfigGeneration: 1,
 		}
 		if err := tx.Where("id = ?", network.ID).First(&NetworkRecord{}).Error; err == nil {
