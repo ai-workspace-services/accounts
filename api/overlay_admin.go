@@ -11,6 +11,7 @@ import (
 
 	"account/internal/auth"
 	"account/internal/overlay"
+	"account/internal/store"
 )
 
 const (
@@ -59,7 +60,7 @@ func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 }
 
 func (h *handler) overlayAdminOverview(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
 		return
 	}
 	value, err := h.overlayService.AdminOverview(c.Request.Context(), auth.GetUserID(c))
@@ -71,7 +72,7 @@ func (h *handler) overlayAdminOverview(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminNetworks(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
 		return
 	}
 	value, err := h.overlayService.AdminNetworks(c.Request.Context(), auth.GetUserID(c))
@@ -83,7 +84,7 @@ func (h *handler) overlayAdminNetworks(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminDevices(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
 		return
 	}
 	value, err := h.overlayService.AdminDevices(c.Request.Context(), auth.GetUserID(c))
@@ -95,7 +96,7 @@ func (h *handler) overlayAdminDevices(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminInvites(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
 		return
 	}
 	value, err := h.overlayService.AdminInvites(c.Request.Context(), auth.GetUserID(c))
@@ -107,7 +108,7 @@ func (h *handler) overlayAdminInvites(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminBootstrap(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroManage); !ok {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
 		return
 	}
 	var request overlayAdminBootstrapRequest
@@ -127,7 +128,7 @@ func (h *handler) overlayAdminBootstrap(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminRevokeDevice(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroManage); !ok {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
 		return
 	}
 	if err := h.overlayService.AdminRevokeDevice(c.Request.Context(), auth.GetUserID(c), c.Param("deviceID")); err != nil {
@@ -138,7 +139,7 @@ func (h *handler) overlayAdminRevokeDevice(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminPolicy(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
 		return
 	}
 	value, err := h.overlayService.AdminPolicy(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"))
@@ -150,7 +151,7 @@ func (h *handler) overlayAdminPolicy(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroManage); !ok {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
 		return
 	}
 	var policy overlay.PolicyArtifact
@@ -164,6 +165,60 @@ func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, value)
+}
+
+// requireXConnectZeroAccess makes Zero a self-service user feature. Resource
+// ownership is still enforced in every service query, so this grants no
+// cross-user administrative view.
+func (h *handler) requireXConnectZeroAccess(c *gin.Context, permission string) (*store.User, bool) {
+	token := h.resolveSessionToken(c)
+	if token == "" {
+		respondError(c, http.StatusUnauthorized, "session_token_required", "session token is required")
+		return nil, false
+	}
+	sess, ok := h.lookupSession(token)
+	if !ok {
+		respondError(c, http.StatusUnauthorized, "invalid_session", "session not found or expired")
+		return nil, false
+	}
+	user, err := h.store.GetUserByID(c.Request.Context(), sess.userID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "session_user_lookup_failed", "failed to load session user")
+		return nil, false
+	}
+	if !user.Active {
+		respondError(c, http.StatusForbidden, "account_suspended", "your account has been suspended")
+		return nil, false
+	}
+	if h.isReadOnlyAccount(user) && c.Request.Method != http.MethodGet {
+		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
+		return nil, false
+	}
+	switch {
+	case store.IsRootRole(user.Role):
+		if !strings.EqualFold(strings.TrimSpace(user.Email), store.RootAdminEmail) {
+			respondError(c, http.StatusForbidden, "root_email_enforced", "root role is restricted")
+			return nil, false
+		}
+	case strings.EqualFold(strings.TrimSpace(user.Role), store.RoleAdmin), strings.EqualFold(strings.TrimSpace(user.Role), store.RoleUser):
+		return user, true
+	case store.IsOperatorRole(user.Role):
+		if !h.operatorPermissionAllowed(c, permission) {
+			respondError(c, http.StatusForbidden, "forbidden", "operator permission denied")
+			return nil, false
+		}
+		return user, true
+	case strings.EqualFold(strings.TrimSpace(user.Role), store.RoleReadOnly):
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead || !hasPermission(user.Permissions, permission) {
+			respondError(c, http.StatusForbidden, "forbidden", "readonly permission denied")
+			return nil, false
+		}
+		return user, true
+	default:
+		respondError(c, http.StatusForbidden, "forbidden", "insufficient permissions")
+		return nil, false
+	}
+	return user, true
 }
 
 func respondOverlayAdminError(c *gin.Context, err error) {
