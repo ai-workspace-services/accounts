@@ -31,6 +31,7 @@ import (
 	"account/internal/auth"
 	"account/internal/mailer"
 	"account/internal/model"
+	"account/internal/overlay"
 	"account/internal/service"
 	"account/internal/store"
 	"account/internal/xrayconfig"
@@ -828,6 +829,14 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		}
 	}()
 	service.SetDB(gormDB)
+	overlayConfig, err := overlay.ConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	overlayService, err := overlay.NewService(gormDB, overlayConfig)
+	if err != nil {
+		return err
+	}
 
 	if err := ensureRootUser(ctx, st, logger); err != nil {
 		return err
@@ -1152,6 +1161,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	options = append(options, api.WithOAuthProviders(oauthProviders))
 	options = append(options, api.WithAgentRegistry(agentRegistry))
 	options = append(options, api.WithGormDB(gormDB))
+	options = append(options, api.WithOverlayService(overlayService))
 
 	// Pre-load sandbox bindings from database into the registry
 	if agentRegistry != nil {
