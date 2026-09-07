@@ -62,7 +62,7 @@ func (h *handler) overlayAdminOverview(c *gin.Context) {
 	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
 		return
 	}
-	value, err := h.overlayService.AdminOverview(c.Request.Context())
+	value, err := h.overlayService.AdminOverview(c.Request.Context(), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero overview")
 		return
@@ -74,7 +74,7 @@ func (h *handler) overlayAdminNetworks(c *gin.Context) {
 	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
 		return
 	}
-	value, err := h.overlayService.AdminNetworks(c.Request.Context())
+	value, err := h.overlayService.AdminNetworks(c.Request.Context(), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero networks")
 		return
@@ -86,7 +86,7 @@ func (h *handler) overlayAdminDevices(c *gin.Context) {
 	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
 		return
 	}
-	value, err := h.overlayService.AdminDevices(c.Request.Context())
+	value, err := h.overlayService.AdminDevices(c.Request.Context(), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero devices")
 		return
@@ -98,7 +98,7 @@ func (h *handler) overlayAdminInvites(c *gin.Context) {
 	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
 		return
 	}
-	value, err := h.overlayService.AdminInvites(c.Request.Context())
+	value, err := h.overlayService.AdminInvites(c.Request.Context(), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero invites")
 		return
@@ -130,7 +130,7 @@ func (h *handler) overlayAdminRevokeDevice(c *gin.Context) {
 	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroManage); !ok {
 		return
 	}
-	if err := h.overlayService.AdminRevokeDevice(c.Request.Context(), c.Param("deviceID")); err != nil {
+	if err := h.overlayService.AdminRevokeDevice(c.Request.Context(), auth.GetUserID(c), c.Param("deviceID")); err != nil {
 		respondOverlayAdminError(c, err)
 		return
 	}
@@ -141,7 +141,7 @@ func (h *handler) overlayAdminPolicy(c *gin.Context) {
 	if _, ok := h.requireAdminPermission(c, permissionXConnectZeroRead); !ok {
 		return
 	}
-	value, err := h.overlayService.AdminPolicy(c.Request.Context(), c.Param("networkID"))
+	value, err := h.overlayService.AdminPolicy(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"))
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -158,7 +158,7 @@ func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero policy")
 		return
 	}
-	value, err := h.overlayService.AdminUpdatePolicy(c.Request.Context(), c.Param("networkID"), policy)
+	value, err := h.overlayService.AdminUpdatePolicy(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"), policy)
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -175,6 +175,8 @@ func respondOverlayAdminError(c *gin.Context, err error) {
 		status, code, message = http.StatusNotFound, "not_found", "XConnect Zero resource not found"
 	case errors.Is(err, overlay.ErrInvalidInput):
 		status, code, message = http.StatusBadRequest, "invalid_request", "invalid XConnect Zero resource"
+	case errors.Is(err, overlay.ErrForbidden):
+		status, code, message = http.StatusForbidden, "forbidden", "XConnect Zero resource belongs to another user"
 	}
 	respondError(c, status, code, message)
 }

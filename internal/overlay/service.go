@@ -79,23 +79,28 @@ func ConfigFromEnv() (Config, error) {
 
 func (s *Service) Repository() *Repository { return s.repo }
 
-func (s *Service) AdminOverview(ctx context.Context) (AdminOverview, error) {
+func (s *Service) AdminOverview(ctx context.Context, ownerUserID string) (AdminOverview, error) {
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if ownerUserID == "" {
+		return AdminOverview{}, ErrInvalidInput
+	}
 	var networks, devices, gateways int64
-	if err := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Count(&networks).Error; err != nil {
+	if err := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Where("owner_user_id = ?", ownerUserID).Count(&networks).Error; err != nil {
 		return AdminOverview{}, err
 	}
-	if err := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Where("status = ?", "active").Count(&devices).Error; err != nil {
+	ownedNetworks := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Select("id").Where("owner_user_id = ?", ownerUserID)
+	if err := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Where("network_id IN (?) AND status = ?", ownedNetworks, "active").Count(&devices).Error; err != nil {
 		return AdminOverview{}, err
 	}
-	if err := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Where("role = ? AND status = ?", RoleGateway, "active").Count(&gateways).Error; err != nil {
+	if err := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Where("network_id IN (?) AND role = ? AND status = ?", ownedNetworks, RoleGateway, "active").Count(&gateways).Error; err != nil {
 		return AdminOverview{}, err
 	}
 	return AdminOverview{Status: "available", NetworkCount: networks, DeviceCount: devices, GatewayCount: gateways, SigningKeyID: s.keyID}, nil
 }
 
-func (s *Service) AdminNetworks(ctx context.Context) ([]Network, error) {
+func (s *Service) AdminNetworks(ctx context.Context, ownerUserID string) ([]Network, error) {
 	var records []NetworkRecord
-	if err := s.repo.DB.WithContext(ctx).Order("id ASC").Find(&records).Error; err != nil {
+	if err := s.repo.DB.WithContext(ctx).Where("owner_user_id = ?", strings.TrimSpace(ownerUserID)).Order("id ASC").Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]Network, 0, len(records))
@@ -105,9 +110,10 @@ func (s *Service) AdminNetworks(ctx context.Context) ([]Network, error) {
 	return result, nil
 }
 
-func (s *Service) AdminDevices(ctx context.Context) ([]Device, error) {
+func (s *Service) AdminDevices(ctx context.Context, ownerUserID string) ([]Device, error) {
 	var records []DeviceRecord
-	if err := s.repo.DB.WithContext(ctx).Order("id ASC").Find(&records).Error; err != nil {
+	ownedNetworks := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Select("id").Where("owner_user_id = ?", strings.TrimSpace(ownerUserID))
+	if err := s.repo.DB.WithContext(ctx).Where("network_id IN (?)", ownedNetworks).Order("id ASC").Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]Device, 0, len(records))
@@ -117,9 +123,10 @@ func (s *Service) AdminDevices(ctx context.Context) ([]Device, error) {
 	return result, nil
 }
 
-func (s *Service) AdminInvites(ctx context.Context) ([]InviteSummary, error) {
+func (s *Service) AdminInvites(ctx context.Context, ownerUserID string) ([]InviteSummary, error) {
 	var records []InviteRecord
-	if err := s.repo.DB.WithContext(ctx).Order("created_at DESC").Find(&records).Error; err != nil {
+	ownedNetworks := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Select("id").Where("owner_user_id = ?", strings.TrimSpace(ownerUserID))
+	if err := s.repo.DB.WithContext(ctx).Where("network_id IN (?)", ownedNetworks).Order("created_at DESC").Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]InviteSummary, 0, len(records))
@@ -149,14 +156,16 @@ func (s *Service) AdminBootstrap(ctx context.Context, cfg BootstrapConfig, contr
 	return AdminBootstrapResult{Network: toNetwork(network), Invite: InviteSummary{ID: invite.ID, NetworkID: invite.NetworkID, DeviceID: invite.DeviceID, Platform: invite.Platform, Role: invite.Role, ExpiresAt: invite.ExpiresAt.UTC(), RemainingUses: invite.RemainingUses, CreatedAt: invite.CreatedAt.UTC()}, JoinURI: "xconnect://join/" + joinToken + "?controller=" + url.QueryEscape(controllerURL)}, nil
 }
 
-func (s *Service) AdminRevokeDevice(ctx context.Context, deviceID string) error {
+func (s *Service) AdminRevokeDevice(ctx context.Context, ownerUserID, deviceID string) error {
+	ownerUserID = strings.TrimSpace(ownerUserID)
 	deviceID = strings.TrimSpace(deviceID)
-	if deviceID == "" {
+	if ownerUserID == "" || deviceID == "" {
 		return ErrInvalidInput
 	}
 	now := s.now()
 	return s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&DeviceRecord{}).Where("id = ? AND status = ?", deviceID, "active").Updates(map[string]any{"status": "revoked", "updated_at": now})
+		ownedNetworks := tx.Model(&NetworkRecord{}).Select("id").Where("owner_user_id = ?", ownerUserID)
+		result := tx.Model(&DeviceRecord{}).Where("id = ? AND network_id IN (?) AND status = ?", deviceID, ownedNetworks, "active").Updates(map[string]any{"status": "revoked", "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -167,9 +176,9 @@ func (s *Service) AdminRevokeDevice(ctx context.Context, deviceID string) error 
 	})
 }
 
-func (s *Service) AdminPolicy(ctx context.Context, networkID string) (PolicyArtifact, error) {
+func (s *Service) AdminPolicy(ctx context.Context, ownerUserID, networkID string) (PolicyArtifact, error) {
 	var network NetworkRecord
-	if err := s.repo.DB.WithContext(ctx).Where("id = ?", strings.TrimSpace(networkID)).First(&network).Error; err != nil {
+	if err := s.repo.DB.WithContext(ctx).Where("id = ? AND owner_user_id = ?", strings.TrimSpace(networkID), strings.TrimSpace(ownerUserID)).First(&network).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return PolicyArtifact{}, ErrNotFound
 		}
@@ -178,11 +187,11 @@ func (s *Service) AdminPolicy(ctx context.Context, networkID string) (PolicyArti
 	return s.policyArtifact(network)
 }
 
-func (s *Service) AdminUpdatePolicy(ctx context.Context, networkID string, policy PolicyArtifact) (PolicyArtifact, error) {
+func (s *Service) AdminUpdatePolicy(ctx context.Context, ownerUserID, networkID string, policy PolicyArtifact) (PolicyArtifact, error) {
 	var result PolicyArtifact
 	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var network NetworkRecord
-		if err := tx.Where("id = ?", strings.TrimSpace(networkID)).First(&network).Error; err != nil {
+		if err := tx.Where("id = ? AND owner_user_id = ?", strings.TrimSpace(networkID), strings.TrimSpace(ownerUserID)).First(&network).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}

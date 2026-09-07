@@ -157,7 +157,11 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 			TransportAuthID: cfg.Network.TransportAuthID, OwnerUserID: cfg.Network.OwnerUserID, PolicyJSON: "",
 			ConfigGeneration: 1,
 		}
-		if err := tx.Where("id = ?", network.ID).First(&NetworkRecord{}).Error; err == nil {
+		var existing NetworkRecord
+		if err := tx.Where("id = ?", network.ID).First(&existing).Error; err == nil {
+			if strings.TrimSpace(existing.OwnerUserID) != strings.TrimSpace(network.OwnerUserID) {
+				return ErrForbidden
+			}
 			if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(map[string]any{
 				"display_name": network.DisplayName, "cidr": network.CIDR, "gateway_id": network.GatewayID,
 				"gateway_wireguard_key": network.GatewayWireGuardKey, "gateway_wireguard_address": network.GatewayWireGuardAddress, "gateway_endpoint_host": network.GatewayEndpointHost,
