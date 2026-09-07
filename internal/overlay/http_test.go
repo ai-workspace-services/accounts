@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -123,7 +124,7 @@ func TestOverlayLifecyclePersistsHashesAndSignsConfig(t *testing.T) {
 	}
 
 	ackBody := `{"config_id":"` + config.ConfigID + `","device_id":"one-laptop","applied_at":"2026-09-07T12:00:00Z"}`
-	ackReq := httptest.NewRequest(http.MethodPost, "/api/overlay/v1/enrollment/signed-config/1/ack", bytes.NewBufferString(ackBody))
+	ackReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/overlay/v1/enrollment/signed-config/%d/ack", config.Generation), bytes.NewBufferString(ackBody))
 	ackReq.Header.Set("Authorization", "Bearer "+session.EnrollmentToken)
 	ackResp := httptest.NewRecorder()
 	router.ServeHTTP(ackResp, ackReq)
@@ -170,7 +171,7 @@ func TestGatewayRoleUsesCentralSignedSnapshot(t *testing.T) {
 	if err := json.Unmarshal(gatewayResp.Body.Bytes(), &config); err != nil {
 		t.Fatal(err)
 	}
-	if config.Role != RoleGateway || config.GatewayID != "gw-uat-1" || config.Generation != 1 || config.Signature.KeyID != "zero-key-1" {
+	if config.Role != RoleGateway || config.GatewayID != "gw-uat-1" || config.Generation != 2 || config.Signature.KeyID != "zero-key-1" {
 		t.Fatalf("unexpected gateway config: %#v", config)
 	}
 	unsigned, err := gatewaySigningBytes(config)

@@ -265,6 +265,10 @@ func (r *Repository) createDevice(ctx context.Context, tokenHash string, request
 		if err := tx.Create(&device).Error; err != nil {
 			return err
 		}
+		if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).UpdateColumn("config_generation", gorm.Expr("config_generation + 1")).Error; err != nil {
+			return err
+		}
+		network.ConfigGeneration++
 		credential.DeviceID = device.ID
 		enrollment.DeviceID = device.ID
 		if err := tx.Create(&credential).Error; err != nil {

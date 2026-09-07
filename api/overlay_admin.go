@@ -42,6 +42,11 @@ type overlayAdminBootstrapRequest struct {
 	} `json:"invite"`
 }
 
+type overlayInternalBootstrapRequest struct {
+	OwnerEmail string                       `json:"owner_email"`
+	Bootstrap  overlayAdminBootstrapRequest `json:"bootstrap"`
+}
+
 func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	if h.overlayService == nil || h.tokenService == nil {
 		return
@@ -116,15 +121,39 @@ func (h *handler) overlayAdminBootstrap(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero bootstrap request")
 		return
 	}
-	result, err := h.overlayService.AdminBootstrap(c.Request.Context(), overlay.BootstrapConfig{
-		Network: overlay.BootstrapNetwork{ID: request.Network.ID, DisplayName: request.Network.DisplayName, CIDR: request.Network.CIDR, GatewayID: request.Network.GatewayID, GatewayWireGuardKey: request.Network.GatewayWireGuardKey, GatewayWireGuardAddress: request.Network.GatewayWireGuardAddress, GatewayEndpointHost: request.Network.GatewayEndpointHost, GatewayEndpointPort: request.Network.GatewayEndpointPort, TransportServerName: request.Network.TransportServerName, TransportPort: request.Network.TransportPort, TransportAuthID: request.Network.TransportAuthID, OwnerUserID: auth.GetUserID(c)},
-		Invite:  overlay.BootstrapInvite{DeviceID: request.Invite.DeviceID, Platform: request.Invite.Platform, Role: request.Invite.Role, ExpiresAt: request.Invite.Expires},
-	}, request.ControllerURL, "")
+	result, err := h.overlayService.AdminBootstrap(c.Request.Context(), overlayBootstrapConfig(request, auth.GetUserID(c)), request.ControllerURL, "")
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, result)
+}
+
+func (h *handler) overlayInternalBootstrap(c *gin.Context) {
+	var request overlayInternalBootstrapRequest
+	if err := c.ShouldBindJSON(&request); err != nil || strings.TrimSpace(request.OwnerEmail) == "" {
+		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero automation request")
+		return
+	}
+	owner, err := h.store.GetUserByEmail(c.Request.Context(), strings.TrimSpace(request.OwnerEmail))
+	if err != nil || !owner.Active {
+		respondError(c, http.StatusNotFound, "owner_not_found", "active XConnect Zero owner was not found")
+		return
+	}
+	result, err := h.overlayService.AdminBootstrap(c.Request.Context(), overlayBootstrapConfig(request.Bootstrap, owner.ID), request.Bootstrap.ControllerURL, "")
+	if err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusCreated, result)
+}
+
+func overlayBootstrapConfig(request overlayAdminBootstrapRequest, ownerUserID string) overlay.BootstrapConfig {
+	return overlay.BootstrapConfig{
+		Network: overlay.BootstrapNetwork{ID: request.Network.ID, DisplayName: request.Network.DisplayName, CIDR: request.Network.CIDR, GatewayID: request.Network.GatewayID, GatewayWireGuardKey: request.Network.GatewayWireGuardKey, GatewayWireGuardAddress: request.Network.GatewayWireGuardAddress, GatewayEndpointHost: request.Network.GatewayEndpointHost, GatewayEndpointPort: request.Network.GatewayEndpointPort, TransportServerName: request.Network.TransportServerName, TransportPort: request.Network.TransportPort, TransportAuthID: request.Network.TransportAuthID, OwnerUserID: ownerUserID},
+		Invite:  overlay.BootstrapInvite{DeviceID: request.Invite.DeviceID, Platform: request.Invite.Platform, Role: request.Invite.Role, ExpiresAt: request.Invite.Expires},
+	}
 }
 
 func (h *handler) overlayAdminRevokeDevice(c *gin.Context) {
