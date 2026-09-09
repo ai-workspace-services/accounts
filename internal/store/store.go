@@ -357,9 +357,11 @@ type Store interface {
 	// suspend_state='suspended', so agent/xray sync endpoints can drop them
 	// in one batched lookup instead of a per-user quota-state query.
 	ListSuspendedAccountUUIDs(ctx context.Context) (map[string]bool, error)
-	// ListProxyBlockedAccountUUIDs contains both billing-suspended and
-	// operator-paused accounts. Agent/Xray config generation is the single
-	// enforcement point for every region.
+	// ListProxyBlockedAccountUUIDs contains quota-exhausted, billing-suspended,
+	// and operator-paused accounts. Quota exhaustion applies only when both a
+	// quota state and billing profile exist, preserving legacy/operator-managed
+	// accounts that have not been enrolled in billing. Agent/Xray config
+	// generation is the enforcement point for every region.
 	ListProxyBlockedAccountUUIDs(ctx context.Context) (map[string]bool, error)
 	UpsertAccountBillingProfile(ctx context.Context, profile *AccountBillingProfile) error
 	GetAccountBillingProfile(ctx context.Context, accountUUID string) (*AccountBillingProfile, error)

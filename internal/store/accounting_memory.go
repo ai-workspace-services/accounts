@@ -312,7 +312,9 @@ func (s *memoryStore) ListProxyBlockedAccountUUIDs(ctx context.Context) (map[str
 
 	blocked := make(map[string]bool)
 	for accountUUID, record := range s.accountQuotaStates {
-		if record != nil && (record.SuspendState == "suspended" || record.ProxyAccessState == "paused") {
+		_, hasBillingProfile := s.accountBillingProfiles[accountUUID]
+		quotaExhausted := record != nil && hasBillingProfile && record.RemainingIncludedQuota <= 0
+		if record != nil && (quotaExhausted || record.SuspendState == "suspended" || record.ProxyAccessState == "paused") {
 			blocked[accountUUID] = true
 		}
 	}

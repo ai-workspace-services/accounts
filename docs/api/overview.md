@@ -70,6 +70,12 @@
 - 允许共享 token + `X-Agent-ID` / `agentId` 解析具体节点身份
 - 认证成功后进入 `Registry` 与 `store.NodeHealthSnapshot` 更新链路
 
+`/api/agent-server/v1/users` 只返回当前允许接入 Xray 的用户配置。存在 billing profile 且月度剩余额度小于等于 0、处于 billing suspension、或被管理员暂停时，账号、订阅、配额、账单和审计记录均永久保留，只暂停向 agent 同步其 Xray 配置；沙箱账号保持豁免。agent 撤下节点本地凭据并重启受影响的 Xray，额度续期或状态恢复后自动重新同步。
+
+`/api/agent-server/v1/users/events` 提供用户配置版本的长连接事件流。agent 以该事件作为主要同步触发器，并保留 10 分钟一次的低频拉取作为断线与漏事件兜底。
+
+`/api/account/usage/summary` 同步返回 `quotaExhausted`、`networkAccessState` 与 `networkAccessReason`，供 Portal 展示实际执行状态，而不是根据余额或旧的 throttle 字段推测。
+
 ### 响应约定
 
 | 类别 | 典型形状 | 说明 |
@@ -175,6 +181,12 @@ So the actual runtime behavior is:
 - they read `Authorization: Bearer <agent-token>`,
 - support shared tokens plus `X-Agent-ID` / `agentId` to resolve the concrete node,
 - and then enter the registry and node-health persistence pipeline.
+
+`/api/agent-server/v1/users` returns only user configurations currently authorized for Xray. When an account with a billing profile has no remaining monthly quota, a billing suspension, or an operator pause, the account, subscription, quota, billing, and audit records are retained permanently; only its Xray configuration sync is paused. The sandbox identity remains exempt. The agent withdraws the node-local credential and restarts the affected Xray instance, then restores it automatically after renewal or reactivation.
+
+`/api/agent-server/v1/users/events` exposes a long-lived user-configuration revision stream. Agents use it as the primary synchronization trigger and retain a low-frequency ten-minute fetch as a disconnect and missed-event fallback.
+
+`/api/account/usage/summary` also returns `quotaExhausted`, `networkAccessState`, and `networkAccessReason` so Portal can display the enforced state without inferring it from balance or the legacy throttle field.
 
 ### Response Conventions
 
