@@ -36,6 +36,43 @@ type User struct {
 	ProxyUUIDExpiresAt *time.Time
 }
 
+// Monthly quota groups are managed by the admin console. Membership changes
+// only affect proxy/config access; the user record is never removed.
+const (
+	MonthlyFreeQuotaLimitGroup     = "segment:quota:free-5gb"
+	MonthlyPlusQuotaLimitGroup     = "segment:quota:plus-20gb"
+	MonthlyUnlimitedBetaQuotaGroup = "segment:quota:unlimited-beta"
+)
+
+var monthlyQuotaGroups = [...]string{
+	MonthlyUnlimitedBetaQuotaGroup,
+	MonthlyPlusQuotaLimitGroup,
+	MonthlyFreeQuotaLimitGroup,
+}
+
+func MonthlyQuotaGroup(user *User) string {
+	if user == nil {
+		return ""
+	}
+	for _, group := range user.Groups {
+		for _, known := range monthlyQuotaGroups {
+			if strings.TrimSpace(group) == known {
+				return known
+			}
+		}
+	}
+	return ""
+}
+
+func IsMonthlyFreeQuotaLimitMember(user *User) bool {
+	return MonthlyQuotaGroup(user) == MonthlyFreeQuotaLimitGroup
+}
+
+func IsMonthlyQuotaLimitMember(user *User) bool {
+	group := MonthlyQuotaGroup(user)
+	return group == MonthlyFreeQuotaLimitGroup || group == MonthlyPlusQuotaLimitGroup
+}
+
 // Subscription represents a recurring or usage-based billing relationship.
 type Subscription struct {
 	ID            string
