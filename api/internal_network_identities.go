@@ -29,7 +29,7 @@ func (h *handler) internalNetworkIdentities(c *gin.Context) {
 	// P1.5: accounts suspended for prolonged billing arrears (suspend_state
 	// set by billing-service's SuspendSyncer) are excluded from identity
 	// enrichment so they stop accruing usage attribution once cut off.
-	blocked, err := h.store.ListProxyBlockedAccountUUIDs(c.Request.Context())
+	blocked, err := h.store.ListSuspendedAccountUUIDs(c.Request.Context())
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "list_suspended_failed", "failed to load suspended accounts")
 		return

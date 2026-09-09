@@ -110,11 +110,109 @@ func TestAgentUsersExcludeOperatorPausedVLESSAccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("agent users: %d %s", rec.Code, rec.Body.String())
 	}
+	if rec.Header().Get("ETag") == "" {
+		t.Fatal("agent users response must expose a revision ETag for event-driven sync")
+	}
 	if strings.Contains(rec.Body.String(), "paused-proxy-id") {
 		t.Fatalf("paused VLESS client leaked into agent config: %s", rec.Body.String())
 	}
 	if !user.Active {
 		t.Fatal("pausing VLESS must not deactivate the account")
+	}
+}
+
+func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	st := store.NewMemoryStore()
+	ctx := context.Background()
+
+	exhausted := &store.User{Name: "Exhausted", Email: "exhausted@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "exhausted-proxy-id"}
+	remaining := &store.User{Name: "Remaining", Email: "remaining@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "remaining-proxy-id"}
+	legacy := &store.User{Name: "Legacy", Email: "legacy@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "legacy-proxy-id"}
+	for _, user := range []*store.User{exhausted, remaining, legacy} {
+		if err := st.CreateUser(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.Email, err)
+		}
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
+		AccountUUID: exhausted.ID, RemainingIncludedQuota: 0,
+		SuspendState: "active", ProxyAccessState: "active", ThrottleState: "normal",
+	}); err != nil {
+		t.Fatalf("set exhausted quota: %v", err)
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
+		AccountUUID: exhausted.ID, PackageName: "default", IncludedQuotaBytes: 1024,
+	}); err != nil {
+		t.Fatalf("set exhausted billing profile: %v", err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
+		AccountUUID: remaining.ID, RemainingIncludedQuota: 1,
+		SuspendState: "active", ProxyAccessState: "active", ThrottleState: "normal",
+	}); err != nil {
+		t.Fatalf("set remaining quota: %v", err)
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
+		AccountUUID: remaining.ID, PackageName: "default", IncludedQuotaBytes: 1024,
+	}); err != nil {
+		t.Fatalf("set remaining billing profile: %v", err)
+	}
+	// Operator pause/resume can create a quota-state row for a legacy account.
+	// Without a billing profile, its zero value is not a monthly quota grant.
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
+		AccountUUID: legacy.ID, RemainingIncludedQuota: 0,
+		SuspendState: "active", ProxyAccessState: "active", ThrottleState: "normal",
+	}); err != nil {
+		t.Fatalf("set legacy proxy state: %v", err)
+	}
+
+	registry, err := agentserver.NewRegistry(agentserver.Config{Credentials: []agentserver.Credential{{ID: "*", Name: "test-agent", Token: "agent-token"}}})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithAgentRegistry(registry), WithEmailVerification(false))
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer agent-token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent users: %d %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, exhausted.ProxyUUID) {
+		t.Fatalf("quota-exhausted client leaked into agent config: %s", body)
+	}
+	if !strings.Contains(body, remaining.ProxyUUID) {
+		t.Fatalf("client with remaining quota was removed: %s", body)
+	}
+	if !strings.Contains(body, legacy.ProxyUUID) {
+		t.Fatalf("legacy client without billing profile was removed: %s", body)
+	}
+
+	if err := st.CreateSession(ctx, "exhausted-session", exhausted.ID, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("create exhausted session: %v", err)
+	}
+	usageReq := httptest.NewRequest(http.MethodGet, "/api/account/usage/summary", nil)
+	usageReq.Header.Set("Authorization", "Bearer exhausted-session")
+	usageRec := httptest.NewRecorder()
+	router.ServeHTTP(usageRec, usageReq)
+	if usageRec.Code != http.StatusOK {
+		t.Fatalf("usage summary: %d %s", usageRec.Code, usageRec.Body.String())
+	}
+	var access struct {
+		QuotaExhausted      bool   `json:"quotaExhausted"`
+		NetworkAccessState  string `json:"networkAccessState"`
+		NetworkAccessReason string `json:"networkAccessReason"`
+	}
+	if err := json.Unmarshal(usageRec.Body.Bytes(), &access); err != nil {
+		t.Fatalf("decode access state: %v", err)
+	}
+	if !access.QuotaExhausted || access.NetworkAccessState != "paused" || access.NetworkAccessReason != "quota_exhausted" {
+		t.Fatalf("unexpected exhausted access state: %+v", access)
+	}
+	if persisted, err := st.GetUserByID(ctx, exhausted.ID); err != nil || persisted.Email != exhausted.Email {
+		t.Fatalf("quota pause must retain the user record: user=%+v err=%v", persisted, err)
 	}
 }
 
@@ -248,15 +346,18 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	}
 
 	var usagePayload struct {
-		AccountUUID        string     `json:"accountUuid"`
-		TotalBytes         int64      `json:"totalBytes"`
-		IncludedQuotaBytes int64      `json:"includedQuotaBytes"`
-		UsedBytes          int64      `json:"usedBytes"`
-		UsagePercent       float64    `json:"usagePercent"`
-		PeriodStart        *time.Time `json:"periodStart"`
-		PeriodEnd          *time.Time `json:"periodEnd"`
-		SourceOfTruth      string     `json:"sourceOfTruth"`
-		BillingProfile     struct {
+		AccountUUID         string     `json:"accountUuid"`
+		TotalBytes          int64      `json:"totalBytes"`
+		IncludedQuotaBytes  int64      `json:"includedQuotaBytes"`
+		UsedBytes           int64      `json:"usedBytes"`
+		UsagePercent        float64    `json:"usagePercent"`
+		PeriodStart         *time.Time `json:"periodStart"`
+		PeriodEnd           *time.Time `json:"periodEnd"`
+		SourceOfTruth       string     `json:"sourceOfTruth"`
+		QuotaExhausted      bool       `json:"quotaExhausted"`
+		NetworkAccessState  string     `json:"networkAccessState"`
+		NetworkAccessReason string     `json:"networkAccessReason"`
+		BillingProfile      struct {
 			PackageName        string  `json:"packageName"`
 			BasePricePerByte   float64 `json:"basePricePerByte"`
 			RegionMultiplier   float64 `json:"regionMultiplier"`
@@ -275,6 +376,9 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	}
 	if usagePayload.IncludedQuotaBytes != 4096 || usagePayload.UsedBytes != 2048 || usagePayload.UsagePercent != 50 {
 		t.Fatalf("unexpected quota summary: %+v", usagePayload)
+	}
+	if usagePayload.QuotaExhausted || usagePayload.NetworkAccessState != "active" || usagePayload.NetworkAccessReason != "" {
+		t.Fatalf("expected active network access, got %+v", usagePayload)
 	}
 	if usagePayload.PeriodStart == nil || !usagePayload.PeriodStart.Equal(periodStart) || usagePayload.PeriodEnd == nil || !usagePayload.PeriodEnd.Equal(periodEnd) {
 		t.Fatalf("unexpected quota period: start=%v end=%v", usagePayload.PeriodStart, usagePayload.PeriodEnd)

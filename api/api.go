@@ -584,6 +584,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	agentServerGroup := r.Group("/api/agent-server/v1")
 	agentServerGroup.GET("/nodes", h.listAgentNodes)
 	agentServerGroup.GET("/users", h.listAgentUsers)
+	agentServerGroup.GET("/users/events", h.watchAgentUsers)
 	agentServerGroup.POST("/status", h.reportAgentStatus)
 
 	accountGroup := r.Group("/api/account")

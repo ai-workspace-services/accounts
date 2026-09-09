@@ -389,7 +389,14 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 }
 
 func (s *postgresStore) ListProxyBlockedAccountUUIDs(ctx context.Context) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT account_uuid FROM account_quota_states WHERE suspend_state = 'suspended' OR proxy_access_state = 'paused'`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT q.account_uuid
+		FROM account_quota_states q
+		WHERE (q.remaining_included_quota <= 0 AND EXISTS (
+		          SELECT 1 FROM account_billing_profiles p WHERE p.account_uuid = q.account_uuid
+		      ))
+		   OR q.suspend_state = 'suspended'
+		   OR q.proxy_access_state = 'paused'`)
 	if err != nil {
 		return nil, err
 	}

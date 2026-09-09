@@ -75,6 +75,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	usagePercent := 0.0
 	suspendState := "active"
 	throttleState := "normal"
+	proxyAccessState := "active"
 	arrears := false
 	var arrearsSince *time.Time
 	var periodStart, periodEnd *time.Time
@@ -84,6 +85,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		remainingQuota = quota.RemainingIncludedQuota
 		suspendState = quota.SuspendState
 		throttleState = quota.ThrottleState
+		proxyAccessState = quota.ProxyAccessState
 		arrears = quota.Arrears
 		arrearsSince = quota.ArrearsSince
 		periodStart = quota.PeriodStart
@@ -99,6 +101,21 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		if includedQuota > 0 {
 			usagePercent = float64(usedBytes) / float64(includedQuota) * 100
 		}
+	}
+
+	quotaExhausted := billingProfile != nil && remainingQuota <= 0
+	networkAccessState := "active"
+	networkAccessReason := ""
+	switch {
+	case proxyAccessState == "paused":
+		networkAccessState = "paused"
+		networkAccessReason = "operator_paused"
+	case suspendState == "suspended":
+		networkAccessState = "paused"
+		networkAccessReason = "billing_suspended"
+	case quotaExhausted:
+		networkAccessState = "paused"
+		networkAccessReason = "quota_exhausted"
 	}
 
 	syncDelaySeconds := 0
@@ -122,18 +139,21 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		// The values are account-level aggregates across every node_id that
 		// reports this user's canonical UUID; email remains display/identity
 		// metadata and is never used as a standalone billing key.
-		"includedQuotaBytes": includedQuota,
-		"usedBytes":          usedBytes,
-		"usagePercent":       usagePercent,
-		"periodStart":        periodStart,
-		"periodEnd":          periodEnd,
-		"suspendState":       suspendState,
-		"throttleState":      throttleState,
-		"arrears":            arrears,
-		"arrearsSince":       arrearsSince,
-		"lastBucketAt":       lastBucketAt,
-		"syncDelaySeconds":   syncDelaySeconds,
-		"billingProfile":     billingProfile,
+		"includedQuotaBytes":  includedQuota,
+		"usedBytes":           usedBytes,
+		"usagePercent":        usagePercent,
+		"periodStart":         periodStart,
+		"periodEnd":           periodEnd,
+		"suspendState":        suspendState,
+		"throttleState":       throttleState,
+		"quotaExhausted":      quotaExhausted,
+		"networkAccessState":  networkAccessState,
+		"networkAccessReason": networkAccessReason,
+		"arrears":             arrears,
+		"arrearsSince":        arrearsSince,
+		"lastBucketAt":        lastBucketAt,
+		"syncDelaySeconds":    syncDelaySeconds,
+		"billingProfile":      billingProfile,
 	})
 }
 
