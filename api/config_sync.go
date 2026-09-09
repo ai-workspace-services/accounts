@@ -43,6 +43,19 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		return
 	}
 
+	// Quota exhaustion is an access gate for opted-in monthly quota users. Keep the
+	// account and credentials intact; withholding this snapshot stops the next
+	// config application without requiring an Xray restart. Operator and
+	// billing-suspension states remain separate gates handled by agent sync.
+	quotaState, quotaStateErr := h.store.GetAccountQuotaState(c.Request.Context(), user.ID)
+	billingProfile, billingProfileErr := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID)
+	if quotaStateErr == nil && billingProfileErr == nil &&
+		quotaState != nil && billingProfile != nil &&
+		store.IsMonthlyQuotaLimitMember(user) && quotaState.RemainingIncludedQuota <= 0 {
+		respondError(c, http.StatusForbidden, "quota_exhausted", "monthly quota exhausted; configuration sync is paused")
+		return
+	}
+
 	sinceVersion := int64(0)
 	if raw := strings.TrimSpace(c.Query("since_version")); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 64)

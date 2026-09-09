@@ -103,7 +103,8 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		}
 	}
 
-	quotaExhausted := billingProfile != nil && remainingQuota <= 0
+	quotaExhausted := billingProfile != nil &&
+		store.IsMonthlyQuotaLimitMember(user) && remainingQuota <= 0
 	networkAccessState := "active"
 	networkAccessReason := ""
 	switch {

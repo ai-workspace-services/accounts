@@ -811,6 +811,66 @@ func TestSyncConfigSnapshotReturnsRenderedJSON(t *testing.T) {
 	}
 }
 
+func TestSyncConfigSnapshotPausesSelectedFreeUserAtQuotaLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := &store.User{
+		Name:          "Selected Free User",
+		Email:         "selected-free@example.com",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+		ProxyUUID:     "selected-free-proxy-id",
+		Groups:        []string{store.MonthlyFreeQuotaLimitGroup},
+	}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create selected free user: %v", err)
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
+		AccountUUID:        user.ID,
+		PackageName:        "free",
+		IncludedQuotaBytes: 5 * 1024 * 1024 * 1024,
+	}); err != nil {
+		t.Fatalf("set free billing profile: %v", err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
+		AccountUUID:            user.ID,
+		RemainingIncludedQuota: 0,
+		SuspendState:           "active",
+		ProxyAccessState:       "active",
+		ThrottleState:          "normal",
+	}); err != nil {
+		t.Fatalf("set exhausted quota: %v", err)
+	}
+	if err := st.CreateSession(ctx, "selected-free-session", user.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create selected free session: %v", err)
+	}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/sync/config?since_version=0", nil)
+	req.Header.Set("Authorization", "Bearer selected-free-session")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected exhausted selected free user to be paused, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp apiResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode quota pause response: %v", err)
+	}
+	if resp.Error != "quota_exhausted" {
+		t.Fatalf("expected quota_exhausted, got %#v", resp.Error)
+	}
+	if _, err := st.GetUserByID(ctx, user.ID); err != nil {
+		t.Fatalf("expected selected free user to remain stored: %v", err)
+	}
+}
+
 func TestSyncConfigSnapshotSkipsRenderingWhenVersionUnchanged(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -126,10 +126,13 @@ func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
 	st := store.NewMemoryStore()
 	ctx := context.Background()
 
-	exhausted := &store.User{Name: "Exhausted", Email: "exhausted@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "exhausted-proxy-id"}
+	exhausted := &store.User{Name: "Exhausted", Email: "exhausted@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "exhausted-proxy-id", Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
+	plusExhausted := &store.User{Name: "Plus Exhausted", Email: "plus-exhausted@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "plus-exhausted-proxy-id", Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
+	internalBeta := &store.User{Name: "Internal Beta", Email: "internal-beta@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "internal-beta-proxy-id", Groups: []string{store.MonthlyUnlimitedBetaQuotaGroup}}
 	remaining := &store.User{Name: "Remaining", Email: "remaining@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "remaining-proxy-id"}
+	unselected := &store.User{Name: "Unselected", Email: "unselected@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "unselected-proxy-id"}
 	legacy := &store.User{Name: "Legacy", Email: "legacy@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "legacy-proxy-id"}
-	for _, user := range []*store.User{exhausted, remaining, legacy} {
+	for _, user := range []*store.User{exhausted, plusExhausted, internalBeta, remaining, unselected, legacy} {
 		if err := st.CreateUser(ctx, user); err != nil {
 			t.Fatalf("create user %s: %v", user.Email, err)
 		}
@@ -141,9 +144,42 @@ func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
 		t.Fatalf("set exhausted quota: %v", err)
 	}
 	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
-		AccountUUID: exhausted.ID, PackageName: "default", IncludedQuotaBytes: 1024,
+		AccountUUID: exhausted.ID, PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024,
 	}); err != nil {
 		t.Fatalf("set exhausted billing profile: %v", err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
+		AccountUUID: plusExhausted.ID, RemainingIncludedQuota: 0,
+		SuspendState: "active", ProxyAccessState: "active", ThrottleState: "normal",
+	}); err != nil {
+		t.Fatalf("set plus exhausted quota: %v", err)
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
+		AccountUUID: plusExhausted.ID, PackageName: "pro", IncludedQuotaBytes: 20 * 1024 * 1024 * 1024,
+	}); err != nil {
+		t.Fatalf("set plus exhausted billing profile: %v", err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
+		AccountUUID: internalBeta.ID, RemainingIncludedQuota: 0,
+		SuspendState: "active", ProxyAccessState: "active", ThrottleState: "normal",
+	}); err != nil {
+		t.Fatalf("set internal beta quota: %v", err)
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
+		AccountUUID: internalBeta.ID, PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024,
+	}); err != nil {
+		t.Fatalf("set internal beta billing profile: %v", err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
+		AccountUUID: unselected.ID, RemainingIncludedQuota: 0,
+		SuspendState: "active", ProxyAccessState: "active", ThrottleState: "normal",
+	}); err != nil {
+		t.Fatalf("set unselected quota: %v", err)
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
+		AccountUUID: unselected.ID, PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024,
+	}); err != nil {
+		t.Fatalf("set unselected billing profile: %v", err)
 	}
 	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
 		AccountUUID: remaining.ID, RemainingIncludedQuota: 1,
@@ -183,8 +219,17 @@ func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
 	if strings.Contains(body, exhausted.ProxyUUID) {
 		t.Fatalf("quota-exhausted client leaked into agent config: %s", body)
 	}
+	if strings.Contains(body, plusExhausted.ProxyUUID) {
+		t.Fatalf("plus quota-exhausted client leaked into agent config: %s", body)
+	}
+	if !strings.Contains(body, internalBeta.ProxyUUID) {
+		t.Fatalf("unlimited internal beta client was removed: %s", body)
+	}
 	if !strings.Contains(body, remaining.ProxyUUID) {
 		t.Fatalf("client with remaining quota was removed: %s", body)
+	}
+	if !strings.Contains(body, unselected.ProxyUUID) {
+		t.Fatalf("unselected free client was removed: %s", body)
 	}
 	if !strings.Contains(body, legacy.ProxyUUID) {
 		t.Fatalf("legacy client without billing profile was removed: %s", body)
