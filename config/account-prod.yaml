@@ -73,7 +73,7 @@ smtp:
   port: 587
   username: "apikey"
   p: "s"
-  from: "XControl Account <no-reply@example.com>"
+  from: "XWorkmate <no-reply@example.com>"
   replyTo: ""
   timeout: 10s
   tls:

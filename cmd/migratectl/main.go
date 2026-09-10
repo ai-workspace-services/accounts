@@ -33,7 +33,7 @@ func newRootCmd() *cobra.Command {
 	var migrationDir string
 	cmd := &cobra.Command{
 		Use:   "migratectl",
-		Short: "XControl database migration orchestrator",
+		Short: "XWorkmate account database migration orchestrator",
 	}
 
 	migrationDir = defaultMigrationDir

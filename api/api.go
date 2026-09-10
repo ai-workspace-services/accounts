@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"math/big"
 	"net"
@@ -37,7 +36,7 @@ import (
 
 const defaultSessionTTL = 24 * time.Hour
 const defaultMFAChallengeTTL = 10 * time.Minute
-const defaultTOTPIssuer = "XControl Account"
+const defaultTOTPIssuer = "XWorkmate"
 const defaultEmailVerificationTTL = 10 * time.Minute
 const defaultPasswordResetTTL = 30 * time.Minute
 const maxMFAVerificationAttempts = 5
@@ -1987,9 +1986,16 @@ func (h *handler) enqueueEmailVerification(ctx context.Context, user *store.User
 		name = "there"
 	}
 
-	subject := "Verify your XControl account"
-	plainBody := fmt.Sprintf("Hello %s,\n\nUse the following verification code to verify your XControl account: %s\n\nThis code expires at %s UTC (in %d minutes).\nIf you did not request this email you can ignore it.\n", name, code, expiresAt.UTC().Format(time.RFC3339), int(ttl.Minutes()))
-	htmlBody := fmt.Sprintf("<p>Hello %s,</p><p>Use the following verification code to verify your XControl account:</p><p><strong>%s</strong></p><p>This code expires at %s UTC (in %d minutes).</p><p>If you did not request this email you can ignore it.</p>", html.EscapeString(name), code, expiresAt.UTC().Format(time.RFC3339), int(ttl.Minutes()))
+	subject := "Verify your " + brandProduct + " account"
+	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
+		Greeting:  "Hello " + name + ",",
+		Intro:     "Use the verification code below to verify your " + brandProduct + " account.",
+		CodeLabel: "Verification code",
+		Code:      code,
+		CodeStyle: codeStyleDigits,
+		Expiry:    expiryLine(expiresAt, ttl),
+		Reassure:  "If you did not request this email you can ignore it.",
+	})
 
 	msg := EmailMessage{
 		To:        []string{email},
@@ -2072,19 +2078,16 @@ func (h *handler) issueRegistrationVerification(ctx context.Context, email strin
 		trimmedEmail = normalized
 	}
 
-	subject := "Verify your email for XControl"
-	plainBody := fmt.Sprintf(
-		"Hello,\n\nUse the following verification code to continue creating your XControl account: %s\n\nThis code expires at %s UTC (in %d minutes).\nIf you did not request this email you can ignore it.\n",
-		verification.code,
-		verification.expiresAt.UTC().Format(time.RFC3339),
-		int(ttl.Minutes()),
-	)
-	htmlBody := fmt.Sprintf(
-		"<p>Hello,</p><p>Use the following verification code to continue creating your XControl account:</p><p><strong>%s</strong></p><p>This code expires at %s UTC (in %d minutes).</p><p>If you did not request this email you can ignore it.</p>",
-		html.EscapeString(verification.code),
-		verification.expiresAt.UTC().Format(time.RFC3339),
-		int(ttl.Minutes()),
-	)
+	subject := "Verify your email for " + brandProduct
+	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
+		Greeting:  "Hello,",
+		Intro:     "Use the verification code below to finish creating your " + brandProduct + " account.",
+		CodeLabel: "Verification code",
+		Code:      verification.code,
+		CodeStyle: codeStyleDigits,
+		Expiry:    expiryLine(verification.expiresAt, ttl),
+		Reassure:  "If you did not request this email you can ignore it.",
+	})
 
 	msg := EmailMessage{
 		To:        []string{trimmedEmail},
@@ -2185,9 +2188,16 @@ func (h *handler) enqueuePasswordReset(ctx context.Context, user *store.User) er
 		name = "there"
 	}
 
-	subject := "Reset your XControl password"
-	plainBody := fmt.Sprintf("Hello %s,\n\nUse the following token to reset your XControl account password: %s\n\nThis token expires at %s UTC.\nIf you did not request a reset you can ignore this email.\n", name, token, expiresAt.UTC().Format(time.RFC3339))
-	htmlBody := fmt.Sprintf("<p>Hello %s,</p><p>Use the following token to reset your XControl account password:</p><p><strong>%s</strong></p><p>This token expires at %s UTC.</p><p>If you did not request a reset you can ignore this email.</p>", html.EscapeString(name), token, expiresAt.UTC().Format(time.RFC3339))
+	subject := "Reset your " + brandProduct + " password"
+	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
+		Greeting:  "Hello " + name + ",",
+		Intro:     "Use the token below to reset your " + brandProduct + " account password.",
+		CodeLabel: "Reset token",
+		Code:      token,
+		CodeStyle: codeStyleToken,
+		Expiry:    "This token expires at " + expiresAt.UTC().Format(time.RFC3339) + " UTC.",
+		Reassure:  "If you did not request a reset you can ignore this email.",
+	})
 
 	msg := EmailMessage{
 		To:        []string{email},

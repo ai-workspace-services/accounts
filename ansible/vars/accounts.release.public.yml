@@ -5,7 +5,7 @@ service_compose_env_common:
   POSTGRES_USER: postgres
   DB_USER: postgres
   DB_NAME: account
-  SMTP_HOST: smtp.qq.com
+  SMTP_HOST: smtp.gmail.com
   SMTP_PORT: "587"
-  SMTP_FROM: "XControl Account <manbuzhe2009@qq.com>"
-  SMTP_USERNAME: manbuzhe2009@qq.com
+  SMTP_FROM: "XWorkmate <no-reply@xworktech.com>"
+  SMTP_USERNAME: no-reply@xworktech.com

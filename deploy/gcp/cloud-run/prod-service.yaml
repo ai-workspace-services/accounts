@@ -99,11 +99,11 @@ spec:
               key: latest
         # --- SMTP Configuration ---
         - name: SMTP_HOST
-          value: "smtp.qq.com"
+          value: "smtp.gmail.com"
         - name: SMTP_PORT
           value: "587"
         - name: SMTP_FROM
-          value: "XControl Account <manbuzhe2009@qq.com>"
+          value: "XWorkmate <no-reply@xworktech.com>"
         - name: SMTP_USERNAME
           valueFrom:
             secretKeyRef:
