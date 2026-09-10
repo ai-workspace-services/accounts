@@ -33,15 +33,16 @@ func TestResolveNodeNameUsesEntrypointWhenRegisteredRegionIsStale(t *testing.T) 
 	for _, tt := range []struct {
 		host string
 		name string
+		want string
 	}{
-		{host: "jp-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-hk.svc.plus"},
-		{host: "hk-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-us.svc.plus"},
-		{host: "ph-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-jp.svc.plus"},
-		{host: "us-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-ph.svc.plus"},
+		{host: "jp-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-hk.svc.plus", want: "JP-Connect"},
+		{host: "hk-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-us.svc.plus", want: "HK-Connect"},
+		{host: "ph-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-jp.svc.plus", want: "PH-Connect"},
+		{host: "us-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-ph.svc.plus", want: "US-Connect"},
 	} {
 		t.Run(tt.host, func(t *testing.T) {
-			if got := resolveNodeName(tt.host, map[string]string{tt.host: tt.name}); got != tt.host {
-				t.Fatalf("node name = %q, want entrypoint %q", got, tt.host)
+			if got := resolveNodeName(tt.host, map[string]string{tt.host: tt.name}); got != tt.want {
+				t.Fatalf("node name = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -50,8 +51,8 @@ func TestResolveNodeNameUsesEntrypointWhenRegisteredRegionIsStale(t *testing.T) 
 func TestResolveNodeNameKeepsMatchingRegisteredRegion(t *testing.T) {
 	const host = "jp-xconnect.svc.plus"
 	const name = "agent-proxy-selfhost-prod-jp.svc.plus"
-	if got := resolveNodeName(host, map[string]string{host: name}); got != name {
-		t.Fatalf("node name = %q, want %q", got, name)
+	if got := resolveNodeName(host, map[string]string{host: name}); got != "JP-Connect" {
+		t.Fatalf("node name = %q, want JP-Connect", got)
 	}
 }
 

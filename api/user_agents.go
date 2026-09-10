@@ -355,12 +355,30 @@ func registeredNodeMetadata(reader agentStatusReader) ([]string, map[string]stri
 }
 
 func resolveNodeName(host string, names map[string]string) string {
+	if regionalName := regionalVLESSDisplayName(host); regionalName != "" {
+		return regionalName
+	}
 	if len(names) > 0 {
 		if name := strings.TrimSpace(names[host]); name != "" && !nodeNameConflictsWithHostRegion(name, host) {
 			return name
 		}
 	}
 	return nodeNameForHost(host)
+}
+
+func regionalVLESSDisplayName(host string) string {
+	switch strings.ToLower(strings.SplitN(strings.TrimSpace(host), ".", 2)[0]) {
+	case "jp-xconnect":
+		return "JP-Connect"
+	case "hk-xconnect":
+		return "HK-Connect"
+	case "ph-xconnect":
+		return "PH-Connect"
+	case "us-xconnect":
+		return "US-Connect"
+	default:
+		return ""
+	}
 }
 
 func nodeNameConflictsWithHostRegion(name, host string) bool {
