@@ -5,12 +5,54 @@ import (
 	"database/sql"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"account/config"
 	"account/internal/store"
 )
+
+func TestReadinessGateServesProbesBeforeRouterIsInstalled(t *testing.T) {
+	gate, err := startReadinessGate("127.0.0.1:0", time.Second, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("start readiness gate: %v", err)
+	}
+	defer gate.close()
+
+	base := "http://" + gate.addr()
+
+	// Before the router exists the process is alive but must not claim to be
+	// ready, and business traffic must be refused rather than mishandled.
+	for path, want := range map[string]int{
+		"/healthz":        http.StatusOK,
+		"/readyz":         http.StatusServiceUnavailable,
+		"/api/auth/login": http.StatusServiceUnavailable,
+	} {
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("GET %s before promote = %d, want %d", path, resp.StatusCode, want)
+		}
+	}
+
+	gate.promote(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	resp, err := http.Get(base + "/api/auth/login")
+	if err != nil {
+		t.Fatalf("GET after promote: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTeapot {
+		t.Fatalf("GET after promote = %d, want %d", resp.StatusCode, http.StatusTeapot)
+	}
+}
 
 func TestConfigureAdminSettingsPoolAppliesLimitsBeforeStartup(t *testing.T) {
 	db, err := sql.Open("sqlite3", ":memory:")

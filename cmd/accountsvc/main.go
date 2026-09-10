@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -1065,6 +1066,40 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		}()
 	}
 
+	addr := strings.TrimSpace(cfg.Server.Addr)
+	if addr == "" {
+		addr = ":8080"
+	}
+
+	tlsSettings := cfg.Server.TLS
+	certFile := strings.TrimSpace(tlsSettings.CertFile)
+	keyFile := strings.TrimSpace(tlsSettings.KeyFile)
+	caFile := strings.TrimSpace(tlsSettings.CAFile)
+	clientCAFile := strings.TrimSpace(tlsSettings.ClientCAFile)
+
+	useTLS := tlsSettings.IsEnabled()
+
+	// Cloud Run's startup probe only checks that something accepts connections
+	// on $PORT. Binding after the business store is reachable makes a saturated
+	// connection pool self-sustaining: the incoming revision never listens, its
+	// probe fails, traffic never shifts, and the outgoing revision goes on
+	// holding the very connections the newcomer is waiting for. Bind first and
+	// report readiness separately, so the rollout can drain the revision that
+	// owns them. TLS serving keeps its original single-phase listener.
+	var gate *readinessGate
+	if !useTLS {
+		gate, err = startReadinessGate(addr, cfg.Server.ReadTimeout, cfg.Server.WriteTimeout, logger)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if cerr := gate.close(); cerr != nil && !errors.Is(cerr, http.ErrServerClosed) {
+				logger.Warn("failed to close account service listener", "err", cerr)
+			}
+		}()
+		logger.Info("listening before dependencies are ready", "addr", gate.addr())
+	}
+
 	storeCfg := store.Config{
 		Driver:       cfg.Store.Driver,
 		DSN:          cfg.Store.DSN,
@@ -1530,19 +1565,6 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	api.RegisterRoutes(r, options...)
 	api.StartAnnualQuotaReconciler(ctx, st, logger.With("component", "annual-quota"))
 
-	addr := strings.TrimSpace(cfg.Server.Addr)
-	if addr == "" {
-		addr = ":8080"
-	}
-
-	tlsSettings := cfg.Server.TLS
-	certFile := strings.TrimSpace(tlsSettings.CertFile)
-	keyFile := strings.TrimSpace(tlsSettings.KeyFile)
-	caFile := strings.TrimSpace(tlsSettings.CAFile)
-	clientCAFile := strings.TrimSpace(tlsSettings.ClientCAFile)
-
-	useTLS := tlsSettings.IsEnabled()
-
 	var tlsConfig *tls.Config
 	if useTLS {
 		if certFile == "" || keyFile == "" {
@@ -1611,21 +1633,20 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		}
 	}
 
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      r,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-	}
-
-	if useTLS {
-		srv.TLSConfig = tlsConfig
-	}
-
 	logger.Info("starting account service", "addr", addr, "tls", useTLS)
 
 	var listenCertFile, listenKeyFile string
 	if useTLS {
+		// The plaintext path serves through the listener opened before the
+		// store was reached; only TLS still binds its own.
+		srv := &http.Server{
+			Addr:         addr,
+			Handler:      r,
+			ReadTimeout:  cfg.Server.ReadTimeout,
+			WriteTimeout: cfg.Server.WriteTimeout,
+			TLSConfig:    tlsConfig,
+		}
+
 		if tlsSettings.RedirectHTTP {
 			go func() {
 				redirectAddr := deriveRedirectAddr(addr)
@@ -1661,14 +1682,85 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			}
 		}
 	} else {
-		if err := srv.ListenAndServe(); err != nil {
-			if !errors.Is(err, http.ErrServerClosed) {
-				logger.Error("account service shutdown", "err", err)
-				return err
-			}
+		// The listener is already open; installing the router is what flips
+		// /readyz positive and starts admitting business traffic.
+		gate.promote(r)
+		if err := gate.wait(); err != nil {
+			logger.Error("account service shutdown", "err", err)
+			return err
 		}
 	}
 	return nil
+}
+
+// readinessGate owns the plaintext listener so the process can answer probes
+// before its dependencies are reachable. It accepts connections immediately,
+// serves liveness right away, keeps readiness negative until the real router is
+// installed, and then swaps that router in without closing the listener.
+type readinessGate struct {
+	ln       net.Listener
+	srv      *http.Server
+	delegate atomic.Pointer[http.Handler]
+	done     chan error
+}
+
+func startReadinessGate(addr string, readTimeout, writeTimeout time.Duration, logger *slog.Logger) (*readinessGate, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("bind account service listener on %s: %w", addr, err)
+	}
+	g := &readinessGate{ln: ln, done: make(chan error, 1)}
+	g.srv = &http.Server{
+		Handler:      g,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
+	}
+	go func() {
+		g.done <- g.srv.Serve(ln)
+	}()
+	return g, nil
+}
+
+func (g *readinessGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h := g.delegate.Load(); h != nil {
+		(*h).ServeHTTP(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	// Liveness answers as soon as the process is up; readiness stays negative
+	// until the router is installed, so a probe can distinguish "still starting"
+	// from "serving" instead of inferring it from a refused connection.
+	if r.URL.Path == "/healthz" {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		return
+	}
+	w.Header().Set("Retry-After", "5")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`{"status":"starting","reason":"business store is not ready"}`))
+}
+
+// promote installs the fully wired router. The swap is atomic and the listener
+// is never closed, so requests already in flight are unaffected.
+func (g *readinessGate) promote(h http.Handler) {
+	g.delegate.Store(&h)
+}
+
+// wait blocks until the listener stops, mirroring ListenAndServe's contract.
+func (g *readinessGate) wait() error {
+	err := <-g.done
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func (g *readinessGate) close() error {
+	return g.srv.Close()
+}
+
+func (g *readinessGate) addr() string {
+	return g.ln.Addr().String()
 }
 
 func runServerAndAgent(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
