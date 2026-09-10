@@ -71,8 +71,11 @@ spec:
           value: "smtp.gmail.com"
         - name: SMTP_PORT
           value: "587"
+        # Non-production shares the production sender identity, so the
+        # display name is the only thing telling a recipient that a code they
+        # did not ask for came from a preview deploy rather than the real one.
         - name: SMTP_FROM
-          value: "XWorkmate <no-reply@xworktech.com>"
+          value: "XWorkmate (Preview) <no-reply@xworktech.com>"
         - name: SMTP_USERNAME
           valueFrom:
             secretKeyRef:
