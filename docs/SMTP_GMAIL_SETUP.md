@@ -26,14 +26,13 @@
 请在您的 GCP 终端或者 Cloud Shell 中运行以下命令（请替换为您的真实信息）：
 
 ### 2.1 创建 SMTP 用户名 Secret
-该 Secret 存储您的发件人邮箱地址。
+该 Secret 存储用于 SMTP 认证的邮箱地址。当前线上取值为 `no-reply@xworktech.com`。
 
 ```bash
-# 替换 admin@svc.plus 为您的真实发信邮箱
 gcloud secrets create smtp-username --replication-policy="automatic"
 
-# 添加版本
-printf "admin@svc.plus" | gcloud secrets versions add smtp-username --data-file=-
+# 已存在时直接加新版本即可
+printf "no-reply@xworktech.com" | gcloud secrets versions add smtp-username --data-file=-
 ```
 
 ### 2.2 创建 SMTP 密码 Secret
@@ -53,13 +52,22 @@ printf "xxxx xxxx xxxx xxxx" | gcloud secrets versions add smtp-password --data-
 
 如果您希望发件人显示为 `@svc.plus` 后缀（如 `admin@svc.plus`），有两种情况：
 
-### 情况 A：使用 Google Workspace (企业邮箱)
-*   **适用场景**：您的 Google 账号本身就是 `admin@svc.plus`，且域名托管在 Google Workspace。
-*   **配置方式**：
+### 情况 A：使用 Google Workspace (企业邮箱) —— 当前采用
+*   **适用场景**：域名托管在 Google Workspace，用该租户下的真实用户做 SMTP 认证。
+*   **当前线上配置**：
     *   **SMTP Host**: `smtp.gmail.com`
-    *   **SMTP Username**: 填入您的完整企业邮箱，例如 `admin@svc.plus`。
-    *   **SMTP Password**: 使用该账号生成的**应用专用密码**。
-*   此方式最稳定、专业，推荐使用。
+    *   **SMTP Port**: `587`（STARTTLS）
+    *   **SMTP Username**: `no-reply@xworktech.com`
+    *   **SMTP From**: `XWorkmate <no-reply@xworktech.com>`
+    *   **SMTP Password**: 该账号的**应用专用密码**（16 位，去掉空格）。
+*   **envelope sender 必须等于认证账号**，否则 Gmail 返回
+    `550-5.7.1 ... not allowed to send as this address`。要用别的地址发信，
+    必须先在 Workspace 里把它配成该账号已验证的 "send mail as" 别名。
+*   **想改用 `no-reply@svc.plus`**：把 svc.plus 作为**域名别名 (Domain alias)**
+    加进同一个 Workspace 租户即可 —— 免费、不额外占席位，`no-reply@xworktech.com`
+    会自动获得 `no-reply@svc.plus`。不要用**辅助域 (Secondary domain)**，那会把
+    `no-reply@svc.plus` 变成独立用户，多吃一个付费席位。
+    切过去时只需改 `SMTP_FROM` 一行；`SMTP_USERNAME` 保持认证账号不变。
 
 ### 情况 B：使用个人 Gmail 代发
 *   **适用场景**：您持有普通 Gmail 账号 (例如 `shenlan@gmail.com`)，但拥有 `svc.plus` 域名。
@@ -75,7 +83,7 @@ printf "xxxx xxxx xxxx xxxx" | gcloud secrets versions add smtp-password --data-
 *   **配置方式**：
     *   **SMTP Username**: 您的完整 Gmail 地址 (例如 `yourname@gmail.com`)。
     *   **SMTP Password**: 您的 16 位**应用专用密码**。
-    *   **SMTP From**: 设置为 `XControl <yourname@gmail.com>`。
+    *   **SMTP From**: 设置为 `XWorkmate <yourname@gmail.com>`。
     *   **Cloud Run Env**: 将 `SMTP_FROM` 环境变量修改为您的 Gmail 地址。
 
 ---
@@ -91,7 +99,7 @@ printf "xxxx xxxx xxxx xxxx" | gcloud secrets versions add smtp-password --data-
         - name: SMTP_PORT
           value: "587"
         - name: SMTP_FROM
-          value: "XControl Account <no-reply@svc.plus>"
+          value: "XWorkmate <no-reply@xworktech.com>"
         - name: SMTP_USERNAME
           valueFrom:
             secretKeyRef:
@@ -104,10 +112,25 @@ printf "xxxx xxxx xxxx xxxx" | gcloud secrets versions add smtp-password --data-
               key: latest
 ```
 
-执行部署命令：
+执行部署命令（`CLOUD_RUN_SERVICE_YAML` 默认解析为 `deploy/gcp/cloud-run/$(CLOUD_RUN_ENV)-service.yaml`）：
 
 ```bash
-make cloudrun-deploy
+GCP_PROJECT=<project> CLOUD_RUN_ENV=prod make cloudrun-deploy
 ```
 
 部署完成后，Cloud Run 实例将自动读取 Secrets 作为环境变量，服务即可使用 Gmail SMTP 发送验证邮件。
+
+---
+
+## 5. 域名的邮件 DNS 由 GitOps 管理，不要手工点
+
+SPF / DMARC / MX 的期望状态声明在 `x-evor/gitops` 的
+`resources/xworktech.com/prod/cloudflare/email-dns.yaml`，由
+`ai-workspace-infra/playbooks` 的 `configure_resend_dns.yml` +
+`.github/workflows/configure-resend-dns.yml` 对账，凭据取自 Vault
+`kv/data/prod/xworktech-email`（`cloudflare_api_token`）。新增或修改记录
+应改那个 YAML 后跑 workflow，而不是在 Cloudflare 控制台手改。
+
+例外：Google Workspace 的 DKIM 密钥对必须在 Admin 控制台
+（Apps → Google Workspace → Gmail → Authenticate email）生成——DNS 侧造不出来。
+生成后把公钥值写回上述 GitOps YAML，再由 workflow 发布 `google._domainkey` TXT。

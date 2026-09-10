@@ -77,7 +77,10 @@ smtp:
   replyTo: ""
   timeout: 10s
   tls:
-    mode: "auto"
+    # Gmail advertises STARTTLS on 587. Pin the mode instead of "auto" so a
+    # server that fails to advertise it aborts loudly here rather than falling
+    # back to plaintext, where Go's smtp.PlainAuth refuses to send credentials.
+    mode: "starttls"
     insecureSkipVerify: false
 
 xray:
