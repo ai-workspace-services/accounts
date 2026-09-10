@@ -356,11 +356,29 @@ func registeredNodeMetadata(reader agentStatusReader) ([]string, map[string]stri
 
 func resolveNodeName(host string, names map[string]string) string {
 	if len(names) > 0 {
-		if name := strings.TrimSpace(names[host]); name != "" {
+		if name := strings.TrimSpace(names[host]); name != "" && !nodeNameConflictsWithHostRegion(name, host) {
 			return name
 		}
 	}
 	return nodeNameForHost(host)
+}
+
+func nodeNameConflictsWithHostRegion(name, host string) bool {
+	hostRegion := regionalCode(host)
+	nameRegion := regionalCode(name)
+	return hostRegion != "" && nameRegion != "" && hostRegion != nameRegion
+}
+
+func regionalCode(value string) string {
+	for _, part := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return r < 'a' || r > 'z'
+	}) {
+		switch part {
+		case "jp", "us", "hk", "ph":
+			return strings.ToUpper(part)
+		}
+	}
+	return ""
 }
 
 func envOrDefault(key, fallback string) string {
