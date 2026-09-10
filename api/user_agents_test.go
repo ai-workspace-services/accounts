@@ -29,6 +29,32 @@ func TestParseProxyNodeHosts(t *testing.T) {
 	}
 }
 
+func TestResolveNodeNameUsesEntrypointWhenRegisteredRegionIsStale(t *testing.T) {
+	for _, tt := range []struct {
+		host string
+		name string
+	}{
+		{host: "jp-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-hk.svc.plus"},
+		{host: "hk-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-us.svc.plus"},
+		{host: "ph-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-jp.svc.plus"},
+		{host: "us-xconnect.svc.plus", name: "agent-proxy-selfhost-prod-ph.svc.plus"},
+	} {
+		t.Run(tt.host, func(t *testing.T) {
+			if got := resolveNodeName(tt.host, map[string]string{tt.host: tt.name}); got != tt.host {
+				t.Fatalf("node name = %q, want entrypoint %q", got, tt.host)
+			}
+		})
+	}
+}
+
+func TestResolveNodeNameKeepsMatchingRegisteredRegion(t *testing.T) {
+	const host = "jp-xconnect.svc.plus"
+	const name = "agent-proxy-selfhost-prod-jp.svc.plus"
+	if got := resolveNodeName(host, map[string]string{host: name}); got != name {
+		t.Fatalf("node name = %q, want %q", got, name)
+	}
+}
+
 func TestAgentEndpointsReturnEmptyWithoutProxyNodes(t *testing.T) {
 	t.Setenv("XRAY_PROXY_NODES", "")
 	router, _, token := newAuthenticatedSyncHarness(t, WithServerPublicURL("https://accounts.svc.plus"))
