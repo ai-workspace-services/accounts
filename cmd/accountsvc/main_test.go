@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log/slog"
 	"strings"
@@ -10,6 +11,21 @@ import (
 	"account/config"
 	"account/internal/store"
 )
+
+func TestConfigureAdminSettingsPoolAppliesLimitsBeforeStartup(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	defer db.Close()
+
+	configureAdminSettingsPool(db, config.Store{MaxOpenConns: 2, MaxIdleConns: 0})
+
+	stats := db.Stats()
+	if stats.MaxOpenConnections != 2 {
+		t.Fatalf("max open connections = %d, want 2", stats.MaxOpenConnections)
+	}
+}
 
 func TestBillingSchemaStatementsCoverSharedAccountingControlPlane(t *testing.T) {
 	t.Parallel()

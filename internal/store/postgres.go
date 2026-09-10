@@ -52,7 +52,7 @@ func New(ctx context.Context, cfg Config) (Store, func(context.Context) error, e
 		if cfg.MaxOpenConns > 0 {
 			db.SetMaxOpenConns(cfg.MaxOpenConns)
 		}
-		if cfg.MaxIdleConns > 0 {
+		if cfg.MaxIdleConns >= 0 {
 			db.SetMaxIdleConns(cfg.MaxIdleConns)
 		}
 		if cfg.ConnMaxLifetime > 0 {
