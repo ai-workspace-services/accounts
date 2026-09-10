@@ -1839,6 +1839,13 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 			sqlDB, err = db.DB()
 		}
 		if err == nil {
+			// Accounts owns a separate admin-settings pool in addition to the
+			// business store pool. Apply the configured limits before the first
+			// Ping and before AutoMigrate so startup cannot open a VPS-sized
+			// burst of sessions against the shared Supabase session pooler.
+			configureAdminSettingsPool(sqlDB, cfg)
+		}
+		if err == nil {
 			probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			err = sqlDB.PingContext(probeCtx)
 			cancel()
@@ -1868,20 +1875,28 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		&model.TenantMembership{},
 		&model.XWorkmateProfile{},
 	); err != nil {
+		_ = sqlDB.Close()
 		return nil, nil, err
-	}
-
-	if cfg.MaxOpenConns > 0 {
-		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
-	}
-	if cfg.MaxIdleConns > 0 {
-		sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
 	}
 
 	cleanup := func(context.Context) error {
 		return sqlDB.Close()
 	}
 	return db, cleanup, nil
+}
+
+func configureAdminSettingsPool(sqlDB *sql.DB, cfg config.Store) {
+	if sqlDB == nil {
+		return
+	}
+	if cfg.MaxOpenConns > 0 {
+		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+	}
+	// Zero is a valid explicit setting: it disables idle connections and is
+	// useful for tightly bounded serverless instances.
+	if cfg.MaxIdleConns >= 0 {
+		sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+	}
 }
 
 func init() {
