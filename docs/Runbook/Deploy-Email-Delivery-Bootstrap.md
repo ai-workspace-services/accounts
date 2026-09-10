@@ -245,6 +245,7 @@ accounts 会关闭邮件发送。注册接口返回 200 但不发信，验证码
 
 | 内容 | 位置 |
 |---|---|
+| 架构与设计取舍 | `docs/architecture/transactional-email.md` |
 | SMTP 配置细则与发件身份说明 | `docs/SMTP_GMAIL_SETUP.md` |
 | DNS 声明（xworktech.com / svc.plus） | `ai-workspace-infra/gitops` → `resources/<domain>/prod/cloudflare/email-dns.yaml` |
 | DNS 对账 playbook 与 workflow | `ai-workspace-infra/playbooks` → `configure_resend_dns.yml` |
