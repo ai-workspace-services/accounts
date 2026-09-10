@@ -2867,7 +2867,7 @@ func TestLoginWithMFASetsSessionCookie(t *testing.T) {
 	}
 
 	key, err := totp.Generate(totp.GenerateOpts{
-		Issuer:      "XControl",
+		Issuer:      "Custom Issuer",
 		AccountName: "mfa@example.com",
 		Period:      30,
 		Digits:      otp.DigitsSix,

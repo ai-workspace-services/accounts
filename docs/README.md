@@ -23,7 +23,7 @@ This `docs/` directory now has a bilingual canonical layer for the current repos
 ## Current Repo Context / 当前仓库背景
 
 - Root README: `accounts.svc.plus`
-- Previous docs index: `XControl Account Service 文档`
+- Previous docs index: `XWorkmate Account Service 文档`
 - Manifest evidence / 构建清单: go.mod (`account`)
 - Active code and ops directories / 当前主要目录: `cmd/`, `internal/`, `api/`, `accountsvc/`, `deploy/`, `ansible/`, `scripts/`, `tests/`, `sql/`, `config/`
 

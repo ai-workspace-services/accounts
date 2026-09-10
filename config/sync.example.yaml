@@ -1,5 +1,5 @@
 # ============================================
-# 🔄 XControl Account Sync Configuration
+# 🔄 XWorkmate Account Sync Configuration
 # ============================================
 # 将本地与远端账号服务通过 SSH 安全同步。默认提供单向 push/pull/mirror
 # 三种模式，可直接通过 `go run ./cmd/syncctl/main.go push --config config/sync.yaml`
