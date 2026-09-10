@@ -5,6 +5,7 @@
 ## 📚 文档分类
 
 ### 🔧 部署相关
+- [Deploy Email Delivery Bootstrap](./Deploy-Email-Delivery-Bootstrap.md) - 启用 XWorkmate 事务邮件通道（Google Workspace SMTP + 域名 DNS + Vault 凭据）。
 - 部署流程
 - 环境配置
 - 依赖管理
