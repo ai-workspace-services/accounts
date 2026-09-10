@@ -2,8 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,6 +229,27 @@ func Load(path string) (*Config, error) {
 	}
 	if supabaseConnectURI != "" {
 		cfg.Store.DSN = supabaseConnectURI
+	}
+
+	// Cloud Run instances share the Supabase Session Pooler connection quota.
+	// Keep the checked-in defaults suitable for a VPS, but allow the serverless
+	// deployment to cap each instance without maintaining a second YAML file.
+	if raw := strings.TrimSpace(os.Getenv("DB_MAX_OPEN_CONNS")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 {
+			return nil, fmt.Errorf("DB_MAX_OPEN_CONNS must be a positive integer, got %q", raw)
+		}
+		cfg.Store.MaxOpenConns = value
+	}
+	if raw := strings.TrimSpace(os.Getenv("DB_MAX_IDLE_CONNS")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			return nil, fmt.Errorf("DB_MAX_IDLE_CONNS must be a non-negative integer, got %q", raw)
+		}
+		cfg.Store.MaxIdleConns = value
+	}
+	if cfg.Store.MaxOpenConns > 0 && cfg.Store.MaxIdleConns > cfg.Store.MaxOpenConns {
+		cfg.Store.MaxIdleConns = cfg.Store.MaxOpenConns
 	}
 	return &cfg, nil
 }
