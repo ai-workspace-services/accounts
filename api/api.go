@@ -1989,7 +1989,7 @@ func (h *handler) enqueueEmailVerification(ctx context.Context, user *store.User
 	subject := "Verify your " + brandProduct + " account"
 	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
 		Greeting:  "Hello " + name + ",",
-		Intro:     "Use the verification code below to verify your " + brandProduct + " account.",
+		Intro:     "Use the verification code below to verify your account.",
 		CodeLabel: "Verification code",
 		Code:      code,
 		CodeStyle: codeStyleDigits,
@@ -2081,7 +2081,7 @@ func (h *handler) issueRegistrationVerification(ctx context.Context, email strin
 	subject := "Verify your email for " + brandProduct
 	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
 		Greeting:  "Hello,",
-		Intro:     "Use the verification code below to finish creating your " + brandProduct + " account.",
+		Intro:     "Use the verification code below to finish creating your account.",
 		CodeLabel: "Verification code",
 		Code:      verification.code,
 		CodeStyle: codeStyleDigits,
@@ -2191,7 +2191,7 @@ func (h *handler) enqueuePasswordReset(ctx context.Context, user *store.User) er
 	subject := "Reset your " + brandProduct + " password"
 	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
 		Greeting:  "Hello " + name + ",",
-		Intro:     "Use the token below to reset your " + brandProduct + " account password.",
+		Intro:     "Use the token below to reset your account password.",
 		CodeLabel: "Reset token",
 		Code:      token,
 		CodeStyle: codeStyleToken,
