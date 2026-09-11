@@ -37,7 +37,7 @@
 
 ## 🎯 影响范围
 
-- **服务**: `accounts-svc-plus`（项目 `xzerolab-480008`，区域 `asia-northeast1`）
+- **服务**: `accounts-svc-plus`（区域 `asia-northeast1`；项目按环境从 Vault 解析，见下）
 - **影响功能**: 新用户注册验证码、账号邮箱验证、重置密码/找回
 - **影响用户**: 全部新注册用户；已注册用户的密码找回
 - **未来影响**: billing-service 的催缴邮件规划复用同一发信身份
@@ -45,6 +45,23 @@
 ---
 
 ## 🔍 诊断步骤
+
+### 0. 先解析目标项目
+
+项目号不要写死在文档或命令里——它随环境和迁移变化，而真源是 Vault。本页所有
+`gcloud` 命令都假设你已经导出了它：
+
+```bash
+export VAULT_ADDR=https://vault.svc.plus
+```
+
+```bash
+export GCP_PROJECT="$(vault kv get -field=GCP_PROJECT_ID kv/prod/serverless/gcp)"; echo "project=$GCP_PROJECT"
+```
+
+同一套 Vault 路径也是部署流水线读取项目的地方，所以这里解析出来的一定和线上一致。
+注意 uat 与 prod 目前解析到**同一个项目**，靠服务名区分环境——所以在其中一个环境上
+看到的 Secret Manager 状态，对另一个同样成立。
 
 ### 1. 确认走的是哪条部署链路
 
@@ -57,7 +74,7 @@ grep -A3 "weight:" gitops/topology/prod/serverless/runtime-topology.yaml
 ### 2. 确认容器实际拿到的 SMTP 配置
 
 ```bash
-gcloud run services describe accounts-svc-plus --region asia-northeast1 --project xzerolab-480008 --format=yaml | grep -A2 SMTP_
+gcloud run services describe accounts-svc-plus --region asia-northeast1 --project "$GCP_PROJECT" --format=yaml | grep -A2 SMTP_
 ```
 
 ### 3. 确认域名邮件 DNS 是否就位
@@ -71,7 +88,7 @@ for d in xworktech.com svc.plus; do echo "--- $d"; dig +short MX $d; dig +short 
 ### 4. 看真实的 SMTP 错误
 
 ```bash
-gcloud logging read 'resource.labels.service_name="accounts-svc-plus" AND jsonPayload.msg=~"verification"' --project xzerolab-480008 --limit 20 --freshness 1h
+gcloud logging read 'resource.labels.service_name="accounts-svc-plus" AND jsonPayload.msg=~"verification"' --project "$GCP_PROJECT" --limit 20 --freshness 1h
 ```
 
 ---
@@ -168,6 +185,14 @@ billing-service 的催缴邮件规划用的是同一个身份。按服务分路�
 GCP Secret Manager 的 `smtp-username` / `smtp-password`，然后新 revision 通过
 `secretKeyRef` 读到。
 
+**绑定是有条件的。** `deploy_cloudrun_services.sh` 只在 `smtp-username` 与
+`smtp-password` 两个 secret 都能 describe 到时才加 `--set-secrets`；否则打印
+`SMTP secrets not present in Secret Manager; skipping secret bindings.` 并继续部署。
+结果是容器里两个变量未设置，accounts 关闭邮件发送、注册接口静默返回 200。
+
+部署日志里必须看到 `Binding Secret Manager SMTP credentials` 这一行，否则这次发布
+没有邮件能力——而每一步都会显示成功。
+
 同步步骤的三个行为值得知道：
 
 | 情况 | 行为 |
@@ -189,7 +214,7 @@ for d in xworktech.com svc.plus; do echo "--- $d"; dig +short MX $d | head -1; d
 ### 2. 容器拿到了正确配置
 
 ```bash
-gcloud run services describe accounts-svc-plus --region asia-northeast1 --project xzerolab-480008 --format=yaml | grep -A2 SMTP_HOST
+gcloud run services describe accounts-svc-plus --region asia-northeast1 --project "$GCP_PROJECT" --format=yaml | grep -A2 SMTP_HOST
 ```
 
 应为 `smtp.gmail.com`。
@@ -227,8 +252,8 @@ preview 环境显示名为 `XWorkmate (Preview)` —— 非生产与生产共用
 **凭据层**：Secret Manager 保留历史版本，回滚到上一版本：
 
 ```bash
-gcloud secrets versions list smtp-password --project xzerolab-480008
-gcloud secrets versions access <上一个版本号> --secret smtp-password --project xzerolab-480008
+gcloud secrets versions list smtp-password --project "$GCP_PROJECT"
+gcloud secrets versions access <上一个版本号> --secret smtp-password --project "$GCP_PROJECT"
 ```
 
 注意：下次部署时同步步骤会再次把 Vault 的值推上去。真正的回滚要改 Vault，
@@ -237,7 +262,7 @@ Secret Manager 只是投递形式。
 **服务层**：Cloud Run 保留旧 revision，紧急时切流量：
 
 ```bash
-gcloud run services update-traffic accounts-svc-plus --region asia-northeast1 --project xzerolab-480008 --to-revisions=<上一个 revision>=100
+gcloud run services update-traffic accounts-svc-plus --region asia-northeast1 --project "$GCP_PROJECT" --to-revisions=<上一个 revision>=100
 ```
 
 **最保守的降级**：把 Vault 路径下的 `username` / `password` 清空并重新部署，
