@@ -935,7 +935,7 @@ func (h *handler) sendEmailVerification(c *gin.Context) {
 			return
 		}
 
-		if err := h.enqueueEmailVerification(ctx, user); err != nil {
+		if err := h.enqueueEmailVerification(ctx, requestLocale(c), user); err != nil {
 			slog.Error("failed to send verification email", "err", err, "email", user.Email)
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				respondError(c, http.StatusGatewayTimeout, "smtp_timeout", "email sending timed out")
@@ -954,7 +954,7 @@ func (h *handler) sendEmailVerification(c *gin.Context) {
 		return
 	}
 
-	if _, err := h.issueRegistrationVerification(ctx, email); err != nil {
+	if _, err := h.issueRegistrationVerification(ctx, requestLocale(c), email); err != nil {
 		slog.Error("failed to issue registration verification", "err", err, "email", email)
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			respondError(c, http.StatusGatewayTimeout, "smtp_timeout", "email sending timed out")
@@ -1004,7 +1004,7 @@ func (h *handler) requestPasswordReset(c *gin.Context) {
 		return
 	}
 
-	if err := h.enqueuePasswordReset(c.Request.Context(), user); err != nil {
+	if err := h.enqueuePasswordReset(c.Request.Context(), requestLocale(c), user); err != nil {
 		slog.Error("failed to send password reset email", "err", err, "email", user.Email)
 		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to initiate password reset")
 		return
@@ -1946,7 +1946,7 @@ func (h *handler) refreshMFAChallenge(token string) (mfaChallenge, bool) {
 	})
 }
 
-func (h *handler) enqueueEmailVerification(ctx context.Context, user *store.User) error {
+func (h *handler) enqueueEmailVerification(ctx context.Context, locale mailLocale, user *store.User) error {
 	email := strings.TrimSpace(user.Email)
 	if email == "" {
 		return errors.New("user email is empty")
@@ -1986,15 +1986,17 @@ func (h *handler) enqueueEmailVerification(ctx context.Context, user *store.User
 		name = "there"
 	}
 
-	subject := "Verify your " + brandProduct + " account"
+	c := copyFor(locale)
+	subject := c.subjectVerify
 	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
-		Greeting:  "Hello " + name + ",",
-		Intro:     "Use the verification code below to verify your account.",
-		CodeLabel: "Verification code",
+		Locale:    locale,
+		Greeting:  fmt.Sprintf(c.greetingNamed, name),
+		Intro:     c.introVerify,
+		CodeLabel: c.labelCode,
 		Code:      code,
 		CodeStyle: codeStyleDigits,
-		Expiry:    expiryLine(expiresAt, ttl),
-		Reassure:  "If you did not request this email you can ignore it.",
+		Expiry:    expiryLine(locale, expiresAt, ttl),
+		Reassure:  c.reassureIgnore,
 	})
 
 	msg := EmailMessage{
@@ -2040,7 +2042,7 @@ func (h *handler) removeEmailVerification(email string) {
 	h.verificationMu.Unlock()
 }
 
-func (h *handler) issueRegistrationVerification(ctx context.Context, email string) (registrationVerification, error) {
+func (h *handler) issueRegistrationVerification(ctx context.Context, locale mailLocale, email string) (registrationVerification, error) {
 	normalized := strings.ToLower(strings.TrimSpace(email))
 	if normalized == "" {
 		return registrationVerification{}, errors.New("email is empty")
@@ -2078,15 +2080,17 @@ func (h *handler) issueRegistrationVerification(ctx context.Context, email strin
 		trimmedEmail = normalized
 	}
 
-	subject := "Verify your email for " + brandProduct
+	c := copyFor(locale)
+	subject := c.subjectRegister
 	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
-		Greeting:  "Hello,",
-		Intro:     "Use the verification code below to finish creating your account.",
-		CodeLabel: "Verification code",
+		Locale:    locale,
+		Greeting:  c.greetingPlain,
+		Intro:     c.introRegister,
+		CodeLabel: c.labelCode,
 		Code:      verification.code,
 		CodeStyle: codeStyleDigits,
-		Expiry:    expiryLine(verification.expiresAt, ttl),
-		Reassure:  "If you did not request this email you can ignore it.",
+		Expiry:    expiryLine(locale, verification.expiresAt, ttl),
+		Reassure:  c.reassureIgnore,
 	})
 
 	msg := EmailMessage{
@@ -2156,7 +2160,7 @@ func (h *handler) removeRegistrationVerification(email string) {
 	h.registrationMu.Unlock()
 }
 
-func (h *handler) enqueuePasswordReset(ctx context.Context, user *store.User) error {
+func (h *handler) enqueuePasswordReset(ctx context.Context, locale mailLocale, user *store.User) error {
 	email := strings.TrimSpace(user.Email)
 	if email == "" {
 		return errors.New("user email is empty")
@@ -2188,15 +2192,17 @@ func (h *handler) enqueuePasswordReset(ctx context.Context, user *store.User) er
 		name = "there"
 	}
 
-	subject := "Reset your " + brandProduct + " password"
+	c := copyFor(locale)
+	subject := c.subjectReset
 	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
-		Greeting:  "Hello " + name + ",",
-		Intro:     "Use the token below to reset your account password.",
-		CodeLabel: "Reset token",
+		Locale:    locale,
+		Greeting:  fmt.Sprintf(c.greetingNamed, name),
+		Intro:     c.introReset,
+		CodeLabel: c.labelToken,
 		Code:      token,
 		CodeStyle: codeStyleToken,
-		Expiry:    "This token expires at " + expiresAt.UTC().Format(time.RFC3339) + " UTC.",
-		Reassure:  "If you did not request a reset you can ignore this email.",
+		Expiry:    fmt.Sprintf(c.expiry, expiresAt.UTC().Format(time.RFC3339)),
+		Reassure:  c.reassureReset,
 	})
 
 	msg := EmailMessage{
