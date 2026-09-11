@@ -121,14 +121,20 @@ DNS 没就位就切 Gmail，邮件发得出去但会进垃圾箱——那比现�
 
 ### 步骤 3：跑 DNS 对账 workflow
 
-仓库 `ai-workspace-infra/playbooks` → Actions → **Configure Resend DNS** →
-Run workflow（environment: prod）。
+仓库 `ai-workspace-infra/platform-ops-toolkit` → Actions → **Configure Email DNS**
+→ Run workflow，`vault_env_path: prod`。
 
-已改为 zone matrix，一次跑完 `xworktech.com` 和 `svc.plus` 两个域，串行执行
-（两份 policy 编辑同一个 Cloudflare 账号）。凭据取自 Vault
-`kv/data/prod/xworktech-email` 的 `cloudflare_api_token`。
+> ⚠️ **Use workflow from 必须选一个 `v*` tag，不能选 main。** Vault role 的 `ref`
+> 绑定限定了 `refs/tags/v*` 与 `refs/heads/release/v*`；从 main 触发会在 Vault 步骤
+> 认证失败，而报错不会提示分支选错了。选包含该 workflow 的最新 tag。
+
+zone matrix 一次跑完 `xworktech.com` 和 `svc.plus`，串行执行（两份 policy 编辑
+同一个 Cloudflare 账号，且各自的 apex SPF 是整条改写而非差异更新）。Cloudflare
+凭据取自 Vault `kv/data/<env>/serverless/cloudflare` 的 `CLOUDFLARE_API_TOKEN`
+——与 serverless-orchestrator 共用同一条，不另建 mail 专用副本。
 
 期望结果：两个域各就位 5 条 Google MX、1 条 apex SPF、1 条 DKIM、1 条 DMARC。
+同名多条记录会被 delete-then-create 收敛，所以手工误加的重复条目也会在这一步被清掉。
 
 ### 步骤 4：Vault 种入 SMTP 凭据
 
@@ -214,7 +220,7 @@ preview 环境显示名为 `XWorkmate (Preview)` —— 非生产与生产共用
 
 ## 🔙 回滚计划
 
-**DNS 层**：`Configure Resend DNS` 是声明式对账。回滚就是把 GitOps 里的
+**DNS 层**：`Configure Email DNS` 是声明式对账。回滚就是把 GitOps 里的
 `email-dns.yaml` 改回上一版再跑一次 workflow，不要在 Cloudflare 控制台手改
 ——手改的记录会在下次对账时被覆盖，且不留痕迹。
 
@@ -248,7 +254,8 @@ accounts 会关闭邮件发送。注册接口返回 200 但不发信，验证码
 | 架构与设计取舍 | `docs/architecture/transactional-email.md` |
 | SMTP 配置细则与发件身份说明 | `docs/SMTP_GMAIL_SETUP.md` |
 | DNS 声明（xworktech.com / svc.plus） | `ai-workspace-infra/gitops` → `resources/<domain>/prod/cloudflare/email-dns.yaml` |
-| DNS 对账 playbook 与 workflow | `ai-workspace-infra/playbooks` → `configure_resend_dns.yml` |
+| DNS 对账 playbook | `ai-workspace-infra/playbooks` → `configure_email_dns.yml` |
+| DNS 对账 workflow（调度入口） | `ai-workspace-infra/platform-ops-toolkit` → `.github/workflows/configure-email-dns.yaml` |
 | Vault → Secret Manager 同步脚本 | `ai-workspace-infra/platform-ops-toolkit` → `.github/scripts/serverless/sync_smtp_secrets.sh` |
 | 邮件模板与文案 | `api/email_template.go` |
 | SMTP 客户端实现 | `internal/mailer/mailer.go` |

@@ -126,10 +126,12 @@ GCP_PROJECT=<project> CLOUD_RUN_ENV=prod make cloudrun-deploy
 
 SPF / DMARC / MX 的期望状态声明在 `x-evor/gitops` 的
 `resources/xworktech.com/prod/cloudflare/email-dns.yaml`，由
-`ai-workspace-infra/playbooks` 的 `configure_resend_dns.yml` +
-`.github/workflows/configure-resend-dns.yml` 对账，凭据取自 Vault
-`kv/data/prod/xworktech-email`（`cloudflare_api_token`）。新增或修改记录
-应改那个 YAML 后跑 workflow，而不是在 Cloudflare 控制台手改。
+`ai-workspace-infra/playbooks` 的 `configure_email_dns.yml` 对账，由
+`ai-workspace-infra/platform-ops-toolkit` 的 **Configure Email DNS** workflow
+调度（只能从 `v*` tag 触发）。Cloudflare 凭据取自 Vault
+`kv/data/<env>/serverless/cloudflare` 的 `CLOUDFLARE_API_TOKEN`。新增或修改记录
+应改那个 YAML 后跑 workflow，而不是在 Cloudflare 控制台手改——手改的记录会在
+下次对账时被覆盖，且不留痕迹。
 
 例外：Google Workspace 的 DKIM 密钥对必须在 Admin 控制台
 （Apps → Google Workspace → Gmail → Authenticate email）生成——DNS 侧造不出来。
