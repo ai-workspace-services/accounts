@@ -1,6 +1,9 @@
 package mailer
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseTLSMode(t *testing.T) {
 	cases := map[string]TLSMode{
@@ -45,5 +48,36 @@ func TestNewImplicitModeAutodetect(t *testing.T) {
 	}
 	if s.tlsMode != TLSModeImplicit {
 		t.Fatalf("expected tlsMode %q, got %q", TLSModeImplicit, s.tlsMode)
+	}
+}
+
+// A Chinese notification must not be declared 7bit: that is a promise every
+// byte is under 128, and relays are entitled to reject the message or hand on
+// mojibake when it is broken.
+func TestBuildMessageEncodesNonASCIIPlainPart(t *testing.T) {
+	sender, err := New(Config{Host: "smtp.example.com", From: "a@example.com"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	s := sender.(*smtpSender)
+
+	ascii, err := s.buildMessage(Message{PlainBody: "code 418062"}, []string{"b@example.com"})
+	if err != nil {
+		t.Fatalf("buildMessage: %v", err)
+	}
+	if !strings.Contains(string(ascii), "Content-Transfer-Encoding: 7bit") {
+		t.Fatal("an all-ASCII plain part should still be sent as 7bit")
+	}
+
+	chinese, err := s.buildMessage(Message{PlainBody: "验证码 418062"}, []string{"b@example.com"})
+	if err != nil {
+		t.Fatalf("buildMessage: %v", err)
+	}
+	body := string(chinese)
+	if strings.Contains(body, "Content-Transfer-Encoding: 7bit") {
+		t.Fatalf("a Chinese plain part was declared 7bit:\n%s", body)
+	}
+	if !strings.Contains(body, "Content-Transfer-Encoding: quoted-printable") {
+		t.Fatalf("a Chinese plain part was not quoted-printable:\n%s", body)
 	}
 }

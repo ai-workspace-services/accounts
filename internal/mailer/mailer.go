@@ -312,9 +312,10 @@ func (s *smtpSender) buildMessage(msg Message, headerTo []string) ([]byte, error
 		}
 		builder.WriteString("\r\n")
 		builder.WriteString(fmt.Sprintf("--%s\r\n", boundary))
+		plainEncoding, plainPayload := encodeTextPart(plainBody)
 		builder.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
-		builder.WriteString("Content-Transfer-Encoding: 7bit\r\n\r\n")
-		builder.WriteString(normalizeNewlines(plainBody))
+		builder.WriteString("Content-Transfer-Encoding: " + plainEncoding + "\r\n\r\n")
+		builder.WriteString(plainPayload)
 		builder.WriteString("\r\n\r\n")
 		builder.WriteString(fmt.Sprintf("--%s\r\n", boundary))
 		builder.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
@@ -323,18 +324,34 @@ func (s *smtpSender) buildMessage(msg Message, headerTo []string) ([]byte, error
 		builder.WriteString("\r\n\r\n")
 		builder.WriteString(fmt.Sprintf("--%s--\r\n", boundary))
 	} else {
+		plainEncoding, plainPayload := encodeTextPart(plainBody)
 		headers = append(headers, "Content-Type: text/plain; charset=UTF-8")
-		headers = append(headers, "Content-Transfer-Encoding: 7bit")
+		headers = append(headers, "Content-Transfer-Encoding: "+plainEncoding)
 		for _, header := range headers {
 			builder.WriteString(header)
 			builder.WriteString("\r\n")
 		}
 		builder.WriteString("\r\n")
-		builder.WriteString(normalizeNewlines(plainBody))
+		builder.WriteString(plainPayload)
 		builder.WriteString("\r\n")
 	}
 
 	return []byte(builder.String()), nil
+}
+
+// encodeTextPart picks a transfer encoding the body can actually be sent under.
+//
+// 7bit is a promise that every byte is below 128, and a plain part carrying any
+// other alphabet - a Chinese notification, an accented name - breaks it. Some
+// relays reject such a message outright; others pass it on to be decoded as
+// mojibake. Declaring quoted-printable in that case costs nothing and keeps the
+// ASCII path byte-identical to what it produced before.
+func encodeTextPart(body string) (encoding, payload string) {
+	normalized := normalizeNewlines(body)
+	if isASCII(normalized) {
+		return "7bit", normalized
+	}
+	return "quoted-printable", toQuotedPrintable(normalized)
 }
 
 func (s *smtpSender) tlsConfig() *tls.Config {
