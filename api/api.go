@@ -748,6 +748,11 @@ func (h *handler) register(c *gin.Context) {
 		Level:        store.LevelUser,
 		Role:         store.RoleUser,
 		Groups:       []string{"User"},
+		// Active must be set explicitly. The column defaults to TRUE in the
+		// schema, but CreateUser always writes it, so the zero value would
+		// persist an account that login accepts and every protected endpoint
+		// then rejects with account_suspended.
+		Active: true,
 	}
 
 	if !h.emailVerificationEnabled || code != "" {
