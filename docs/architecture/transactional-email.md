@@ -115,13 +115,26 @@ Gmail 的规则是 envelope sender 必须是认证账号**或其已验证别名*
 | 声明 | gitops | `resources/<zone>/<env>/cloudflare/email-dns.yaml` | 期望状态：MX、SPF include、DKIM selector、DMARC |
 | 对账 | playbooks | `configure_email_dns.yml` | Ansible 实现，按 name/type 对做差异 |
 | 调度 | platform-ops-toolkit | `.github/workflows/configure-email-dns.yaml` | 唯一入口，zone 串行、不 fail-fast |
-| 凭据 | Vault | `kv/data/<env>/xworktech-email` | `cloudflare_api_token`，需 Zone:Read + DNS:Edit |
+| 凭据 | Vault | `kv/data/<env>/serverless/cloudflare` | `CLOUDFLARE_API_TOKEN`，需 Zone:Read + DNS:Edit |
+
+Cloudflare 凭据复用 serverless-orchestrator 已在读的那一条，而不是另建一份 mail
+专用副本：同一个凭据存两个路径就是两个轮换点，而第二个正是轮换那天没人记得的那个。
+（历史记录：本文最初写的是 `kv/data/<env>/xworktech-email`——那个路径从未存在过，
+是从一条从未成功运行的流水线里继承来的引用。验证一个路径被**引用**，不等于验证它
+**能解析**。）
 
 调度层在 toolkit 而非 playbooks：后者是 Ansible 内容层，其他跑这些 playbook 的
-流水线全部从 toolkit 驱动。**Vault role 绑定的是仓库的 OIDC subject**，所以这次
-搬迁也改变了读 Cloudflare token 的角色——
-`github-actions-platform-ops-toolkit-<env>` 需要被授予该路径的读权限，否则运行
-停在 Vault 步骤报一个点名该路径的 403。
+流水线全部从 toolkit 驱动。
+
+**Vault role 绑定的是仓库的 OIDC subject**，所以读 Cloudflare token 的角色是
+`github-actions-platform-ops-toolkit-<env>`，其策略已含 `kv/data/<env>/*` 的读权限。
+真正需要维护的是该 role 的 **workflow 允许列表**——它在 toolkit 的
+`scripts/create_vault_service_repo_roles.sh` 里，条目一律以 `@*` 结尾。
+
+不要在那里钉具体 tag。`ref` 绑定（`refs/tags/v*`、`refs/heads/release/v*`）已经把
+触发来源限制在发布 tag 上，再钉一个具体版本不增加任何隔离，只会让下次发版后这个
+workflow 静默失效——失败点在 Vault 认证，而没有任何线索指向"tag 变了"。
+手工 `vault write` 出来的绑定同样危险：它游离在脚本之外，脚本下次运行会把它抹掉。
 
 zone 之间串行且不 fail-fast：两份 policy 编辑的是同一个 Cloudflare 账号，且每个
 zone 的 apex SPF 是**整条改写**而非差异更新，一个 zone 失败不能让另一个停在半
