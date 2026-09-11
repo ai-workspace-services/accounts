@@ -1,10 +1,12 @@
 package api
 
 import (
+	"fmt"
 	"html"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // Brand strings for outbound transactional mail.
@@ -19,17 +21,130 @@ import (
 // "XControl" is a retired internal codename and must never reach a recipient.
 const (
 	brandProduct  = "XWorkmate"
-	brandSuite    = "Connect and work with your AI Workspace"
 	brandPlatform = "svc.plus Platform"
 	brandCompany  = "XWork Technologies"
 	brandSiteURL  = "https://www.xworktech.com/"
 	brandSiteText = "www.xworktech.com"
-
-	// The plain-text alternative is emitted with Content-Transfer-Encoding: 7bit,
-	// so it must stay ASCII-only. Middots and other punctuation live in the HTML
-	// part, which is quoted-printable encoded.
-	brandSuiteASCII = "Connect and work with your AI Workspace"
 )
+
+// mailLocale selects the language of a transactional mail. English is the
+// default because it is the only language every recipient of this product has
+// in common; Chinese is offered because most of them read it more comfortably.
+type mailLocale string
+
+const (
+	localeEN mailLocale = "en"
+	localeZH mailLocale = "zh"
+)
+
+// mailCopy is every sentence that changes with the language. Brand names do
+// not appear here on purpose: XWorkmate and svc.plus Platform are the same
+// words in both, and duplicating them would be one more place to forget.
+type mailCopy struct {
+	htmlLang        string
+	suite           string
+	greetingPlain   string // no recipient name is known
+	greetingNamed   string // %s is the recipient's name
+	introRegister   string
+	introVerify     string
+	introReset      string
+	labelCode       string
+	labelToken      string
+	expiry          string // %s is an RFC3339 UTC timestamp
+	expiryMinutes   string // %s timestamp, %d minutes
+	reassureIgnore  string
+	reassureReset   string
+	subjectRegister string
+	subjectVerify   string
+	subjectReset    string
+	automatedNotice string
+}
+
+var mailCopyByLocale = map[mailLocale]mailCopy{
+	localeEN: {
+		htmlLang:        "en",
+		suite:           "Connect and work with your AI Workspace",
+		greetingPlain:   "Hello,",
+		greetingNamed:   "Hello %s,",
+		introRegister:   "Use the verification code below to finish creating your account.",
+		introVerify:     "Use the verification code below to verify your account.",
+		introReset:      "Use the token below to reset your account password.",
+		labelCode:       "Verification code",
+		labelToken:      "Reset token",
+		expiry:          "This token expires at %s UTC.",
+		expiryMinutes:   "This code expires at %s UTC (in %d minutes).",
+		reassureIgnore:  "If you did not request this email you can ignore it.",
+		reassureReset:   "If you did not request a reset you can ignore this email.",
+		subjectRegister: "Verify your email for " + brandProduct,
+		subjectVerify:   "Verify your " + brandProduct + " account",
+		subjectReset:    "Reset your " + brandProduct + " password",
+		automatedNotice: "This is an automated message, please do not reply.",
+	},
+	localeZH: {
+		htmlLang:        "zh-Hans",
+		suite:           "连接并驾驭你的 AI 工作空间",
+		greetingPlain:   "您好：",
+		greetingNamed:   "%s，您好：",
+		introRegister:   "请使用下方验证码完成账号创建。",
+		introVerify:     "请使用下方验证码完成邮箱验证。",
+		introReset:      "请使用下方令牌重置账号密码。",
+		labelCode:       "验证码",
+		labelToken:      "重置令牌",
+		expiry:          "该令牌于 %s UTC 失效。",
+		expiryMinutes:   "该验证码于 %s UTC 失效（%d 分钟后）。",
+		reassureIgnore:  "如果这不是你发起的请求，忽略本邮件即可。",
+		reassureReset:   "如果这不是你发起的重置请求，忽略本邮件即可。",
+		subjectRegister: brandProduct + " 邮箱验证码",
+		subjectVerify:   "验证你的 " + brandProduct + " 账号",
+		subjectReset:    "重置你的 " + brandProduct + " 密码",
+		automatedNotice: "本邮件由系统自动发送，请勿直接回复。",
+	},
+}
+
+// copyFor never fails: an unknown locale falls back to English rather than
+// rendering a mail with empty sentences in it.
+func copyFor(locale mailLocale) mailCopy {
+	if c, ok := mailCopyByLocale[locale]; ok {
+		return c
+	}
+	return mailCopyByLocale[localeEN]
+}
+
+// parseMailLocale resolves a locale from whatever the caller knows, which is
+// usually an Accept-Language header. Only the primary subtag is inspected, so
+// zh-CN, zh-TW and zh all land on Chinese; everything else is English.
+func parseMailLocale(value string) mailLocale {
+	for _, part := range strings.Split(value, ",") {
+		tag := strings.ToLower(strings.TrimSpace(strings.SplitN(part, ";", 2)[0]))
+		switch {
+		case tag == "":
+			continue
+		case strings.HasPrefix(tag, "zh"):
+			return localeZH
+		case strings.HasPrefix(tag, "en"):
+			return localeEN
+		}
+	}
+	return localeEN
+}
+
+// requestLocale picks the language for a mail sent in response to this request.
+//
+// An explicit ?locale= or X-Locale wins, because the console knows which
+// language the person is actually reading; Accept-Language is the fallback the
+// browser supplies on its own. Neither is trusted to be valid - parseMailLocale
+// resolves anything it does not recognise to English.
+func requestLocale(c *gin.Context) mailLocale {
+	if c == nil || c.Request == nil {
+		return localeEN
+	}
+	for _, explicit := range []string{c.Query("locale"), c.GetHeader("X-Locale")} {
+		if strings.TrimSpace(explicit) != "" {
+			return parseMailLocale(explicit)
+		}
+	}
+	return parseMailLocale(c.GetHeader("Accept-Language"))
+}
 
 // codeStyle selects how the highlighted credential is typeset. A six-digit
 // verification code reads best tracked out on one line; a 64-character hex
@@ -44,6 +159,7 @@ const (
 // transactionalEmail is the content of one code-delivery message. Every field
 // is plain text: the renderer escapes what goes into the HTML part.
 type transactionalEmail struct {
+	Locale    mailLocale
 	Greeting  string
 	Intro     string
 	CodeLabel string
@@ -59,7 +175,7 @@ const emailMonoStack = "ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation M
 // Table layout with inline styles throughout: Gmail strips <style> blocks and
 // Outlook's word-based renderer ignores modern layout entirely.
 const emailHTMLTemplate = `<!doctype html>
-<html lang="en">
+<html lang="__LANG__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -97,7 +213,7 @@ const emailHTMLTemplate = `<!doctype html>
 <div style="margin:14px 0 0 0;font-family:__FONT__;font-size:12px;line-height:1.6;color:#98a2b3;">
 <a href="__SITE__" style="color:#667085;font-weight:600;text-decoration:none;">__COMPANY__</a><span style="color:#d0d5dd;">&nbsp;&middot;&nbsp;</span>__PLATFORM__
 </div>
-<div style="margin:4px 0 0 0;font-family:__FONT__;font-size:12px;line-height:1.6;color:#98a2b3;">This is an automated message, please do not reply.</div>
+<div style="margin:4px 0 0 0;font-family:__FONT__;font-size:12px;line-height:1.6;color:#98a2b3;">__NOTICE__</div>
 </td></tr>
 </table>
 </td></tr>
@@ -108,6 +224,8 @@ const emailHTMLTemplate = `<!doctype html>
 // renderTransactionalEmail returns the plain-text and HTML alternatives for one
 // message. Both carry the same information; the plain part stays ASCII-only.
 func renderTransactionalEmail(m transactionalEmail) (string, string) {
+	c := copyFor(m.Locale)
+
 	var codeCSS string
 	switch m.CodeStyle {
 	case codeStyleToken:
@@ -118,9 +236,11 @@ func renderTransactionalEmail(m transactionalEmail) (string, string) {
 	}
 
 	replacer := strings.NewReplacer(
+		"__LANG__", c.htmlLang,
 		"__PRODUCT__", brandProduct,
 		"__PLATFORM__", brandPlatform,
-		"__SUITE__", brandSuite,
+		"__NOTICE__", html.EscapeString(c.automatedNotice),
+		"__SUITE__", c.suite,
 		"__COMPANY__", brandCompany,
 		"__SITE__", brandSiteURL,
 		"__SITE_TEXT__", brandSiteText,
@@ -137,7 +257,7 @@ func renderTransactionalEmail(m transactionalEmail) (string, string) {
 	)
 
 	var plain strings.Builder
-	plain.WriteString(brandProduct + " - " + brandSuiteASCII + "\n")
+	plain.WriteString(brandProduct + " - " + c.suite + "\n")
 	plain.WriteString(strings.Repeat("-", 40) + "\n\n")
 	plain.WriteString(m.Greeting + "\n\n")
 	plain.WriteString(m.Intro + "\n\n")
@@ -147,17 +267,18 @@ func renderTransactionalEmail(m transactionalEmail) (string, string) {
 	plain.WriteString(strings.Repeat("-", 40) + "\n")
 	plain.WriteString(brandSiteURL + "\n\n")
 	plain.WriteString(brandCompany + " - " + brandPlatform + "\n")
-	plain.WriteString("This is an automated message, please do not reply.\n")
+	plain.WriteString(c.automatedNotice + "\n")
 
 	return plain.String(), replacer.Replace(emailHTMLTemplate)
 }
 
 // expiryLine renders the shared "expires at ... (in N minutes)" sentence so the
 // three transactional mails cannot drift apart in wording.
-func expiryLine(expiresAt time.Time, ttl time.Duration) string {
-	line := "This code expires at " + expiresAt.UTC().Format(time.RFC3339) + " UTC"
+func expiryLine(locale mailLocale, expiresAt time.Time, ttl time.Duration) string {
+	c := copyFor(locale)
+	stamp := expiresAt.UTC().Format(time.RFC3339)
 	if minutes := int(ttl.Minutes()); minutes > 0 {
-		line += " (in " + strconv.Itoa(minutes) + " minutes)"
+		return fmt.Sprintf(c.expiryMinutes, stamp, minutes)
 	}
-	return line + "."
+	return fmt.Sprintf(c.expiry, stamp)
 }
