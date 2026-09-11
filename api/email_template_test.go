@@ -11,7 +11,7 @@ import (
 func sampleRegistrationEmail() transactionalEmail {
 	return transactionalEmail{
 		Greeting:  "Hello,",
-		Intro:     "Use the verification code below to finish creating your " + brandProduct + " account.",
+		Intro:     "Use the verification code below to finish creating your account.",
 		CodeLabel: "Verification code",
 		Code:      "418062",
 		CodeStyle: codeStyleDigits,
@@ -23,7 +23,7 @@ func sampleRegistrationEmail() transactionalEmail {
 func sampleResetEmail() transactionalEmail {
 	return transactionalEmail{
 		Greeting:  "Hello Ada,",
-		Intro:     "Use the token below to reset your " + brandProduct + " account password.",
+		Intro:     "Use the token below to reset your account password.",
 		CodeLabel: "Reset token",
 		Code:      "9f2c1a7be40d5386c1ab77f0e9d4c2158b3a6de0c47f91b2a8e5d3c60f7148ab",
 		CodeStyle: codeStyleToken,
