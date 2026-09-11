@@ -43,6 +43,23 @@ const maxMFAVerificationAttempts = 5
 const defaultMFALockoutDuration = 5 * time.Minute
 const defaultOAuthExchangeCodeTTL = 5 * time.Minute
 
+// Enumeration-resistance budgets for register/send, register, and login.
+// Each pair bounds one axis (source IP, target email/identifier)
+// independently -- see the handler struct's registrationProbe*/login*
+// fields. Numbers are generous enough for a genuine user's retries (a typo
+// on the third try, a resend after a slow inbox) while making a dictionary
+// sweep of emails take hours instead of seconds.
+const (
+	registrationProbeIPLimit     = 20
+	registrationProbeIPWindow    = time.Hour
+	registrationProbeEmailLimit  = 5
+	registrationProbeEmailWindow = time.Hour
+	loginIPAttemptLimit          = 30
+	loginIPAttemptWindow         = 5 * time.Minute
+	loginIdentifierAttemptLimit  = 10
+	loginIdentifierAttemptWindow = 5 * time.Minute
+)
+
 const sessionCookieName = "xc_session"
 
 type imageVersionInfo struct {
@@ -91,6 +108,18 @@ type handler struct {
 	stripe                    *stripeClient
 	bridgeCredentials         map[string]memoryBridgeCredential
 	taskSessions              tasksession.Store
+
+	// Enumeration resistance for login and registration. Both flows tell an
+	// anonymous caller whether an email is already registered
+	// (email_already_exists / user_not_found); these limiters don't hide
+	// that signal -- the copy stays -- they bound how fast it can be
+	// harvested. Each pair is checked by IP and by the email/identifier in
+	// the request, independently, so neither axis alone can be starved by
+	// the other filling up first. See internal/auth.RateLimiter.
+	registrationProbeByIP     *auth.RateLimiter
+	registrationProbeByEmail  *auth.RateLimiter
+	loginAttemptsByIP         *auth.RateLimiter
+	loginAttemptsByIdentifier *auth.RateLimiter
 }
 
 type memoryBridgeCredential struct {
@@ -347,6 +376,10 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		passwordResets:            make(map[string]passwordReset),
 		oauthExchangeTTL:          defaultOAuthExchangeCodeTTL,
 		bridgeCredentials:         make(map[string]memoryBridgeCredential),
+		registrationProbeByIP:     auth.NewRateLimiter(registrationProbeIPLimit, registrationProbeIPWindow),
+		registrationProbeByEmail:  auth.NewRateLimiter(registrationProbeEmailLimit, registrationProbeEmailWindow),
+		loginAttemptsByIP:         auth.NewRateLimiter(loginIPAttemptLimit, loginIPAttemptWindow),
+		loginAttemptsByIdentifier: auth.NewRateLimiter(loginIdentifierAttemptLimit, loginIdentifierAttemptWindow),
 	}
 
 	for _, opt := range opts {
@@ -670,6 +703,36 @@ func hasQueryParameter(c *gin.Context, keys ...string) bool {
 	return false
 }
 
+// clientIP resolves the caller's address for rate-limit keying.
+// CF-Connecting-IP is set by Cloudflare's edge on every request that
+// reaches this service and cannot be supplied by the client itself, so it
+// is trusted first; gin's ClientIP (X-Forwarded-For/X-Real-Ip, falling
+// back to the socket peer) covers direct calls such as local development
+// or an internal health check.
+func clientIP(c *gin.Context) string {
+	if ip := strings.TrimSpace(c.GetHeader("CF-Connecting-IP")); ip != "" {
+		return ip
+	}
+	return c.ClientIP()
+}
+
+// allowAuthProbe checks a per-IP and a per-key budget together, so an
+// enumeration sweep is capped whichever axis it concentrates on: many
+// emails from one IP, or one email retried from many IPs. It denies with a
+// generic rate_limited response before either limiter is consulted for its
+// individual reason, since surfacing which axis tripped would itself leak
+// information to the caller. key is expected already normalized
+// (lowercased/trimmed) by the caller.
+func allowAuthProbe(c *gin.Context, byIP, byKey *auth.RateLimiter, key string) bool {
+	ipAllowed := byIP.Allow(clientIP(c))
+	keyAllowed := byKey.Allow(key)
+	if ipAllowed && keyAllowed {
+		return true
+	}
+	respondError(c, http.StatusTooManyRequests, "rate_limited", "too many attempts, please try again later")
+	return false
+}
+
 func (h *handler) register(c *gin.Context) {
 	if hasQueryParameter(c, "password", "email", "confirmPassword") {
 		respondError(c, http.StatusBadRequest, "credentials_in_query", "sensitive credentials must not be sent in the query string")
@@ -694,6 +757,10 @@ func (h *handler) register(c *gin.Context) {
 
 	if email == "" || password == "" {
 		respondError(c, http.StatusBadRequest, "missing_credentials", "email and password are required")
+		return
+	}
+
+	if !allowAuthProbe(c, h.registrationProbeByIP, h.registrationProbeByEmail, email) {
 		return
 	}
 
@@ -915,6 +982,13 @@ func (h *handler) sendEmailVerification(c *gin.Context) {
 	// 基础邮箱校验，避免明显无效地址触发外发
 	if !strings.Contains(email, "@") {
 		respondError(c, http.StatusBadRequest, "invalid_email", "email must be a valid address")
+		return
+	}
+
+	// Shares register()'s limiter pair: send and register both answer
+	// email_already_exists, so a caller working around one endpoint's
+	// budget by switching to the other must not get a fresh one.
+	if !allowAuthProbe(c, h.registrationProbeByIP, h.registrationProbeByEmail, email) {
 		return
 	}
 
@@ -1241,6 +1315,12 @@ func (h *handler) login(c *gin.Context) {
 
 	if identifier == "" {
 		respondError(c, http.StatusBadRequest, "missing_credentials", "identifier is required")
+		return
+	}
+
+	// Case-fold only for the rate-limit key: findUserByIdentifier below
+	// keeps its existing exact-identifier lookup semantics unchanged.
+	if !allowAuthProbe(c, h.loginAttemptsByIP, h.loginAttemptsByIdentifier, strings.ToLower(identifier)) {
 		return
 	}
 
