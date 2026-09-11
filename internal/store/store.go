@@ -590,6 +590,10 @@ func (s *memoryStore) CreateUser(ctx context.Context, user *User) error {
 	normalizeUserRoleFields(&stored)
 	stored.Groups = cloneStringSlice(stored.Groups)
 	stored.Permissions = cloneStringSlice(stored.Permissions)
+	// Diverges from postgresStore.CreateUser, which writes User.Active
+	// verbatim. Tests that read an account back through this store therefore
+	// cannot observe a caller that forgot to set Active; assert on the value
+	// passed to CreateUser instead (see TestRegisterCreatesActiveAccount).
 	stored.Active = true
 	if strings.TrimSpace(stored.ProxyUUID) == "" {
 		credentialID, err := uuid.NewV7()
