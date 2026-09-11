@@ -38,7 +38,7 @@
 
 ### accounts #16 [MERGED] — Wire Google OAuth secrets into the deploy pipeline
 - pipeline.yml 增 `OAUTH_GOOGLE_CLIENT_ID`(var)+ `OAUTH_GOOGLE_CLIENT_SECRET`(secret)透传
-- Google 凭证:GCP 项目 xzerolab-480008 建 Web OAuth client,client_id `266500572462-c00141…apps.googleusercontent.com`,callback `…/callback/google`
+- Google 凭证:当时的 GCP 项目下建 Web OAuth client,client_id `<client-id>.apps.googleusercontent.com`,callback `…/callback/google`
 - 已设 GH secret/var + Vault `OAUTH_GOOGLE_CLIENT_SECRET`;合并部署后 `login/google` 验证 307 通过
 - Vault 顺手改名 `GITHUB_CLIENT_SECRET` → `OAUTH_GITHUB_CLIENT_SECRET`,与 Google 命名对齐(纯备份字段,零运行时影响)
 

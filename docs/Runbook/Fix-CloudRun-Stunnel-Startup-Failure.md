@@ -19,7 +19,7 @@ within the allocated timeout.
 
 **错误日志链接示例**:
 ```
-https://console.cloud.google.com/logs/viewer?project=xzerolab-480008&resource=cloud_run_revision/service_name/accounts-svc-plus/revision_name/accounts-svc-plus-00049-gjv
+https://console.cloud.google.com/logs/viewer?project=$GCP_PROJECT&resource=cloud_run_revision/service_name/accounts-svc-plus/revision_name/accounts-svc-plus-00049-gjv
 ```
 
 ---
@@ -72,7 +72,7 @@ https://console.cloud.google.com/logs/viewer?project=xzerolab-480008&resource=cl
 ```bash
 gcloud logging read "resource.type=cloud_run_revision \
   AND resource.labels.service_name=accounts-svc-plus" \
-  --limit 50 --format json --project xzerolab-480008
+  --limit 50 --format json --project "$GCP_PROJECT"
 ```
 
 **关键错误信息**:
@@ -83,11 +83,11 @@ gcloud logging read "resource.type=cloud_run_revision \
 ### 2. 检查 Stunnel 配置
 ```bash
 # 查看当前 Secret 版本
-gcloud secrets versions list stunnel-config --project xzerolab-480008
+gcloud secrets versions list stunnel-config --project "$GCP_PROJECT"
 
 # 查看配置内容
 gcloud secrets versions access latest --secret=stunnel-config \
-  --project xzerolab-480008
+  --project "$GCP_PROJECT"
 ```
 
 ### 3. 本地复现（可选）
@@ -127,23 +127,23 @@ docker run --rm -v $(pwd)/deploy/gcp/cloud-run/stunnel.conf:/etc/stunnel/stunnel
 cd /path/to/accounts.svc.plus
 
 # 更新 Secret（会创建新版本）
-make cloudrun-stunnel GCP_PROJECT=xzerolab-480008
+make cloudrun-stunnel GCP_PROJECT="$GCP_PROJECT"
 
 # 或手动执行
 gcloud secrets versions add stunnel-config \
   --data-file deploy/gcp/cloud-run/stunnel.conf \
-  --project xzerolab-480008
+  --project "$GCP_PROJECT"
 ```
 
 ### 步骤 3: 重新部署服务
 ```bash
 # 触发新部署（会拉取最新 Secret 版本）
-make cloudrun-deploy GCP_PROJECT=xzerolab-480008
+make cloudrun-deploy GCP_PROJECT="$GCP_PROJECT"
 
 # 或手动执行
 gcloud run services replace deploy/gcp/cloud-run/service.yaml \
   --region asia-northeast1 \
-  --project xzerolab-480008
+  --project "$GCP_PROJECT"
 ```
 
 ---
@@ -154,7 +154,7 @@ gcloud run services replace deploy/gcp/cloud-run/service.yaml \
 ```bash
 gcloud run services describe accounts-svc-plus \
   --region asia-northeast1 \
-  --project xzerolab-480008 \
+  --project "$GCP_PROJECT" \
   --format="value(status.conditions)"
 ```
 
@@ -164,7 +164,7 @@ gcloud run services describe accounts-svc-plus \
 ```bash
 SERVICE_URL=$(gcloud run services describe accounts-svc-plus \
   --region asia-northeast1 \
-  --project xzerolab-480008 \
+  --project "$GCP_PROJECT" \
   --format="value(status.url)")
 
 curl -f "${SERVICE_URL}/healthz"
@@ -185,7 +185,7 @@ curl -X POST "${SERVICE_URL}/api/auth/login" \
 ```bash
 gcloud run services logs read accounts-svc-plus \
   --region asia-northeast1 \
-  --project xzerolab-480008 \
+  --project "$GCP_PROJECT" \
   --limit 20
 ```
 
@@ -206,13 +206,13 @@ gcloud run services logs read accounts-svc-plus \
 # 查看历史 Revision
 gcloud run revisions list --service accounts-svc-plus \
   --region asia-northeast1 \
-  --project xzerolab-480008
+  --project "$GCP_PROJECT"
 
 # 回滚到指定版本（替换 REVISION_NAME）
 gcloud run services update-traffic accounts-svc-plus \
   --to-revisions REVISION_NAME=100 \
   --region asia-northeast1 \
-  --project xzerolab-480008
+  --project "$GCP_PROJECT"
 ```
 
 ### 方案 B: 临时禁用 Stunnel（仅测试环境）
