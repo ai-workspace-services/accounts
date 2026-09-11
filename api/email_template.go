@@ -9,16 +9,17 @@ import (
 
 // Brand strings for outbound transactional mail.
 //
-// The account itself belongs to svc.plus - that is the platform a recipient
-// registered on at console.svc.plus, and the name they will look for when this
-// mail arrives. XWorkmate, XConnect and AI Workspace are the services it
-// carries, so they read as the subtitle rather than the identity. XWork
+// The masthead is the product a recipient signed up for: XWorkmate, with the
+// rest of the suite beneath it. svc.plus is the platform underneath - real, but
+// infrastructure, and nobody scanning an inbox is looking for the name of the
+// platform. It is credited once in the footer and nowhere else. XWork
 // Technologies is the company that operates all of it.
 //
 // "XControl" is a retired internal codename and must never reach a recipient.
 const (
-	brandProduct  = "svc.plus"
-	brandSuite    = "XWorkmate · XConnect · AI Workspace"
+	brandProduct  = "XWorkmate"
+	brandSuite    = "XConnect · AI Workspace"
+	brandPlatform = "svc.plus Platform"
 	brandCompany  = "XWork Technologies"
 	brandSiteURL  = "https://www.xworktech.com/"
 	brandSiteText = "www.xworktech.com"
@@ -30,7 +31,7 @@ const (
 	// The plain-text alternative is emitted with Content-Transfer-Encoding: 7bit,
 	// so it must stay ASCII-only. Middots and other punctuation live in the HTML
 	// part, which is quoted-printable encoded.
-	brandSuiteASCII = "XWorkmate - XConnect - AI Workspace"
+	brandSuiteASCII = "XConnect - AI Workspace"
 )
 
 // codeStyle selects how the highlighted credential is typeset. A six-digit
@@ -98,7 +99,7 @@ const emailHTMLTemplate = `<!doctype html>
 <div style="margin:16px 0 0 0;font-family:__FONT__;font-size:13px;font-weight:500;line-height:1.5;color:#475467;">__TAGLINE__</div>
 <div style="margin:4px 0 0 0;font-family:__FONT__;font-size:13px;line-height:1.5;"><a href="__SITE__" style="color:#3538cd;font-weight:600;text-decoration:none;">__SITE_TEXT__</a></div>
 <div style="margin:14px 0 0 0;font-family:__FONT__;font-size:12px;line-height:1.6;color:#98a2b3;">
-<a href="__SITE__" style="color:#667085;font-weight:600;text-decoration:none;">__COMPANY__</a><span style="color:#d0d5dd;">&nbsp;&middot;&nbsp;</span>__PRODUCT__
+<a href="__SITE__" style="color:#667085;font-weight:600;text-decoration:none;">__COMPANY__</a><span style="color:#d0d5dd;">&nbsp;&middot;&nbsp;</span>__PLATFORM__
 </div>
 <div style="margin:4px 0 0 0;font-family:__FONT__;font-size:12px;line-height:1.6;color:#98a2b3;">This is an automated message, please do not reply.</div>
 </td></tr>
@@ -122,6 +123,7 @@ func renderTransactionalEmail(m transactionalEmail) (string, string) {
 
 	replacer := strings.NewReplacer(
 		"__PRODUCT__", brandProduct,
+		"__PLATFORM__", brandPlatform,
 		"__SUITE__", brandSuite,
 		"__COMPANY__", brandCompany,
 		"__SITE__", brandSiteURL,
@@ -150,7 +152,7 @@ func renderTransactionalEmail(m transactionalEmail) (string, string) {
 	plain.WriteString(strings.Repeat("-", 40) + "\n")
 	plain.WriteString(brandTagline + "\n")
 	plain.WriteString(brandSiteURL + "\n\n")
-	plain.WriteString(brandCompany + " - " + brandProduct + "\n")
+	plain.WriteString(brandCompany + " - " + brandPlatform + "\n")
 	plain.WriteString("This is an automated message, please do not reply.\n")
 
 	return plain.String(), replacer.Replace(emailHTMLTemplate)
