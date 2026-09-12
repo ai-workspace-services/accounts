@@ -12,19 +12,25 @@ import (
 )
 
 const (
-	permissionAdminSettingsRead   = "admin.settings.read"
-	permissionAdminSettingsWrite  = "admin.settings.write"
-	permissionAdminUsersMetrics   = "admin.users.metrics.read"
-	permissionAdminBillingLedger  = "admin.billing.ledger.read"
-	permissionAdminUsersListRead  = "admin.users.list.read"
-	permissionAdminAgentsStatus   = "admin.agents.status.read"
-	permissionAdminUsersPause     = "admin.users.pause.write"
-	permissionAdminUsersResume    = "admin.users.resume.write"
-	permissionAdminUsersDelete    = "admin.users.delete.write"
-	permissionAdminUsersRenewUUID = "admin.users.renew_uuid.write"
-	permissionAdminUsersRoleWrite = "admin.users.role.write"
-	permissionAdminBlacklistRead  = "admin.blacklist.read"
-	permissionAdminBlacklistWrite = "admin.blacklist.write"
+	permissionAdminSettingsRead  = "admin.settings.read"
+	permissionAdminSettingsWrite = "admin.settings.write"
+	permissionAdminUsersMetrics  = "admin.users.metrics.read"
+	permissionAdminBillingLedger = "admin.billing.ledger.read"
+	permissionAdminUsersListRead = "admin.users.list.read"
+	permissionAdminAgentsStatus  = "admin.agents.status.read"
+	permissionAdminUsersPause    = "admin.users.pause.write"
+	permissionAdminUsersResume   = "admin.users.resume.write"
+	// Distinct from pause/resume above, which move AccountQuotaState's
+	// ProxyAccessState (VLESS). These two move users.active -- the flag
+	// auth.RequireActiveUser checks on every protected endpoint, so an
+	// account without it can log in and then be refused everywhere else.
+	permissionAdminUsersActivate   = "admin.users.activate.write"
+	permissionAdminUsersDeactivate = "admin.users.deactivate.write"
+	permissionAdminUsersDelete     = "admin.users.delete.write"
+	permissionAdminUsersRenewUUID  = "admin.users.renew_uuid.write"
+	permissionAdminUsersRoleWrite  = "admin.users.role.write"
+	permissionAdminBlacklistRead   = "admin.blacklist.read"
+	permissionAdminBlacklistWrite  = "admin.blacklist.write"
 	// permissionAdminBillingMoneyWrite gates the two operations that move real
 	// money: crediting/debiting an account balance, and publishing the price
 	// catalog the public pricing page reads. Being able to edit the price list
@@ -34,21 +40,28 @@ const (
 )
 
 var defaultOperatorPermissions = map[string]bool{
-	permissionXConnectZeroRead:    true,
-	permissionXConnectZeroManage:  false,
-	permissionAdminSettingsRead:   true,
-	permissionAdminSettingsWrite:  false,
-	permissionAdminUsersMetrics:   true,
-	permissionAdminBillingLedger:  true,
-	permissionAdminUsersListRead:  true,
-	permissionAdminAgentsStatus:   true,
-	permissionAdminUsersPause:     true,
-	permissionAdminUsersResume:    true,
-	permissionAdminUsersDelete:    false,
-	permissionAdminUsersRenewUUID: true,
-	permissionAdminUsersRoleWrite: false,
-	permissionAdminBlacklistRead:  true,
-	permissionAdminBlacklistWrite: true,
+	permissionXConnectZeroRead:   true,
+	permissionXConnectZeroManage: false,
+	permissionAdminSettingsRead:  true,
+	permissionAdminSettingsWrite: false,
+	permissionAdminUsersMetrics:  true,
+	permissionAdminBillingLedger: true,
+	permissionAdminUsersListRead: true,
+	permissionAdminAgentsStatus:  true,
+	permissionAdminUsersPause:    true,
+	permissionAdminUsersResume:   true,
+	// Asymmetric on purpose. Restoring an account an operator is already
+	// fielding a support request about is low risk and reversible, so it sits
+	// with pause/resume. Withdrawing every protected endpoint from an account
+	// is closer to delete in blast radius, so it stays with the admin until
+	// someone grants it deliberately through the permission matrix.
+	permissionAdminUsersActivate:   true,
+	permissionAdminUsersDeactivate: false,
+	permissionAdminUsersDelete:     false,
+	permissionAdminUsersRenewUUID:  true,
+	permissionAdminUsersRoleWrite:  false,
+	permissionAdminBlacklistRead:   true,
+	permissionAdminBlacklistWrite:  true,
 	// Denied to operators by default. It can still be granted deliberately
 	// through the permission matrix, but it is not something an operator holds
 	// simply by being an operator.
@@ -208,6 +221,8 @@ func registerAdminRoutes(group *gin.RouterGroup, h *handler) {
 	admin.POST("/users", h.createCustomUser)
 	admin.POST("/users/:userId/pause", h.pauseUser)
 	admin.POST("/users/:userId/resume", h.resumeUser)
+	admin.POST("/users/:userId/activate", h.activateUser)
+	admin.POST("/users/:userId/deactivate", h.deactivateUser)
 	admin.DELETE("/users/:userId", h.deleteUser)
 	admin.POST("/users/:userId/renew-uuid", h.renewProxyUUID)
 

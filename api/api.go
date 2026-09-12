@@ -529,6 +529,12 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.PUT("/admin/users/:userId/groups", h.updateUserGroups)
 	authProtected.POST("/admin/users/:userId/pause", h.pauseUser)
 	authProtected.POST("/admin/users/:userId/resume", h.resumeUser)
+	// pause/resume above gate VLESS (AccountQuotaState.ProxyAccessState);
+	// activate/deactivate gate users.active, which RequireActiveUser checks
+	// on every protected endpoint. Different switches, deliberately named
+	// apart -- conflating them is how an inactive account looked unfixable.
+	authProtected.POST("/admin/users/:userId/activate", h.activateUser)
+	authProtected.POST("/admin/users/:userId/deactivate", h.deactivateUser)
 	authProtected.DELETE("/admin/users/:userId", h.deleteUser)
 	authProtected.POST("/admin/users/:userId/renew-uuid", h.renewProxyUUID)
 	authProtected.POST("/admin/tenants/bootstrap", h.bootstrapTenant)
