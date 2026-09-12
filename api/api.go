@@ -41,6 +41,20 @@ const defaultEmailVerificationTTL = 10 * time.Minute
 const defaultPasswordResetTTL = 30 * time.Minute
 const maxMFAVerificationAttempts = 5
 const defaultMFALockoutDuration = 5 * time.Minute
+
+// Email verification codes are six decimal digits, so the space is 10^6 --
+// small enough to sweep well inside the 10 minute TTL without a limit on
+// guesses. The registration path merely gates signup, but the
+// already-registered path hands back a session on success, which makes an
+// unbounded guess loop a way into an existing account. Same budget and
+// lockout as MFA above, for the same reason.
+//
+// A resend does not refill the budget: sendEmailVerification reuses the
+// existing code while it is unexpired, so resetting the counter there would
+// hand an attacker a free reset. The record is replaced -- and the counter
+// naturally cleared -- only once the TTL lapses and a new code is issued.
+const maxEmailVerificationAttempts = 5
+const emailVerificationLockoutDuration = 5 * time.Minute
 const defaultOAuthExchangeCodeTTL = 5 * time.Minute
 
 // Enumeration-resistance budgets for register/send, register, and login.
@@ -151,10 +165,12 @@ type mfaChallenge struct {
 }
 
 type emailVerification struct {
-	userID    string
-	email     string
-	code      string
-	expiresAt time.Time
+	userID         string
+	email          string
+	code           string
+	expiresAt      time.Time
+	failedAttempts int
+	lockedUntil    time.Time
 }
 
 type passwordReset struct {
@@ -164,10 +180,12 @@ type passwordReset struct {
 }
 
 type registrationVerification struct {
-	email     string
-	code      string
-	expiresAt time.Time
-	verified  bool
+	email          string
+	code           string
+	expiresAt      time.Time
+	verified       bool
+	failedAttempts int
+	lockedUntil    time.Time
 }
 
 // Option configures handler behaviour when registering routes.
@@ -862,6 +880,17 @@ func (h *handler) register(c *gin.Context) {
 	c.JSON(http.StatusCreated, response)
 }
 
+// respondVerificationLocked reports a spent guess budget. It mirrors the MFA
+// lockout response: 429 with the deadline, so a client can say how long to
+// wait instead of looking like a rejected code.
+func respondVerificationLocked(c *gin.Context, retryAt time.Time) {
+	c.JSON(http.StatusTooManyRequests, gin.H{
+		"error":   "verification_locked",
+		"message": "too many invalid verification attempts, try again later",
+		"retryAt": retryAt.UTC(),
+	})
+}
+
 func (h *handler) verifyEmail(c *gin.Context) {
 	if hasQueryParameter(c, "token", "code") {
 		respondError(c, http.StatusBadRequest, "token_in_query", "verification code must be sent in the request body")
@@ -895,7 +924,18 @@ func (h *handler) verifyEmail(c *gin.Context) {
 	}
 
 	if verification, ok := h.lookupEmailVerification(email); ok {
+		// This branch returns a session on success, so an unbounded guess loop
+		// is a way into an existing account. Check the lockout before comparing.
+		if now := time.Now(); now.Before(verification.lockedUntil) {
+			respondVerificationLocked(c, verification.lockedUntil)
+			return
+		}
+
 		if verification.code != code {
+			if lockedUntil := h.recordEmailVerificationFailure(email); !lockedUntil.IsZero() && time.Now().Before(lockedUntil) {
+				respondVerificationLocked(c, lockedUntil)
+				return
+			}
 			respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
 			return
 		}
@@ -945,7 +985,17 @@ func (h *handler) verifyEmail(c *gin.Context) {
 	}
 
 	pending, ok := h.lookupRegistrationVerification(email)
+	if ok {
+		if now := time.Now(); now.Before(pending.lockedUntil) {
+			respondVerificationLocked(c, pending.lockedUntil)
+			return
+		}
+	}
 	if !ok || pending.code != code {
+		if lockedUntil := h.recordRegistrationVerificationFailure(email); !lockedUntil.IsZero() && time.Now().Before(lockedUntil) {
+			respondVerificationLocked(c, lockedUntil)
+			return
+		}
 		respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
 		return
 	}
@@ -2125,6 +2175,67 @@ func (h *handler) lookupEmailVerification(email string) (emailVerification, bool
 	}
 
 	return verification, true
+}
+
+// recordEmailVerificationFailure counts one wrong code against the pending
+// verification for email and reports the lockout deadline once the budget is
+// spent. A zero deadline means the caller may keep going.
+func (h *handler) recordEmailVerificationFailure(email string) time.Time {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return time.Time{}
+	}
+
+	now := time.Now()
+
+	h.verificationMu.Lock()
+	defer h.verificationMu.Unlock()
+
+	verification, ok := h.verifications[email]
+	if !ok {
+		return time.Time{}
+	}
+	if now.Before(verification.lockedUntil) {
+		return verification.lockedUntil
+	}
+
+	verification.failedAttempts++
+	if verification.failedAttempts >= maxEmailVerificationAttempts {
+		verification.failedAttempts = 0
+		verification.lockedUntil = now.Add(emailVerificationLockoutDuration)
+	}
+	h.verifications[email] = verification
+	return verification.lockedUntil
+}
+
+// recordRegistrationVerificationFailure is the same counter for the
+// pre-registration code, which gates signup rather than an existing account.
+func (h *handler) recordRegistrationVerificationFailure(email string) time.Time {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return time.Time{}
+	}
+
+	now := time.Now()
+
+	h.registrationMu.Lock()
+	defer h.registrationMu.Unlock()
+
+	verification, ok := h.registrationVerifications[email]
+	if !ok {
+		return time.Time{}
+	}
+	if now.Before(verification.lockedUntil) {
+		return verification.lockedUntil
+	}
+
+	verification.failedAttempts++
+	if verification.failedAttempts >= maxEmailVerificationAttempts {
+		verification.failedAttempts = 0
+		verification.lockedUntil = now.Add(emailVerificationLockoutDuration)
+	}
+	h.registrationVerifications[email] = verification
+	return verification.lockedUntil
 }
 
 func (h *handler) removeEmailVerification(email string) {
