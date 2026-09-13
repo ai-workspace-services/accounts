@@ -79,6 +79,12 @@ func (h *handler) authorizedAgentClients(ctx context.Context) ([]xrayconfig.Clie
 	}
 
 	for _, u := range users {
+		if err := h.archiveInactiveFreeUser(ctx, &u); err != nil {
+			return nil, "", err
+		}
+		if err := h.ensureExpiredSubscriptionDowngrade(ctx, &u); err != nil {
+			return nil, "", err
+		}
 		if !u.Active {
 			continue
 		}

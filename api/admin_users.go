@@ -291,6 +291,15 @@ func (h *handler) deleteUser(c *gin.Context) {
 		respondError(c, http.StatusForbidden, "root_protected", "root account cannot be deleted")
 		return
 	}
+	activeSubscription, err := h.hasActiveSubscription(c.Request.Context(), user.ID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "subscription_lookup_failed", "failed to verify subscription protection")
+		return
+	}
+	if activeSubscription || store.MonthlyQuotaGroup(user) == store.MonthlyPlusQuotaLimitGroup || store.MonthlyQuotaGroup(user) == store.MonthlyUnlimitedBetaQuotaGroup {
+		respondError(c, http.StatusForbidden, "subscription_protected", "subscribed accounts are protected from deletion")
+		return
+	}
 	if err := h.store.DeleteUser(c.Request.Context(), userID); err != nil {
 		respondError(c, http.StatusInternalServerError, "delete_failed", "failed to delete user")
 		return

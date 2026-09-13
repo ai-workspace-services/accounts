@@ -20,16 +20,16 @@ type BillingPlan struct {
 	// Stripe remains the authority on what is actually charged; this is what
 	// the storefront displays and what the ops console audits when the price
 	// changes. Zero means "no list price published".
-	PriceAmount   int64
-	PriceCurrency string // ISO 4217, e.g. CNY / USD
-	PriceUnit     string // month | year | once | GB
-	PriceMultipliers   map[string]float64 // region/line/peak/offpeak, default 1.0
-	Features           map[string]any
-	TrialDays          int
-	Active             bool
-	SortOrder          int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	PriceAmount      int64
+	PriceCurrency    string             // ISO 4217, e.g. CNY / USD
+	PriceUnit        string             // month | year | once | GB
+	PriceMultipliers map[string]float64 // region/line/peak/offpeak, default 1.0
+	Features         map[string]any
+	TrialDays        int
+	Active           bool
+	SortOrder        int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // Multiplier returns a named price multiplier with a 1.0 fallback.

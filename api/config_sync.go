@@ -38,6 +38,10 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if err := h.ensureExpiredSubscriptionDowngrade(c.Request.Context(), user); err != nil {
+		respondError(c, http.StatusInternalServerError, "subscription_downgrade_failed", "failed to apply expired subscription downgrade")
+		return
+	}
 	if strings.TrimSpace(user.ProxyUUID) == "" {
 		respondError(c, http.StatusServiceUnavailable, "proxy_uuid_unavailable", "proxy UUID is not provisioned for this account")
 		return

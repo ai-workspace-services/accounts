@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -138,6 +139,59 @@ func TestUpdateUserGroups(t *testing.T) {
 		rec := putGroups(rootUser.ID, []string{"segment:operations"})
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("expected 403 for root account, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("batch updates selected users", func(t *testing.T) {
+		payload, err := json.Marshal(map[string]any{
+			"updates": []map[string]any{{
+				"userId": target.ID,
+				"groups": []string{store.MonthlyPlusQuotaLimitGroup, "segment:beta"},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("failed to marshal batch payload: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPut, "/api/auth/admin/users/groups/batch", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		stored, err := st.GetUserByID(context.Background(), target.ID)
+		if err != nil {
+			t.Fatalf("failed to reload batch-updated user: %v", err)
+		}
+		if !equalStrings(stored.Groups, []string{store.MonthlyPlusQuotaLimitGroup, "segment:beta"}) {
+			t.Fatalf("expected batch groups to persist, got %v", stored.Groups)
+		}
+	})
+
+	t.Run("expired validity downgrades without deleting user", func(t *testing.T) {
+		past := time.Now().UTC().AddDate(0, 0, -2).Format("2006-01-02")
+		payload, err := json.Marshal(map[string]any{"validUntil": past})
+		if err != nil {
+			t.Fatalf("failed to marshal validity payload: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPut, "/api/auth/admin/users/"+target.ID+"/subscription-validity", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		stored, err := st.GetUserByID(context.Background(), target.ID)
+		if err != nil {
+			t.Fatalf("expected expired user to remain, got: %v", err)
+		}
+		if store.MonthlyQuotaGroup(stored) != store.MonthlyFreeQuotaLimitGroup {
+			t.Fatalf("expected expired user to downgrade to Free 5GB, got groups %v", stored.Groups)
+		}
+		if stored.SubscriptionValidUntil == nil || stored.SubscriptionValidUntil.Format("2006-01-02") != past {
+			t.Fatalf("expected validity to persist, got %#v", stored.SubscriptionValidUntil)
 		}
 	})
 
