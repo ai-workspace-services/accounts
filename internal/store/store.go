@@ -32,8 +32,12 @@ type User struct {
 	// ProxyUUID is the legacy Xray client identifier. During the credential
 	// migration it is copied verbatim into bridge_credentials.credential_uuid;
 	// users.ID is never used as a network credential.
-	ProxyUUID          string
-	ProxyUUIDExpiresAt *time.Time
+	ProxyUUID              string
+	ProxyUUIDExpiresAt     *time.Time
+	SubscriptionValidFrom  *time.Time
+	SubscriptionValidUntil *time.Time
+	LastActiveAt           *time.Time
+	ArchivedAt             *time.Time
 }
 
 // Monthly quota groups are managed by the admin console. Membership changes
@@ -721,6 +725,10 @@ func (s *memoryStore) UpdateUser(ctx context.Context, user *User) error {
 		updated.ProxyUUID = credentialID.String()
 	}
 	updated.ProxyUUIDExpiresAt = user.ProxyUUIDExpiresAt
+	updated.SubscriptionValidFrom = cloneTimePointer(user.SubscriptionValidFrom)
+	updated.SubscriptionValidUntil = cloneTimePointer(user.SubscriptionValidUntil)
+	updated.LastActiveAt = cloneTimePointer(user.LastActiveAt)
+	updated.ArchivedAt = cloneTimePointer(user.ArchivedAt)
 	normalizeUserRoleFields(&updated)
 	if user.CreatedAt.IsZero() {
 		updated.CreatedAt = existing.CreatedAt
@@ -1016,6 +1024,10 @@ func cloneUser(user *User) *User {
 	clone := *user
 	clone.Groups = cloneStringSlice(user.Groups)
 	clone.Permissions = cloneStringSlice(user.Permissions)
+	clone.SubscriptionValidFrom = cloneTimePointer(user.SubscriptionValidFrom)
+	clone.SubscriptionValidUntil = cloneTimePointer(user.SubscriptionValidUntil)
+	clone.LastActiveAt = cloneTimePointer(user.LastActiveAt)
+	clone.ArchivedAt = cloneTimePointer(user.ArchivedAt)
 	normalizeUserRoleFields(&clone)
 	return &clone
 }
@@ -1024,7 +1036,19 @@ func assignUser(dst, src *User) {
 	*dst = *src
 	dst.Groups = cloneStringSlice(src.Groups)
 	dst.Permissions = cloneStringSlice(src.Permissions)
+	dst.SubscriptionValidFrom = cloneTimePointer(src.SubscriptionValidFrom)
+	dst.SubscriptionValidUntil = cloneTimePointer(src.SubscriptionValidUntil)
+	dst.LastActiveAt = cloneTimePointer(src.LastActiveAt)
+	dst.ArchivedAt = cloneTimePointer(src.ArchivedAt)
 	normalizeUserRoleFields(dst)
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
 }
 
 func assignSubscription(dst, src *Subscription) {

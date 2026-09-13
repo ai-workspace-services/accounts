@@ -563,6 +563,18 @@ func TestRegisterEndpoint(t *testing.T) {
 	if !ok || len(groups) == 0 {
 		t.Fatalf("expected groups array in response")
 	}
+	if !containsString(groups, store.MonthlyFreeQuotaLimitGroup) {
+		t.Fatalf("expected new registration to receive Free 5GB group, got %#v", groups)
+	}
+}
+
+func containsString(values []interface{}, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestOAuthCallbackIssuesOneTimeExchangeCode(t *testing.T) {

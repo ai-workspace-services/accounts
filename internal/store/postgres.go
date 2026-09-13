@@ -78,19 +78,23 @@ func New(ctx context.Context, cfg Config) (Store, func(context.Context) error, e
 }
 
 type schemaCapabilities struct {
-	hasMFATOTPSecret      bool
-	hasMFAEnabled         bool
-	hasMFASecretIssuedAt  bool
-	hasMFAConfirmedAt     bool
-	hasCreatedAt          bool
-	hasUpdatedAt          bool
-	hasLevel              bool
-	hasRole               bool
-	hasGroups             bool
-	hasPermissions        bool
-	hasActive             bool
-	hasProxyUUID          bool
-	hasProxyUUIDExpiresAt bool
+	hasMFATOTPSecret          bool
+	hasMFAEnabled             bool
+	hasMFASecretIssuedAt      bool
+	hasMFAConfirmedAt         bool
+	hasCreatedAt              bool
+	hasUpdatedAt              bool
+	hasLevel                  bool
+	hasRole                   bool
+	hasGroups                 bool
+	hasPermissions            bool
+	hasActive                 bool
+	hasProxyUUID              bool
+	hasProxyUUIDExpiresAt     bool
+	hasSubscriptionValidFrom  bool
+	hasSubscriptionValidUntil bool
+	hasLastActiveAt           bool
+	hasArchivedAt             bool
 }
 
 func (c schemaCapabilities) supportsMFA() bool {
@@ -224,6 +228,30 @@ func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 		args = append(args, user.ProxyUUIDExpiresAt)
 		idx++
 	}
+	if caps.hasSubscriptionValidFrom {
+		columns = append(columns, "subscription_valid_from")
+		placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
+		args = append(args, user.SubscriptionValidFrom)
+		idx++
+	}
+	if caps.hasSubscriptionValidUntil {
+		columns = append(columns, "subscription_valid_until")
+		placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
+		args = append(args, user.SubscriptionValidUntil)
+		idx++
+	}
+	if caps.hasLastActiveAt {
+		columns = append(columns, "last_active_at")
+		placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
+		args = append(args, user.LastActiveAt)
+		idx++
+	}
+	if caps.hasArchivedAt {
+		columns = append(columns, "archived_at")
+		placeholders = append(placeholders, fmt.Sprintf("$%d", idx))
+		args = append(args, user.ArchivedAt)
+		idx++
+	}
 
 	query := fmt.Sprintf(`INSERT INTO users (%s)
       VALUES (%s)
@@ -343,27 +371,31 @@ type rowScanner interface {
 
 func scanUser(row rowScanner) (*User, error) {
 	var (
-		idValue         any
-		username        sql.NullString
-		email           sql.NullString
-		emailVerified   sql.NullBool
-		password        sql.NullString
-		mfaSecret       sql.NullString
-		mfaEnabled      sql.NullBool
-		mfaSecretIssued sql.NullTime
-		mfaConfirmed    sql.NullTime
-		createdAt       time.Time
-		updatedAt       time.Time
-		levelValue      sql.NullInt64
-		roleValue       sql.NullString
-		groupsRaw       []byte
-		permissionsRaw  []byte
-		activeValue     sql.NullBool
-		proxyUUID       sql.NullString
-		proxyExpiresAt  sql.NullTime
+		idValue                any
+		username               sql.NullString
+		email                  sql.NullString
+		emailVerified          sql.NullBool
+		password               sql.NullString
+		mfaSecret              sql.NullString
+		mfaEnabled             sql.NullBool
+		mfaSecretIssued        sql.NullTime
+		mfaConfirmed           sql.NullTime
+		createdAt              time.Time
+		updatedAt              time.Time
+		levelValue             sql.NullInt64
+		roleValue              sql.NullString
+		groupsRaw              []byte
+		permissionsRaw         []byte
+		activeValue            sql.NullBool
+		proxyUUID              sql.NullString
+		proxyExpiresAt         sql.NullTime
+		subscriptionValidFrom  sql.NullTime
+		subscriptionValidUntil sql.NullTime
+		lastActiveAt           sql.NullTime
+		archivedAt             sql.NullTime
 	)
 
-	if err := row.Scan(&idValue, &username, &email, &emailVerified, &password, &mfaSecret, &mfaEnabled, &mfaSecretIssued, &mfaConfirmed, &createdAt, &updatedAt, &levelValue, &roleValue, &groupsRaw, &permissionsRaw, &activeValue, &proxyUUID, &proxyExpiresAt); err != nil {
+	if err := row.Scan(&idValue, &username, &email, &emailVerified, &password, &mfaSecret, &mfaEnabled, &mfaSecretIssued, &mfaConfirmed, &createdAt, &updatedAt, &levelValue, &roleValue, &groupsRaw, &permissionsRaw, &activeValue, &proxyUUID, &proxyExpiresAt, &subscriptionValidFrom, &subscriptionValidUntil, &lastActiveAt, &archivedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrUserNotFound
 		}
@@ -399,6 +431,22 @@ func scanUser(row rowScanner) (*User, error) {
 	if proxyExpiresAt.Valid {
 		t := proxyExpiresAt.Time.UTC()
 		user.ProxyUUIDExpiresAt = &t
+	}
+	if subscriptionValidFrom.Valid {
+		t := subscriptionValidFrom.Time.UTC()
+		user.SubscriptionValidFrom = &t
+	}
+	if subscriptionValidUntil.Valid {
+		t := subscriptionValidUntil.Time.UTC()
+		user.SubscriptionValidUntil = &t
+	}
+	if lastActiveAt.Valid {
+		t := lastActiveAt.Time.UTC()
+		user.LastActiveAt = &t
+	}
+	if archivedAt.Valid {
+		t := archivedAt.Time.UTC()
+		user.ArchivedAt = &t
 	}
 	normalizeUserRoleFields(user)
 	return user, nil
@@ -528,6 +576,26 @@ func (s *postgresStore) UpdateUser(ctx context.Context, user *User) error {
 	if caps.hasProxyUUIDExpiresAt {
 		builder.WriteString(fmt.Sprintf(", proxy_uuid_expires_at = $%d", idx))
 		args = append(args, user.ProxyUUIDExpiresAt)
+		idx++
+	}
+	if caps.hasSubscriptionValidFrom {
+		builder.WriteString(fmt.Sprintf(", subscription_valid_from = $%d", idx))
+		args = append(args, user.SubscriptionValidFrom)
+		idx++
+	}
+	if caps.hasSubscriptionValidUntil {
+		builder.WriteString(fmt.Sprintf(", subscription_valid_until = $%d", idx))
+		args = append(args, user.SubscriptionValidUntil)
+		idx++
+	}
+	if caps.hasLastActiveAt {
+		builder.WriteString(fmt.Sprintf(", last_active_at = $%d", idx))
+		args = append(args, user.LastActiveAt)
+		idx++
+	}
+	if caps.hasArchivedAt {
+		builder.WriteString(fmt.Sprintf(", archived_at = $%d", idx))
+		args = append(args, user.ArchivedAt)
 		idx++
 	}
 
@@ -1026,7 +1094,31 @@ func (s *postgresStore) capabilities(ctx context.Context) (schemaCapabilities, e
     WHERE table_name = 'users'
       AND table_schema = ANY (current_schemas(false))
       AND column_name = 'proxy_uuid_expires_at'
-  ) AS has_proxy_uuid_expires_at`
+  ) AS has_proxy_uuid_expires_at,
+  EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users'
+      AND table_schema = ANY (current_schemas(false))
+      AND column_name = 'subscription_valid_from'
+  ) AS has_subscription_valid_from,
+  EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users'
+      AND table_schema = ANY (current_schemas(false))
+      AND column_name = 'subscription_valid_until'
+  ) AS has_subscription_valid_until,
+  EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users'
+      AND table_schema = ANY (current_schemas(false))
+      AND column_name = 'last_active_at'
+  ) AS has_last_active_at,
+  EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users'
+      AND table_schema = ANY (current_schemas(false))
+      AND column_name = 'archived_at'
+  ) AS has_archived_at`
 
 	row := s.db.QueryRowContext(ctx, query)
 	var caps schemaCapabilities
@@ -1044,6 +1136,10 @@ func (s *postgresStore) capabilities(ctx context.Context) (schemaCapabilities, e
 		&caps.hasActive,
 		&caps.hasProxyUUID,
 		&caps.hasProxyUUIDExpiresAt,
+		&caps.hasSubscriptionValidFrom,
+		&caps.hasSubscriptionValidUntil,
+		&caps.hasLastActiveAt,
+		&caps.hasArchivedAt,
 	); err != nil {
 		return schemaCapabilities{}, err
 	}
@@ -1119,8 +1215,28 @@ func (s *postgresStore) selectUserQuery(caps schemaCapabilities, whereClause str
 		proxyExpiresAtExpr = "proxy_uuid_expires_at"
 	}
 
-	return fmt.Sprintf(`SELECT uuid, username, email, (email_verified_at IS NOT NULL) AS email_verified, password, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s FROM users %s`,
-		secretExpr, enabledExpr, issuedExpr, confirmedExpr, createdExpr, updatedExpr, levelExpr, roleExpr, groupsExpr, permissionsExpr, activeExpr, proxyUUIDExpr, proxyExpiresAtExpr, whereClause)
+	subscriptionValidFromExpr := "NULL::timestamptz"
+	if caps.hasSubscriptionValidFrom {
+		subscriptionValidFromExpr = "subscription_valid_from"
+	}
+
+	subscriptionValidUntilExpr := "NULL::timestamptz"
+	if caps.hasSubscriptionValidUntil {
+		subscriptionValidUntilExpr = "subscription_valid_until"
+	}
+
+	lastActiveAtExpr := "NULL::timestamptz"
+	if caps.hasLastActiveAt {
+		lastActiveAtExpr = "last_active_at"
+	}
+
+	archivedAtExpr := "NULL::timestamptz"
+	if caps.hasArchivedAt {
+		archivedAtExpr = "archived_at"
+	}
+
+	return fmt.Sprintf(`SELECT uuid, username, email, (email_verified_at IS NOT NULL) AS email_verified, password, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s FROM users %s`,
+		secretExpr, enabledExpr, issuedExpr, confirmedExpr, createdExpr, updatedExpr, levelExpr, roleExpr, groupsExpr, permissionsExpr, activeExpr, proxyUUIDExpr, proxyExpiresAtExpr, subscriptionValidFromExpr, subscriptionValidUntilExpr, lastActiveAtExpr, archivedAtExpr, whereClause)
 }
 
 func encodeStringSlice(values []string) ([]byte, error) {

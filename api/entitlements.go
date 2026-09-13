@@ -11,6 +11,8 @@ import (
 	"account/internal/store"
 )
 
+const defaultFreeQuotaBytes int64 = 5 * 1024 * 1024 * 1024
+
 // Entitlement sync (billing P1): translates subscription lifecycle events into
 // the account_billing_profiles / account_quota_states rows billing-service
 // rates against. Decisions (2026-07-11): sync lives inline in accounts and is
@@ -93,7 +95,17 @@ func (h *handler) ensureFreeEntitlement(ctx context.Context, userID string) erro
 
 	plan, err := h.store.GetBillingPlan(ctx, store.BillingPlanFree)
 	if err != nil {
-		return err
+		if !errors.Is(err, store.ErrBillingPlanNotFound) {
+			return err
+		}
+		// Keep newly-created Free accounts enforceable even while the catalog
+		// migration is rolling out. An operator-created FREE plan still wins.
+		plan = &store.BillingPlan{
+			PlanID:             store.BillingPlanFree,
+			PackageName:        "default",
+			IncludedQuotaBytes: defaultFreeQuotaBytes,
+			Active:             true,
+		}
 	}
 	if !plan.Active {
 		return nil
@@ -185,7 +197,12 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 		if !errors.Is(err, store.ErrBillingPlanNotFound) {
 			return err
 		}
-		plan = &store.BillingPlan{PlanID: store.BillingPlanFree, PackageName: "default"}
+		plan = &store.BillingPlan{
+			PlanID:             store.BillingPlanFree,
+			PackageName:        "default",
+			IncludedQuotaBytes: defaultFreeQuotaBytes,
+			Active:             true,
+		}
 	}
 	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 		return err

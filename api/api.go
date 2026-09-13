@@ -106,6 +106,10 @@ type handler struct {
 	resetTTL                  time.Duration
 	passwordResets            map[string]passwordReset
 	resetMu                   sync.RWMutex
+	passwordResetCodes        map[string]passwordResetCode
+	passwordResetCodeMu       sync.RWMutex
+	reactivationCodes         map[string]accountReactivationCode
+	reactivationCodeMu        sync.RWMutex
 	oauthExchangeTTL          time.Duration
 	metricsProvider           service.UserMetricsProvider
 	agentStatusReader         agentStatusReader
@@ -177,6 +181,24 @@ type passwordReset struct {
 	userID    string
 	email     string
 	expiresAt time.Time
+}
+
+type passwordResetCode struct {
+	userID         string
+	email          string
+	code           string
+	expiresAt      time.Time
+	failedAttempts int
+	lockedUntil    time.Time
+}
+
+type accountReactivationCode struct {
+	userID         string
+	email          string
+	code           string
+	expiresAt      time.Time
+	failedAttempts int
+	lockedUntil    time.Time
 }
 
 type registrationVerification struct {
@@ -392,6 +414,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		registrationVerifications: make(map[string]registrationVerification),
 		resetTTL:                  defaultPasswordResetTTL,
 		passwordResets:            make(map[string]passwordReset),
+		passwordResetCodes:        make(map[string]passwordResetCode),
+		reactivationCodes:         make(map[string]accountReactivationCode),
 		oauthExchangeTTL:          defaultOAuthExchangeCodeTTL,
 		bridgeCredentials:         make(map[string]memoryBridgeCredential),
 		registrationProbeByIP:     auth.NewRateLimiter(registrationProbeIPLimit, registrationProbeIPWindow),
@@ -460,6 +484,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	// /password/reset remain for the logged-in "change password" case.
 	authGroup.POST("/password/forgot", h.requestPasswordReset)
 	authGroup.POST("/password/forgot/confirm", h.confirmPasswordReset)
+	authGroup.POST("/password/forgot/send-code", h.requestPasswordResetCode)
+	authGroup.POST("/password/forgot/confirm-code", h.confirmPasswordResetCode)
+	authGroup.POST("/account/reactivate", h.reactivateAccount)
 
 	authGroup.POST("/login", h.login)
 	authGroup.POST("/mfa/verify", h.verifyMFALogin)
@@ -508,6 +535,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/password/set", h.setPassword)
 	authProtected.POST("/password/reset", h.requestPasswordReset)
 	authProtected.POST("/password/reset/confirm", h.confirmPasswordReset)
+	authProtected.POST("/password/reset/mfa", h.resetPasswordWithMFA)
+	authProtected.DELETE("/account", h.selfCancelFreeAccount)
 
 	authProtected.GET("/subscriptions", h.listSubscriptions)
 	authProtected.POST("/subscriptions", h.upsertSubscription)
@@ -544,7 +573,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/admin/users", h.createCustomUser)
 	authProtected.POST("/admin/users/:userId/role", h.updateUserRole)
 	authProtected.DELETE("/admin/users/:userId/role", h.resetUserRole)
+	authProtected.PUT("/admin/users/groups/batch", h.updateUserGroupsBatch)
 	authProtected.PUT("/admin/users/:userId/groups", h.updateUserGroups)
+	authProtected.PUT("/admin/users/:userId/subscription-validity", h.updateSubscriptionValidity)
 	authProtected.POST("/admin/users/:userId/pause", h.pauseUser)
 	authProtected.POST("/admin/users/:userId/resume", h.resumeUser)
 	// pause/resume above gate VLESS (AccountQuotaState.ProxyAccessState);
@@ -838,7 +869,7 @@ func (h *handler) register(c *gin.Context) {
 		PasswordHash: string(hashed),
 		Level:        store.LevelUser,
 		Role:         store.RoleUser,
-		Groups:       []string{"User"},
+		Groups:       []string{"User", store.MonthlyFreeQuotaLimitGroup},
 		// Active must be set explicitly. The column defaults to TRUE in the
 		// schema, but CreateUser always writes it, so the zero value would
 		// persist an account that login accepts and every protected endpoint
@@ -865,6 +896,10 @@ func (h *handler) register(c *gin.Context) {
 			respondError(c, http.StatusInternalServerError, "user_creation_failed", "failed to create user")
 			return
 		}
+	}
+	if err := h.ensureFreeEntitlement(c.Request.Context(), user.ID); err != nil {
+		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "failed to initialize the default Free 5GB entitlement")
+		return
 	}
 
 	if h.emailVerificationEnabled {
@@ -1420,6 +1455,14 @@ func (h *handler) login(c *gin.Context) {
 		respondError(c, http.StatusUnauthorized, "email_not_verified", "email must be verified before login")
 		return
 	}
+	if user.ArchivedAt != nil {
+		if err := h.enqueueReactivationCode(c.Request.Context(), user, requestLocale(c)); err != nil {
+			respondError(c, http.StatusInternalServerError, "reactivation_failed", "failed to send account reactivation email")
+			return
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": "account_archived", "message": "account archived; check email to reactivate", "reactivationRequired": true})
+		return
+	}
 
 	// Demo/read-only account explicitly disables MFA to keep the roaming
 	// experience simple while write operations remain blocked by policy.
@@ -1471,6 +1514,7 @@ func (h *handler) login(c *gin.Context) {
 			return
 		}
 
+		h.touchUserActivity(c.Request.Context(), user)
 		token, expiresAt, err := h.createSession(user.ID)
 		if err != nil {
 			respondError(c, http.StatusInternalServerError, "session_creation_failed", "failed to create session")
@@ -1492,6 +1536,7 @@ func (h *handler) login(c *gin.Context) {
 		return
 	}
 
+	h.touchUserActivity(c.Request.Context(), user)
 	token, expiresAt, err := h.createSession(user.ID)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "session_creation_failed", "failed to create session")
@@ -1827,6 +1872,7 @@ func (h *handler) requireAuthenticatedUser(c *gin.Context) (*store.User, bool) {
 		respondError(c, http.StatusForbidden, "account_suspended", "your account has been suspended")
 		return nil, false
 	}
+	h.touchUserActivity(c.Request.Context(), user)
 
 	return user, true
 }
@@ -3056,21 +3102,25 @@ func sanitizeUser(user *store.User, challenge *mfaChallenge) gin.H {
 		permissions = cloned
 	}
 	return gin.H{
-		"id":                 identifier,
-		"uuid":               identifier,
-		"name":               user.Name,
-		"username":           user.Name,
-		"email":              user.Email,
-		"emailVerified":      user.EmailVerified,
-		"passwordSet":        strings.TrimSpace(user.PasswordHash) != "",
-		"mfaEnabled":         user.MFAEnabled,
-		"mfa":                buildMFAState(user, challenge),
-		"serviceReadiness":   computeServiceReadiness(user),
-		"role":               user.Role,
-		"groups":             groups,
-		"permissions":        permissions,
-		"proxyUuid":          proxyUUID,
-		"proxyUuidExpiresAt": user.ProxyUUIDExpiresAt,
+		"id":                     identifier,
+		"uuid":                   identifier,
+		"name":                   user.Name,
+		"username":               user.Name,
+		"email":                  user.Email,
+		"emailVerified":          user.EmailVerified,
+		"passwordSet":            strings.TrimSpace(user.PasswordHash) != "",
+		"mfaEnabled":             user.MFAEnabled,
+		"mfa":                    buildMFAState(user, challenge),
+		"serviceReadiness":       computeServiceReadiness(user),
+		"role":                   user.Role,
+		"groups":                 groups,
+		"permissions":            permissions,
+		"proxyUuid":              proxyUUID,
+		"proxyUuidExpiresAt":     user.ProxyUUIDExpiresAt,
+		"subscriptionValidFrom":  subscriptionDateString(user.SubscriptionValidFrom),
+		"subscriptionValidUntil": subscriptionDateString(user.SubscriptionValidUntil),
+		"lastActiveAt":           user.LastActiveAt,
+		"archivedAt":             user.ArchivedAt,
 	}
 }
 
@@ -3274,11 +3324,15 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			EmailVerified: true,
 			Level:         store.LevelUser,
 			Role:          store.RoleUser,
-			Groups:        []string{"User"},
+			Groups:        []string{"User", store.MonthlyFreeQuotaLimitGroup},
 			Active:        true,
 		}
 		if err := h.store.CreateUser(ctx, user); err != nil {
 			respondError(c, http.StatusInternalServerError, "user_creation_failed", "failed to create user")
+			return
+		}
+		if err := h.ensureFreeEntitlement(ctx, user.ID); err != nil {
+			respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "failed to initialize the default Free 5GB entitlement")
 			return
 		}
 	} else {
@@ -3352,6 +3406,14 @@ func (h *handler) listUsers(c *gin.Context) {
 
 	sanitized := make([]gin.H, 0, len(users))
 	for _, u := range users {
+		if err := h.archiveInactiveFreeUser(c.Request.Context(), &u); err != nil {
+			respondError(c, http.StatusInternalServerError, "user_archive_failed", "failed to archive inactive user")
+			return
+		}
+		if err := h.ensureExpiredSubscriptionDowngrade(c.Request.Context(), &u); err != nil {
+			respondError(c, http.StatusInternalServerError, "user_downgrade_failed", "failed to apply expired subscription downgrade")
+			return
+		}
 		sanitized = append(sanitized, sanitizeUser(&u, nil))
 	}
 

@@ -85,7 +85,11 @@ CREATE TABLE IF NOT EXISTS public.users (
   email_verified BOOLEAN GENERATED ALWAYS AS ((email_verified_at IS NOT NULL)) STORED,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   proxy_uuid UUID NOT NULL,
-  proxy_uuid_expires_at TIMESTAMPTZ
+  proxy_uuid_expires_at TIMESTAMPTZ,
+  subscription_valid_from TIMESTAMPTZ,
+  subscription_valid_until TIMESTAMPTZ,
+  last_active_at TIMESTAMPTZ,
+  archived_at TIMESTAMPTZ
 );
 
 
