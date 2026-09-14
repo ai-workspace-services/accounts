@@ -97,7 +97,7 @@ func TestAdminDevicesProjectionReportsACKStateAndOwnerScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	service, err := NewService(db, Config{SigningPrivateKey: signer, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)

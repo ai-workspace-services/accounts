@@ -828,7 +828,8 @@ func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string) (Ga
 		}
 		address = prefix.Addr().Next().String() + "/32"
 	}
-	config := GatewaySignedConfig{SchemaVersion: 1, Role: RoleGateway, ConfigID: configID(network.ID, network.GatewayID, network.ConfigGeneration), NetworkID: network.ID, GatewayID: network.GatewayID, Generation: network.ConfigGeneration, IssuedAt: now, ExpiresAt: canonicalTime(now.Add(s.signedConfigTTL)), InterfaceName: "xconzero0", Address: address, ListenPort: network.GatewayEndpointPort, MTU: 1420, Peers: peers, Transport: GatewayTransport{ServerName: network.TransportServerName, Port: network.TransportPort, AuthID: network.TransportAuthID}}
+	transport := networkTransport(network)
+	config := GatewaySignedConfig{SchemaVersion: 1, Role: RoleGateway, ConfigID: configID(network.ID, network.GatewayID, network.ConfigGeneration), NetworkID: network.ID, GatewayID: network.GatewayID, Generation: network.ConfigGeneration, IssuedAt: now, ExpiresAt: canonicalTime(now.Add(s.signedConfigTTL)), InterfaceName: "xconzero0", Address: address, ListenPort: network.GatewayEndpointPort, MTU: 1420, Peers: peers, Transport: GatewayTransport{Kind: transport.Kind, ServerName: network.TransportServerName, Port: network.TransportPort, AuthID: network.TransportAuthID, Path: transport.Path, Mode: transport.Mode, Host: transport.Host}}
 	payload, err := gatewaySigningBytes(config)
 	if err != nil {
 		return GatewaySignedConfig{}, "", err
@@ -904,12 +905,13 @@ func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, 
 		ExpiresAt:     expires,
 		ProxyCore:     "xray",
 		Transport: Transport{
-			Kind: "vless-tls-xudp", Loopback: Endpoint{Host: "127.0.0.1", Port: 18080},
+			Kind: networkTransport(network).Kind, Loopback: Endpoint{Host: "127.0.0.1", Port: 51830},
 			Remote: RemoteEndpoint{Host: network.GatewayEndpointHost, Port: network.TransportPort, ServerName: network.TransportServerName}, AuthID: network.TransportAuthID,
+			Path: networkTransport(network).Path, Mode: networkTransport(network).Mode, Host: networkTransport(network).Host,
 		},
 		WireGuard: WireGuard{
 			InterfaceName: "xconone0", Addresses: []string{device.WireGuardAddress}, MTU: 1420,
-			Peers: []WireGuardPeer{{GatewayID: network.GatewayID, PublicKey: network.GatewayWireGuardKey, AllowedIPs: []string{network.CIDR}, Endpoint: Endpoint{Host: "127.0.0.1", Port: 18080}, PersistentKeepaliveSeconds: 25}},
+			Peers: []WireGuardPeer{{GatewayID: network.GatewayID, PublicKey: network.GatewayWireGuardKey, AllowedIPs: []string{network.CIDR}, Endpoint: Endpoint{Host: "127.0.0.1", Port: 51830}, PersistentKeepaliveSeconds: 25}},
 		},
 	}
 	if v2 {
@@ -956,6 +958,20 @@ func (s *Service) policyArtifact(network NetworkRecord) (PolicyArtifact, error) 
 		return PolicyArtifact{}, ErrGenerationConflict
 	}
 	return policy, nil
+}
+
+func networkTransport(network NetworkRecord) Transport {
+	kind, path, mode := network.TransportKind, network.TransportPath, network.TransportMode
+	if strings.TrimSpace(kind) == "" {
+		kind = TransportVLESSXHTTP
+	}
+	if strings.TrimSpace(path) == "" {
+		path = DefaultTransportPath
+	}
+	if strings.TrimSpace(mode) == "" {
+		mode = DefaultTransportMode
+	}
+	return Transport{Kind: kind, Path: path, Mode: mode, Host: network.TransportHost}
 }
 
 func signingBytes(config SignedConfig) ([]byte, error) {
@@ -1098,5 +1114,5 @@ func toAdminDevice(record DeviceRecord, ackReceivedAt time.Time, acknowledged bo
 }
 
 func toNetwork(record NetworkRecord) Network {
-	return Network{ID: record.ID, DisplayName: record.DisplayName, CIDR: record.CIDR, GatewayID: record.GatewayID, GatewayWireGuardKey: record.GatewayWireGuardKey, GatewayEndpointHost: record.GatewayEndpointHost, GatewayEndpointPort: record.GatewayEndpointPort, TransportServerName: record.TransportServerName, TransportPort: record.TransportPort, TransportAuthID: record.TransportAuthID, ConfigGeneration: record.ConfigGeneration, CreatedAt: record.CreatedAt.UTC(), UpdatedAt: record.UpdatedAt.UTC()}
+	return Network{ID: record.ID, DisplayName: record.DisplayName, CIDR: record.CIDR, GatewayID: record.GatewayID, GatewayWireGuardKey: record.GatewayWireGuardKey, GatewayEndpointHost: record.GatewayEndpointHost, GatewayEndpointPort: record.GatewayEndpointPort, TransportServerName: record.TransportServerName, TransportPort: record.TransportPort, TransportAuthID: record.TransportAuthID, TransportKind: record.TransportKind, TransportPath: record.TransportPath, TransportMode: record.TransportMode, TransportHost: record.TransportHost, ConfigGeneration: record.ConfigGeneration, CreatedAt: record.CreatedAt.UTC(), UpdatedAt: record.UpdatedAt.UTC()}
 }
