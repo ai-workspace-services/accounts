@@ -12,6 +12,10 @@ const (
 	RoleGateway = "gateway"
 	RoleOne     = "one"
 
+	TransportVLESSXHTTP  = "vless-xhttp"
+	DefaultTransportPath = "/xconnect"
+	DefaultTransportMode = "auto"
+
 	TokenTypeBearer = "Bearer"
 	TokenTypeDevice = "Device"
 
@@ -55,6 +59,10 @@ type Network struct {
 	TransportServerName string    `json:"transport_server_name"`
 	TransportPort       int       `json:"transport_port"`
 	TransportAuthID     string    `json:"transport_auth_id"`
+	TransportKind       string    `json:"transport_kind"`
+	TransportPath       string    `json:"transport_path,omitempty"`
+	TransportMode       string    `json:"transport_mode,omitempty"`
+	TransportHost       string    `json:"transport_host,omitempty"`
 	ConfigGeneration    uint64    `json:"-"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
@@ -120,6 +128,9 @@ type Transport struct {
 	Loopback Endpoint       `json:"loopback"`
 	Remote   RemoteEndpoint `json:"remote"`
 	AuthID   string         `json:"auth_id"`
+	Path     string         `json:"path,omitempty"`
+	Mode     string         `json:"mode,omitempty"`
+	Host     string         `json:"host,omitempty"`
 }
 
 type WireGuardPeer struct {
@@ -327,9 +338,13 @@ type GatewaySignedConfig struct {
 }
 
 type GatewayTransport struct {
+	Kind       string `json:"kind"`
 	ServerName string `json:"server_name"`
 	Port       int    `json:"port"`
 	AuthID     string `json:"auth_id"`
+	Path       string `json:"path,omitempty"`
+	Mode       string `json:"mode,omitempty"`
+	Host       string `json:"host,omitempty"`
 }
 
 type PolicyArtifact struct {
@@ -413,6 +428,10 @@ type BootstrapNetwork struct {
 	TransportServerName     string
 	TransportPort           int
 	TransportAuthID         string
+	TransportKind           string
+	TransportPath           string
+	TransportMode           string
+	TransportHost           string
 	OwnerUserID             string
 }
 
@@ -453,11 +472,33 @@ func (c Config) withDefaults() Config {
 }
 
 func (n BootstrapNetwork) validate() error {
-	if strings.TrimSpace(n.ID) == "" || strings.TrimSpace(n.CIDR) == "" || strings.TrimSpace(n.GatewayID) == "" || strings.TrimSpace(n.GatewayWireGuardKey) == "" || strings.TrimSpace(n.GatewayEndpointHost) == "" || n.GatewayEndpointPort < 1 || n.GatewayEndpointPort > 65535 || strings.TrimSpace(n.TransportServerName) == "" || n.TransportPort < 1 || n.TransportPort > 65535 || strings.TrimSpace(n.TransportAuthID) == "" {
+	if strings.TrimSpace(n.ID) == "" || strings.TrimSpace(n.CIDR) == "" || strings.TrimSpace(n.GatewayID) == "" || strings.TrimSpace(n.GatewayWireGuardKey) == "" || strings.TrimSpace(n.GatewayEndpointHost) == "" || n.GatewayEndpointPort < 1 || n.GatewayEndpointPort > 65535 || strings.TrimSpace(n.TransportServerName) == "" || n.TransportPort != 443 || strings.TrimSpace(n.TransportAuthID) == "" {
+		return ErrInvalidInput
+	}
+	if kind := strings.TrimSpace(n.TransportKind); kind != "" && kind != TransportVLESSXHTTP {
+		return ErrInvalidInput
+	}
+	if path := strings.TrimSpace(n.TransportPath); path != "" && (!strings.HasPrefix(path, "/") || len(path) > 1024) {
+		return ErrInvalidInput
+	}
+	if mode := strings.TrimSpace(n.TransportMode); mode != "" && mode != DefaultTransportMode && mode != "packet-up" && mode != "stream-up" {
 		return ErrInvalidInput
 	}
 	if _, err := netip.ParsePrefix(n.CIDR); err != nil {
 		return ErrInvalidInput
 	}
 	return nil
+}
+
+func (n BootstrapNetwork) withTransportDefaults() BootstrapNetwork {
+	if strings.TrimSpace(n.TransportKind) == "" {
+		n.TransportKind = TransportVLESSXHTTP
+	}
+	if strings.TrimSpace(n.TransportPath) == "" {
+		n.TransportPath = DefaultTransportPath
+	}
+	if strings.TrimSpace(n.TransportMode) == "" {
+		n.TransportMode = DefaultTransportMode
+	}
+	return n
 }

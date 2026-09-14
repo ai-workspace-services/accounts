@@ -63,7 +63,7 @@ func newRegistrationTestService(t *testing.T) (*Service, *gorm.DB, *time.Time, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	service, err := NewService(db, Config{SigningPrivateKey: signer, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +164,7 @@ func TestRegistrationExpiryOwnerIsolationAndConcurrentTransitions(t *testing.T) 
 		t.Fatalf("expiry did not persist: %#v err=%v", expired, err)
 	}
 
-	*now = time.Date(2026, 9, 8, 12, 1, 0, 0, time.UTC)
+	*now = (*now).Add(time.Minute)
 	isolated, err := service.Register(t.Context(), registrationRequest("one-owner-change", 12))
 	if err != nil {
 		t.Fatal(err)
@@ -506,6 +506,9 @@ func TestOverlayLifecyclePersistsHashesAndSignsConfig(t *testing.T) {
 	if err != nil || !ed25519.Verify(service.privateKey.Public().(ed25519.PublicKey), unsigned, mustDecodeBase64(t, config.Signature.Value)) {
 		t.Fatalf("signed config verification failed: err=%v config=%#v", err, config)
 	}
+	if config.Transport.Kind != TransportVLESSXHTTP || config.Transport.Loopback != (Endpoint{Host: "127.0.0.1", Port: 51830}) || config.Transport.Remote.Port != 443 || config.Transport.Path != DefaultTransportPath || config.Transport.Mode != DefaultTransportMode || config.WireGuard.Peers[0].Endpoint.Port != 51830 {
+		t.Fatalf("unexpected XHTTP One transport contract: %#v", config)
+	}
 	v2Req := httptest.NewRequest(http.MethodGet, "/api/overlay/v1/enrollment/signed-config?device_id=one-laptop&network_id=sit-private", nil)
 	v2Req.Header.Set("Authorization", "Bearer "+session.EnrollmentToken)
 	v2Req.Header.Set("Accept", SignedConfigV2MediaType)
@@ -590,6 +593,9 @@ func TestGatewayRoleUsesCentralSignedSnapshot(t *testing.T) {
 	unsigned, err := gatewaySigningBytes(config)
 	if err != nil || !ed25519.Verify(service.privateKey.Public().(ed25519.PublicKey), unsigned, mustDecodeBase64(t, config.Signature.Value)) {
 		t.Fatalf("gateway signed config verification failed: err=%v", err)
+	}
+	if config.Transport.Kind != TransportVLESSXHTTP || config.Transport.Port != 443 || config.Transport.Path != DefaultTransportPath || config.Transport.Mode != DefaultTransportMode {
+		t.Fatalf("unexpected XHTTP Gateway transport contract: %#v", config.Transport)
 	}
 }
 

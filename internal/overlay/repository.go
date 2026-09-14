@@ -29,6 +29,10 @@ type NetworkRecord struct {
 	TransportServerName     string    `gorm:"column:transport_server_name;type:text;not null"`
 	TransportPort           int       `gorm:"column:transport_port;not null"`
 	TransportAuthID         string    `gorm:"column:transport_auth_id;type:text;not null"`
+	TransportKind           string    `gorm:"column:transport_kind;type:text;not null;default:'vless-xhttp'"`
+	TransportPath           string    `gorm:"column:transport_path;type:text;not null;default:'/xconnect'"`
+	TransportMode           string    `gorm:"column:transport_mode;type:text;not null;default:'auto'"`
+	TransportHost           string    `gorm:"column:transport_host;type:text;not null;default:''"`
 	OwnerUserID             string    `gorm:"column:owner_user_id;type:text;index"`
 	PolicyJSON              string    `gorm:"column:policy_json;type:text;not null;default:''"`
 	ConfigGeneration        uint64    `gorm:"column:config_generation;not null;default:1"`
@@ -160,6 +164,7 @@ func HashSecret(secret string) string {
 }
 
 func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken string) (string, error) {
+	cfg.Network = cfg.Network.withTransportDefaults()
 	if err := cfg.Network.validate(); err != nil {
 		return "", err
 	}
@@ -184,7 +189,9 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 			GatewayWireGuardAddress: cfg.Network.GatewayWireGuardAddress,
 			GatewayEndpointHost:     cfg.Network.GatewayEndpointHost, GatewayEndpointPort: cfg.Network.GatewayEndpointPort,
 			TransportServerName: cfg.Network.TransportServerName, TransportPort: cfg.Network.TransportPort,
-			TransportAuthID: cfg.Network.TransportAuthID, OwnerUserID: cfg.Network.OwnerUserID, PolicyJSON: "",
+			TransportAuthID: cfg.Network.TransportAuthID, TransportKind: cfg.Network.TransportKind,
+			TransportPath: cfg.Network.TransportPath, TransportMode: cfg.Network.TransportMode,
+			TransportHost: cfg.Network.TransportHost, OwnerUserID: cfg.Network.OwnerUserID, PolicyJSON: "",
 			ConfigGeneration: 1,
 		}
 		var existing NetworkRecord
@@ -197,6 +204,8 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 				"gateway_wireguard_key": network.GatewayWireGuardKey, "gateway_wireguard_address": network.GatewayWireGuardAddress, "gateway_endpoint_host": network.GatewayEndpointHost,
 				"gateway_endpoint_port": network.GatewayEndpointPort, "transport_server_name": network.TransportServerName,
 				"transport_port": network.TransportPort, "transport_auth_id": network.TransportAuthID,
+				"transport_kind": network.TransportKind, "transport_path": network.TransportPath,
+				"transport_mode": network.TransportMode, "transport_host": network.TransportHost,
 				"owner_user_id": network.OwnerUserID,
 			}).Error; err != nil {
 				return err
