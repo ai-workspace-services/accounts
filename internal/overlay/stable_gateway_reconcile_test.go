@@ -56,6 +56,20 @@ func base64KeyForTest() string {
 func TestReconcileStableGatewayRepairsOnlyUATOwnerProjection(t *testing.T) {
 	service, db, now := newStableGatewayTestService(t)
 	seedStableGateway(t, service, "old-owner", now)
+	// A prior lab may have left a record with the same Gateway ID under a
+	// different network. It must not make the canonical net_uat reconciliation
+	// ambiguous; net_uat is the source of truth for this repair.
+	if err := db.Create(&NetworkRecord{
+		ID: "legacy-network", DisplayName: "Legacy lab", CIDR: "10.79.0.0/24",
+		GatewayID: stableUATGatewayID, GatewayWireGuardKey: base64KeyForTest(),
+		GatewayWireGuardAddress: "10.79.0.1/32", GatewayEndpointHost: "203.0.113.44",
+		GatewayEndpointPort: 443, TransportServerName: "203.0.113.44", TransportPort: 443,
+		TransportAuthID: "legacy-auth", TransportKind: TransportVLESSXHTTP,
+		TransportPath: DefaultTransportPath, TransportMode: DefaultTransportMode,
+		TransportHost: "203.0.113.44", OwnerUserID: "old-owner", ConfigGeneration: 1,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Create(&DeviceRecord{ID: "gateway-uat", UserUUID: "old-owner", UserID: "old-owner", NetworkID: stableUATNetworkID, Role: RoleGateway, Name: "Gateway", Platform: "linux", Hostname: stableUATGatewayHost, WireGuardPublicKey: base64KeyForTest(), WireGuardAddress: "10.77.0.1/32", Status: "active", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
 		t.Fatal(err)
 	}
