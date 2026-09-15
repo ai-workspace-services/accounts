@@ -54,12 +54,11 @@ type overlayInternalBootstrapRequest struct {
 }
 
 type overlayInternalStableGatewayReconcileRequest struct {
-	Environment                string `json:"environment"`
-	NetworkID                  string `json:"network_id"`
-	GatewayID                  string `json:"gateway_id"`
-	GatewayEndpointHost        string `json:"gateway_endpoint_host"`
-	CurrentGatewayEndpointHost string `json:"current_gateway_endpoint_host"`
-	OwnerEmail                 string `json:"owner_email"`
+	Environment         string `json:"environment"`
+	NetworkID           string `json:"network_id"`
+	GatewayID           string `json:"gateway_id"`
+	GatewayEndpointHost string `json:"gateway_endpoint_host"`
+	OwnerEmail          string `json:"owner_email"`
 }
 
 func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
@@ -263,7 +262,7 @@ func (h *handler) overlayInternalReconcileStableGateway(c *gin.Context) {
 	}
 	result, err := h.overlayService.ReconcileStableGateway(c.Request.Context(), overlay.StableGatewayReconcileRequest{
 		Environment: request.Environment, NetworkID: request.NetworkID, GatewayID: request.GatewayID,
-		GatewayEndpointHost: request.GatewayEndpointHost, CurrentGatewayEndpointHost: request.CurrentGatewayEndpointHost, OwnerUserID: owner.ID,
+		GatewayEndpointHost: request.GatewayEndpointHost, OwnerUserID: owner.ID,
 	})
 	if err != nil {
 		respondOverlayAdminError(c, err)

@@ -127,11 +127,8 @@ func (s *Service) ReconcileStableGateway(ctx context.Context, request StableGate
 			}
 			return err
 		}
-		if network.GatewayID != stableUATGatewayID || strings.ToLower(strings.TrimSpace(network.GatewayEndpointHost)) != stableUATGatewayHost {
-			legacyHost := strings.ToLower(strings.TrimSpace(request.CurrentGatewayEndpointHost))
-			if legacyHost == "" || strings.ToLower(strings.TrimSpace(network.GatewayEndpointHost)) != legacyHost {
-				return ErrInvalidInput
-			}
+		if network.GatewayID != stableUATGatewayID {
+			return ErrInvalidInput
 		}
 		var gatewayCount int64
 		if err := tx.Model(&NetworkRecord{}).Where("gateway_id = ?", stableUATGatewayID).Count(&gatewayCount).Error; err != nil {
