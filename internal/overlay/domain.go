@@ -400,12 +400,11 @@ type AdminBootstrapResult struct {
 // It is used only by UAT automation to repair ownership of the one stable
 // Gateway without allowing an arbitrary network or environment reassignment.
 type StableGatewayReconcileRequest struct {
-	Environment                string
-	NetworkID                  string
-	GatewayID                  string
-	GatewayEndpointHost        string
-	CurrentGatewayEndpointHost string
-	OwnerUserID                string
+	Environment         string
+	NetworkID           string
+	GatewayID           string
+	GatewayEndpointHost string
+	OwnerUserID         string
 }
 
 type StableGatewayReconcileResult struct {
