@@ -37,6 +37,13 @@ type Service struct {
 const adminDeviceACKRecentWindow = 5 * time.Minute
 
 const (
+	stableUATEnvironment = "uat"
+	stableUATNetworkID   = "net_uat"
+	stableUATGatewayID   = "gw-uat-tw-xconnect"
+	stableUATGatewayHost = "tw-xconnect.svc.plus"
+)
+
+const (
 	registrationTTL               = 15 * time.Minute
 	registrationPollInterval      = 5
 	registrationPendingLimit      = 20
@@ -93,6 +100,68 @@ func ConfigFromEnv() (Config, error) {
 }
 
 func (s *Service) Repository() *Repository { return s.repo }
+
+// ReconcileStableGateway repairs only the owner projection for the fixed UAT
+// Gateway. The exact identity guard prevents a generic cross-tenant transfer
+// or a production backdoor. Users, subscriptions, billing, usage, credentials,
+// keys, and ACK rows are deliberately untouched.
+func (s *Service) ReconcileStableGateway(ctx context.Context, request StableGatewayReconcileRequest) (StableGatewayReconcileResult, error) {
+	if strings.ToLower(strings.TrimSpace(request.Environment)) != stableUATEnvironment ||
+		strings.TrimSpace(request.NetworkID) != stableUATNetworkID ||
+		strings.TrimSpace(request.GatewayID) != stableUATGatewayID ||
+		strings.ToLower(strings.TrimSpace(request.GatewayEndpointHost)) != stableUATGatewayHost ||
+		strings.TrimSpace(request.OwnerUserID) == "" {
+		return StableGatewayReconcileResult{}, ErrInvalidInput
+	}
+
+	result := StableGatewayReconcileResult{
+		Environment: stableUATEnvironment, NetworkID: stableUATNetworkID,
+		GatewayID: stableUATGatewayID, GatewayEndpointHost: stableUATGatewayHost,
+		OwnerUserID: strings.TrimSpace(request.OwnerUserID),
+	}
+	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var network NetworkRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", stableUATNetworkID).First(&network).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if network.GatewayID != stableUATGatewayID || strings.ToLower(strings.TrimSpace(network.GatewayEndpointHost)) != stableUATGatewayHost {
+			return ErrInvalidInput
+		}
+		var duplicateCount int64
+		if err := tx.Model(&NetworkRecord{}).Where("gateway_id = ? AND lower(gateway_endpoint_host) = ?", stableUATGatewayID, stableUATGatewayHost).Count(&duplicateCount).Error; err != nil {
+			return err
+		}
+		if duplicateCount != 1 {
+			return ErrConflict
+		}
+
+		result.PreviousOwnerID = strings.TrimSpace(network.OwnerUserID)
+		result.OwnerReconciled = result.PreviousOwnerID != result.OwnerUserID
+		if result.OwnerReconciled {
+			if err := tx.Model(&NetworkRecord{}).Where("id = ?", stableUATNetworkID).Updates(map[string]any{
+				"owner_user_id": result.OwnerUserID, "updated_at": s.now(),
+			}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&DeviceRecord{}).Where("network_id = ?", stableUATNetworkID).Updates(map[string]any{
+				"user_uuid": result.OwnerUserID, "user_id": result.OwnerUserID, "updated_at": s.now(),
+			}).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&RegistrationRecord{}).Where("network_id = ?", stableUATNetworkID).Update("owner_user_id", result.OwnerUserID).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&DeviceRecord{}).Where("network_id = ?", stableUATNetworkID).Count(&result.DeviceCount).Error; err != nil {
+			return err
+		}
+		return tx.Model(&RegistrationRecord{}).Where("network_id = ?", stableUATNetworkID).Count(&result.RegistrationCount).Error
+	})
+	return result, err
+}
 
 func (s *Service) AdminOverview(ctx context.Context, ownerUserID string) (AdminOverview, error) {
 	ownerUserID = strings.TrimSpace(ownerUserID)

@@ -648,6 +648,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
 	if h.overlayService != nil {
 		internalGroup.POST("/overlay/networks/bootstrap", h.overlayInternalBootstrap)
+		internalGroup.POST("/overlay/gateways/reconcile-stable-owner", h.overlayInternalReconcileStableGateway)
 	}
 
 	// Public /api routes for admin/management (expected by frontend at /api/admin/...)
