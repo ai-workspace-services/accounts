@@ -244,16 +244,17 @@ type AuditLogFilter struct {
 // Audit action names. Kept as constants so a typo cannot silently create a
 // second, unqueryable action stream.
 const (
-	AuditActionPlanUpsert         = "billing.plan.upsert"
-	AuditActionPlanDelete         = "billing.plan.delete"
-	AuditActionQuotaAdjust        = "billing.quota.adjust"
-	AuditActionBalanceAdjust      = "billing.balance.adjust"
-	AuditActionEntitlementGrant   = "billing.entitlement.grant"
-	AuditActionTrialGrant         = "billing.trial.grant"
-	AuditActionArrearsClear       = "billing.arrears.clear"
-	AuditActionSubscriptionCancel = "billing.subscription.cancel"
-	AuditActionSegmentUpdate      = "account.segment.update"
-	AuditActionRoleUpdate         = "account.role.update"
+	AuditActionPlanUpsert            = "billing.plan.upsert"
+	AuditActionPlanDelete            = "billing.plan.delete"
+	AuditActionQuotaAdjust           = "billing.quota.adjust"
+	AuditActionBalanceAdjust         = "billing.balance.adjust"
+	AuditActionEntitlementGrant      = "billing.entitlement.grant"
+	AuditActionTrialGrant            = "billing.trial.grant"
+	AuditActionArrearsClear          = "billing.arrears.clear"
+	AuditActionSubscriptionCancel    = "billing.subscription.cancel"
+	AuditActionSegmentUpdate         = "account.segment.update"
+	AuditActionRoleUpdate            = "account.role.update"
+	AuditActionOverlayOwnerReconcile = "overlay.gateway.owner_reconcile"
 )
 
 type AccountQuotaState struct {

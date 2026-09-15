@@ -46,6 +46,7 @@ var (
 	ErrRegistrationExpired      = errors.New("overlay registration expired")
 	ErrRegistrationConsumed     = errors.New("overlay registration was consumed")
 	ErrRegistrationNotPending   = errors.New("overlay registration is not pending")
+	ErrConflict                 = errors.New("overlay resource conflict")
 )
 
 type Network struct {
@@ -393,6 +394,29 @@ type AdminBootstrapResult struct {
 	Network Network       `json:"network"`
 	Invite  InviteSummary `json:"invite"`
 	JoinURI string        `json:"join_uri"`
+}
+
+// StableGatewayReconcileRequest is deliberately narrower than BootstrapConfig.
+// It is used only by UAT automation to repair ownership of the one stable
+// Gateway without allowing an arbitrary network or environment reassignment.
+type StableGatewayReconcileRequest struct {
+	Environment         string
+	NetworkID           string
+	GatewayID           string
+	GatewayEndpointHost string
+	OwnerUserID         string
+}
+
+type StableGatewayReconcileResult struct {
+	Environment         string `json:"environment"`
+	NetworkID           string `json:"network_id"`
+	GatewayID           string `json:"gateway_id"`
+	GatewayEndpointHost string `json:"gateway_endpoint_host"`
+	OwnerUserID         string `json:"owner_user_id"`
+	PreviousOwnerID     string `json:"previous_owner_user_id,omitempty"`
+	OwnerReconciled     bool   `json:"owner_reconciled"`
+	DeviceCount         int64  `json:"device_count"`
+	RegistrationCount   int64  `json:"registration_count"`
 }
 
 // AdminInviteRequest creates one device-bound enrollment invitation for an

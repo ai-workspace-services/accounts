@@ -53,6 +53,14 @@ type overlayInternalBootstrapRequest struct {
 	Bootstrap  overlayAdminBootstrapRequest `json:"bootstrap"`
 }
 
+type overlayInternalStableGatewayReconcileRequest struct {
+	Environment         string `json:"environment"`
+	NetworkID           string `json:"network_id"`
+	GatewayID           string `json:"gateway_id"`
+	GatewayEndpointHost string `json:"gateway_endpoint_host"`
+	OwnerEmail          string `json:"owner_email"`
+}
+
 func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	if h.overlayService == nil || h.tokenService == nil {
 		return
@@ -238,6 +246,41 @@ func (h *handler) overlayInternalBootstrap(c *gin.Context) {
 	c.JSON(http.StatusCreated, result)
 }
 
+func (h *handler) overlayInternalReconcileStableGateway(c *gin.Context) {
+	var request overlayInternalStableGatewayReconcileRequest
+	if !decodeOverlayAdminJSON(c, &request) {
+		return
+	}
+	if strings.TrimSpace(request.OwnerEmail) == "" {
+		respondError(c, http.StatusBadRequest, "invalid_request", "owner_email is required for XConnect Zero reconciliation")
+		return
+	}
+	owner, err := h.store.GetUserByEmail(c.Request.Context(), strings.TrimSpace(request.OwnerEmail))
+	if err != nil || owner == nil || !owner.Active {
+		respondError(c, http.StatusNotFound, "owner_not_found", "active XConnect Zero owner was not found")
+		return
+	}
+	result, err := h.overlayService.ReconcileStableGateway(c.Request.Context(), overlay.StableGatewayReconcileRequest{
+		Environment: request.Environment, NetworkID: request.NetworkID, GatewayID: request.GatewayID,
+		GatewayEndpointHost: request.GatewayEndpointHost, OwnerUserID: owner.ID,
+	})
+	if err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	if result.OwnerReconciled {
+		if err := h.recordAudit(c.Request.Context(), "system", store.AuditActionOverlayOwnerReconcile,
+			auditDetails(result.NetworkID, "UAT stable Gateway ownership reconciliation",
+				map[string]any{"owner_user_id": result.PreviousOwnerID, "gateway_id": result.GatewayID},
+				map[string]any{"owner_user_id": result.OwnerUserID, "gateway_id": result.GatewayID})); err != nil {
+			respondError(c, http.StatusInternalServerError, "audit_write_failed", "Gateway ownership was reconciled but the audit entry could not be written")
+			return
+		}
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, result)
+}
+
 func overlayBootstrapConfig(request overlayAdminBootstrapRequest, ownerUserID string) overlay.BootstrapConfig {
 	return overlay.BootstrapConfig{
 		Network: overlay.BootstrapNetwork{ID: request.Network.ID, DisplayName: request.Network.DisplayName, CIDR: request.Network.CIDR, GatewayID: request.Network.GatewayID, GatewayWireGuardKey: request.Network.GatewayWireGuardKey, GatewayWireGuardAddress: request.Network.GatewayWireGuardAddress, GatewayEndpointHost: request.Network.GatewayEndpointHost, GatewayEndpointPort: request.Network.GatewayEndpointPort, TransportServerName: request.Network.TransportServerName, TransportPort: request.Network.TransportPort, TransportAuthID: request.Network.TransportAuthID, TransportKind: request.Network.TransportKind, TransportPath: request.Network.TransportPath, TransportMode: request.Network.TransportMode, TransportHost: request.Network.TransportHost, OwnerUserID: ownerUserID},
@@ -358,6 +401,8 @@ func respondOverlayAdminError(c *gin.Context, err error) {
 		status, code, message = http.StatusConflict, "registration_consumed", "XConnect One registration was already consumed"
 	case errors.Is(err, overlay.ErrForbidden):
 		status, code, message = http.StatusForbidden, "forbidden", "XConnect Zero resource belongs to another user"
+	case errors.Is(err, overlay.ErrConflict):
+		status, code, message = http.StatusConflict, "conflict", "XConnect Zero stable Gateway identity is ambiguous"
 	}
 	respondError(c, status, code, message)
 }
