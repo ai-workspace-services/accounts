@@ -54,11 +54,12 @@ type overlayInternalBootstrapRequest struct {
 }
 
 type overlayInternalStableGatewayReconcileRequest struct {
-	Environment         string `json:"environment"`
-	NetworkID           string `json:"network_id"`
-	GatewayID           string `json:"gateway_id"`
-	GatewayEndpointHost string `json:"gateway_endpoint_host"`
-	OwnerEmail          string `json:"owner_email"`
+	Environment                string `json:"environment"`
+	NetworkID                  string `json:"network_id"`
+	GatewayID                  string `json:"gateway_id"`
+	GatewayEndpointHost        string `json:"gateway_endpoint_host"`
+	CurrentGatewayEndpointHost string `json:"current_gateway_endpoint_host"`
+	OwnerEmail                 string `json:"owner_email"`
 }
 
 func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
@@ -262,17 +263,17 @@ func (h *handler) overlayInternalReconcileStableGateway(c *gin.Context) {
 	}
 	result, err := h.overlayService.ReconcileStableGateway(c.Request.Context(), overlay.StableGatewayReconcileRequest{
 		Environment: request.Environment, NetworkID: request.NetworkID, GatewayID: request.GatewayID,
-		GatewayEndpointHost: request.GatewayEndpointHost, OwnerUserID: owner.ID,
+		GatewayEndpointHost: request.GatewayEndpointHost, CurrentGatewayEndpointHost: request.CurrentGatewayEndpointHost, OwnerUserID: owner.ID,
 	})
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
 	}
-	if result.OwnerReconciled {
+	if result.OwnerReconciled || result.EndpointNormalized {
 		if err := h.recordAudit(c.Request.Context(), "system", store.AuditActionOverlayOwnerReconcile,
 			auditDetails(result.NetworkID, "UAT stable Gateway ownership reconciliation",
 				map[string]any{"owner_user_id": result.PreviousOwnerID, "gateway_id": result.GatewayID},
-				map[string]any{"owner_user_id": result.OwnerUserID, "gateway_id": result.GatewayID})); err != nil {
+				map[string]any{"owner_user_id": result.OwnerUserID, "gateway_id": result.GatewayID, "gateway_endpoint_host": result.GatewayEndpointHost})); err != nil {
 			respondError(c, http.StatusInternalServerError, "audit_write_failed", "Gateway ownership was reconciled but the audit entry could not be written")
 			return
 		}

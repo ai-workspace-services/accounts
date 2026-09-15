@@ -128,24 +128,35 @@ func (s *Service) ReconcileStableGateway(ctx context.Context, request StableGate
 			return err
 		}
 		if network.GatewayID != stableUATGatewayID || strings.ToLower(strings.TrimSpace(network.GatewayEndpointHost)) != stableUATGatewayHost {
-			return ErrInvalidInput
+			legacyHost := strings.ToLower(strings.TrimSpace(request.CurrentGatewayEndpointHost))
+			if legacyHost == "" || strings.ToLower(strings.TrimSpace(network.GatewayEndpointHost)) != legacyHost {
+				return ErrInvalidInput
+			}
 		}
-		var duplicateCount int64
-		if err := tx.Model(&NetworkRecord{}).Where("gateway_id = ? AND lower(gateway_endpoint_host) = ?", stableUATGatewayID, stableUATGatewayHost).Count(&duplicateCount).Error; err != nil {
+		var gatewayCount int64
+		if err := tx.Model(&NetworkRecord{}).Where("gateway_id = ?", stableUATGatewayID).Count(&gatewayCount).Error; err != nil {
 			return err
 		}
-		if duplicateCount != 1 {
+		if gatewayCount != 1 {
 			return ErrConflict
 		}
 
 		result.PreviousOwnerID = strings.TrimSpace(network.OwnerUserID)
 		result.OwnerReconciled = result.PreviousOwnerID != result.OwnerUserID
-		if result.OwnerReconciled {
-			if err := tx.Model(&NetworkRecord{}).Where("id = ?", stableUATNetworkID).Updates(map[string]any{
-				"owner_user_id": result.OwnerUserID, "updated_at": s.now(),
-			}).Error; err != nil {
+		result.EndpointNormalized = strings.ToLower(strings.TrimSpace(network.GatewayEndpointHost)) != stableUATGatewayHost
+		if result.OwnerReconciled || result.EndpointNormalized {
+			updates := map[string]any{"updated_at": s.now()}
+			if result.OwnerReconciled {
+				updates["owner_user_id"] = result.OwnerUserID
+			}
+			if result.EndpointNormalized {
+				updates["gateway_endpoint_host"] = stableUATGatewayHost
+			}
+			if err := tx.Model(&NetworkRecord{}).Where("id = ?", stableUATNetworkID).Updates(updates).Error; err != nil {
 				return err
 			}
+		}
+		if result.OwnerReconciled {
 			if err := tx.Model(&DeviceRecord{}).Where("network_id = ?", stableUATNetworkID).Updates(map[string]any{
 				"user_uuid": result.OwnerUserID, "user_id": result.OwnerUserID, "updated_at": s.now(),
 			}).Error; err != nil {
