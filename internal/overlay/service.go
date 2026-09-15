@@ -130,8 +130,11 @@ func (s *Service) ReconcileStableGateway(ctx context.Context, request StableGate
 		if network.GatewayID != stableUATGatewayID {
 			return ErrInvalidInput
 		}
+		// The network ID is the canonical UAT identity. Scope the uniqueness
+		// check to that network so a stale record from an older test network
+		// cannot block reconciliation of the current stable Gateway.
 		var gatewayCount int64
-		if err := tx.Model(&NetworkRecord{}).Where("gateway_id = ?", stableUATGatewayID).Count(&gatewayCount).Error; err != nil {
+		if err := tx.Model(&NetworkRecord{}).Where("id = ? AND gateway_id = ?", stableUATNetworkID, stableUATGatewayID).Count(&gatewayCount).Error; err != nil {
 			return err
 		}
 		if gatewayCount != 1 {
