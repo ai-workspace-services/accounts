@@ -91,6 +91,13 @@ func TestReconcileStableGatewayRepairsOnlyUATOwnerProjection(t *testing.T) {
 	if err != nil || idempotent.OwnerReconciled {
 		t.Fatalf("expected idempotent no-op, result=%#v err=%v", idempotent, err)
 	}
+	if err := db.Model(&NetworkRecord{}).Where("id = ?", stableUATNetworkID).Update("gateway_endpoint_host", "203.0.113.44").Error; err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := service.ReconcileStableGateway(t.Context(), StableGatewayReconcileRequest{Environment: "uat", NetworkID: stableUATNetworkID, GatewayID: stableUATGatewayID, GatewayEndpointHost: stableUATGatewayHost, CurrentGatewayEndpointHost: "203.0.113.44", OwnerUserID: "new-owner"})
+	if err != nil || !normalized.EndpointNormalized || normalized.OwnerReconciled {
+		t.Fatalf("expected legacy endpoint normalization, result=%#v err=%v", normalized, err)
+	}
 }
 
 func TestReconcileStableGatewayRejectsNonUATOrMismatchedIdentity(t *testing.T) {
