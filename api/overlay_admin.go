@@ -47,6 +47,14 @@ type overlayInternalBootstrapRequest struct {
 	Bootstrap  overlayAdminBootstrapRequest `json:"bootstrap"`
 }
 
+type overlayInternalStableGatewayReconcileRequest struct {
+	Environment         string `json:"environment"`
+	NetworkID           string `json:"network_id"`
+	GatewayID           string `json:"gateway_id"`
+	GatewayEndpointHost string `json:"gateway_endpoint_host"`
+	OwnerEmail          string `json:"owner_email"`
+}
+
 func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	if h.overlayService == nil || h.tokenService == nil {
 		return
@@ -147,6 +155,39 @@ func (h *handler) overlayInternalBootstrap(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusCreated, result)
+}
+
+func (h *handler) overlayInternalReconcileStableGatewayOwner(c *gin.Context) {
+	var request overlayInternalStableGatewayReconcileRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero reconciliation request")
+		return
+	}
+	if strings.ToLower(strings.TrimSpace(request.Environment)) != "uat" ||
+		strings.TrimSpace(request.NetworkID) != "net_uat" ||
+		strings.TrimSpace(request.GatewayID) != "gw-uat-tw-xconnect" ||
+		!strings.EqualFold(strings.TrimSpace(request.GatewayEndpointHost), "tw-xconnect.svc.plus") {
+		respondError(c, http.StatusForbidden, "forbidden", "stable Gateway reconciliation is restricted to the fixed UAT identity")
+		return
+	}
+	owner, err := h.store.GetUserByEmail(c.Request.Context(), strings.TrimSpace(request.OwnerEmail))
+	if err != nil || !owner.Active {
+		respondError(c, http.StatusNotFound, "owner_not_found", "active XConnect Zero owner was not found")
+		return
+	}
+	result, err := h.overlayService.ReconcileStableGatewayOwner(c.Request.Context(), overlay.StableGatewayOwnerReconciliation{
+		Environment:         "uat",
+		NetworkID:           "net_uat",
+		GatewayID:           "gw-uat-tw-xconnect",
+		GatewayEndpointHost: "tw-xconnect.svc.plus",
+		OwnerUserID:         owner.ID,
+	})
+	if err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, result)
 }
 
 func overlayBootstrapConfig(request overlayAdminBootstrapRequest, ownerUserID string) overlay.BootstrapConfig {

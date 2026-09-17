@@ -265,6 +265,25 @@ type AdminOverview struct {
 	SigningKeyID string `json:"signingKeyId"`
 }
 
+// StableGatewayOwnerReconciliation is deliberately narrow: the automation
+// endpoint may repair only the fixed UAT Gateway identity. It must not become
+// a general-purpose ownership transfer API.
+type StableGatewayOwnerReconciliation struct {
+	Environment         string
+	NetworkID           string
+	GatewayID           string
+	GatewayEndpointHost string
+	OwnerUserID         string
+}
+
+type StableGatewayOwnerReconciliationResult struct {
+	Environment         string `json:"environment"`
+	NetworkID           string `json:"network_id"`
+	GatewayID           string `json:"gateway_id"`
+	GatewayEndpointHost string `json:"gateway_endpoint_host"`
+	OwnerReconciled     bool   `json:"owner_reconciled"`
+}
+
 type InviteSummary struct {
 	ID            string     `json:"id"`
 	NetworkID     string     `json:"network_id"`

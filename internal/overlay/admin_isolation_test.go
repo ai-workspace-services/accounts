@@ -113,3 +113,47 @@ func TestBootstrapCannotTakeOverAnotherUsersNetwork(t *testing.T) {
 		t.Fatalf("expected cross-user bootstrap rejection, got %v", err)
 	}
 }
+
+func TestStableGatewayOwnerReconciliationIsIdentityBoundAndIdempotent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:stable-gateway-reconcile-%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(db, Config{SigningPrivateKey: signer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Seed(t.Context(), BootstrapConfig{Network: BootstrapNetwork{
+		ID: "net_uat", DisplayName: "UAT", CIDR: "10.94.0.0/29", GatewayID: "gw-uat-tw-xconnect",
+		GatewayWireGuardKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)), GatewayWireGuardAddress: "10.94.0.1/32",
+		GatewayEndpointHost: "tw-xconnect.svc.plus", GatewayEndpointPort: 443, TransportServerName: "tw-xconnect.svc.plus",
+		TransportPort: 443, TransportAuthID: "22222222-2222-2222-2222-222222222222", OwnerUserID: "old-owner",
+	}, Invite: BootstrapInvite{Platform: "linux", Role: RoleGateway, ExpiresAt: time.Now().UTC().Add(time.Hour)}}, "seed-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.ReconcileStableGatewayOwner(t.Context(), StableGatewayOwnerReconciliation{
+		Environment: "uat", NetworkID: "net_uat", GatewayID: "gw-uat-tw-xconnect",
+		GatewayEndpointHost: "TW-XCONNECT.SVC.PLUS", OwnerUserID: "portal-owner",
+	})
+	if err != nil || !result.OwnerReconciled {
+		t.Fatalf("expected owner reconciliation: %#v err=%v", result, err)
+	}
+	result, err = service.ReconcileStableGatewayOwner(t.Context(), StableGatewayOwnerReconciliation{
+		Environment: "uat", NetworkID: "net_uat", GatewayID: "gw-uat-tw-xconnect",
+		GatewayEndpointHost: "tw-xconnect.svc.plus", OwnerUserID: "portal-owner",
+	})
+	if err != nil || result.OwnerReconciled {
+		t.Fatalf("expected idempotent reconciliation: %#v err=%v", result, err)
+	}
+	if _, err := service.ReconcileStableGatewayOwner(t.Context(), StableGatewayOwnerReconciliation{
+		Environment: "uat", NetworkID: "net_uat", GatewayID: "other-gateway",
+		GatewayEndpointHost: "tw-xconnect.svc.plus", OwnerUserID: "portal-owner",
+	}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("expected identity-bound rejection, got %v", err)
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var overlayDeviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
@@ -96,6 +97,53 @@ func (s *Service) AdminOverview(ctx context.Context, ownerUserID string) (AdminO
 		return AdminOverview{}, err
 	}
 	return AdminOverview{Status: "available", NetworkCount: networks, DeviceCount: devices, GatewayCount: gateways, SigningKeyID: s.keyID}, nil
+}
+
+// ReconcileStableGatewayOwner repairs the owner of the pre-existing UAT
+// Gateway record used by the deployment harness. The caller is an internal,
+// service-token protected route; the API layer additionally enforces the
+// exact UAT identity. Keeping the update here makes it transactional and
+// prevents a partial ownership change from being observable by admin queries.
+func (s *Service) ReconcileStableGatewayOwner(ctx context.Context, request StableGatewayOwnerReconciliation) (StableGatewayOwnerReconciliationResult, error) {
+	request.Environment = strings.ToLower(strings.TrimSpace(request.Environment))
+	request.NetworkID = strings.TrimSpace(request.NetworkID)
+	request.GatewayID = strings.TrimSpace(request.GatewayID)
+	request.GatewayEndpointHost = strings.ToLower(strings.TrimSpace(request.GatewayEndpointHost))
+	request.OwnerUserID = strings.TrimSpace(request.OwnerUserID)
+	if request.Environment == "" || request.NetworkID == "" || request.GatewayID == "" || request.GatewayEndpointHost == "" || request.OwnerUserID == "" {
+		return StableGatewayOwnerReconciliationResult{}, ErrInvalidInput
+	}
+
+	result := StableGatewayOwnerReconciliationResult{
+		Environment:         request.Environment,
+		NetworkID:           request.NetworkID,
+		GatewayID:           request.GatewayID,
+		GatewayEndpointHost: request.GatewayEndpointHost,
+	}
+	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var network NetworkRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", request.NetworkID).First(&network).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if network.GatewayID != request.GatewayID || strings.ToLower(strings.TrimSpace(network.GatewayEndpointHost)) != request.GatewayEndpointHost {
+			return ErrForbidden
+		}
+		if strings.TrimSpace(network.OwnerUserID) == request.OwnerUserID {
+			return nil
+		}
+		if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(map[string]any{
+			"owner_user_id": request.OwnerUserID,
+			"updated_at":    s.now(),
+		}).Error; err != nil {
+			return err
+		}
+		result.OwnerReconciled = true
+		return nil
+	})
+	return result, err
 }
 
 func (s *Service) AdminNetworks(ctx context.Context, ownerUserID string) ([]Network, error) {
