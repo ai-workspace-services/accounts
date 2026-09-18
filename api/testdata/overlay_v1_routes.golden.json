@@ -1,0 +1,94 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/admin/devices"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/admin/devices/:deviceID/revoke"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/admin/invites"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/admin/invites"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/admin/networks"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/admin/networks/:networkID/policy"
+  },
+  {
+    "method": "PUT",
+    "path": "/api/overlay/v1/admin/networks/:networkID/policy"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/admin/networks/bootstrap"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/admin/overview"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/admin/registrations"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/admin/registrations/:registrationID/approve"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/admin/registrations/:registrationID/reject"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/device/session"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/enrollment/policy-artifacts/:generation/:digest"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/enrollment/signed-config"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/enrollment/signed-config/:generation/ack"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/gateway/signed-config"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/join-tokens/exchange"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/registrations"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/registrations/:registrationID/exchange"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/signed-config"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/signed-config/:generation/ack"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/signing-keys"
+  }
+]
