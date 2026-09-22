@@ -476,6 +476,7 @@ type BootstrapInvite struct {
 type Config struct {
 	SigningKeyID      string
 	SigningPrivateKey ed25519.PrivateKey
+	LocalProxyPort    int
 	EnrollmentTTL     time.Duration
 	CredentialTTL     time.Duration
 	SignedConfigTTL   time.Duration
@@ -494,6 +495,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.SignedConfigTTL <= 0 || c.SignedConfigTTL > 15*time.Minute {
 		c.SignedConfigTTL = 10 * time.Minute
+	}
+	if c.LocalProxyPort == 0 {
+		c.LocalProxyPort = 51830
 	}
 	if c.Clock == nil {
 		c.Clock = time.Now

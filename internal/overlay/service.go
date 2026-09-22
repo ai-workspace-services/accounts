@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ type Service struct {
 	enrollmentTTL   time.Duration
 	credentialTTL   time.Duration
 	signedConfigTTL time.Duration
+	localProxyPort  int
 	clock           func() time.Time
 }
 
@@ -62,6 +64,9 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 		return nil, fmt.Errorf("migrate overlay schema: %w", err)
 	}
 	cfg = cfg.withDefaults()
+	if cfg.LocalProxyPort < 1024 || cfg.LocalProxyPort > 65535 {
+		return nil, errors.New("overlay local proxy port must be between 1024 and 65535")
+	}
 	key := append(ed25519.PrivateKey(nil), cfg.SigningPrivateKey...)
 	if len(key) == 0 {
 		var err error
@@ -77,7 +82,7 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{repo: repo, keyID: cfg.SigningKeyID, privateKey: key, enrollmentTTL: cfg.EnrollmentTTL, credentialTTL: cfg.CredentialTTL, signedConfigTTL: cfg.SignedConfigTTL, clock: cfg.Clock}, nil
+	return &Service{repo: repo, keyID: cfg.SigningKeyID, privateKey: key, enrollmentTTL: cfg.EnrollmentTTL, credentialTTL: cfg.CredentialTTL, signedConfigTTL: cfg.SignedConfigTTL, localProxyPort: cfg.LocalProxyPort, clock: cfg.Clock}, nil
 }
 
 // ConfigFromEnv is intended for the account service entrypoint. The private
@@ -85,9 +90,17 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 // encoded as unpadded or padded base64. Development may omit it and receives
 // an ephemeral key, which makes the limitation explicit at the boundary.
 func ConfigFromEnv() (Config, error) {
+	localProxyPort := 0
+	if value := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_LOCAL_PROXY_PORT")); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1024 || parsed > 65535 {
+			return Config{}, errors.New("XCONNECT_OVERLAY_LOCAL_PROXY_PORT must be a valid unprivileged port")
+		}
+		localProxyPort = parsed
+	}
 	keyText := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY"))
 	if keyText == "" {
-		return Config{SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID"))}, nil
+		return Config{SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), LocalProxyPort: localProxyPort}, nil
 	}
 	key, err := base64.StdEncoding.DecodeString(keyText)
 	if err != nil {
@@ -96,7 +109,7 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil || len(key) != ed25519.PrivateKeySize {
 		return Config{}, errors.New("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY must be base64 Ed25519 private key")
 	}
-	return Config{SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), SigningPrivateKey: ed25519.PrivateKey(key)}, nil
+	return Config{SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), SigningPrivateKey: ed25519.PrivateKey(key), LocalProxyPort: localProxyPort}, nil
 }
 
 func (s *Service) Repository() *Repository { return s.repo }
@@ -1010,13 +1023,13 @@ func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, 
 		ExpiresAt:     expires,
 		ProxyCore:     "xray",
 		Transport: Transport{
-			Kind: networkTransport(network).Kind, Loopback: Endpoint{Host: "127.0.0.1", Port: 51830},
+			Kind: networkTransport(network).Kind, Loopback: Endpoint{Host: "127.0.0.1", Port: s.localProxyPort},
 			Remote: RemoteEndpoint{Host: network.GatewayEndpointHost, Port: network.TransportPort, ServerName: network.TransportServerName}, AuthID: network.TransportAuthID,
 			Path: networkTransport(network).Path, Mode: networkTransport(network).Mode, Host: networkTransport(network).Host,
 		},
 		WireGuard: WireGuard{
 			InterfaceName: "xconone0", Addresses: []string{device.WireGuardAddress}, MTU: 1420,
-			Peers: []WireGuardPeer{{GatewayID: network.GatewayID, PublicKey: network.GatewayWireGuardKey, AllowedIPs: []string{network.CIDR}, Endpoint: Endpoint{Host: "127.0.0.1", Port: 51830}, PersistentKeepaliveSeconds: 25}},
+			Peers: []WireGuardPeer{{GatewayID: network.GatewayID, PublicKey: network.GatewayWireGuardKey, AllowedIPs: []string{network.CIDR}, Endpoint: Endpoint{Host: "127.0.0.1", Port: s.localProxyPort}, PersistentKeepaliveSeconds: 25}},
 		},
 	}
 	if v2 {

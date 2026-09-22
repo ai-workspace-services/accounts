@@ -31,7 +31,7 @@ func newOverlayHTTPTest(t *testing.T) (*Service, *gin.Engine, string) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
-	service, err := NewService(db, Config{SigningKeyID: "zero-key-1", SigningPrivateKey: signer, Clock: func() time.Time { return now }})
+	service, err := NewService(db, Config{SigningKeyID: "zero-key-1", SigningPrivateKey: signer, LocalProxyPort: 51831, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +506,7 @@ func TestOverlayLifecyclePersistsHashesAndSignsConfig(t *testing.T) {
 	if err != nil || !ed25519.Verify(service.privateKey.Public().(ed25519.PublicKey), unsigned, mustDecodeBase64(t, config.Signature.Value)) {
 		t.Fatalf("signed config verification failed: err=%v config=%#v", err, config)
 	}
-	if config.Transport.Kind != TransportVLESSXHTTP || config.Transport.Loopback != (Endpoint{Host: "127.0.0.1", Port: 51830}) || config.Transport.Remote.Port != 443 || config.Transport.Path != DefaultTransportPath || config.Transport.Mode != DefaultTransportMode || config.WireGuard.Peers[0].Endpoint.Port != 51830 {
+	if config.Transport.Kind != TransportVLESSXHTTP || config.Transport.Loopback != (Endpoint{Host: "127.0.0.1", Port: 51831}) || config.Transport.Remote.Port != 443 || config.Transport.Path != DefaultTransportPath || config.Transport.Mode != DefaultTransportMode || config.WireGuard.Peers[0].Endpoint.Port != 51831 {
 		t.Fatalf("unexpected XHTTP One transport contract: %#v", config)
 	}
 	v2Req := httptest.NewRequest(http.MethodGet, "/api/overlay/v1/enrollment/signed-config?device_id=one-laptop&network_id=sit-private", nil)
