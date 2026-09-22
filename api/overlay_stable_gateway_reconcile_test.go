@@ -79,6 +79,9 @@ func TestInternalStableGatewayReconcileRequiresServiceTokenAndAuditsRepair(t *te
 	if len(entries) != 1 {
 		t.Fatalf("expected one reconciliation audit entry, got %d", len(entries))
 	}
+	if entries[0].ActorUUID != "" {
+		t.Fatalf("system reconciliation must retain a nullable audit actor, got %q", entries[0].ActorUUID)
+	}
 	if entries[0].Details["reason"] != "UAT stable Gateway ownership reconciliation" {
 		t.Fatalf("unexpected audit details: %#v", entries[0].Details)
 	}

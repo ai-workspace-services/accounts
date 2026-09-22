@@ -269,7 +269,11 @@ func (h *handler) overlayInternalReconcileStableGateway(c *gin.Context) {
 		return
 	}
 	if result.OwnerReconciled || result.EndpointNormalized {
-		if err := h.recordAudit(c.Request.Context(), "system", store.AuditActionOverlayOwnerReconcile,
+		// This is an authenticated service-to-service reconciliation, not an
+		// end-user action. actor_uuid is a PostgreSQL UUID column; use the
+		// documented empty actor representation so the store persists NULL
+		// rather than attempting to write the non-UUID string "system".
+		if err := h.recordAudit(c.Request.Context(), "", store.AuditActionOverlayOwnerReconcile,
 			auditDetails(result.NetworkID, "UAT stable Gateway ownership reconciliation",
 				map[string]any{"owner_user_id": result.PreviousOwnerID, "gateway_id": result.GatewayID},
 				map[string]any{"owner_user_id": result.OwnerUserID, "gateway_id": result.GatewayID, "gateway_endpoint_host": result.GatewayEndpointHost})); err != nil {
