@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"account/internal/agentproto"
 	"account/internal/agentserver"
+	"account/internal/overlay"
 	"account/internal/store"
 	"account/internal/xrayconfig"
 )
@@ -237,6 +239,21 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 	// Ensure report uses the resolved agent id.
 	report.AgentID = identity.ID
 	h.agentRegistry.ReportStatus(identity, report)
+	// A Gateway/One control agent may only refresh liveness for a device which
+	// already exists through signed enrollment. This deliberately never creates
+	// or reassigns an overlay device, so generic Agent telemetry cannot bypass
+	// Zero ownership or tenant isolation.
+	if h.overlayService != nil && (report.Role == overlay.RoleGateway || report.Role == overlay.RoleOne) {
+		if err := h.overlayService.RecordRuntimeObservation(c.Request.Context(), overlay.RuntimeObservationRequest{
+			NetworkID: report.Xray.NetworkID,
+			DeviceID:  report.Xray.NodeID,
+			Role:      report.Role,
+		}); err != nil {
+			if !errors.Is(err, overlay.ErrNotFound) && !errors.Is(err, overlay.ErrInvalidInput) {
+				c.Error(err)
+			}
+		}
+	}
 	if h.store != nil {
 		nodeID := strings.TrimSpace(report.Xray.NodeID)
 		if nodeID == "" {

@@ -425,6 +425,15 @@ type StableGatewayReconcileResult struct {
 	RegistrationCount   int64  `json:"registration_count"`
 }
 
+// RuntimeObservationRequest is an authenticated, liveness-only update from a
+// deployed control agent. It cannot create, reassign, rekey, enroll, or revoke
+// an overlay device.
+type RuntimeObservationRequest struct {
+	NetworkID string
+	DeviceID  string
+	Role      string
+}
+
 // AdminInviteRequest creates one device-bound enrollment invitation for an
 // existing owner-scoped network. A raw token is returned only once in JoinURI.
 type AdminInviteRequest struct {

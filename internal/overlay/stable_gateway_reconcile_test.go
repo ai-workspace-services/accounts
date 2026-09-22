@@ -144,3 +144,27 @@ func TestReconcileStableGatewayRequiresExistingNetwork(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestRecordRuntimeObservationOnlyTouchesExistingActiveDevice(t *testing.T) {
+	service, db, now := newStableGatewayTestService(t)
+	seedStableGateway(t, service, "owner", now)
+	if err := db.Create(&DeviceRecord{ID: stableUATGatewayID, UserUUID: "owner", UserID: "owner", NetworkID: stableUATNetworkID, Role: RoleGateway, Name: "Gateway", Platform: "linux", Hostname: stableUATGatewayHost, WireGuardPublicKey: base64KeyForTest(), WireGuardAddress: "10.77.0.1/32", Status: "active", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordRuntimeObservation(t.Context(), RuntimeObservationRequest{NetworkID: stableUATNetworkID, DeviceID: stableUATGatewayID, Role: RoleGateway}); err != nil {
+		t.Fatal(err)
+	}
+	var observed DeviceRecord
+	if err := db.First(&observed, "id = ?", stableUATGatewayID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if observed.LastSeenAt == nil || !observed.LastSeenAt.Equal(now) || observed.UserID != "owner" {
+		t.Fatalf("unexpected liveness-only update: %#v", observed)
+	}
+	if err := db.Model(&DeviceRecord{}).Where("id = ?", stableUATGatewayID).Update("status", "revoked").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecordRuntimeObservation(t.Context(), RuntimeObservationRequest{NetworkID: stableUATNetworkID, DeviceID: stableUATGatewayID, Role: RoleGateway}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked device report = %v, want ErrNotFound", err)
+	}
+}
