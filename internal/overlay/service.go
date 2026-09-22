@@ -416,6 +416,15 @@ func (s *Service) AdminBootstrap(ctx context.Context, cfg BootstrapConfig, contr
 	if err != nil {
 		return AdminBootstrapResult{}, err
 	}
+	// The UAT Gateway is a fixed machine identity. Its persisted local
+	// WireGuard key can legitimately be regenerated during an interrupted UAT
+	// recovery, while the device record from the earlier run remains. Reconcile
+	// that one exact identity before issuing its fresh, device-bound invite.
+	// This is deliberately unavailable to arbitrary networks, Gateways, One
+	// devices, or production environments.
+	if err := s.reconcileStableUATGatewayKey(ctx, cfg); err != nil {
+		return AdminBootstrapResult{}, err
+	}
 	var network NetworkRecord
 	if err := s.repo.DB.WithContext(ctx).Where("id = ?", cfg.Network.ID).First(&network).Error; err != nil {
 		return AdminBootstrapResult{}, err
@@ -429,6 +438,50 @@ func (s *Service) AdminBootstrap(ctx context.Context, cfg BootstrapConfig, contr
 		return AdminBootstrapResult{}, ErrInvalidInput
 	}
 	return AdminBootstrapResult{Network: toNetwork(network), Invite: InviteSummary{ID: invite.ID, NetworkID: invite.NetworkID, DeviceID: invite.DeviceID, Platform: invite.Platform, Role: invite.Role, ExpiresAt: invite.ExpiresAt.UTC(), RemainingUses: invite.RemainingUses, CreatedAt: invite.CreatedAt.UTC()}, JoinURI: "xconnect://join/" + joinToken + "?controller=" + url.QueryEscape(controllerURL)}, nil
+}
+
+func (s *Service) reconcileStableUATGatewayKey(ctx context.Context, cfg BootstrapConfig) error {
+	if cfg.Network.ID != stableUATNetworkID || cfg.Network.GatewayID != stableUATGatewayID ||
+		strings.ToLower(strings.TrimSpace(cfg.Network.GatewayEndpointHost)) != stableUATGatewayHost ||
+		cfg.Invite.DeviceID != stableUATGatewayID || cfg.Invite.Role != RoleGateway || cfg.Invite.Platform != "linux" {
+		return nil
+	}
+
+	return s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var network NetworkRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", stableUATNetworkID).First(&network).Error; err != nil {
+			return err
+		}
+		var device DeviceRecord
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND network_id = ?", stableUATGatewayID, stableUATNetworkID).First(&device).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if device.Role != RoleGateway {
+			return ErrConflict
+		}
+		if device.WireGuardPublicKey == network.GatewayWireGuardKey && device.Status == "active" {
+			return nil
+		}
+
+		now := s.now()
+		if err := tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", device.ID).Update("revoked_at", now).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&DeviceRecord{}).Where("id = ? AND network_id = ?", device.ID, network.ID).Updates(map[string]any{
+			"wireguard_public_key": network.GatewayWireGuardKey,
+			"wireguard_address":    network.GatewayWireGuardAddress,
+			"status":               "active",
+			"updated_at":           now,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Update("config_generation", gorm.Expr("config_generation + 1")).Error
+	})
 }
 
 func (s *Service) AdminRevokeDevice(ctx context.Context, ownerUserID, deviceID string) error {
