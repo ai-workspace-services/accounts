@@ -12,9 +12,12 @@ const (
 	RoleGateway = "gateway"
 	RoleOne     = "one"
 
-	TransportVLESSXHTTP  = "vless-xhttp"
-	DefaultTransportPath = "/xconnect"
-	DefaultTransportMode = "auto"
+	TransportVLESSXHTTP         = "vless-xhttp"
+	DefaultTransportPath        = "/xconnect"
+	DefaultTransportMode        = "auto"
+	GatewayFrontendDirectTLS    = "direct-tls"
+	GatewayFrontendCaddyUnixH2C = "caddy-unix-h2c"
+	DefaultGatewayListenSocket  = "/run/xconnect-gateway/xray.sock"
 
 	TokenTypeBearer = "Bearer"
 	TokenTypeDevice = "Device"
@@ -339,13 +342,15 @@ type GatewaySignedConfig struct {
 }
 
 type GatewayTransport struct {
-	Kind       string `json:"kind"`
-	ServerName string `json:"server_name"`
-	Port       int    `json:"port"`
-	AuthID     string `json:"auth_id"`
-	Path       string `json:"path,omitempty"`
-	Mode       string `json:"mode,omitempty"`
-	Host       string `json:"host,omitempty"`
+	Kind         string `json:"kind"`
+	ServerName   string `json:"server_name"`
+	Port         int    `json:"port"`
+	AuthID       string `json:"auth_id"`
+	Path         string `json:"path,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Host         string `json:"host,omitempty"`
+	Frontend     string `json:"frontend,omitempty"`
+	ListenSocket string `json:"listen_socket,omitempty"`
 }
 
 type PolicyArtifact struct {
