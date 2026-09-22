@@ -290,11 +290,6 @@ func (r *Repository) createDevice(ctx context.Context, tokenHash string, request
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("token_hash = ?", tokenHash).First(&invite).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("id = ? AND network_id = ?", request.DeviceID, invite.NetworkID).First(&DeviceRecord{}).Error; err == nil {
-			return ErrDeviceConflict
-		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-			return err
-		}
 		var networkErr error
 		network, networkErr = r.networkTx(tx, invite.NetworkID)
 		if networkErr != nil {
@@ -302,6 +297,34 @@ func (r *Repository) createDevice(ctx context.Context, tokenHash string, request
 		}
 		if invite.Role == RoleGateway && request.WireGuardPublicKey != network.GatewayWireGuardKey {
 			return ErrInvalidInput
+		}
+		var existing DeviceRecord
+		existingErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND network_id = ?", request.DeviceID, invite.NetworkID).First(&existing).Error
+		if existingErr == nil {
+			// A Gateway's local state can outlive a UAT control-plane reset. Permit
+			// a fresh, device-bound Gateway invitation to rotate only its credential
+			// when the network's pinned WireGuard identity is unchanged. One devices
+			// deliberately retain strict single-enrollment semantics.
+			if invite.Role != RoleGateway || existing.Role != RoleGateway || existing.Status != "active" ||
+				existing.WireGuardPublicKey != request.WireGuardPublicKey || existing.ID != network.GatewayID {
+				return ErrDeviceConflict
+			}
+			if err := tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", existing.ID).Update("revoked_at", now).Error; err != nil {
+				return err
+			}
+			credential.DeviceID = existing.ID
+			enrollment.DeviceID = existing.ID
+			if err := tx.Create(&credential).Error; err != nil {
+				return err
+			}
+			if err := tx.Create(&enrollment).Error; err != nil {
+				return err
+			}
+			device = existing
+			return nil
+		}
+		if !errors.Is(existingErr, gorm.ErrRecordNotFound) {
+			return existingErr
 		}
 		address := network.GatewayWireGuardAddress
 		if invite.Role != RoleGateway {
