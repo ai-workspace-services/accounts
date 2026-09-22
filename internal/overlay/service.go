@@ -909,7 +909,11 @@ func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string) (Ga
 		address = prefix.Addr().Next().String() + "/32"
 	}
 	transport := networkTransport(network)
-	config := GatewaySignedConfig{SchemaVersion: 1, Role: RoleGateway, ConfigID: configID(network.ID, network.GatewayID, network.ConfigGeneration), NetworkID: network.ID, GatewayID: network.GatewayID, Generation: network.ConfigGeneration, IssuedAt: now, ExpiresAt: canonicalTime(now.Add(s.signedConfigTTL)), InterfaceName: "xconzero0", Address: address, ListenPort: network.GatewayEndpointPort, MTU: 1420, Peers: peers, Transport: GatewayTransport{Kind: transport.Kind, ServerName: network.TransportServerName, Port: network.TransportPort, AuthID: network.TransportAuthID, Path: transport.Path, Mode: transport.Mode, Host: transport.Host}}
+	frontend, listenSocket, err := gatewayFrontend()
+	if err != nil {
+		return GatewaySignedConfig{}, "", err
+	}
+	config := GatewaySignedConfig{SchemaVersion: 1, Role: RoleGateway, ConfigID: configID(network.ID, network.GatewayID, network.ConfigGeneration), NetworkID: network.ID, GatewayID: network.GatewayID, Generation: network.ConfigGeneration, IssuedAt: now, ExpiresAt: canonicalTime(now.Add(s.signedConfigTTL)), InterfaceName: "xconzero0", Address: address, ListenPort: network.GatewayEndpointPort, MTU: 1420, Peers: peers, Transport: GatewayTransport{Kind: transport.Kind, ServerName: network.TransportServerName, Port: network.TransportPort, AuthID: network.TransportAuthID, Path: transport.Path, Mode: transport.Mode, Host: transport.Host, Frontend: frontend, ListenSocket: listenSocket}}
 	payload, err := gatewaySigningBytes(config)
 	if err != nil {
 		return GatewaySignedConfig{}, "", err
@@ -921,6 +925,27 @@ func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string) (Ga
 	}
 	sum := sha256.Sum256(raw)
 	return config, `"` + hex.EncodeToString(sum[:]) + `"`, nil
+}
+
+func gatewayFrontend() (string, string, error) {
+	frontend := strings.TrimSpace(os.Getenv("XCONNECT_GATEWAY_XRAY_FRONTEND"))
+	if frontend == "" {
+		frontend = GatewayFrontendDirectTLS
+	}
+	if frontend != GatewayFrontendDirectTLS && frontend != GatewayFrontendCaddyUnixH2C {
+		return "", "", ErrInvalidInput
+	}
+	if frontend == GatewayFrontendDirectTLS {
+		return frontend, "", nil
+	}
+	socket := strings.TrimSpace(os.Getenv("XCONNECT_GATEWAY_XRAY_LISTEN_SOCKET"))
+	if socket == "" {
+		socket = DefaultGatewayListenSocket
+	}
+	if !strings.HasPrefix(socket, "/") || strings.ContainsAny(socket, "\r\n") || len(socket) > 4096 {
+		return "", "", ErrInvalidInput
+	}
+	return frontend, socket, nil
 }
 
 func (s *Service) AckEnrollment(ctx context.Context, enrollmentToken string, request SignedConfigAckRequest) (SignedConfigAckResponse, error) {

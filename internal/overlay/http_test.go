@@ -554,6 +554,8 @@ func TestOverlayLifecyclePersistsHashesAndSignsConfig(t *testing.T) {
 }
 
 func TestGatewayRoleUsesCentralSignedSnapshot(t *testing.T) {
+	t.Setenv("XCONNECT_GATEWAY_XRAY_FRONTEND", GatewayFrontendCaddyUnixH2C)
+	t.Setenv("XCONNECT_GATEWAY_XRAY_LISTEN_SOCKET", DefaultGatewayListenSocket)
 	service, router, _ := newOverlayHTTPTest(t)
 	joinToken, err := service.Seed(t.Context(), BootstrapConfig{
 		Network: BootstrapNetwork{ID: "uat-private", DisplayName: "UAT private", CIDR: "10.88.0.0/29", GatewayID: "gw-uat-1", GatewayWireGuardKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{5}, 32)), GatewayWireGuardAddress: "10.88.0.1/32", GatewayEndpointHost: "gw.uat.test", GatewayEndpointPort: 51820, TransportServerName: "gw.uat.test", TransportPort: 443, TransportAuthID: "22222222-2222-2222-2222-222222222222"},
@@ -594,7 +596,7 @@ func TestGatewayRoleUsesCentralSignedSnapshot(t *testing.T) {
 	if err != nil || !ed25519.Verify(service.privateKey.Public().(ed25519.PublicKey), unsigned, mustDecodeBase64(t, config.Signature.Value)) {
 		t.Fatalf("gateway signed config verification failed: err=%v", err)
 	}
-	if config.Transport.Kind != TransportVLESSXHTTP || config.Transport.Port != 443 || config.Transport.Path != DefaultTransportPath || config.Transport.Mode != DefaultTransportMode {
+	if config.Transport.Kind != TransportVLESSXHTTP || config.Transport.Port != 443 || config.Transport.Path != DefaultTransportPath || config.Transport.Mode != DefaultTransportMode || config.Transport.Frontend != GatewayFrontendCaddyUnixH2C || config.Transport.ListenSocket != DefaultGatewayListenSocket {
 		t.Fatalf("unexpected XHTTP Gateway transport contract: %#v", config.Transport)
 	}
 }
