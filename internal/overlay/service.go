@@ -319,6 +319,30 @@ func (s *Service) AdminDevices(ctx context.Context, ownerUserID string) ([]Admin
 	return result, nil
 }
 
+// RecordRuntimeObservation marks an existing, active signed-enrollment device
+// as recently observed. It is intentionally limited to liveness: ownership,
+// credentials, WireGuard keys, transport settings, and device status are not
+// mutable through this path.
+func (s *Service) RecordRuntimeObservation(ctx context.Context, request RuntimeObservationRequest) error {
+	networkID := strings.TrimSpace(request.NetworkID)
+	deviceID := strings.TrimSpace(request.DeviceID)
+	role := strings.TrimSpace(request.Role)
+	if networkID == "" || deviceID == "" || (role != RoleGateway && role != RoleOne) {
+		return ErrInvalidInput
+	}
+
+	result := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).
+		Where("id = ? AND network_id = ? AND role = ? AND status = ?", deviceID, networkID, role, "active").
+		Updates(map[string]any{"last_seen_at": s.now(), "updated_at": s.now()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func adminDeviceACKKey(networkID, deviceID string) string { return networkID + "\x00" + deviceID }
 
 func (s *Service) AdminInvites(ctx context.Context, ownerUserID string) ([]InviteSummary, error) {
