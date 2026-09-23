@@ -277,35 +277,62 @@ func (h *handler) deactivateUser(c *gin.Context) {
 }
 
 func (h *handler) deleteUser(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminUsersDelete); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminUsersDelete)
+	if !ok {
+		return
+	}
+	reason, ok := requireReason(c, c.Query("reason"))
+	if !ok {
 		return
 	}
 
 	userID := c.Param("userId")
 	user, err := h.store.GetUserByID(c.Request.Context(), userID)
 	if err != nil {
+		if errors.Is(err, store.ErrUserNotFound) {
+			respondError(c, http.StatusNotFound, "user_not_found", "user not found")
+			return
+		}
 		respondError(c, http.StatusInternalServerError, "user_lookup_failed", "failed to find user")
 		return
 	}
-	if h.isRootAccount(user) {
-		respondError(c, http.StatusForbidden, "root_protected", "root account cannot be deleted")
-		return
+	archivedAt := time.Now().UTC()
+	auditEntry := &store.AuditLog{
+		Action:    store.AuditActionUserArchive,
+		ActorUUID: actor.ID,
+		Details: auditDetails(user.ID, reason,
+			map[string]any{"role": user.Role, "active": user.Active, "archived_at": user.ArchivedAt},
+			map[string]any{"lifecycle_state": "archived", "active": false}),
 	}
-	activeSubscription, err := h.hasActiveSubscription(c.Request.Context(), user.ID)
-	if err != nil {
-		respondError(c, http.StatusInternalServerError, "subscription_lookup_failed", "failed to verify subscription protection")
-		return
-	}
-	if activeSubscription || store.MonthlyQuotaGroup(user) == store.MonthlyPlusQuotaLimitGroup || store.MonthlyQuotaGroup(user) == store.MonthlyUnlimitedBetaQuotaGroup {
-		respondError(c, http.StatusForbidden, "subscription_protected", "subscribed accounts are protected from deletion")
-		return
-	}
-	if err := h.store.DeleteUser(c.Request.Context(), userID); err != nil {
-		respondError(c, http.StatusInternalServerError, "delete_failed", "failed to delete user")
+	if err := h.store.DeleteUser(c.Request.Context(), userID, auditEntry, c.GetHeader("X-Request-ID")); err != nil {
+		if errors.Is(err, store.ErrUserNotFound) {
+			respondError(c, http.StatusNotFound, "user_not_found", "user not found")
+			return
+		}
+		if errors.Is(err, store.ErrUserArchiveUnsupported) {
+			respondError(c, http.StatusConflict, "archive_unsupported", "atomic archive requires the account lifecycle migration")
+			return
+		}
+		if errors.Is(err, store.ErrUserProtected) {
+			respondError(c, http.StatusForbidden, "user_protected", "administrator or paid accounts are protected from archive")
+			return
+		}
+		if errors.Is(err, store.ErrUserAlreadyArchived) {
+			respondError(c, http.StatusConflict, "user_already_archived", "user is already archived")
+			return
+		}
+		if errors.Is(err, store.ErrUserArchiveReplayConflict) {
+			respondError(c, http.StatusConflict, "request_id_reused", "request ID was already used with different archive details")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "archive_failed", "failed to archive user and record audit")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "user deleted"})
+	if !auditEntry.CreatedAt.IsZero() {
+		archivedAt = auditEntry.CreatedAt
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "user archived", "archivedAt": archivedAt, "transitionId": auditEntry.Details["transition_id"]})
 }
 
 func (h *handler) renewProxyUUID(c *gin.Context) {

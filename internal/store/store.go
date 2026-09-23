@@ -252,6 +252,7 @@ const (
 	AuditActionTrialGrant            = "billing.trial.grant"
 	AuditActionArrearsClear          = "billing.arrears.clear"
 	AuditActionSubscriptionCancel    = "billing.subscription.cancel"
+	AuditActionUserArchive           = "account.user.archive"
 	AuditActionSegmentUpdate         = "account.segment.update"
 	AuditActionRoleUpdate            = "account.role.update"
 	AuditActionOverlayOwnerReconcile = "overlay.gateway.owner_reconcile"
@@ -351,7 +352,9 @@ type Store interface {
 	CancelSubscription(ctx context.Context, userID, externalID string, cancelledAt time.Time) (*Subscription, error)
 	CreateIdentity(ctx context.Context, identity *Identity) error
 	ListUsers(ctx context.Context) ([]User, error)
-	DeleteUser(ctx context.Context, id string) error
+	// DeleteUser archives an account and atomically records the operator audit
+	// and lifecycle transition. Implementations must reject unsupported schemas.
+	DeleteUser(ctx context.Context, id string, audit *AuditLog, requestID string) error
 
 	// Email Blacklist
 	AddToBlacklist(ctx context.Context, email string) error
@@ -449,10 +452,16 @@ type Store interface {
 
 // Domain level errors returned by the store implementation.
 var (
-	ErrEmailExists                = errors.New("email already exists")
-	ErrNameExists                 = errors.New("name already exists")
-	ErrInvalidName                = errors.New("invalid user name")
-	ErrUserNotFound               = errors.New("user not found")
+	ErrEmailExists  = errors.New("email already exists")
+	ErrNameExists   = errors.New("name already exists")
+	ErrInvalidName  = errors.New("invalid user name")
+	ErrUserNotFound = errors.New("user not found")
+	// ErrUserArchiveUnsupported is returned when the backing schema cannot
+	// atomically persist lifecycle state and its audit events.
+	ErrUserArchiveUnsupported     = errors.New("atomic user archive is not supported by the current schema")
+	ErrUserProtected              = errors.New("user is protected from archive")
+	ErrUserAlreadyArchived        = errors.New("user is already archived")
+	ErrUserArchiveReplayConflict  = errors.New("user archive request key was reused with different input")
 	ErrMFANotSupported            = errors.New("mfa is not supported by the current store schema")
 	ErrSuperAdminCountingDisabled = errors.New("super administrator counting is disabled")
 	ErrSubscriptionNotFound       = errors.New("subscription not found")
@@ -1134,17 +1143,74 @@ func (s *memoryStore) ListUsers(ctx context.Context) ([]User, error) {
 	return result, nil
 }
 
-func (s *memoryStore) DeleteUser(ctx context.Context, id string) error {
+func (s *memoryStore) DeleteUser(ctx context.Context, id string, audit *AuditLog, requestID string) error {
 	_ = ctx
+	if err := validateUserArchiveAudit(id, audit); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	requestID = strings.TrimSpace(requestID)
+	if requestID != "" {
+		for _, existing := range s.auditLogs {
+			if existing.Action != AuditActionUserArchive ||
+				existing.Details["target_uuid"] != id || existing.Details["request_id"] != requestID {
+				continue
+			}
+			if existing.ActorUUID != audit.ActorUUID || existing.Details["reason"] != audit.Details["reason"] {
+				return ErrUserArchiveReplayConflict
+			}
+			*audit = *cloneAuditLog(existing)
+			return nil
+		}
+	}
 	user, ok := s.byID[id]
 	if !ok {
-		return nil
+		return ErrUserNotFound
 	}
-	delete(s.byID, id)
-	delete(s.byEmail, strings.ToLower(user.Email))
-	delete(s.byName, strings.ToLower(user.Name))
+	if user.ArchivedAt != nil {
+		return ErrUserAlreadyArchived
+	}
+	if IsAdminRole(user.Role) || user.Level == LevelAdmin ||
+		MonthlyQuotaGroup(user) == MonthlyPlusQuotaLimitGroup ||
+		MonthlyQuotaGroup(user) == MonthlyUnlimitedBetaQuotaGroup {
+		return ErrUserProtected
+	}
+	for _, subscription := range s.subscriptions[id] {
+		if subscription.Status == "active" || subscription.Status == "trialing" || subscription.Status == "past_due" {
+			return ErrUserProtected
+		}
+	}
+	now := time.Now().UTC()
+	transitionID := uuid.NewString()
+	user.Active = false
+	user.ArchivedAt = &now
+	user.UpdatedAt = now
+	if strings.TrimSpace(audit.UUID) == "" {
+		audit.UUID = uuid.NewString()
+	}
+	audit.CreatedAt = now
+	if requestID != "" {
+		audit.Details["request_id"] = requestID
+	}
+	audit.Details["transition_id"] = transitionID
+	audit.Details["occurred_at"] = now
+	s.auditLogs = append(s.auditLogs, cloneAuditLog(audit))
+	return nil
+}
+
+func validateUserArchiveAudit(userID string, audit *AuditLog) error {
+	if audit == nil || strings.TrimSpace(audit.Action) != AuditActionUserArchive || strings.TrimSpace(audit.ActorUUID) == "" {
+		return errors.New("a user archive audit entry with an actor is required")
+	}
+	if audit.Details == nil {
+		return errors.New("user archive audit details are required")
+	}
+	target, _ := audit.Details["target_uuid"].(string)
+	reason, _ := audit.Details["reason"].(string)
+	if strings.TrimSpace(target) != strings.TrimSpace(userID) || strings.TrimSpace(reason) == "" {
+		return errors.New("user archive audit target and reason are required")
+	}
 	return nil
 }
 
