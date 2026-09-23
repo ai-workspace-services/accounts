@@ -91,6 +91,11 @@ type ImportOptions struct {
 	Merge         bool
 	MergeStrategy MergeStrategy
 	DryRun        bool
+	// PreserveExistingUsers keeps target user profiles (including proxy UUIDs)
+	// untouched while allowing new users and their identities to be imported.
+	PreserveExistingUsers bool
+	// SkipSessions prevents production login sessions from entering UAT.
+	SkipSessions bool
 	// RegenerateUserUUIDs gives imported users new identity UUIDs while
 	// preserving their proxy UUIDs. If this would require changing the UUID of
 	// an existing target user, the import is rejected before writes because its
@@ -215,6 +220,9 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	}
 	if !opts.Merge {
 		strategy = MergeStrategyReplace
+		if opts.PreserveExistingUsers || opts.SkipSessions {
+			return nil, errors.New("preserve-existing-users and skip-sessions require merge mode")
+		}
 	}
 	db, err := openDB(ctx, dsn)
 	if err != nil {
@@ -306,8 +314,10 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	}
 
 	incomingSessionsByUser := make(map[string][]SessionRecord)
-	for _, session := range dump.Sessions {
-		incomingSessionsByUser[session.UserUUID] = append(incomingSessionsByUser[session.UserUUID], session)
+	if !opts.SkipSessions {
+		for _, session := range dump.Sessions {
+			incomingSessionsByUser[session.UserUUID] = append(incomingSessionsByUser[session.UserUUID], session)
+		}
 	}
 	if opts.Merge {
 		if err := validateMergeUserConflicts(ctx, db, dump.Users, opts.Allowlist, targetToSource); err != nil {
@@ -352,7 +362,10 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 
 		existing, hasExisting := existingUsers[user.UUID]
 
-		if opts.Merge && hasExisting && strategy == MergeStrategyTimestamp && existing.UpdatedAt.After(user.UpdatedAt) {
+		if opts.PreserveExistingUsers && hasExisting {
+			report.UsersSkipped++
+			existingUsers[user.UUID] = existing
+		} else if opts.Merge && hasExisting && strategy == MergeStrategyTimestamp && existing.UpdatedAt.After(user.UpdatedAt) {
 			if existing.ProxyUUID != user.ProxyUUID || !timePtrEqual(existing.ProxyUUIDExpiresAt, user.ProxyUUIDExpiresAt) {
 				if !opts.DryRun {
 					if err := updateUserProxyUUID(ctx, tx, user.UUID, user.ProxyUUID, user.ProxyUUIDExpiresAt); err != nil {
@@ -370,28 +383,27 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 			report.ConflictsSkipped++
 			logf("skip profile for user %s: existing updated_at %s newer than snapshot %s\n", user.UUID, existing.UpdatedAt.Format(time.RFC3339), user.UpdatedAt.Format(time.RFC3339))
 			continue
-		}
-
-		mergedUser, changed := mergeUserRecord(user, existing, opts.Merge, hasExisting)
-
-		if !hasExisting {
-			report.UsersInserted++
-		} else if changed {
-			report.UsersUpdated++
-			if opts.Merge && strategy == MergeStrategyTimestamp {
-				report.ConflictsResolved++
-			}
 		} else {
-			report.UsersSkipped++
-		}
+			mergedUser, changed := mergeUserRecord(user, existing, opts.Merge, hasExisting)
 
-		if changed && !opts.DryRun {
-			if err := upsertUser(ctx, tx, &mergedUser); err != nil {
-				return nil, err
+			if !hasExisting {
+				report.UsersInserted++
+			} else if changed {
+				report.UsersUpdated++
+				if opts.Merge && strategy == MergeStrategyTimestamp {
+					report.ConflictsResolved++
+				}
+			} else {
+				report.UsersSkipped++
 			}
-		}
 
-		existingUsers[user.UUID] = mergedUser
+			if changed && !opts.DryRun {
+				if err := upsertUser(ctx, tx, &mergedUser); err != nil {
+					return nil, err
+				}
+			}
+			existingUsers[user.UUID] = mergedUser
+		}
 
 		incomingIdentities := incomingIdentitiesByUser[user.UUID]
 		incomingSessions := incomingSessionsByUser[user.UUID]

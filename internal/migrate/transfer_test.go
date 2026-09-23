@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	accountschema "account/sql"
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
@@ -26,6 +27,20 @@ func TestRejectUserUUIDRekeysBeforeWrites(t *testing.T) {
 	}
 	if err := rejectUserUUIDRekeys(nil); err != nil {
 		t.Fatalf("empty rekey plan should be allowed: %v", err)
+	}
+}
+
+func TestProtectedImportOptionsRequireMergeBeforeOpeningDatabase(t *testing.T) {
+	for _, opts := range []ImportOptions{
+		{PreserveExistingUsers: true},
+		{SkipSessions: true},
+	} {
+		_, err := NewImporter().Import(context.Background(), "postgres://unreachable", &AccountDump{
+			Metadata: &SnapshotMetadata{Version: SnapshotVersion, SchemaHash: accountschema.Hash()},
+		}, opts)
+		if err == nil || !strings.Contains(err.Error(), "require merge mode") {
+			t.Fatalf("expected merge guard for %+v, got %v", opts, err)
+		}
 	}
 }
 
