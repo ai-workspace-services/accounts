@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"account/internal/migrate"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
