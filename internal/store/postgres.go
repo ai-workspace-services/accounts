@@ -1337,36 +1337,133 @@ func (s *postgresStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, nil
 }
 
-func (s *postgresStore) DeleteUser(ctx context.Context, id string) error {
-	caps, err := s.capabilities(ctx)
+func (s *postgresStore) DeleteUser(ctx context.Context, id string, audit *AuditLog, requestID string) error {
+	if err := validateUserArchiveAudit(id, audit); err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if !canArchiveUser(caps) {
+	defer tx.Rollback()
+
+	var schemaReady bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+		  EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'active')
+		  AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'archived_at')
+		  AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'updated_at')
+		  AND (SELECT COUNT(*) = 6 FROM information_schema.columns
+		       WHERE table_schema = 'public' AND table_name = 'users'
+		         AND column_name IN ('account_lifecycle_state', 'account_lifecycle_changed_at',
+		           'account_lifecycle_actor_type', 'account_lifecycle_actor_ref',
+		           'account_lifecycle_reason', 'account_lifecycle_transition_id'))
+		  AND to_regclass('public.account_lifecycle_events') IS NOT NULL
+		  AND to_regclass('public.audit_logs') IS NOT NULL
+		  AND to_regclass('public.subscriptions') IS NOT NULL`).Scan(&schemaReady); err != nil {
+		return err
+	}
+	if !schemaReady {
 		return ErrUserArchiveUnsupported
 	}
 
-	query := "UPDATE users SET archived_at = COALESCE(archived_at, now()), active = false"
-	if caps.hasUpdatedAt {
-		query += ", updated_at = now()"
-	}
-	query += " WHERE uuid = $1"
-	result, err := s.db.ExecContext(ctx, query, id)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
+	var lifecycleState, role string
+	var level int
+	var groupsRaw []byte
+	var archivedAt sql.NullTime
+	err = tx.QueryRowContext(ctx, `
+		SELECT account_lifecycle_state, role, level, groups, archived_at
+		FROM public.users WHERE uuid = $1 FOR UPDATE`, id).
+		Scan(&lifecycleState, &role, &level, &groupsRaw, &archivedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return ErrUserNotFound
 	}
-	return nil
-}
+	if err != nil {
+		return err
+	}
+	if lifecycleState != "active" || archivedAt.Valid {
+		return ErrUserAlreadyArchived
+	}
+	groups := decodeStringSlice(groupsRaw)
+	if IsAdminRole(role) || level == LevelAdmin ||
+		MonthlyQuotaGroup(&User{Groups: groups}) == MonthlyPlusQuotaLimitGroup ||
+		MonthlyQuotaGroup(&User{Groups: groups}) == MonthlyUnlimitedBetaQuotaGroup {
+		return ErrUserProtected
+	}
+	var paidSubscription bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM public.subscriptions
+		  WHERE user_uuid = $1 AND status IN ('active', 'trialing', 'past_due')
+		)`, id).Scan(&paidSubscription); err != nil {
+		return err
+	}
+	if paidSubscription {
+		return ErrUserProtected
+	}
 
-func canArchiveUser(caps schemaCapabilities) bool {
-	return caps.hasArchivedAt && caps.hasActive
+	now := time.Now().UTC()
+	transitionID := uuid.NewString()
+	auditEntry := cloneAuditLog(audit)
+	if strings.TrimSpace(auditEntry.UUID) == "" {
+		auditEntry.UUID = uuid.NewString()
+	}
+	requestID = strings.TrimSpace(requestID)
+	var requestIDValue any
+	if requestID != "" {
+		requestIDValue = requestID
+	}
+	auditEntry.Details["transition_id"] = transitionID
+	auditEntry.Details["request_id"] = requestID
+	auditEntry.Details["occurred_at"] = now
+	metadata, err := json.Marshal(auditEntry.Details)
+	if err != nil {
+		return fmt.Errorf("encode user archive metadata: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE public.users
+		SET active = FALSE,
+		    archived_at = COALESCE(archived_at, $1),
+		    updated_at = $1,
+		    account_lifecycle_state = 'archived',
+		    account_lifecycle_changed_at = $1,
+		    account_lifecycle_actor_type = 'admin',
+		    account_lifecycle_actor_ref = $2,
+		    account_lifecycle_reason = $3,
+		    account_lifecycle_transition_id = $4
+		WHERE uuid = $5 AND account_lifecycle_state = 'active'`,
+		now, auditEntry.ActorUUID, auditEntry.Details["reason"], transitionID, id)
+	if err != nil {
+		return err
+	}
+	rowsUpdated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsUpdated != 1 {
+		return ErrUserAlreadyArchived
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO public.account_lifecycle_events
+		  (transition_id, user_uuid, from_state, to_state, actor_type, actor_ref, reason, request_id, metadata, occurred_at)
+		VALUES ($1, $2, $3, 'archived', 'admin', $4, $5, $6, $7, $8)`,
+		transitionID, id, lifecycleState, auditEntry.ActorUUID, auditEntry.Details["reason"], requestIDValue, metadata, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO public.audit_logs (uuid, action, actor_uuid, details, created_at)
+		VALUES ($1, $2, $3, $4, $5)`,
+		auditEntry.UUID, auditEntry.Action, auditEntry.ActorUUID, metadata, now); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	audit.UUID = auditEntry.UUID
+	audit.CreatedAt = now
+	audit.Details = auditEntry.Details
+	return nil
 }
 
 func (s *postgresStore) AddToBlacklist(ctx context.Context, email string) error {

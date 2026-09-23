@@ -17,7 +17,8 @@ func TestMemoryDeleteUserArchivesWithoutRemovingIdentity(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	if err := st.DeleteUser(ctx, user.ID); err != nil {
+	audit := userArchiveTestAudit(user.ID)
+	if err := st.DeleteUser(ctx, user.ID, audit, "request-archive-1"); err != nil {
 		t.Fatalf("archive user: %v", err)
 	}
 	archived, err := st.GetUserByID(ctx, user.ID)
@@ -35,8 +36,8 @@ func TestMemoryDeleteUserArchivesWithoutRemovingIdentity(t *testing.T) {
 	}
 
 	firstArchivedAt := archived.ArchivedAt
-	if err := st.DeleteUser(ctx, user.ID); err != nil {
-		t.Fatalf("repeated archive should be idempotent: %v", err)
+	if err := st.DeleteUser(ctx, user.ID, userArchiveTestAudit(user.ID), "request-archive-2"); !errors.Is(err, ErrUserAlreadyArchived) {
+		t.Fatalf("repeated archive should be refused, got %v", err)
 	}
 	archived, err = st.GetUserByID(ctx, user.ID)
 	if err != nil {
@@ -53,26 +54,34 @@ func TestMemoryDeleteUserArchivesWithoutRemovingIdentity(t *testing.T) {
 }
 
 func TestMemoryDeleteUserUnknownID(t *testing.T) {
-	if err := NewMemoryStore().DeleteUser(context.Background(), "missing"); !errors.Is(err, ErrUserNotFound) {
+	if err := NewMemoryStore().DeleteUser(context.Background(), "missing", userArchiveTestAudit("missing"), ""); !errors.Is(err, ErrUserNotFound) {
 		t.Fatalf("expected ErrUserNotFound, got %v", err)
 	}
 }
 
-func TestCanArchiveUserRequiresBothSafetyColumns(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		caps schemaCapabilities
-		want bool
-	}{
-		{name: "both columns", caps: schemaCapabilities{hasArchivedAt: true, hasActive: true}, want: true},
-		{name: "archive only", caps: schemaCapabilities{hasArchivedAt: true}, want: false},
-		{name: "active only", caps: schemaCapabilities{hasActive: true}, want: false},
-		{name: "neither", caps: schemaCapabilities{}, want: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := canArchiveUser(tc.caps); got != tc.want {
-				t.Fatalf("canArchiveUser(%+v) = %v, want %v", tc.caps, got, tc.want)
-			}
-		})
+func TestMemoryDeleteUserRejectsMissingAuditWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	st := NewMemoryStore()
+	user := &User{ID: "user-audit-required", Name: "audit target", Email: "audit@example.com", Role: RoleUser}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.DeleteUser(ctx, user.ID, nil, ""); err == nil {
+		t.Fatal("expected missing audit to be rejected")
+	}
+	stored, err := st.GetUserByID(ctx, user.ID)
+	if err != nil || !stored.Active || stored.ArchivedAt != nil {
+		t.Fatalf("invalid audit must leave user unchanged: user=%+v err=%v", stored, err)
+	}
+	entries, err := st.ListAuditLogs(ctx, AuditLogFilter{ActionPrefix: AuditActionUserArchive})
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("invalid audit must not append audit log: entries=%v err=%v", entries, err)
+	}
+}
+
+func userArchiveTestAudit(userID string) *AuditLog {
+	return &AuditLog{
+		Action: AuditActionUserArchive, ActorUUID: "operator-test",
+		Details: map[string]any{"target_uuid": userID, "reason": "test archive"},
 	}
 }
