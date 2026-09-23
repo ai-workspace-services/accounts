@@ -54,6 +54,34 @@ defaults:
     shell: bash
 
 jobs:
+  account_lifecycle_migration:
+    name: Account Lifecycle Migration (PostgreSQL 17)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Apply lifecycle migration fixture twice and verify guards
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql "postgres://postgres@localhost:5432/postgres?sslmode=disable"
+          --set ON_ERROR_STOP=1
+          --file sql/migrations/tests/account_lifecycle_upgrade_test.sql
+
   prep:
     name: Prep
     runs-on: ubuntu-latest
