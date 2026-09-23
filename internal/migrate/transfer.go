@@ -91,9 +91,15 @@ type ImportOptions struct {
 	Merge         bool
 	MergeStrategy MergeStrategy
 	DryRun        bool
+	// PreserveExistingUsers keeps target user profiles (including proxy UUIDs)
+	// untouched while allowing new users and their identities to be imported.
+	PreserveExistingUsers bool
+	// SkipSessions prevents production login sessions from entering UAT.
+	SkipSessions bool
 	// RegenerateUserUUIDs gives imported users new identity UUIDs while
-	// preserving their proxy UUIDs. The source UUID remains only as the
-	// relationship key for identities and sessions during this import.
+	// preserving their proxy UUIDs. If this would require changing the UUID of
+	// an existing target user, the import is rejected before writes because its
+	// account references cannot be safely rekeyed without deleting the user.
 	RegenerateUserUUIDs bool
 	Allowlist           map[string]struct{}
 	LogWriter           io.Writer
@@ -214,6 +220,9 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	}
 	if !opts.Merge {
 		strategy = MergeStrategyReplace
+		if opts.PreserveExistingUsers || opts.SkipSessions {
+			return nil, errors.New("preserve-existing-users and skip-sessions require merge mode")
+		}
 	}
 	db, err := openDB(ctx, dsn)
 	if err != nil {
@@ -237,6 +246,9 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		var err error
 		dump, userUUIDMap, targetToSource, rekeys, err = prepareIdentityUUIDIsolation(ctx, db, dump)
 		if err != nil {
+			return nil, err
+		}
+		if err := rejectUserUUIDRekeys(rekeys); err != nil {
 			return nil, err
 		}
 	}
@@ -302,8 +314,15 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	}
 
 	incomingSessionsByUser := make(map[string][]SessionRecord)
-	for _, session := range dump.Sessions {
-		incomingSessionsByUser[session.UserUUID] = append(incomingSessionsByUser[session.UserUUID], session)
+	if !opts.SkipSessions {
+		for _, session := range dump.Sessions {
+			incomingSessionsByUser[session.UserUUID] = append(incomingSessionsByUser[session.UserUUID], session)
+		}
+	}
+	if opts.Merge {
+		if err := validateMergeUserConflicts(ctx, db, dump.Users, opts.Allowlist, targetToSource); err != nil {
+			return nil, err
+		}
 	}
 
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{})
@@ -318,11 +337,6 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	}()
 
 	report := &ImportReport{}
-	if !opts.DryRun {
-		if err := applyUserUUIDRekeys(ctx, tx, rekeys, existingUsers); err != nil {
-			return nil, err
-		}
-	}
 
 	allowlist := opts.Allowlist
 	allowlistEnabled := opts.Merge && len(allowlist) > 0
@@ -348,7 +362,10 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 
 		existing, hasExisting := existingUsers[user.UUID]
 
-		if opts.Merge && hasExisting && strategy == MergeStrategyTimestamp && existing.UpdatedAt.After(user.UpdatedAt) {
+		if opts.PreserveExistingUsers && hasExisting {
+			report.UsersSkipped++
+			existingUsers[user.UUID] = existing
+		} else if opts.Merge && hasExisting && strategy == MergeStrategyTimestamp && existing.UpdatedAt.After(user.UpdatedAt) {
 			if existing.ProxyUUID != user.ProxyUUID || !timePtrEqual(existing.ProxyUUIDExpiresAt, user.ProxyUUIDExpiresAt) {
 				if !opts.DryRun {
 					if err := updateUserProxyUUID(ctx, tx, user.UUID, user.ProxyUUID, user.ProxyUUIDExpiresAt); err != nil {
@@ -366,28 +383,27 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 			report.ConflictsSkipped++
 			logf("skip profile for user %s: existing updated_at %s newer than snapshot %s\n", user.UUID, existing.UpdatedAt.Format(time.RFC3339), user.UpdatedAt.Format(time.RFC3339))
 			continue
-		}
-
-		mergedUser, changed := mergeUserRecord(user, existing, opts.Merge, hasExisting)
-
-		if !hasExisting {
-			report.UsersInserted++
-		} else if changed {
-			report.UsersUpdated++
-			if opts.Merge && strategy == MergeStrategyTimestamp {
-				report.ConflictsResolved++
-			}
 		} else {
-			report.UsersSkipped++
-		}
+			mergedUser, changed := mergeUserRecord(user, existing, opts.Merge, hasExisting)
 
-		if changed && !opts.DryRun {
-			if err := upsertUser(ctx, tx, &mergedUser, opts.Merge); err != nil {
-				return nil, err
+			if !hasExisting {
+				report.UsersInserted++
+			} else if changed {
+				report.UsersUpdated++
+				if opts.Merge && strategy == MergeStrategyTimestamp {
+					report.ConflictsResolved++
+				}
+			} else {
+				report.UsersSkipped++
 			}
-		}
 
-		existingUsers[user.UUID] = mergedUser
+			if changed && !opts.DryRun {
+				if err := upsertUser(ctx, tx, &mergedUser); err != nil {
+					return nil, err
+				}
+			}
+			existingUsers[user.UUID] = mergedUser
+		}
 
 		incomingIdentities := incomingIdentitiesByUser[user.UUID]
 		incomingSessions := incomingSessionsByUser[user.UUID]
@@ -523,8 +539,8 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 // retaining every source proxy UUID. Existing target users are matched by
 // proxy UUID first and email second so repeated migrations remain idempotent.
 // When an earlier import left the source UUID in users.uuid, the returned rekey
-// plan moves that existing account and all of its foreign-key references in
-// the same import transaction.
+// plan is rejected by Import before any writes. This avoids deleting the user,
+// which could cascade into its account and ledger references.
 func prepareIdentityUUIDIsolation(ctx context.Context, db *sql.DB, dump *AccountDump) (*AccountDump, map[string]string, map[string]string, []userUUIDRekey, error) {
 	isolated := *dump
 	isolated.Users = append([]UserRecord(nil), dump.Users...)
@@ -692,159 +708,68 @@ func newTargetUUID(ctx context.Context, db *sql.DB, sourceUUIDs map[string]struc
 	return "", errors.New("could not allocate a target identity UUID")
 }
 
-func applyUserUUIDRekeys(ctx context.Context, tx *sql.Tx, rekeys []userUUIDRekey, existingUsers map[string]UserRecord) error {
+func rejectUserUUIDRekeys(rekeys []userUUIDRekey) error {
 	if len(rekeys) == 0 {
 		return nil
 	}
+	return fmt.Errorf(
+		"cannot regenerate identity UUID for existing user %s as %s without deleting or rewriting its account references; import aborted before writes",
+		rekeys[0].Source,
+		rekeys[0].Target,
+	)
+}
 
-	rows, err := tx.QueryContext(ctx, `
-SELECT table_schema, table_name, column_name
-FROM information_schema.columns
-WHERE table_schema = 'public'
-  AND table_name <> 'users'
-  AND column_name IN ('user_uuid', 'account_uuid')
-ORDER BY CASE WHEN table_name = 'overlay_devices' THEN 0 ELSE 1 END, table_name, column_name`)
-	if err != nil {
-		return fmt.Errorf("discover user UUID references: %w", err)
-	}
-	type referenceColumn struct {
-		schema string
-		table  string
-		column string
-	}
-	var references []referenceColumn
-	for rows.Next() {
-		var reference referenceColumn
-		if err := rows.Scan(&reference.schema, &reference.table, &reference.column); err != nil {
-			rows.Close()
-			return err
-		}
-		references = append(references, reference)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	if len(references) == 0 {
-		return errors.New("no user UUID reference columns discovered")
-	}
-	hasOverlayDevices := false
-	hasOverlayAcks := false
-	for _, reference := range references {
-		hasOverlayDevices = hasOverlayDevices || reference.table == "overlay_devices"
-		hasOverlayAcks = hasOverlayAcks || reference.table == "overlay_config_acks"
-	}
+func validateMergeUserConflicts(ctx context.Context, db *sql.DB, users []UserRecord, allowlist map[string]struct{}, targetToSource map[string]string) error {
+	seenUsernames := make(map[string]string, len(users))
+	seenEmails := make(map[string]string, len(users))
+	allowlistEnabled := len(allowlist) > 0
 
-	for _, rekey := range rekeys {
-		oldUser, ok := existingUsers[rekey.Source]
-		if !ok {
-			return fmt.Errorf("cannot rekey missing target user %s", rekey.Source)
+	for _, user := range users {
+		if strings.EqualFold(user.Role, "root") {
+			continue
 		}
-		newUser := oldUser
-		newUser.UUID = rekey.Target
-		temporaryUser := newUser
-		temporaryUser.Username = "__rekey__" + rekey.Target
-		if temporaryUser.Email != "" {
-			temporaryUser.Email = "__rekey__" + rekey.Target + "@invalid.local"
-		}
-		if strings.EqualFold(temporaryUser.Role, "root") {
-			temporaryUser.Role = "user"
-		}
-		if err := upsertUser(ctx, tx, &temporaryUser, false); err != nil {
-			return fmt.Errorf("create rekeyed user %s: %w", rekey.Target, err)
-		}
-		if hasOverlayDevices && hasOverlayAcks {
-			if err := rekeyOverlayData(ctx, tx, rekey.Source, rekey.Target); err != nil {
-				return err
+		if allowlistEnabled {
+			sourceUUID := targetToSource[user.UUID]
+			if sourceUUID == "" {
+				sourceUUID = user.UUID
 			}
-		}
-
-		for _, reference := range references {
-			if hasOverlayDevices && hasOverlayAcks && (reference.table == "overlay_devices" || reference.table == "overlay_config_acks") {
+			if _, ok := allowlist[sourceUUID]; !ok {
 				continue
 			}
-			query := fmt.Sprintf(
-				`UPDATE %s.%s SET %s = $1 WHERE %s = $2`,
-				quoteIdentifier(reference.schema),
-				quoteIdentifier(reference.table),
-				quoteIdentifier(reference.column),
-				quoteIdentifier(reference.column),
-			)
-			if _, err := tx.ExecContext(ctx, query, rekey.Target, rekey.Source); err != nil {
-				return fmt.Errorf("rekey %s.%s for %s: %w", reference.table, reference.column, rekey.Source, err)
-			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM users WHERE uuid = $1`, rekey.Source); err != nil {
-			return fmt.Errorf("remove old identity UUID %s: %w", rekey.Source, err)
+
+		username := strings.ToLower(user.Username)
+		if previous := seenUsernames[username]; previous != "" && previous != user.UUID {
+			return fmt.Errorf("merge username %q is shared by snapshot users %s and %s", user.Username, previous, user.UUID)
 		}
-		if err := upsertUser(ctx, tx, &newUser, false); err != nil {
-			return fmt.Errorf("restore rekeyed user %s: %w", rekey.Target, err)
+		seenUsernames[username] = user.UUID
+		var ownerUUID string
+		err := db.QueryRowContext(ctx, `SELECT uuid::text FROM users WHERE lower(username) = lower($1) AND uuid <> $2 LIMIT 1`, user.Username, user.UUID).Scan(&ownerUUID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("check merge username %q conflict: %w", user.Username, err)
+		}
+		if err == nil {
+			return fmt.Errorf("merge username %q for user %s belongs to existing user %s; import aborted before writes", user.Username, user.UUID, ownerUUID)
+		}
+
+		if user.Email == "" {
+			continue
+		}
+		email := strings.ToLower(user.Email)
+		if previous := seenEmails[email]; previous != "" && previous != user.UUID {
+			return fmt.Errorf("merge email %q is shared by snapshot users %s and %s", user.Email, previous, user.UUID)
+		}
+		seenEmails[email] = user.UUID
+		ownerUUID = ""
+		err = db.QueryRowContext(ctx, `SELECT uuid::text FROM users WHERE lower(email) = lower($1) AND uuid <> $2 LIMIT 1`, user.Email, user.UUID).Scan(&ownerUUID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("check merge email %q conflict: %w", user.Email, err)
+		}
+		if err == nil {
+			return fmt.Errorf("merge email %q for user %s belongs to existing user %s; import aborted before writes", user.Email, user.UUID, ownerUUID)
 		}
 	}
 	return nil
-}
-
-func rekeyOverlayData(ctx context.Context, tx *sql.Tx, sourceUUID, targetUUID string) error {
-	if _, err := tx.ExecContext(ctx, `
-CREATE TEMP TABLE IF NOT EXISTS migration_overlay_devices_rekey
-ON COMMIT DROP AS
-SELECT id, user_uuid, network_id, name, platform, hostname,
-       wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
-FROM overlay_devices
-WHERE false`); err != nil {
-		return fmt.Errorf("prepare overlay rekey buffer: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `TRUNCATE migration_overlay_devices_rekey`); err != nil {
-		return fmt.Errorf("reset overlay rekey buffer: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO migration_overlay_devices_rekey (
-        id, user_uuid, network_id, name, platform, hostname,
-        wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
-)
-SELECT id, user_uuid, network_id, name, platform, hostname,
-       wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
-FROM overlay_devices
-WHERE user_uuid = $1`, sourceUUID); err != nil {
-		return fmt.Errorf("save overlay devices for %s: %w", sourceUUID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-UPDATE overlay_devices
-SET wireguard_address = '__rekey__' || $1 || '__' || id
-WHERE user_uuid = $1`, sourceUUID); err != nil {
-		return fmt.Errorf("reserve overlay addresses for %s: %w", sourceUUID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO overlay_devices (
-        id, user_uuid, network_id, name, platform, hostname,
-        wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
-)
-SELECT id, $1, network_id, name, platform, hostname,
-       wireguard_public_key, wireguard_address, last_seen_at, created_at, updated_at
-FROM migration_overlay_devices_rekey`, targetUUID); err != nil {
-		return fmt.Errorf("rekey overlay_devices for %s: %w", sourceUUID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO overlay_config_acks (
-        user_uuid, device_id, network_id, revision, digest, applied_at, received_at
-)
-SELECT $1, device_id, network_id, revision, digest, applied_at, received_at
-FROM overlay_config_acks
-WHERE user_uuid = $2`, targetUUID, sourceUUID); err != nil {
-		return fmt.Errorf("rekey overlay_config_acks for %s: %w", sourceUUID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM overlay_config_acks WHERE user_uuid = $1`, sourceUUID); err != nil {
-		return fmt.Errorf("remove old overlay_config_acks for %s: %w", sourceUUID, err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM overlay_devices WHERE user_uuid = $1`, sourceUUID); err != nil {
-		return fmt.Errorf("remove old overlay_devices for %s: %w", sourceUUID, err)
-	}
-	return nil
-}
-
-func quoteIdentifier(value string) string {
-	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
 }
 
 func updateUserProxyUUID(ctx context.Context, tx *sql.Tx, userUUID, proxyUUID string, expiresAt *time.Time) error {
@@ -1411,7 +1336,7 @@ func buildInQuery(format string, uuids []string) (string, []any) {
 	return fmt.Sprintf(format, strings.Join(placeholders, ", ")), args
 }
 
-func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord, isMerge bool) error {
+func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord) error {
 	groupsJSON, err := json.Marshal(user.Groups)
 	if err != nil {
 		return fmt.Errorf("encode groups for user %s: %w", user.UUID, err)
@@ -1427,19 +1352,6 @@ func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord, isMerge bool)
 			ts = user.CreatedAt
 		}
 		user.EmailVerifiedAt = &ts
-	}
-
-	if isMerge {
-		_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE lower(username) = lower($1) AND uuid != $2`, user.Username, user.UUID)
-		if err != nil {
-			return fmt.Errorf("failed to delete conflicting username for user %s: %w", user.UUID, err)
-		}
-		if user.Email != "" {
-			_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE lower(email) = lower($1) AND uuid != $2`, user.Email, user.UUID)
-			if err != nil {
-				return fmt.Errorf("failed to delete conflicting email for user %s: %w", user.UUID, err)
-			}
-		}
 	}
 
 	_, err = tx.ExecContext(ctx, `
