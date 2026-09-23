@@ -1341,6 +1341,7 @@ func (s *postgresStore) DeleteUser(ctx context.Context, id string, audit *AuditL
 	if err := validateUserArchiveAudit(id, audit); err != nil {
 		return err
 	}
+	requestID = strings.TrimSpace(requestID)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1380,6 +1381,50 @@ func (s *postgresStore) DeleteUser(ctx context.Context, id string, audit *AuditL
 	}
 	if err != nil {
 		return err
+	}
+	if requestID != "" {
+		var existingActor, existingReason, existingAuditActor string
+		var existingTransitionID, existingAuditID string
+		var eventMetadata, auditMetadata []byte
+		var existingAt time.Time
+		err := tx.QueryRowContext(ctx, `
+			SELECT e.transition_id::text, e.actor_ref, e.reason, e.metadata,
+			       a.uuid, COALESCE(a.actor_uuid::text, ''), a.details, a.created_at
+			FROM public.account_lifecycle_events e
+		JOIN public.audit_logs a
+		  ON a.action = $3
+		 AND a.details->>'transition_id' = e.transition_id::text
+			WHERE e.user_uuid = $1 AND e.request_id = $2`,
+			id, requestID, AuditActionUserArchive).
+			Scan(&existingTransitionID, &existingActor, &existingReason, &eventMetadata,
+				&existingAuditID, &existingAuditActor, &auditMetadata, &existingAt)
+		if err == nil {
+			if existingActor != audit.ActorUUID || existingAuditActor != audit.ActorUUID || existingReason != audit.Details["reason"] {
+				return ErrUserArchiveReplayConflict
+			}
+			var details map[string]any
+			if err := json.Unmarshal(auditMetadata, &details); err != nil {
+				return fmt.Errorf("decode user archive replay audit: %w", err)
+			}
+			var eventDetails map[string]any
+			if err := json.Unmarshal(eventMetadata, &eventDetails); err != nil {
+				return fmt.Errorf("decode user archive replay event: %w", err)
+			}
+			if details["target_uuid"] != id || details["transition_id"] != existingTransitionID ||
+				eventDetails["target_uuid"] != id || eventDetails["transition_id"] != existingTransitionID {
+				return errors.New("user archive replay audit does not match its lifecycle event")
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+			audit.UUID = existingAuditID
+			audit.CreatedAt = existingAt
+			audit.Details = details
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 	}
 	if lifecycleState != "active" || archivedAt.Valid {
 		return ErrUserAlreadyArchived

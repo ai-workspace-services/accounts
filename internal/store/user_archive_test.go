@@ -36,6 +36,20 @@ func TestMemoryDeleteUserArchivesWithoutRemovingIdentity(t *testing.T) {
 	}
 
 	firstArchivedAt := archived.ArchivedAt
+	firstAuditID := audit.UUID
+	firstTransitionID := audit.Details["transition_id"]
+	replay := userArchiveTestAudit(user.ID)
+	if err := st.DeleteUser(ctx, user.ID, replay, "request-archive-1"); err != nil {
+		t.Fatalf("same request ID should replay the completed archive: %v", err)
+	}
+	if replay.UUID != firstAuditID || replay.Details["transition_id"] != firstTransitionID || !replay.CreatedAt.Equal(audit.CreatedAt) {
+		t.Fatalf("replay must return the original audit result: first=%+v replay=%+v", audit, replay)
+	}
+	changed := userArchiveTestAudit(user.ID)
+	changed.Details["reason"] = "different request"
+	if err := st.DeleteUser(ctx, user.ID, changed, "request-archive-1"); !errors.Is(err, ErrUserArchiveReplayConflict) {
+		t.Fatalf("reusing a request ID with different details should conflict, got %v", err)
+	}
 	if err := st.DeleteUser(ctx, user.ID, userArchiveTestAudit(user.ID), "request-archive-2"); !errors.Is(err, ErrUserAlreadyArchived) {
 		t.Fatalf("repeated archive should be refused, got %v", err)
 	}

@@ -296,19 +296,6 @@ func (h *handler) deleteUser(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "user_lookup_failed", "failed to find user")
 		return
 	}
-	if store.IsAdminRole(user.Role) || user.Level == store.LevelAdmin {
-		respondError(c, http.StatusForbidden, "admin_protected", "administrator accounts cannot be archived")
-		return
-	}
-	activeSubscription, err := h.hasActiveSubscription(c.Request.Context(), user.ID)
-	if err != nil {
-		respondError(c, http.StatusInternalServerError, "subscription_lookup_failed", "failed to verify subscription protection")
-		return
-	}
-	if activeSubscription || store.MonthlyQuotaGroup(user) == store.MonthlyPlusQuotaLimitGroup || store.MonthlyQuotaGroup(user) == store.MonthlyUnlimitedBetaQuotaGroup {
-		respondError(c, http.StatusForbidden, "subscription_protected", "subscribed accounts are protected from deletion")
-		return
-	}
 	archivedAt := time.Now().UTC()
 	auditEntry := &store.AuditLog{
 		Action:    store.AuditActionUserArchive,
@@ -332,6 +319,10 @@ func (h *handler) deleteUser(c *gin.Context) {
 		}
 		if errors.Is(err, store.ErrUserAlreadyArchived) {
 			respondError(c, http.StatusConflict, "user_already_archived", "user is already archived")
+			return
+		}
+		if errors.Is(err, store.ErrUserArchiveReplayConflict) {
+			respondError(c, http.StatusConflict, "request_id_reused", "request ID was already used with different archive details")
 			return
 		}
 		respondError(c, http.StatusInternalServerError, "archive_failed", "failed to archive user and record audit")

@@ -461,6 +461,7 @@ var (
 	ErrUserArchiveUnsupported     = errors.New("atomic user archive is not supported by the current schema")
 	ErrUserProtected              = errors.New("user is protected from archive")
 	ErrUserAlreadyArchived        = errors.New("user is already archived")
+	ErrUserArchiveReplayConflict  = errors.New("user archive request key was reused with different input")
 	ErrMFANotSupported            = errors.New("mfa is not supported by the current store schema")
 	ErrSuperAdminCountingDisabled = errors.New("super administrator counting is disabled")
 	ErrSubscriptionNotFound       = errors.New("subscription not found")
@@ -1149,6 +1150,20 @@ func (s *memoryStore) DeleteUser(ctx context.Context, id string, audit *AuditLog
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	requestID = strings.TrimSpace(requestID)
+	if requestID != "" {
+		for _, existing := range s.auditLogs {
+			if existing.Action != AuditActionUserArchive ||
+				existing.Details["target_uuid"] != id || existing.Details["request_id"] != requestID {
+				continue
+			}
+			if existing.ActorUUID != audit.ActorUUID || existing.Details["reason"] != audit.Details["reason"] {
+				return ErrUserArchiveReplayConflict
+			}
+			*audit = *cloneAuditLog(existing)
+			return nil
+		}
+	}
 	user, ok := s.byID[id]
 	if !ok {
 		return ErrUserNotFound
@@ -1175,7 +1190,7 @@ func (s *memoryStore) DeleteUser(ctx context.Context, id string, audit *AuditLog
 		audit.UUID = uuid.NewString()
 	}
 	audit.CreatedAt = now
-	if requestID = strings.TrimSpace(requestID); requestID != "" {
+	if requestID != "" {
 		audit.Details["request_id"] = requestID
 	}
 	audit.Details["transition_id"] = transitionID

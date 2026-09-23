@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
@@ -141,6 +143,9 @@ func TestPostgresDeleteUserRollsBackWhenAuditInsertFails(t *testing.T) {
 		WithArgs(userID).
 		WillReturnRows(sqlmock.NewRows([]string{"account_lifecycle_state", "role", "level", "groups", "archived_at"}).
 			AddRow("active", RoleUser, LevelUser, []byte("[]"), nil))
+	mock.ExpectQuery(`(?s)SELECT e\.transition_id::text.*e\.request_id = \$2`).
+		WithArgs(userID, "request-1", AuditActionUserArchive).
+		WillReturnRows(sqlmock.NewRows([]string{"transition_id", "actor_ref", "reason", "metadata", "audit_uuid", "audit_actor", "audit_details", "created_at"}))
 	mock.ExpectQuery(`(?s)SELECT EXISTS\s+\(\s+SELECT 1 FROM public\.subscriptions`).
 		WithArgs(userID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
@@ -160,6 +165,55 @@ func TestPostgresDeleteUserRollsBackWhenAuditInsertFails(t *testing.T) {
 	}
 	if !audit.CreatedAt.IsZero() {
 		t.Fatal("failed transaction must not report a committed audit timestamp")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+func TestPostgresDeleteUserReplaysExistingRequest(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+	st := &postgresStore{db: db}
+	const userID = "11111111-1111-4111-8111-111111111111"
+	const actorID = "22222222-2222-4222-8222-222222222222"
+	const transitionID = "33333333-3333-4333-8333-333333333333"
+	const auditID = "44444444-4444-4444-8444-444444444444"
+	const requestID = "request-1"
+	at := time.Date(2026, 9, 23, 9, 0, 0, 0, time.UTC)
+	details := map[string]any{
+		"target_uuid": userID, "reason": "retention request", "request_id": requestID,
+		"transition_id": transitionID,
+	}
+	metadata, err := json.Marshal(details)
+	if err != nil {
+		t.Fatalf("marshal replay details: %v", err)
+	}
+	audit := &AuditLog{
+		Action: AuditActionUserArchive, ActorUUID: actorID,
+		Details: map[string]any{"target_uuid": userID, "reason": "retention request"},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT\s+EXISTS.*account_lifecycle_events`).
+		WillReturnRows(sqlmock.NewRows([]string{"schema_ready"}).AddRow(true))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT account_lifecycle_state, role, level, groups, archived_at\n\t\tFROM public.users WHERE uuid = $1 FOR UPDATE")).
+		WithArgs(userID).
+		WillReturnRows(sqlmock.NewRows([]string{"account_lifecycle_state", "role", "level", "groups", "archived_at"}).
+			AddRow("archived", RoleUser, LevelUser, []byte("[]"), at))
+	mock.ExpectQuery(`(?s)SELECT e\.transition_id::text.*e\.request_id = \$2`).
+		WithArgs(userID, requestID, AuditActionUserArchive).
+		WillReturnRows(sqlmock.NewRows([]string{"transition_id", "actor_ref", "reason", "metadata", "audit_uuid", "audit_actor", "audit_details", "created_at"}).
+			AddRow(transitionID, actorID, "retention request", metadata, auditID, actorID, metadata, at))
+	mock.ExpectCommit()
+
+	if err := st.DeleteUser(context.Background(), userID, audit, requestID); err != nil {
+		t.Fatalf("replay completed archive: %v", err)
+	}
+	if audit.UUID != auditID || audit.CreatedAt != at || audit.Details["transition_id"] != transitionID {
+		t.Fatalf("expected original archive result, got %+v", audit)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet SQL expectations: %v", err)

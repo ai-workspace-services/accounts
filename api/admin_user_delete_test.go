@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"account/internal/store"
@@ -51,6 +53,74 @@ func TestAdminDeleteUserArchivesAndAudits(t *testing.T) {
 	}
 	if entry.Details["reason"] != "duplicate account" {
 		t.Fatalf("expected recorded reason, got %#v", entry.Details["reason"])
+	}
+}
+
+func TestAdminDeleteUserConcurrentReplayReturnsOneArchive(t *testing.T) {
+	h := newActiveHarness(t)
+	const requestID = "admin-archive-replay-1"
+	type response struct {
+		TransitionID string `json:"transitionId"`
+	}
+	results := make(chan struct {
+		status       int
+		transitionID string
+		body         string
+	}, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodDelete,
+				"/api/auth/admin/users/"+h.target.ID+"?reason=duplicate%20account", nil)
+			req.Header.Set("Authorization", "Bearer "+h.adminToken)
+			req.Header.Set("X-Request-ID", requestID)
+			rec := httptest.NewRecorder()
+			h.router.ServeHTTP(rec, req)
+			var payload response
+			_ = json.Unmarshal(rec.Body.Bytes(), &payload)
+			results <- struct {
+				status       int
+				transitionID string
+				body         string
+			}{rec.Code, payload.TransitionID, rec.Body.String()}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var transitionID string
+	for result := range results {
+		if result.status != http.StatusOK {
+			t.Fatalf("replayed archive should return 200, got %d: %s", result.status, result.body)
+		}
+		if result.transitionID == "" {
+			t.Fatalf("archive response must include its transition ID: %s", result.body)
+		}
+		if transitionID == "" {
+			transitionID = result.transitionID
+		} else if result.transitionID != transitionID {
+			t.Fatalf("replay must return the original transition ID, got %q and %q", transitionID, result.transitionID)
+		}
+	}
+	entries, err := h.store.ListAuditLogs(context.Background(), store.AuditLogFilter{
+		ActionPrefix: store.AuditActionUserArchive,
+		TargetUUID:   h.target.ID,
+	})
+	if err != nil {
+		t.Fatalf("list archive audit: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("concurrent replay should write one audit entry, got %d", len(entries))
+	}
+	changedReq := httptest.NewRequest(http.MethodDelete,
+		"/api/auth/admin/users/"+h.target.ID+"?reason=changed%20reason", nil)
+	changedReq.Header.Set("Authorization", "Bearer "+h.adminToken)
+	changedReq.Header.Set("X-Request-ID", requestID)
+	changedRec := httptest.NewRecorder()
+	h.router.ServeHTTP(changedRec, changedReq)
+	if changedRec.Code != http.StatusConflict {
+		t.Fatalf("reusing the request ID with different details should return 409, got %d: %s", changedRec.Code, changedRec.Body.String())
 	}
 }
 
