@@ -1338,9 +1338,35 @@ func (s *postgresStore) ListUsers(ctx context.Context) ([]User, error) {
 }
 
 func (s *postgresStore) DeleteUser(ctx context.Context, id string) error {
-	const query = "DELETE FROM users WHERE uuid = $1"
-	_, err := s.db.ExecContext(ctx, query, id)
-	return err
+	caps, err := s.capabilities(ctx)
+	if err != nil {
+		return err
+	}
+	if !canArchiveUser(caps) {
+		return ErrUserArchiveUnsupported
+	}
+
+	query := "UPDATE users SET archived_at = COALESCE(archived_at, now()), active = false"
+	if caps.hasUpdatedAt {
+		query += ", updated_at = now()"
+	}
+	query += " WHERE uuid = $1"
+	result, err := s.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+func canArchiveUser(caps schemaCapabilities) bool {
+	return caps.hasArchivedAt && caps.hasActive
 }
 
 func (s *postgresStore) AddToBlacklist(ctx context.Context, email string) error {

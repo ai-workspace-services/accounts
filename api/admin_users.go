@@ -277,18 +277,27 @@ func (h *handler) deactivateUser(c *gin.Context) {
 }
 
 func (h *handler) deleteUser(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminUsersDelete); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminUsersDelete)
+	if !ok {
+		return
+	}
+	reason, ok := requireReason(c, c.Query("reason"))
+	if !ok {
 		return
 	}
 
 	userID := c.Param("userId")
 	user, err := h.store.GetUserByID(c.Request.Context(), userID)
 	if err != nil {
+		if errors.Is(err, store.ErrUserNotFound) {
+			respondError(c, http.StatusNotFound, "user_not_found", "user not found")
+			return
+		}
 		respondError(c, http.StatusInternalServerError, "user_lookup_failed", "failed to find user")
 		return
 	}
-	if h.isRootAccount(user) {
-		respondError(c, http.StatusForbidden, "root_protected", "root account cannot be deleted")
+	if store.IsAdminRole(user.Role) || user.Level == store.LevelAdmin {
+		respondError(c, http.StatusForbidden, "admin_protected", "administrator accounts cannot be archived")
 		return
 	}
 	activeSubscription, err := h.hasActiveSubscription(c.Request.Context(), user.ID)
@@ -301,11 +310,32 @@ func (h *handler) deleteUser(c *gin.Context) {
 		return
 	}
 	if err := h.store.DeleteUser(c.Request.Context(), userID); err != nil {
-		respondError(c, http.StatusInternalServerError, "delete_failed", "failed to delete user")
+		if errors.Is(err, store.ErrUserNotFound) {
+			respondError(c, http.StatusNotFound, "user_not_found", "user not found")
+			return
+		}
+		if errors.Is(err, store.ErrUserArchiveUnsupported) {
+			respondError(c, http.StatusConflict, "archive_unsupported", "user archive is unavailable with the current database schema")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "archive_failed", "failed to archive user")
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "user deleted"})
+	archivedUser, err := h.store.GetUserByID(c.Request.Context(), user.ID)
+	if err != nil || archivedUser.Active || archivedUser.ArchivedAt == nil {
+		respondError(c, http.StatusInternalServerError, "archive_verify_failed", "user was archived but could not be reloaded")
+		return
+	}
+	before := map[string]any{"role": user.Role, "active": user.Active, "archived_at": user.ArchivedAt}
+	archivedAt := *archivedUser.ArchivedAt
+	if err := h.recordAudit(c.Request.Context(), actor.ID, store.AuditActionUserArchive,
+		auditDetails(user.ID, reason, before, map[string]any{"active": archivedUser.Active, "archived_at": archivedAt})); err != nil {
+		respondError(c, http.StatusInternalServerError, "audit_write_failed", "the user was archived but the audit entry could not be written")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "user archived", "archivedAt": archivedAt})
 }
 
 func (h *handler) renewProxyUUID(c *gin.Context) {

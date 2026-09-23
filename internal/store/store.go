@@ -252,6 +252,7 @@ const (
 	AuditActionTrialGrant            = "billing.trial.grant"
 	AuditActionArrearsClear          = "billing.arrears.clear"
 	AuditActionSubscriptionCancel    = "billing.subscription.cancel"
+	AuditActionUserArchive           = "account.user.archive"
 	AuditActionSegmentUpdate         = "account.segment.update"
 	AuditActionRoleUpdate            = "account.role.update"
 	AuditActionOverlayOwnerReconcile = "overlay.gateway.owner_reconcile"
@@ -351,6 +352,8 @@ type Store interface {
 	CancelSubscription(ctx context.Context, userID, externalID string, cancelledAt time.Time) (*Subscription, error)
 	CreateIdentity(ctx context.Context, identity *Identity) error
 	ListUsers(ctx context.Context) ([]User, error)
+	// DeleteUser preserves the account and its billing history by marking it
+	// inactive and archived. Implementations must reject unsupported schemas.
 	DeleteUser(ctx context.Context, id string) error
 
 	// Email Blacklist
@@ -449,10 +452,14 @@ type Store interface {
 
 // Domain level errors returned by the store implementation.
 var (
-	ErrEmailExists                = errors.New("email already exists")
-	ErrNameExists                 = errors.New("name already exists")
-	ErrInvalidName                = errors.New("invalid user name")
-	ErrUserNotFound               = errors.New("user not found")
+	ErrEmailExists  = errors.New("email already exists")
+	ErrNameExists   = errors.New("name already exists")
+	ErrInvalidName  = errors.New("invalid user name")
+	ErrUserNotFound = errors.New("user not found")
+	// ErrUserArchiveUnsupported is returned when the backing schema cannot
+	// safely represent an archived, inactive account. DeleteUser must never
+	// fall back to physically removing a user row.
+	ErrUserArchiveUnsupported     = errors.New("user archive is not supported by the current schema")
 	ErrMFANotSupported            = errors.New("mfa is not supported by the current store schema")
 	ErrSuperAdminCountingDisabled = errors.New("super administrator counting is disabled")
 	ErrSubscriptionNotFound       = errors.New("subscription not found")
@@ -1140,11 +1147,14 @@ func (s *memoryStore) DeleteUser(ctx context.Context, id string) error {
 	defer s.mu.Unlock()
 	user, ok := s.byID[id]
 	if !ok {
-		return nil
+		return ErrUserNotFound
 	}
-	delete(s.byID, id)
-	delete(s.byEmail, strings.ToLower(user.Email))
-	delete(s.byName, strings.ToLower(user.Name))
+	if user.ArchivedAt == nil {
+		now := time.Now().UTC()
+		user.ArchivedAt = &now
+		user.UpdatedAt = now
+	}
+	user.Active = false
 	return nil
 }
 
