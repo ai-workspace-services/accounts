@@ -65,6 +65,45 @@ CREATE TABLE IF NOT EXISTS public.account_lifecycle_events (
 
 ALTER TABLE public.account_lifecycle_events ENABLE ROW LEVEL SECURITY;
 
+-- Protect every account, including legacy users with no lifecycle events yet.
+-- Archiving changes state; neither API paths nor import jobs may hard-delete.
+CREATE OR REPLACE FUNCTION public.reject_user_hard_delete()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'users are retained; archive the account instead'
+    USING ERRCODE = '55000';
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'public.users'::regclass
+      AND tgname = 'users_no_delete_trg'
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER users_no_delete_trg
+      BEFORE DELETE ON public.users
+      FOR EACH ROW
+      EXECUTE FUNCTION public.reject_user_hard_delete();
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgrelid = 'public.users'::regclass
+      AND tgname = 'users_no_truncate_trg'
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER users_no_truncate_trg
+      BEFORE TRUNCATE ON public.users
+      FOR EACH STATEMENT
+      EXECUTE FUNCTION public.reject_user_hard_delete();
+  END IF;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.reject_account_lifecycle_event_mutation()
 RETURNS TRIGGER
 LANGUAGE plpgsql
