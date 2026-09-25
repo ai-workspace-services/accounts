@@ -20,6 +20,10 @@
     "path": "/api/overlay/v1/admin/networks"
   },
   {
+    "method": "DELETE",
+    "path": "/api/overlay/v1/admin/networks/:networkID"
+  },
+  {
     "method": "GET",
     "path": "/api/overlay/v1/admin/networks/:networkID/policy"
   },

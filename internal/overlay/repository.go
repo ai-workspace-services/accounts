@@ -223,6 +223,83 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 	return joinToken, nil
 }
 
+// DeleteNetwork removes one owner's network and its network-scoped control
+// plane records atomically. Device credentials and enrollment sessions are
+// keyed only by device ID, so refuse deletion if that ID is shared with a
+// device on another network rather than accidentally deleting the other
+// network's credentials.
+func (r *Repository) DeleteNetwork(ctx context.Context, ownerUserID, networkID string) error {
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	networkID = strings.TrimSpace(networkID)
+	if ownerUserID == "" || networkID == "" {
+		return ErrInvalidInput
+	}
+	return r.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var network NetworkRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_user_id = ?", networkID, ownerUserID).
+			First(&network).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+
+		var devices []DeviceRecord
+		if err := tx.Select("id").Where("network_id = ?", networkID).Find(&devices).Error; err != nil {
+			return err
+		}
+		deviceIDs := make([]string, 0, len(devices))
+		for _, device := range devices {
+			deviceIDs = append(deviceIDs, device.ID)
+		}
+		if len(deviceIDs) > 0 {
+			var sharedIDs int64
+			if err := tx.Model(&DeviceRecord{}).
+				Where("id IN ? AND network_id <> ?", deviceIDs, networkID).
+				Count(&sharedIDs).Error; err != nil {
+				return err
+			}
+			if sharedIDs > 0 {
+				return ErrDeviceConflict
+			}
+			for _, table := range []string{"overlay_device_credentials", "overlay_enrollment_sessions"} {
+				if tx.Migrator().HasTable(table) {
+					if err := tx.Exec("DELETE FROM "+table+" WHERE device_id IN ?", deviceIDs).Error; err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		// These legacy tables may be absent in fresh Zero-only installations;
+		// when present, remove stale network records as part of the same delete.
+		for _, table := range []string{
+			"overlay_signed_config_acks",
+			"overlay_registrations",
+			"overlay_invites",
+			"overlay_config_acks",
+			"overlay_nodes",
+			"overlay_devices",
+		} {
+			if !tx.Migrator().HasTable(table) {
+				continue
+			}
+			if err := tx.Exec("DELETE FROM "+table+" WHERE network_id = ?", networkID).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Where("id = ? AND owner_user_id = ?", networkID, ownerUserID).Delete(&NetworkRecord{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 func (r *Repository) peekInvite(ctx context.Context, tokenHash string) (InviteRecord, error) {
 	var invite InviteRecord
 	if err := r.DB.WithContext(ctx).Where("token_hash = ?", tokenHash).First(&invite).Error; err != nil {
