@@ -264,6 +264,10 @@ func (s *Service) AdminNetworks(ctx context.Context, ownerUserID string) ([]Netw
 	return result, nil
 }
 
+func (s *Service) AdminDeleteNetwork(ctx context.Context, ownerUserID, networkID string) error {
+	return s.repo.DeleteNetwork(ctx, ownerUserID, networkID)
+}
+
 func (s *Service) AdminDevices(ctx context.Context, ownerUserID string) ([]AdminDevice, error) {
 	ownerUserID = strings.TrimSpace(ownerUserID)
 	var networks []NetworkRecord

@@ -61,6 +61,10 @@ type overlayInternalStableGatewayReconcileRequest struct {
 	OwnerEmail          string `json:"owner_email"`
 }
 
+type overlayAdminDeleteNetworkRequest struct {
+	ConfirmNetworkID string `json:"confirm_network_id"`
+}
+
 func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	if h.overlayService == nil || h.tokenService == nil {
 		return
@@ -70,6 +74,7 @@ func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	group.Use(auth.RequireActiveUser(h.store))
 	group.GET("/overview", h.overlayAdminOverview)
 	group.GET("/networks", h.overlayAdminNetworks)
+	group.DELETE("/networks/:networkID", h.overlayAdminDeleteNetwork)
 	group.GET("/devices", h.overlayAdminDevices)
 	group.GET("/invites", h.overlayAdminInvites)
 	group.POST("/invites", h.overlayAdminCreateInvite)
@@ -104,6 +109,29 @@ func (h *handler) overlayAdminNetworks(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"networks": value})
+}
+
+func (h *handler) overlayAdminDeleteNetwork(c *gin.Context) {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	var request overlayAdminDeleteNetworkRequest
+	if err := decoder.Decode(&request); err != nil || strings.TrimSpace(request.ConfirmNetworkID) != strings.TrimSpace(c.Param("networkID")) {
+		respondError(c, http.StatusBadRequest, "network_confirmation_required", "confirm_network_id must exactly match the network ID")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero network deletion request")
+		return
+	}
+	if err := h.overlayService.AdminDeleteNetwork(c.Request.Context(), auth.GetUserID(c), c.Param("networkID")); err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *handler) overlayAdminDevices(c *gin.Context) {

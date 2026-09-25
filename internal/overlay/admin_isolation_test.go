@@ -88,6 +88,124 @@ func TestAdminResourcesAreIsolatedByOwner(t *testing.T) {
 	}
 }
 
+func TestAdminDeleteNetworkRequiresOwnershipAndRemovesScopedData(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:admin-delete-network-%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	service, err := NewService(db, Config{SigningPrivateKey: signer, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := func(owner, id, cidr string) {
+		t.Helper()
+		_, err := service.Seed(t.Context(), BootstrapConfig{
+			Network: BootstrapNetwork{
+				ID: id, DisplayName: id, CIDR: cidr, GatewayID: "gateway-" + id,
+				GatewayWireGuardKey:     base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)),
+				GatewayWireGuardAddress: "10.98.0.1/32", GatewayEndpointHost: "gateway.example.test",
+				GatewayEndpointPort: 443, TransportServerName: "gateway.example.test", TransportPort: 443,
+				TransportAuthID: "11111111-1111-1111-1111-111111111111", OwnerUserID: owner,
+			},
+			Invite: BootstrapInvite{DeviceID: "gateway-" + id, Platform: "linux", Role: RoleGateway, ExpiresAt: now.Add(time.Hour)},
+		}, "token-"+id)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("owner-a", "net-delete", "10.98.0.0/29")
+	seed("owner-b", "net-keep", "10.99.0.0/29")
+	target := DeviceRecord{ID: "device-delete", UserUUID: "11111111-2222-4333-8444-555555555555", UserID: "owner-a", NetworkID: "net-delete", Role: RoleOne, Name: "target", Platform: "linux", Hostname: "target", WireGuardPublicKey: "public-target", WireGuardAddress: "10.98.0.2/32", Status: "active", CreatedAt: now, UpdatedAt: now}
+	other := DeviceRecord{ID: "device-keep", UserUUID: "22222222-3333-4444-8555-666666666666", UserID: "owner-b", NetworkID: "net-keep", Role: RoleOne, Name: "other", Platform: "linux", Hostname: "other", WireGuardPublicKey: "public-other", WireGuardAddress: "10.99.0.2/32", Status: "active", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&[]DeviceRecord{target, other}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&CredentialRecord{ID: "credential-delete", DeviceID: target.ID, CredentialID: "credential-id-delete", TokenHash: HashSecret("credential-token-delete"), IssuedAt: now, ExpiresAt: now.Add(time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&EnrollmentRecord{ID: "enrollment-delete", DeviceID: target.ID, TokenHash: HashSecret("enrollment-token-delete"), IssuedAt: now, ExpiresAt: now.Add(time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&AckRecord{ID: "ack-delete", DeviceID: target.ID, NetworkID: "net-delete", Generation: 1, ConfigID: "config-delete", AppliedAt: now, ReceivedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&RegistrationRecord{ID: "registration-delete", NetworkID: "net-delete", OwnerUserID: "owner-a", DeviceID: "pending", Platform: "linux", WireGuardPublicKey: "pending-key", WireGuardPublicKeyFingerprint: "fingerprint", TokenHash: HashSecret("registration-token-delete"), Status: RegistrationStatusPending, ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.AdminDeleteNetwork(t.Context(), "owner-b", "net-delete"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("other owner was able to delete the network: %v", err)
+	}
+	if err := service.AdminDeleteNetwork(t.Context(), "owner-a", "net-delete"); err != nil {
+		t.Fatalf("delete owned network: %v", err)
+	}
+	for _, model := range []any{&NetworkRecord{}, &InviteRecord{}, &DeviceRecord{}, &CredentialRecord{}, &EnrollmentRecord{}, &AckRecord{}, &RegistrationRecord{}} {
+		query := db.Model(model)
+		switch model.(type) {
+		case *NetworkRecord:
+			query = query.Where("id = ?", "net-delete")
+		case *InviteRecord, *AckRecord, *RegistrationRecord:
+			query = query.Where("network_id = ?", "net-delete")
+		case *DeviceRecord:
+			query = query.Where("network_id = ?", "net-delete")
+		case *CredentialRecord, *EnrollmentRecord:
+			query = query.Where("device_id = ?", target.ID)
+		}
+		var count int64
+		if err := query.Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("network-scoped records remain for %T: count=%d err=%v", model, count, err)
+		}
+	}
+	if err := db.First(&NetworkRecord{}, "id = ?", "net-keep").Error; err != nil {
+		t.Fatalf("another owner's network was removed: %v", err)
+	}
+	if err := db.First(&DeviceRecord{}, "id = ?", other.ID).Error; err != nil {
+		t.Fatalf("another owner's device was removed: %v", err)
+	}
+}
+
+func TestAdminDeleteNetworkRejectsAmbiguousDeviceCredentialOwnership(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:admin-delete-network-shared-id-%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(db, Config{SigningPrivateKey: signer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, item := range []struct{ owner, id, cidr string }{{"owner-a", "net-a", "10.97.0.0/29"}, {"owner-b", "net-b", "10.96.0.0/29"}} {
+		_, err := service.Seed(t.Context(), BootstrapConfig{
+			Network: BootstrapNetwork{ID: item.id, DisplayName: item.id, CIDR: item.cidr, GatewayID: "gw-" + item.id, GatewayWireGuardKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)), GatewayWireGuardAddress: "10.96.0.1/32", GatewayEndpointHost: "gw.example.test", GatewayEndpointPort: 443, TransportServerName: "gw.example.test", TransportPort: 443, TransportAuthID: "22222222-1111-4111-8111-111111111111", OwnerUserID: item.owner},
+			Invite:  BootstrapInvite{DeviceID: "gw-" + item.id, Platform: "linux", Role: RoleGateway, ExpiresAt: now.Add(time.Hour)},
+		}, "seed-"+item.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&[]DeviceRecord{
+		{ID: "same-device", UserUUID: "11111111-2222-4333-8444-555555555555", UserID: "owner-a", NetworkID: "net-a", Role: RoleOne, Name: "A", Platform: "linux", Hostname: "a", WireGuardPublicKey: "key-a", WireGuardAddress: "10.97.0.2/32", Status: "active"},
+		{ID: "same-device", UserUUID: "22222222-3333-4444-8555-666666666666", UserID: "owner-b", NetworkID: "net-b", Role: RoleOne, Name: "B", Platform: "linux", Hostname: "b", WireGuardPublicKey: "key-b", WireGuardAddress: "10.96.0.2/32", Status: "active"},
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.AdminDeleteNetwork(t.Context(), "owner-a", "net-a"); !errors.Is(err, ErrDeviceConflict) {
+		t.Fatalf("expected conflict for ambiguous child device IDs, got %v", err)
+	}
+	if err := db.First(&NetworkRecord{}, "id = ?", "net-a").Error; err != nil {
+		t.Fatalf("ambiguous deletion removed target network: %v", err)
+	}
+}
+
 func TestAdminDevicesProjectionReportsACKStateAndOwnerScope(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:admin-device-projection-%d?mode=memory&cache=shared", time.Now().UnixNano())), &gorm.Config{})
 	if err != nil {
