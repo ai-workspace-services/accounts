@@ -1003,7 +1003,7 @@ func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string) (Ga
 		address = prefix.Addr().Next().String() + "/32"
 	}
 	transport := networkTransport(network)
-	frontend, listenSocket, err := gatewayFrontend()
+	frontend, listenSocket, err := gatewayFrontend(network)
 	if err != nil {
 		return GatewaySignedConfig{}, "", err
 	}
@@ -1021,8 +1021,18 @@ func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string) (Ga
 	return config, `"` + hex.EncodeToString(sum[:]) + `"`, nil
 }
 
-func gatewayFrontend() (string, string, error) {
-	frontend := strings.TrimSpace(os.Getenv("XCONNECT_GATEWAY_XRAY_FRONTEND"))
+// gatewayFrontend picks the Gateway's Xray frontend. A network that declares
+// its own frontend keeps it; otherwise the deployment-wide environment applies,
+// so one environment can host both direct-TLS and Caddy-fronted Gateways.
+func gatewayFrontend(network NetworkRecord) (string, string, error) {
+	if strings.TrimSpace(network.GatewayFrontend) != "" {
+		return resolveGatewayFrontend(network.GatewayFrontend, network.GatewayListenSocket)
+	}
+	return resolveGatewayFrontend(os.Getenv("XCONNECT_GATEWAY_XRAY_FRONTEND"), os.Getenv("XCONNECT_GATEWAY_XRAY_LISTEN_SOCKET"))
+}
+
+func resolveGatewayFrontend(frontend, socket string) (string, string, error) {
+	frontend = strings.TrimSpace(frontend)
 	if frontend == "" {
 		frontend = GatewayFrontendDirectTLS
 	}
@@ -1032,7 +1042,7 @@ func gatewayFrontend() (string, string, error) {
 	if frontend == GatewayFrontendDirectTLS {
 		return frontend, "", nil
 	}
-	socket := strings.TrimSpace(os.Getenv("XCONNECT_GATEWAY_XRAY_LISTEN_SOCKET"))
+	socket = strings.TrimSpace(socket)
 	if socket == "" {
 		socket = DefaultGatewayListenSocket
 	}
@@ -1313,5 +1323,5 @@ func toAdminDevice(record DeviceRecord, ackReceivedAt time.Time, acknowledged bo
 }
 
 func toNetwork(record NetworkRecord) Network {
-	return Network{ID: record.ID, DisplayName: record.DisplayName, CIDR: record.CIDR, GatewayID: record.GatewayID, GatewayWireGuardKey: record.GatewayWireGuardKey, GatewayEndpointHost: record.GatewayEndpointHost, GatewayEndpointPort: record.GatewayEndpointPort, TransportServerName: record.TransportServerName, TransportPort: record.TransportPort, TransportAuthID: record.TransportAuthID, TransportKind: record.TransportKind, TransportPath: record.TransportPath, TransportMode: record.TransportMode, TransportHost: record.TransportHost, ConfigGeneration: record.ConfigGeneration, CreatedAt: record.CreatedAt.UTC(), UpdatedAt: record.UpdatedAt.UTC()}
+	return Network{ID: record.ID, DisplayName: record.DisplayName, CIDR: record.CIDR, GatewayID: record.GatewayID, GatewayWireGuardKey: record.GatewayWireGuardKey, GatewayEndpointHost: record.GatewayEndpointHost, GatewayEndpointPort: record.GatewayEndpointPort, TransportServerName: record.TransportServerName, TransportPort: record.TransportPort, TransportAuthID: record.TransportAuthID, TransportKind: record.TransportKind, TransportPath: record.TransportPath, TransportMode: record.TransportMode, TransportHost: record.TransportHost, GatewayFrontend: record.GatewayFrontend, GatewayListenSocket: record.GatewayListenSocket, ConfigGeneration: record.ConfigGeneration, CreatedAt: record.CreatedAt.UTC(), UpdatedAt: record.UpdatedAt.UTC()}
 }

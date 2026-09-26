@@ -33,6 +33,8 @@ type NetworkRecord struct {
 	TransportPath           string    `gorm:"column:transport_path;type:text;not null;default:'/xconnect'"`
 	TransportMode           string    `gorm:"column:transport_mode;type:text;not null;default:'auto'"`
 	TransportHost           string    `gorm:"column:transport_host;type:text;not null;default:''"`
+	GatewayFrontend         string    `gorm:"column:gateway_frontend;type:text;not null;default:''"`
+	GatewayListenSocket     string    `gorm:"column:gateway_listen_socket;type:text;not null;default:''"`
 	OwnerUserID             string    `gorm:"column:owner_user_id;type:text;index"`
 	PolicyJSON              string    `gorm:"column:policy_json;type:text;not null;default:''"`
 	ConfigGeneration        uint64    `gorm:"column:config_generation;not null;default:1"`
@@ -191,7 +193,8 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 			TransportServerName: cfg.Network.TransportServerName, TransportPort: cfg.Network.TransportPort,
 			TransportAuthID: cfg.Network.TransportAuthID, TransportKind: cfg.Network.TransportKind,
 			TransportPath: cfg.Network.TransportPath, TransportMode: cfg.Network.TransportMode,
-			TransportHost: cfg.Network.TransportHost, OwnerUserID: cfg.Network.OwnerUserID, PolicyJSON: "",
+			TransportHost: cfg.Network.TransportHost, GatewayFrontend: cfg.Network.GatewayFrontend,
+			GatewayListenSocket: cfg.Network.GatewayListenSocket, OwnerUserID: cfg.Network.OwnerUserID, PolicyJSON: "",
 			ConfigGeneration: 1,
 		}
 		var existing NetworkRecord
@@ -199,15 +202,22 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 			if strings.TrimSpace(existing.OwnerUserID) != strings.TrimSpace(network.OwnerUserID) {
 				return ErrForbidden
 			}
-			if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(map[string]any{
+			updates := map[string]any{
 				"display_name": network.DisplayName, "cidr": network.CIDR, "gateway_id": network.GatewayID,
 				"gateway_wireguard_key": network.GatewayWireGuardKey, "gateway_wireguard_address": network.GatewayWireGuardAddress, "gateway_endpoint_host": network.GatewayEndpointHost,
 				"gateway_endpoint_port": network.GatewayEndpointPort, "transport_server_name": network.TransportServerName,
 				"transport_port": network.TransportPort, "transport_auth_id": network.TransportAuthID,
 				"transport_kind": network.TransportKind, "transport_path": network.TransportPath,
 				"transport_mode": network.TransportMode, "transport_host": network.TransportHost,
-				"owner_user_id": network.OwnerUserID,
-			}).Error; err != nil {
+				"owner_user_id":    network.OwnerUserID,
+				"gateway_frontend": network.GatewayFrontend, "gateway_listen_socket": network.GatewayListenSocket,
+			}
+			// A frontend change rewires the Gateway's Xray listener, so the
+			// Gateway must re-apply its runtime: issue a new generation.
+			if existing.GatewayFrontend != network.GatewayFrontend || existing.GatewayListenSocket != network.GatewayListenSocket {
+				updates["config_generation"] = gorm.Expr("config_generation + 1")
+			}
+			if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(updates).Error; err != nil {
 				return err
 			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {

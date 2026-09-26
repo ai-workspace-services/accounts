@@ -39,6 +39,8 @@ type overlayAdminBootstrapRequest struct {
 		TransportPath           string `json:"transport_path"`
 		TransportMode           string `json:"transport_mode"`
 		TransportHost           string `json:"transport_host"`
+		GatewayFrontend         string `json:"gateway_frontend"`
+		GatewayListenSocket     string `json:"gateway_listen_socket"`
 	} `json:"network"`
 	Invite struct {
 		DeviceID string    `json:"device_id"`
@@ -315,7 +317,7 @@ func (h *handler) overlayInternalReconcileStableGateway(c *gin.Context) {
 
 func overlayBootstrapConfig(request overlayAdminBootstrapRequest, ownerUserID string) overlay.BootstrapConfig {
 	return overlay.BootstrapConfig{
-		Network: overlay.BootstrapNetwork{ID: request.Network.ID, DisplayName: request.Network.DisplayName, CIDR: request.Network.CIDR, GatewayID: request.Network.GatewayID, GatewayWireGuardKey: request.Network.GatewayWireGuardKey, GatewayWireGuardAddress: request.Network.GatewayWireGuardAddress, GatewayEndpointHost: request.Network.GatewayEndpointHost, GatewayEndpointPort: request.Network.GatewayEndpointPort, TransportServerName: request.Network.TransportServerName, TransportPort: request.Network.TransportPort, TransportAuthID: request.Network.TransportAuthID, TransportKind: request.Network.TransportKind, TransportPath: request.Network.TransportPath, TransportMode: request.Network.TransportMode, TransportHost: request.Network.TransportHost, OwnerUserID: ownerUserID},
+		Network: overlay.BootstrapNetwork{ID: request.Network.ID, DisplayName: request.Network.DisplayName, CIDR: request.Network.CIDR, GatewayID: request.Network.GatewayID, GatewayWireGuardKey: request.Network.GatewayWireGuardKey, GatewayWireGuardAddress: request.Network.GatewayWireGuardAddress, GatewayEndpointHost: request.Network.GatewayEndpointHost, GatewayEndpointPort: request.Network.GatewayEndpointPort, TransportServerName: request.Network.TransportServerName, TransportPort: request.Network.TransportPort, TransportAuthID: request.Network.TransportAuthID, TransportKind: request.Network.TransportKind, TransportPath: request.Network.TransportPath, TransportMode: request.Network.TransportMode, TransportHost: request.Network.TransportHost, GatewayFrontend: request.Network.GatewayFrontend, GatewayListenSocket: request.Network.GatewayListenSocket, OwnerUserID: ownerUserID},
 		Invite:  overlay.BootstrapInvite{DeviceID: request.Invite.DeviceID, Platform: request.Invite.Platform, Role: request.Invite.Role, ExpiresAt: request.Invite.Expires},
 	}
 }

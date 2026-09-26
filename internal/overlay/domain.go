@@ -67,6 +67,8 @@ type Network struct {
 	TransportPath       string    `json:"transport_path,omitempty"`
 	TransportMode       string    `json:"transport_mode,omitempty"`
 	TransportHost       string    `json:"transport_host,omitempty"`
+	GatewayFrontend     string    `json:"gateway_frontend,omitempty"`
+	GatewayListenSocket string    `json:"gateway_listen_socket,omitempty"`
 	ConfigGeneration    uint64    `json:"-"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
@@ -471,6 +473,8 @@ type BootstrapNetwork struct {
 	TransportPath           string
 	TransportMode           string
 	TransportHost           string
+	GatewayFrontend         string
+	GatewayListenSocket     string
 	OwnerUserID             string
 }
 
@@ -528,6 +532,12 @@ func (n BootstrapNetwork) validate() error {
 		return ErrInvalidInput
 	}
 	if _, err := netip.ParsePrefix(n.CIDR); err != nil {
+		return ErrInvalidInput
+	}
+	if _, _, err := resolveGatewayFrontend(n.GatewayFrontend, n.GatewayListenSocket); n.GatewayFrontend != "" && err != nil {
+		return ErrInvalidInput
+	}
+	if n.GatewayFrontend == "" && n.GatewayListenSocket != "" {
 		return ErrInvalidInput
 	}
 	return nil
