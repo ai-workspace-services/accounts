@@ -1028,6 +1028,33 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 			Active:    true,
 			SortOrder: 10,
 		},
+		{
+			PlanID:             store.BillingPlanPlus,
+			DisplayName:        "Plus",
+			Kind:               "subscription",
+			IncludedQuotaBytes: 20 * 1024 * 1024 * 1024, // 20 GiB per natural month
+			PackageName:        "plus",
+			Features: map[string]any{
+				"quota_cycle": "natural_month",
+				"fast_lane":   map[string]any{"mode": "quota"},
+			},
+			Active:    true,
+			SortOrder: 20,
+		},
+		{
+			PlanID:             store.BillingPlanUnlimitedBeta,
+			DisplayName:        "无限制（内测）",
+			Kind:               "subscription",
+			IncludedQuotaBytes: 0,
+			PackageName:        "unlimited-beta",
+			Features: map[string]any{
+				"quota_cycle":   "none",
+				"fast_lane":     map[string]any{"mode": "unlimited"},
+				"internal_only": true,
+			},
+			Active:    true,
+			SortOrder: 30,
+		},
 	}
 
 	for i := range defaults {
