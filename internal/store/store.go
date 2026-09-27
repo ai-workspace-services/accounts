@@ -368,6 +368,7 @@ type Store interface {
 	DeleteSession(ctx context.Context, token string) error
 
 	CreatePasswordRecoveryChallenge(ctx context.Context, challenge *PasswordRecoveryChallenge) error
+	CreatePasswordRecoveryCodeChallenge(ctx context.Context, challenge *PasswordRecoveryChallenge, cooldown time.Duration) error
 	GetPasswordRecoveryChallengeByTokenHash(ctx context.Context, tokenHash string) (*PasswordRecoveryChallenge, error)
 	GetLatestPasswordRecoveryCode(ctx context.Context, email string) (*PasswordRecoveryChallenge, error)
 	RecordPasswordRecoveryFailure(ctx context.Context, challengeID string, now time.Time, maxAttempts int, lockout time.Duration) (time.Time, error)
@@ -473,6 +474,7 @@ var (
 	ErrSuperAdminCountingDisabled = errors.New("super administrator counting is disabled")
 	ErrSubscriptionNotFound       = errors.New("subscription not found")
 	ErrPasswordRecoveryInvalid    = errors.New("password recovery challenge is invalid, expired, or consumed")
+	ErrPasswordRecoveryCooldown   = errors.New("password recovery code cooldown is active")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for

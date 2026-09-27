@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +167,111 @@ func TestPublicForgotPasswordCodeIsPersistentOneTimeAndRevokesSessions(t *testin
 	confirmRouter.ServeHTTP(rec, req)
 	if rec.Code == http.StatusOK {
 		t.Fatal("consumed recovery code was accepted a second time")
+	}
+}
+
+func TestPasswordRecoveryCodeSendIsEnumerationSafeAndCooledDown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := &store.User{Name: "Known", Email: "known-recovery@example.com", EmailVerified: true, Active: true}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	mailer := &testEmailSender{}
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailSender(mailer))
+
+	request := func(email string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"email": email})
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/password/forgot/send-code", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	known := request(user.Email)
+	unknown := request("missing-recovery@example.com")
+	if known.Code != http.StatusAccepted || unknown.Code != http.StatusAccepted || known.Body.String() != unknown.Body.String() {
+		t.Fatalf("known and unknown emails must have identical responses: known=%d %s unknown=%d %s", known.Code, known.Body.String(), unknown.Code, unknown.Body.String())
+	}
+	if second := request(user.Email); second.Code != http.StatusAccepted {
+		t.Fatalf("cooldown should retain the generic accepted response, got %d: %s", second.Code, second.Body.String())
+	}
+	mailer.mu.Lock()
+	messageCount := len(mailer.messages)
+	mailer.mu.Unlock()
+	if messageCount != 1 {
+		t.Fatalf("cooldown sent another email; got %d messages", messageCount)
+	}
+	for i := 0; i < 3; i++ {
+		if limited := request(user.Email); limited.Code != http.StatusAccepted {
+			t.Fatalf("request %d should keep the generic response, got %d: %s", i+4, limited.Code, limited.Body.String())
+		}
+	}
+	if limited := request(user.Email); limited.Code != http.StatusTooManyRequests || !strings.Contains(limited.Body.String(), `"error":"rate_limited"`) {
+		t.Fatalf("sixth request for one email should be rate limited, got %d: %s", limited.Code, limited.Body.String())
+	}
+}
+
+func TestPublicForgotPasswordCodeReportsExpiredCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := &store.User{Name: "Expired Code", Email: "expired-code@example.com", EmailVerified: true, Active: true}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	mailer := &testEmailSender{}
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailSender(mailer), WithPasswordResetTTL(time.Millisecond))
+	body, _ := json.Marshal(map[string]string{"email": user.Email})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/password/forgot/send-code", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("send code: expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	message, ok := mailer.last()
+	if !ok {
+		t.Fatal("expected recovery code email")
+	}
+	code := extractVerificationCodeFromMessage(t, message)
+	time.Sleep(5 * time.Millisecond)
+	confirmBody, _ := json.Marshal(map[string]string{"email": user.Email, "code": code, "password": "newPassword123"})
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/password/forgot/confirm-code", bytes.NewReader(confirmBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusGone || !strings.Contains(rec.Body.String(), `"error":"code_expired"`) {
+		t.Fatalf("expired code should have a distinct response, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPasswordRecoveryCodeSendIsRateLimitedByIP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	RegisterRoutes(router, WithStore(store.NewMemoryStore()))
+	for i := 0; i < passwordRecoveryIPLimit; i++ {
+		body, _ := json.Marshal(map[string]string{"email": fmt.Sprintf("unknown-%d@example.com", i)})
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/password/forgot/send-code", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("request %d should receive the generic accepted response, got %d: %s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	body, _ := json.Marshal(map[string]string{"email": "another-unknown@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/password/forgot/send-code", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), `"error":"rate_limited"`) {
+		t.Fatalf("request after the IP budget should be rate limited, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

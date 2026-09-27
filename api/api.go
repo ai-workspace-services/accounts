@@ -66,14 +66,23 @@ const defaultOAuthExchangeCodeTTL = 5 * time.Minute
 // on the third try, a resend after a slow inbox) while making a dictionary
 // sweep of emails take hours instead of seconds.
 const (
-	registrationProbeIPLimit     = 20
-	registrationProbeIPWindow    = time.Hour
-	registrationProbeEmailLimit  = 5
-	registrationProbeEmailWindow = time.Hour
-	loginIPAttemptLimit          = 30
-	loginIPAttemptWindow         = 5 * time.Minute
-	loginIdentifierAttemptLimit  = 10
-	loginIdentifierAttemptWindow = 5 * time.Minute
+	registrationProbeIPLimit           = 20
+	registrationProbeIPWindow          = time.Hour
+	registrationProbeEmailLimit        = 5
+	registrationProbeEmailWindow       = time.Hour
+	passwordRecoveryIPLimit            = 20
+	passwordRecoveryIPWindow           = time.Hour
+	passwordRecoveryEmailLimit         = 5
+	passwordRecoveryEmailWindow        = time.Hour
+	passwordRecoveryCodeCooldown       = time.Minute
+	passwordRecoveryConfirmIPLimit     = 30
+	passwordRecoveryConfirmIPWindow    = 5 * time.Minute
+	passwordRecoveryConfirmEmailLimit  = 10
+	passwordRecoveryConfirmEmailWindow = 15 * time.Minute
+	loginIPAttemptLimit                = 30
+	loginIPAttemptWindow               = 5 * time.Minute
+	loginIdentifierAttemptLimit        = 10
+	loginIdentifierAttemptWindow       = 5 * time.Minute
 )
 
 const sessionCookieName = "xc_session"
@@ -132,10 +141,14 @@ type handler struct {
 	// harvested. Each pair is checked by IP and by the email/identifier in
 	// the request, independently, so neither axis alone can be starved by
 	// the other filling up first. See internal/auth.RateLimiter.
-	registrationProbeByIP     *auth.RateLimiter
-	registrationProbeByEmail  *auth.RateLimiter
-	loginAttemptsByIP         *auth.RateLimiter
-	loginAttemptsByIdentifier *auth.RateLimiter
+	registrationProbeByIP          *auth.RateLimiter
+	registrationProbeByEmail       *auth.RateLimiter
+	passwordRecoveryByIP           *auth.RateLimiter
+	passwordRecoveryByEmail        *auth.RateLimiter
+	passwordRecoveryConfirmByIP    *auth.RateLimiter
+	passwordRecoveryConfirmByEmail *auth.RateLimiter
+	loginAttemptsByIP              *auth.RateLimiter
+	loginAttemptsByIdentifier      *auth.RateLimiter
 }
 
 type memoryBridgeCredential struct {
@@ -384,25 +397,29 @@ func WithStripeConfig(cfg StripeConfig) Option {
 // RegisterRoutes attaches account service endpoints to the router.
 func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	h := &handler{
-		store:                     store.NewMemoryStore(),
-		taskSessions:              tasksession.NewMemoryStore(),
-		sessionTTL:                defaultSessionTTL,
-		mfaChallenges:             make(map[string]mfaChallenge),
-		mfaChallengeTTL:           defaultMFAChallengeTTL,
-		totpIssuer:                defaultTOTPIssuer,
-		emailSender:               noopEmailSender,
-		emailVerificationEnabled:  true,
-		verificationTTL:           defaultEmailVerificationTTL,
-		verifications:             make(map[string]emailVerification),
-		registrationVerifications: make(map[string]registrationVerification),
-		resetTTL:                  defaultPasswordResetTTL,
-		reactivationCodes:         make(map[string]accountReactivationCode),
-		oauthExchangeTTL:          defaultOAuthExchangeCodeTTL,
-		bridgeCredentials:         make(map[string]memoryBridgeCredential),
-		registrationProbeByIP:     auth.NewRateLimiter(registrationProbeIPLimit, registrationProbeIPWindow),
-		registrationProbeByEmail:  auth.NewRateLimiter(registrationProbeEmailLimit, registrationProbeEmailWindow),
-		loginAttemptsByIP:         auth.NewRateLimiter(loginIPAttemptLimit, loginIPAttemptWindow),
-		loginAttemptsByIdentifier: auth.NewRateLimiter(loginIdentifierAttemptLimit, loginIdentifierAttemptWindow),
+		store:                          store.NewMemoryStore(),
+		taskSessions:                   tasksession.NewMemoryStore(),
+		sessionTTL:                     defaultSessionTTL,
+		mfaChallenges:                  make(map[string]mfaChallenge),
+		mfaChallengeTTL:                defaultMFAChallengeTTL,
+		totpIssuer:                     defaultTOTPIssuer,
+		emailSender:                    noopEmailSender,
+		emailVerificationEnabled:       true,
+		verificationTTL:                defaultEmailVerificationTTL,
+		verifications:                  make(map[string]emailVerification),
+		registrationVerifications:      make(map[string]registrationVerification),
+		resetTTL:                       defaultPasswordResetTTL,
+		reactivationCodes:              make(map[string]accountReactivationCode),
+		oauthExchangeTTL:               defaultOAuthExchangeCodeTTL,
+		bridgeCredentials:              make(map[string]memoryBridgeCredential),
+		registrationProbeByIP:          auth.NewRateLimiter(registrationProbeIPLimit, registrationProbeIPWindow),
+		registrationProbeByEmail:       auth.NewRateLimiter(registrationProbeEmailLimit, registrationProbeEmailWindow),
+		passwordRecoveryByIP:           auth.NewRateLimiter(passwordRecoveryIPLimit, passwordRecoveryIPWindow),
+		passwordRecoveryByEmail:        auth.NewRateLimiter(passwordRecoveryEmailLimit, passwordRecoveryEmailWindow),
+		passwordRecoveryConfirmByIP:    auth.NewRateLimiter(passwordRecoveryConfirmIPLimit, passwordRecoveryConfirmIPWindow),
+		passwordRecoveryConfirmByEmail: auth.NewRateLimiter(passwordRecoveryConfirmEmailLimit, passwordRecoveryConfirmEmailWindow),
+		loginAttemptsByIP:              auth.NewRateLimiter(loginIPAttemptLimit, loginIPAttemptWindow),
+		loginAttemptsByIdentifier:      auth.NewRateLimiter(loginIdentifierAttemptLimit, loginIdentifierAttemptWindow),
 	}
 
 	for _, opt := range opts {
