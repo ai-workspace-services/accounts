@@ -27,8 +27,8 @@ INSERT INTO billing_plans
    package_name, price_amount, price_currency, price_unit,
    price_multipliers, features, trial_days, active, sort_order)
 VALUES
-  -- free：体验档。高速流量按时间窗口给，不按字节。
-  ('FREE', NULL, 'Free', 'subscription', 0,
+  -- free：每个自然月 5GB。新用户默认进入此档，存量用户不在种子中迁移。
+  ('FREE', NULL, 'Free', 'subscription', 5368709120,
    'free',
    0, '', '',
    '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
@@ -36,11 +36,39 @@ VALUES
       "sla": "none",
       "session_persistence": false,
       "demo_cards": {"enabled": true, "create": true, "runs_per_day": 1, "session_minutes": 60},
-      "fast_lane": {"mode": "windowed", "window": "weekly", "minutes": 60, "fallback": "vps"},
+      "fast_lane": {"mode": "quota", "fallback": "vps"},
+      "quota_cycle": "natural_month",
       "resource_cards": {"create": false},
       "dunning": {"policy": "none"}
     }'::jsonb,
    0, true, 10),
+
+  -- Plus：每个自然月 20GB。Stripe 价格由支付目录单独回填。
+  ('PLUS', NULL, 'Plus', 'subscription', 21474836480,
+   'plus',
+   0, '', '',
+   '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{
+      "sla": "standard",
+      "session_persistence": true,
+      "fast_lane": {"mode": "quota"},
+      "quota_cycle": "natural_month",
+      "dunning": {"policy": "downgrade_to_free"}
+    }'::jsonb,
+   0, true, 20),
+
+  -- 无限限制仅用于内测分组，不进入公开支付目录。
+  ('UNLIMITED-BETA', NULL, '无限制（内测）', 'subscription', 0,
+   'unlimited-beta',
+   0, '', '',
+   '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{
+      "fast_lane": {"mode": "unlimited"},
+      "quota_cycle": "none",
+      "internal_only": true,
+      "dunning": {"policy": "manual"}
+    }'::jsonb,
+   0, true, 30),
 
   -- Pay-As-You-Go：预充值按量扣费，欠费立即停机。
   -- 充值走 PAYG-TOPUP-* 那几条一次性价格，不在这条上挂 price。

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -186,4 +187,49 @@ func TestFreeTierGrantsTheQuotaTheStorefrontPromises(t *testing.T) {
 		return
 	}
 	t.Error("manifest defines no FREE plan; accounts downgrades to it when a subscription ends")
+}
+
+func TestQuotaCatalogDefinesTheUATGroups(t *testing.T) {
+	const (
+		fiveGiB   = int64(5 * 1024 * 1024 * 1024)
+		twentyGiB = int64(20 * 1024 * 1024 * 1024)
+	)
+	plans := make(map[string]manifestPlan)
+	for _, plan := range loadManifest(t) {
+		plans[plan.PlanID] = plan
+	}
+
+	free := plans["FREE"]
+	if free.IncludedQuotaBytes != fiveGiB || free.PackageName != "free" {
+		t.Fatalf("FREE must expose 5GiB in the free package: %+v", free)
+	}
+	plus := plans["PLUS"]
+	if plus.IncludedQuotaBytes != twentyGiB || plus.PackageName != "plus" {
+		t.Fatalf("PLUS must expose 20GiB in the plus package: %+v", plus)
+	}
+	unlimited := plans["UNLIMITED-BETA"]
+	if unlimited.IncludedQuotaBytes != 0 || unlimited.PackageName != "unlimited-beta" {
+		t.Fatalf("UNLIMITED-BETA must be an explicit unlimited internal package: %+v", unlimited)
+	}
+	features, _ := unlimited.Features["internal_only"].(bool)
+	if !features {
+		t.Fatal("UNLIMITED-BETA must remain internal-only")
+	}
+}
+
+func TestQuotaMigrationIsAdditiveAndIdempotent(t *testing.T) {
+	path := filepath.Join("..", "..", "sql", "migrations", "2026092701_quota_plan_groups.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read quota migration: %v", err)
+	}
+	sql := strings.ToUpper(string(raw))
+	for _, forbidden := range []string{"DROP TABLE", "TRUNCATE", "DELETE FROM PUBLIC.USERS", "DELETE FROM PUBLIC.SUBSCRIPTIONS", "DELETE FROM PUBLIC.PAYMENTS", "DELETE FROM PUBLIC.USAGE"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("quota migration must not contain destructive operation %q", forbidden)
+		}
+	}
+	if !strings.Contains(sql, "ON CONFLICT (PLAN_ID) DO UPDATE") {
+		t.Fatal("quota migration must be idempotent on billing_plans.plan_id")
+	}
 }

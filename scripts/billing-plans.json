@@ -37,6 +37,47 @@
       "sortOrder": 10
     },
     {
+      "planId": "PLUS",
+      "displayName": "Plus",
+      "kind": "subscription",
+      "includedQuotaBytes": 21474836480,
+      "packageName": "plus",
+      "priceAmount": 0,
+      "priceCurrency": "",
+      "priceUnit": "",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "sla": "standard",
+        "session_persistence": true,
+        "fast_lane": { "mode": "quota" },
+        "quota_cycle": "natural_month",
+        "dunning": { "policy": "downgrade_to_free" }
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 20
+    },
+    {
+      "planId": "UNLIMITED-BETA",
+      "displayName": "无限制（内测）",
+      "kind": "subscription",
+      "includedQuotaBytes": 0,
+      "packageName": "unlimited-beta",
+      "priceAmount": 0,
+      "priceCurrency": "",
+      "priceUnit": "",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "fast_lane": { "mode": "unlimited" },
+        "quota_cycle": "none",
+        "internal_only": true,
+        "dunning": { "policy": "manual" }
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 30
+    },
+    {
       "planId": "PAYG",
       "displayName": "Pay As You Go",
       "kind": "subscription",

@@ -64,8 +64,10 @@ const (
 
 // Well-known catalog plan ids provisioned by the seed.
 const (
-	BillingPlanTrial7D = "TRIAL-7D"
-	BillingPlanFree    = "FREE"
+	BillingPlanTrial7D       = "TRIAL-7D"
+	BillingPlanFree          = "FREE"
+	BillingPlanPlus          = "PLUS"
+	BillingPlanUnlimitedBeta = "UNLIMITED-BETA"
 )
 
 var (
