@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
@@ -81,10 +82,17 @@ func (h *handler) enqueuePasswordResetCode(c *gin.Context, user *store.User) err
 	}
 	expiresAt := time.Now().Add(ttl)
 	email := strings.ToLower(strings.TrimSpace(user.Email))
-	entry := passwordResetCode{userID: user.ID, email: email, code: code, expiresAt: expiresAt}
-	h.passwordResetCodeMu.Lock()
-	h.passwordResetCodes[email] = entry
-	h.passwordResetCodeMu.Unlock()
+	codeHash, err := bcrypt.GenerateFromPassword([]byte(code), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	challenge := &store.PasswordRecoveryChallenge{
+		ID: uuid.NewString(), UserID: user.ID, Email: email, Kind: "code",
+		SecretHash: string(codeHash), ExpiresAt: expiresAt, CreatedAt: time.Now().UTC(),
+	}
+	if err := h.store.CreatePasswordRecoveryChallenge(c.Request.Context(), challenge); err != nil {
+		return err
+	}
 
 	copy := copyFor(requestLocale(c))
 	plainBody, htmlBody := renderTransactionalEmail(transactionalEmail{
@@ -100,48 +108,10 @@ func (h *handler) enqueuePasswordResetCode(c *gin.Context, user *store.User) err
 	if err := h.emailSender.Send(c.Request.Context(), EmailMessage{
 		To: []string{email}, Subject: copy.subjectReset, PlainBody: plainBody, HTMLBody: htmlBody,
 	}); err != nil {
-		h.removePasswordResetCode(email)
+		_ = h.store.InvalidatePasswordRecoveryChallenge(c.Request.Context(), challenge.ID, time.Now().UTC())
 		return err
 	}
 	return nil
-}
-
-func (h *handler) lookupPasswordResetCode(email string) (passwordResetCode, bool) {
-	email = strings.ToLower(strings.TrimSpace(email))
-	h.passwordResetCodeMu.RLock()
-	entry, ok := h.passwordResetCodes[email]
-	h.passwordResetCodeMu.RUnlock()
-	if !ok {
-		return passwordResetCode{}, false
-	}
-	if time.Now().After(entry.expiresAt) {
-		h.removePasswordResetCode(email)
-		return passwordResetCode{}, false
-	}
-	return entry, true
-}
-
-func (h *handler) removePasswordResetCode(email string) {
-	h.passwordResetCodeMu.Lock()
-	delete(h.passwordResetCodes, strings.ToLower(strings.TrimSpace(email)))
-	h.passwordResetCodeMu.Unlock()
-}
-
-func (h *handler) recordPasswordResetCodeFailure(email string) time.Time {
-	email = strings.ToLower(strings.TrimSpace(email))
-	h.passwordResetCodeMu.Lock()
-	defer h.passwordResetCodeMu.Unlock()
-	entry, ok := h.passwordResetCodes[email]
-	if !ok {
-		return time.Time{}
-	}
-	entry.failedAttempts++
-	if entry.failedAttempts >= maxMFAVerificationAttempts {
-		entry.lockedUntil = time.Now().Add(defaultMFALockoutDuration)
-		entry.failedAttempts = 0
-	}
-	h.passwordResetCodes[email] = entry
-	return entry.lockedUntil
 }
 
 func (h *handler) confirmPasswordResetCode(c *gin.Context) {
@@ -169,35 +139,60 @@ func (h *handler) confirmPasswordResetCode(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "password_too_short", "password must be at least 8 characters")
 		return
 	}
-	entry, ok := h.lookupPasswordResetCode(email)
-	if !ok || time.Now().Before(entry.lockedUntil) {
+	challenge, err := h.store.GetLatestPasswordRecoveryCode(c.Request.Context(), email)
+	if errors.Is(err, store.ErrPasswordRecoveryInvalid) {
 		respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
 		return
 	}
-	if entry.code != code {
-		if retryAt := h.recordPasswordResetCodeFailure(email); !retryAt.IsZero() {
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to load password reset challenge")
+		return
+	}
+	if challenge == nil || !challenge.ExpiresAt.After(time.Now()) || time.Now().Before(challenge.LockedUntil) {
+		respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(challenge.SecretHash), []byte(code)) != nil {
+		retryAt, failureErr := h.store.RecordPasswordRecoveryFailure(c.Request.Context(), challenge.ID, time.Now().UTC(), maxMFAVerificationAttempts, defaultMFALockoutDuration)
+		if errors.Is(failureErr, store.ErrPasswordRecoveryInvalid) {
+			respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
+			return
+		}
+		if failureErr != nil {
+			respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to update password reset attempt state")
+			return
+		}
+		if !retryAt.IsZero() {
 			respondVerificationLocked(c, retryAt)
 			return
 		}
 		respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
 		return
 	}
-	user, err := h.store.GetUserByID(c.Request.Context(), entry.userID)
+	user, err := h.store.GetUserByID(c.Request.Context(), challenge.UserID)
 	if err != nil || !strings.EqualFold(strings.TrimSpace(user.Email), email) {
-		h.removePasswordResetCode(email)
+		_ = h.store.InvalidatePasswordRecoveryChallenge(c.Request.Context(), challenge.ID, time.Now().UTC())
 		respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
 		return
 	}
 	if h.isReadOnlyAccount(user) {
-		h.removePasswordResetCode(email)
+		_ = h.store.InvalidatePasswordRecoveryChallenge(c.Request.Context(), challenge.ID, time.Now().UTC())
 		respondError(c, http.StatusForbidden, "read_only_account", "demo account cannot change password")
 		return
 	}
-	if err := h.replacePassword(c, user, password); err != nil {
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
 		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to reset password")
 		return
 	}
-	h.removePasswordResetCode(email)
+	if err := h.store.CompletePasswordRecovery(c.Request.Context(), challenge.ID, string(hashed), time.Now().UTC()); err != nil {
+		if errors.Is(err, store.ErrPasswordRecoveryInvalid) {
+			respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to reset password")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "password reset successful", "user": sanitizeUser(user, nil)})
 }
 

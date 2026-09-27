@@ -22,7 +22,7 @@ The main design record is [architecture/design-decisions.md](../architecture/des
 ## Design Snapshot
 
 - Runtime truth is meant to come from the current store / runtime contracts, not from duplicated local config-center state.
-- Session, MFA challenge, email verification, password reset, and OAuth exchange state are process-local by design in the current implementation.
+- Sessions and OAuth exchange codes are persisted in the database; password recovery challenges are persisted in `password_recovery_challenges`. MFA challenges and registration email verification state remain process-local.
 - Admin policy and homepage customization are intentionally separated into GORM-backed services rather than folded into the primary store abstraction.
 - Agent mode reuses the same Xray generation primitives as server mode instead of introducing a second configuration model.
 
