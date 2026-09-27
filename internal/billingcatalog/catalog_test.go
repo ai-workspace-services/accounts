@@ -223,13 +223,44 @@ func TestQuotaMigrationIsAdditiveAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read quota migration: %v", err)
 	}
-	sql := strings.ToUpper(string(raw))
-	for _, forbidden := range []string{"DROP TABLE", "TRUNCATE", "DELETE FROM PUBLIC.USERS", "DELETE FROM PUBLIC.SUBSCRIPTIONS", "DELETE FROM PUBLIC.PAYMENTS", "DELETE FROM PUBLIC.USAGE"} {
+	var executableLines []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "--") {
+			executableLines = append(executableLines, trimmed)
+		}
+	}
+	sql := strings.ToUpper(strings.Join(executableLines, "\n"))
+	for _, forbidden := range []string{
+		"DROP ", "TRUNCATE ", "DELETE FROM ", "UPDATE PUBLIC.USERS", "UPDATE PUBLIC.SUBSCRIPTIONS",
+		"INSERT INTO PUBLIC.USERS", "PUBLIC.PAYMENTS", "PUBLIC.USAGE", "ACCOUNT_BILLING_PROFILES", "ACCOUNT_QUOTA_STATES", "BILLING_LEDGER",
+		"STRIPE_PRICE_ID",
+	} {
 		if strings.Contains(sql, forbidden) {
 			t.Fatalf("quota migration must not contain destructive operation %q", forbidden)
 		}
 	}
+	if !strings.Contains(sql, "BEGIN;") || !strings.Contains(sql, "COMMIT;") {
+		t.Fatal("quota migration must execute as one explicit transaction")
+	}
 	if !strings.Contains(sql, "ON CONFLICT (PLAN_ID) DO UPDATE") {
 		t.Fatal("quota migration must be idempotent on billing_plans.plan_id")
+	}
+}
+
+func TestLocalPlanIDIsPrimaryKeyAndStripePriceIsOnlyUniqueAdapterField(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "sql", "schema.sql"))
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	schema := strings.ToUpper(string(raw))
+	if !strings.Contains(schema, "PLAN_ID TEXT PRIMARY KEY") {
+		t.Fatal("billing_plans.plan_id must remain the internal business primary key")
+	}
+	if !strings.Contains(schema, "STRIPE_PRICE_ID TEXT UNIQUE") {
+		t.Fatal("stripe_price_id may map an external Price uniquely but must not replace plan_id")
+	}
+	if strings.Contains(schema, "STRIPE_PRICE_ID TEXT PRIMARY KEY") {
+		t.Fatal("stripe_price_id is an external adapter reference, never a business primary key")
 	}
 }

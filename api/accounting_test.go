@@ -556,17 +556,18 @@ func TestAccountUsageAndPolicyEndpoints(t *testing.T) {
 	}
 }
 
-func TestAccountUsageSummaryInitializesMissingFreeEntitlement(t *testing.T) {
+func TestAccountUsageSummaryKeepsLegacyAccountUnassigned(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
 	st := store.NewMemoryStore()
 	if err := st.CreateUser(ctx, &store.User{
-		Name: "New account", Email: "new-account@example.com", PasswordHash: "hashed",
+		Name: "Legacy account", Email: "legacy-account@example.com", PasswordHash: "hashed",
 		EmailVerified: true, Role: store.RoleUser, Level: store.LevelUser, Active: true,
+		Groups: []string{"User", store.MonthlyPlusQuotaLimitGroup},
 	}); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	user, err := st.GetUserByEmail(ctx, "new-account@example.com")
+	user, err := st.GetUserByEmail(ctx, "legacy-account@example.com")
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -576,14 +577,14 @@ func TestAccountUsageSummaryInitializesMissingFreeEntitlement(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed free plan: %v", err)
 	}
-	if err := st.CreateSession(ctx, "new-account-session", user.ID, time.Now().UTC().Add(time.Hour)); err != nil {
+	if err := st.CreateSession(ctx, "legacy-account-session", user.ID, time.Now().UTC().Add(time.Hour)); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
 	router := gin.New()
 	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
 	req := httptest.NewRequest(http.MethodGet, "/api/account/usage/summary", nil)
-	req.Header.Set("Authorization", "Bearer new-account-session")
+	req.Header.Set("Authorization", "Bearer legacy-account-session")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -595,16 +596,56 @@ func TestAccountUsageSummaryInitializesMissingFreeEntitlement(t *testing.T) {
 		RemainingIncludedQuota int64      `json:"remainingIncludedQuota"`
 		PeriodStart            *time.Time `json:"periodStart"`
 		PeriodEnd              *time.Time `json:"periodEnd"`
+		PlanAssignmentStatus   string     `json:"planAssignmentStatus"`
+		CurrentPlan            *struct {
+			Assigned        bool  `json:"assigned"`
+			MaxTrafficBytes int64 `json:"maxTrafficBytes"`
+		} `json:"currentPlan"`
+		DefaultPlan *struct {
+			PlanID          string `json:"planId"`
+			MaxTrafficBytes int64  `json:"maxTrafficBytes"`
+			Assigned        bool   `json:"assigned"`
+		} `json:"defaultPlan"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode usage summary: %v", err)
 	}
 	const freeQuota = int64(5 * 1024 * 1024 * 1024)
-	if payload.IncludedQuotaBytes != freeQuota || payload.RemainingIncludedQuota != freeQuota {
-		t.Fatalf("expected free quota %d, got included=%d remaining=%d", freeQuota, payload.IncludedQuotaBytes, payload.RemainingIncludedQuota)
+	if payload.IncludedQuotaBytes != 0 || payload.RemainingIncludedQuota != 0 {
+		t.Fatalf("legacy account must remain unassigned, got included=%d remaining=%d", payload.IncludedQuotaBytes, payload.RemainingIncludedQuota)
 	}
-	if payload.PeriodStart == nil || payload.PeriodEnd == nil || !payload.PeriodEnd.After(*payload.PeriodStart) {
-		t.Fatalf("expected a valid billing period, got start=%v end=%v", payload.PeriodStart, payload.PeriodEnd)
+	if payload.PeriodStart != nil || payload.PeriodEnd != nil {
+		t.Fatalf("legacy account must not receive a quota period, got start=%v end=%v", payload.PeriodStart, payload.PeriodEnd)
+	}
+	if payload.PlanAssignmentStatus != "unassigned" || payload.CurrentPlan != nil {
+		t.Fatalf("expected an unassigned legacy account, status=%q current=%+v", payload.PlanAssignmentStatus, payload.CurrentPlan)
+	}
+	if payload.DefaultPlan == nil || payload.DefaultPlan.PlanID != store.BillingPlanFree || payload.DefaultPlan.MaxTrafficBytes != freeQuota || payload.DefaultPlan.Assigned {
+		t.Fatalf("expected Free 5GiB to be reference-only default plan, got %+v", payload.DefaultPlan)
+	}
+	if _, err := st.GetAccountBillingProfile(ctx, user.ID); err == nil {
+		t.Fatal("usage GET must not create a billing profile for a legacy account")
+	}
+	if _, err := st.GetAccountQuotaState(ctx, user.ID); err == nil {
+		t.Fatal("usage GET must not create a quota state for a legacy account")
+	}
+
+	billingReq := httptest.NewRequest(http.MethodGet, "/api/account/billing/summary", nil)
+	billingReq.Header.Set("Authorization", "Bearer legacy-account-session")
+	billingRec := httptest.NewRecorder()
+	router.ServeHTTP(billingRec, billingReq)
+	if billingRec.Code != http.StatusOK {
+		t.Fatalf("billing summary status: %d body=%s", billingRec.Code, billingRec.Body.String())
+	}
+	if _, err := st.GetAccountBillingProfile(ctx, user.ID); err == nil {
+		t.Fatal("billing summary GET must not create a billing profile for a legacy account")
+	}
+	afterRead, err := st.GetUserByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("reload legacy account: %v", err)
+	}
+	if len(afterRead.Groups) != 2 || afterRead.Groups[1] != store.MonthlyPlusQuotaLimitGroup {
+		t.Fatalf("read-only account summaries changed existing groups: %#v", afterRead.Groups)
 	}
 }
 

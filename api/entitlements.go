@@ -70,13 +70,10 @@ func (h *handler) applyPlanEntitlements(ctx context.Context, userID string, plan
 	return h.store.UpsertAccountBillingProfile(ctx, profile)
 }
 
-// ensureFreeEntitlement gives an account that has never received an
-// entitlement its initial FREE allowance.  This is deliberately lazy: older
-// accounts predate the billing tables, while a database migration must never
-// overwrite an operator-assigned or Stripe-managed entitlement.  Calling this
-// from the account read models makes the first visit repair the missing state
-// and keeps the usage/quota UI truthful instead of rendering 0 B / 0 B.
-func (h *handler) ensureFreeEntitlement(ctx context.Context, userID string) error {
+// provisionFreeEntitlement is used only after a new account has been created.
+// Read models must not call it: existing accounts without an assignment are
+// intentionally left for an administrator to classify.
+func (h *handler) provisionFreeEntitlement(ctx context.Context, userID string) error {
 	if strings.TrimSpace(userID) == "" {
 		return nil
 	}
@@ -89,7 +86,7 @@ func (h *handler) ensureFreeEntitlement(ctx context.Context, userID string) erro
 	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
 		return err
 	}
-	if profile != nil || quota != nil {
+	if profile != nil && quota != nil {
 		return nil
 	}
 
@@ -110,8 +107,13 @@ func (h *handler) ensureFreeEntitlement(ctx context.Context, userID string) erro
 	if !plan.Active {
 		return nil
 	}
-	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
-		return err
+	if profile == nil {
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+			return err
+		}
+	}
+	if quota != nil {
+		return nil
 	}
 	periodStart, periodEnd := naturalMonthPeriod(time.Now())
 	return h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd)

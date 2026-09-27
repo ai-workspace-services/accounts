@@ -896,11 +896,11 @@ func (h *handler) register(c *gin.Context) {
 			return
 		}
 	}
-	if err := h.ensureFreeEntitlement(c.Request.Context(), user.ID); err != nil {
-		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "failed to initialize the default Free 5GB entitlement")
+	if err := h.provisionFreeEntitlement(c.Request.Context(), user.ID); err != nil {
+		slog.Error("failed to provision free entitlement for new account", "err", err, "userID", user.ID)
+		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "account was created but its default plan could not be initialized")
 		return
 	}
-
 	if h.emailVerificationEnabled {
 		h.removeRegistrationVerification(email)
 	}
@@ -3294,13 +3294,8 @@ func (h *handler) oauthCallback(c *gin.Context) {
 	// The provider already told us this address is verified — unverified
 	// profiles were rejected above — so we accept that as our verification
 	// rather than mailing a second code to an inbox the provider just proved
-	// the user controls. This is a deliberate funnel decision: a GitHub or
-	// Google signup lands in the console with the trial already active.
-	//
-	// It does grant proxy/VPN access at signup, since listAgentUsers and
-	// internalNetworkIdentities gate on EmailVerified. That is the intended
-	// trade: the abuse ceiling is one trial per provider-verified address,
-	// and the trial is bounded by the catalog's quota and expiry.
+	// the user controls. New OAuth accounts receive the catalog Free plan below;
+	// existing accounts retain their current billing assignment.
 	if errors.Is(err, store.ErrUserNotFound) {
 		user = &store.User{
 			Name:          profile.Name,
@@ -3315,8 +3310,9 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			respondError(c, http.StatusInternalServerError, "user_creation_failed", "failed to create user")
 			return
 		}
-		if err := h.ensureFreeEntitlement(ctx, user.ID); err != nil {
-			respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "failed to initialize the default Free 5GB entitlement")
+		if err := h.provisionFreeEntitlement(ctx, user.ID); err != nil {
+			slog.Error("failed to provision free entitlement for OAuth account", "err", err, "userID", user.ID)
+			respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "account was created but its default plan could not be initialized")
 			return
 		}
 	} else {

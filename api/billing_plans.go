@@ -20,6 +20,7 @@ type billingPlanPayload struct {
 	DisplayName        string             `json:"displayName"`
 	Kind               string             `json:"kind"`
 	IncludedQuotaBytes int64              `json:"includedQuotaBytes"`
+	MaxTrafficBytes    int64              `json:"maxTrafficBytes"`
 	PackageName        string             `json:"packageName"`
 	PriceAmount        int64              `json:"priceAmount"`
 	PriceCurrency      string             `json:"priceCurrency,omitempty"`
@@ -92,6 +93,7 @@ func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
 		DisplayName:        plan.DisplayName,
 		Kind:               plan.Kind,
 		IncludedQuotaBytes: plan.IncludedQuotaBytes,
+		MaxTrafficBytes:    plan.IncludedQuotaBytes,
 		PackageName:        plan.PackageName,
 		PriceAmount:        plan.PriceAmount,
 		PriceCurrency:      plan.PriceCurrency,
