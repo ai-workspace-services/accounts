@@ -45,11 +45,6 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.ensureFreeEntitlement(c.Request.Context(), user.ID); err != nil {
-		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "failed to initialize the account entitlement")
-		return
-	}
-
 	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, time.Time{}, time.Time{})
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "usage_summary_unavailable", "failed to load usage summary")
@@ -102,6 +97,11 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 			usagePercent = float64(usedBytes) / float64(includedQuota) * 100
 		}
 	}
+	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "billing_plan_unavailable", "failed to resolve the account plan")
+		return
+	}
 
 	quotaExhausted := billingProfile != nil &&
 		store.IsMonthlyQuotaLimitMember(user) && remainingQuota <= 0
@@ -140,21 +140,24 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		// The values are account-level aggregates across every node_id that
 		// reports this user's canonical UUID; email remains display/identity
 		// metadata and is never used as a standalone billing key.
-		"includedQuotaBytes":  includedQuota,
-		"usedBytes":           usedBytes,
-		"usagePercent":        usagePercent,
-		"periodStart":         periodStart,
-		"periodEnd":           periodEnd,
-		"suspendState":        suspendState,
-		"throttleState":       throttleState,
-		"quotaExhausted":      quotaExhausted,
-		"networkAccessState":  networkAccessState,
-		"networkAccessReason": networkAccessReason,
-		"arrears":             arrears,
-		"arrearsSince":        arrearsSince,
-		"lastBucketAt":        lastBucketAt,
-		"syncDelaySeconds":    syncDelaySeconds,
-		"billingProfile":      billingProfile,
+		"includedQuotaBytes":   includedQuota,
+		"usedBytes":            usedBytes,
+		"usagePercent":         usagePercent,
+		"periodStart":          periodStart,
+		"periodEnd":            periodEnd,
+		"suspendState":         suspendState,
+		"throttleState":        throttleState,
+		"quotaExhausted":       quotaExhausted,
+		"networkAccessState":   networkAccessState,
+		"networkAccessReason":  networkAccessReason,
+		"arrears":              arrears,
+		"arrearsSince":         arrearsSince,
+		"lastBucketAt":         lastBucketAt,
+		"syncDelaySeconds":     syncDelaySeconds,
+		"billingProfile":       billingProfile,
+		"currentPlan":          planContract.CurrentPlan,
+		"defaultPlan":          planContract.DefaultPlan,
+		"planAssignmentStatus": planContract.AssignmentStatus,
 	})
 }
 
@@ -193,11 +196,6 @@ func (h *handler) accountBillingSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.ensureFreeEntitlement(c.Request.Context(), user.ID); err != nil {
-		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "failed to initialize the account entitlement")
-		return
-	}
-
 	ledger, err := h.store.ListBillingLedgerByAccount(c.Request.Context(), user.ID, 20)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "billing_summary_unavailable", "failed to load billing summary")
@@ -212,13 +210,21 @@ func (h *handler) accountBillingSummary(c *gin.Context) {
 	if profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID); err == nil {
 		billingProfile = profile
 	}
+	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "billing_plan_unavailable", "failed to resolve the account plan")
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"accountUuid":    user.ID,
-		"quotaState":     quota,
-		"billingProfile": billingProfile,
-		"ledger":         ledger,
-		"sourceOfTruth":  accountingDataSource,
+		"accountUuid":          user.ID,
+		"quotaState":           quota,
+		"billingProfile":       billingProfile,
+		"currentPlan":          planContract.CurrentPlan,
+		"defaultPlan":          planContract.DefaultPlan,
+		"planAssignmentStatus": planContract.AssignmentStatus,
+		"ledger":               ledger,
+		"sourceOfTruth":        accountingDataSource,
 	})
 }
 

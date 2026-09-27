@@ -46,6 +46,12 @@ func TestRegisterCreatesActiveAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	spy := &createUserSpy{Store: store.NewMemoryStore()}
+	if err := spy.UpsertBillingPlan(context.Background(), &store.BillingPlan{
+		PlanID: store.BillingPlanFree, DisplayName: "Free", Kind: "subscription",
+		PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, Active: true,
+	}); err != nil {
+		t.Fatalf("seed Free plan: %v", err)
+	}
 
 	router := gin.New()
 	RegisterRoutes(router, WithEmailVerification(false), WithStore(spy))
@@ -77,5 +83,21 @@ func TestRegisterCreatesActiveAccount(t *testing.T) {
 
 	if !spy.created[0].Active {
 		t.Fatal("registration persisted an inactive account: login would succeed and every protected endpoint would answer 403 account_suspended")
+	}
+	created, err := spy.GetUserByEmail(context.Background(), "self-registered@example.com")
+	if err != nil {
+		t.Fatalf("load registered account: %v", err)
+	}
+	profile, err := spy.GetAccountBillingProfile(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("load new account billing profile: %v", err)
+	}
+	const freeQuota = int64(5 * 1024 * 1024 * 1024)
+	if profile.PackageName != "free" || profile.IncludedQuotaBytes != freeQuota || profile.PricingRuleVersion != "plan:FREE" {
+		t.Fatalf("new registration must receive catalog Free 5GiB: %+v", profile)
+	}
+	quota, err := spy.GetAccountQuotaState(context.Background(), created.ID)
+	if err != nil || quota.RemainingIncludedQuota != freeQuota {
+		t.Fatalf("new registration quota mismatch: state=%+v err=%v", quota, err)
 	}
 }
