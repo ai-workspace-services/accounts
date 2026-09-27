@@ -225,8 +225,10 @@ BEGIN
     RAISE EXCEPTION 'rejected user DELETE unexpectedly cascaded into billing history';
   END IF;
 
+  -- Intentional rejection probe: list every CASCADE-dependent sentinel table
+  -- so PostgreSQL reaches the users TRUNCATE guard instead of failing FK checks.
   BEGIN
-    TRUNCATE public.users, public.subscriptions;
+    TRUNCATE public.users, public.subscriptions, public.billing_ledger;
     RAISE EXCEPTION 'TRUNCATE of users was accepted';
   EXCEPTION WHEN SQLSTATE '55000' THEN
     GET STACKED DIAGNOSTICS error_message = MESSAGE_TEXT;
@@ -234,6 +236,12 @@ BEGIN
       RAISE EXCEPTION 'user TRUNCATE was rejected for an unexpected reason: %', error_message;
     END IF;
   END;
+
+  IF (SELECT count(*) FROM public.users WHERE username = 'legacy-sentinel') <> 1
+     OR (SELECT count(*) FROM public.subscriptions WHERE id = 9) <> 1
+     OR (SELECT count(*) FROM public.billing_ledger WHERE id = 9) <> 1 THEN
+    RAISE EXCEPTION 'rejected user TRUNCATE unexpectedly removed user or billing history';
+  END IF;
 END;
 $$;
 
