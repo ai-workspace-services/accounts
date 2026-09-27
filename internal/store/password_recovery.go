@@ -29,6 +29,33 @@ func (s *memoryStore) CreatePasswordRecoveryChallenge(ctx context.Context, chall
 	return nil
 }
 
+func (s *memoryStore) CreatePasswordRecoveryCodeChallenge(ctx context.Context, challenge *PasswordRecoveryChallenge, cooldown time.Duration) error {
+	_ = ctx
+	if challenge == nil || strings.TrimSpace(challenge.ID) == "" || strings.TrimSpace(challenge.UserID) == "" {
+		return ErrPasswordRecoveryInvalid
+	}
+	email := strings.ToLower(strings.TrimSpace(challenge.Email))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.byID[challenge.UserID]; !ok {
+		return ErrUserNotFound
+	}
+	for _, existing := range s.passwordRecovery {
+		if existing.Kind == "code" && strings.EqualFold(existing.Email, email) && cooldown > 0 && challenge.CreatedAt.Sub(existing.CreatedAt) < cooldown {
+			return ErrPasswordRecoveryCooldown
+		}
+	}
+	for _, existing := range s.passwordRecovery {
+		if existing.UserID == challenge.UserID && existing.Kind == challenge.Kind && existing.ConsumedAt.IsZero() && existing.InvalidatedAt.IsZero() {
+			existing.InvalidatedAt = challenge.CreatedAt
+		}
+	}
+	copy := *challenge
+	copy.Email = email
+	s.passwordRecovery[copy.ID] = &copy
+	return nil
+}
+
 func (s *memoryStore) GetPasswordRecoveryChallengeByTokenHash(ctx context.Context, tokenHash string) (*PasswordRecoveryChallenge, error) {
 	_ = ctx
 	s.mu.RLock()
@@ -131,6 +158,49 @@ WHERE user_uuid = $1 AND challenge_kind = $2
 VALUES ($1, $2, $3, $4, $5, $6, $7)`, challenge.ID, challenge.UserID,
 		strings.ToLower(strings.TrimSpace(challenge.Email)), challenge.Kind, challenge.SecretHash,
 		challenge.ExpiresAt.UTC(), challenge.CreatedAt.UTC())
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *postgresStore) CreatePasswordRecoveryCodeChallenge(ctx context.Context, challenge *PasswordRecoveryChallenge, cooldown time.Duration) error {
+	if challenge == nil || strings.TrimSpace(challenge.ID) == "" || strings.TrimSpace(challenge.UserID) == "" {
+		return ErrPasswordRecoveryInvalid
+	}
+	email := strings.ToLower(strings.TrimSpace(challenge.Email))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Serialize code issuance per normalized email so concurrent requests on
+	// different service instances cannot bypass the cooldown. The advisory lock
+	// is transaction-scoped and adds no schema or persistent PII.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, email); err != nil {
+		return err
+	}
+	if cooldown > 0 {
+		var latest sql.NullTime
+		if err := tx.QueryRowContext(ctx, `SELECT max(created_at) FROM public.password_recovery_challenges
+WHERE challenge_kind = 'code' AND lower(email_snapshot) = lower($1)`, email).Scan(&latest); err != nil {
+			return err
+		}
+		if latest.Valid && challenge.CreatedAt.Before(latest.Time.Add(cooldown)) {
+			return ErrPasswordRecoveryCooldown
+		}
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE public.password_recovery_challenges
+SET invalidated_at = $2
+WHERE user_uuid = $1 AND challenge_kind = 'code'
+  AND consumed_at IS NULL AND invalidated_at IS NULL`, challenge.UserID, challenge.CreatedAt.UTC())
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO public.password_recovery_challenges
+(id, user_uuid, email_snapshot, challenge_kind, secret_hash, expires_at, created_at)
+VALUES ($1, $2, $3, 'code', $4, $5, $6)`, challenge.ID, challenge.UserID, email,
+		challenge.SecretHash, challenge.ExpiresAt.UTC(), challenge.CreatedAt.UTC())
 	if err != nil {
 		return err
 	}

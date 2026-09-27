@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -46,28 +47,40 @@ func (h *handler) requestPasswordResetCode(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "email_required", "email is required")
 		return
 	}
+	if !allowAuthProbe(c, h.passwordRecoveryByIP, h.passwordRecoveryByEmail, email) {
+		return
+	}
 
 	user, err := h.store.GetUserByEmail(c.Request.Context(), email)
 	if err != nil {
 		if errors.Is(err, store.ErrUserNotFound) {
-			c.JSON(http.StatusAccepted, gin.H{"message": "if the account exists a reset code will be sent"})
+			respondPasswordRecoveryAccepted(c)
 			return
 		}
 		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to initiate password reset")
 		return
 	}
 	if !user.EmailVerified || strings.TrimSpace(user.Email) == "" {
-		c.JSON(http.StatusAccepted, gin.H{"message": "if the account exists a reset code will be sent"})
+		respondPasswordRecoveryAccepted(c)
 		return
 	}
 	if h.isReadOnlyAccount(user) {
-		respondError(c, http.StatusForbidden, "read_only_account", "demo account cannot change password")
+		respondPasswordRecoveryAccepted(c)
 		return
 	}
 	if err := h.enqueuePasswordResetCode(c, user); err != nil {
-		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to send password reset code")
+		if !errors.Is(err, store.ErrPasswordRecoveryCooldown) {
+			// Keep the public response identical to unknown-address and cooldown
+			// responses; logging the delivery failure is operational only.
+			slog.Error("password recovery code could not be delivered", "error", err)
+		}
+		respondPasswordRecoveryAccepted(c)
 		return
 	}
+	respondPasswordRecoveryAccepted(c)
+}
+
+func respondPasswordRecoveryAccepted(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"message": "if the account exists a reset code will be sent"})
 }
 
@@ -90,7 +103,7 @@ func (h *handler) enqueuePasswordResetCode(c *gin.Context, user *store.User) err
 		ID: uuid.NewString(), UserID: user.ID, Email: email, Kind: "code",
 		SecretHash: string(codeHash), ExpiresAt: expiresAt, CreatedAt: time.Now().UTC(),
 	}
-	if err := h.store.CreatePasswordRecoveryChallenge(c.Request.Context(), challenge); err != nil {
+	if err := h.store.CreatePasswordRecoveryCodeChallenge(c.Request.Context(), challenge, passwordRecoveryCodeCooldown); err != nil {
 		return err
 	}
 
@@ -139,6 +152,9 @@ func (h *handler) confirmPasswordResetCode(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "password_too_short", "password must be at least 8 characters")
 		return
 	}
+	if !allowAuthProbe(c, h.passwordRecoveryConfirmByIP, h.passwordRecoveryConfirmByEmail, email) {
+		return
+	}
 	challenge, err := h.store.GetLatestPasswordRecoveryCode(c.Request.Context(), email)
 	if errors.Is(err, store.ErrPasswordRecoveryInvalid) {
 		respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
@@ -148,7 +164,11 @@ func (h *handler) confirmPasswordResetCode(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to load password reset challenge")
 		return
 	}
-	if challenge == nil || !challenge.ExpiresAt.After(time.Now()) || time.Now().Before(challenge.LockedUntil) {
+	if challenge != nil && !challenge.ExpiresAt.After(time.Now()) {
+		respondError(c, http.StatusGone, "code_expired", "verification code has expired")
+		return
+	}
+	if challenge == nil || time.Now().Before(challenge.LockedUntil) {
 		respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
 		return
 	}
@@ -163,7 +183,7 @@ func (h *handler) confirmPasswordResetCode(c *gin.Context) {
 			return
 		}
 		if !retryAt.IsZero() {
-			respondVerificationLocked(c, retryAt)
+			respondError(c, http.StatusTooManyRequests, "rate_limited", "too many attempts, please try again later")
 			return
 		}
 		respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")

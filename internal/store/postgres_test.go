@@ -100,6 +100,66 @@ func TestSelectUserQueryUsesVerificationTimestamp(t *testing.T) {
 	}
 }
 
+func TestPostgresCreatePasswordRecoveryCodeChallengeUsesCooldownAndMatchingSQLArgs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+	st := &postgresStore{db: db}
+	now := time.Date(2026, time.September, 27, 12, 0, 0, 0, time.UTC)
+	challenge := &PasswordRecoveryChallenge{
+		ID: "challenge-id", UserID: "user-id", Email: " Person@Example.com ", Kind: "code",
+		SecretHash: "bcrypt-hash", ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now,
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(hashtextextended\(\$1, 0\)\)`).
+		WithArgs("person@example.com").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT max\(created_at\) FROM public\.password_recovery_challenges`).
+		WithArgs("person@example.com").WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(nil))
+	mock.ExpectExec(`UPDATE public\.password_recovery_challenges\s+SET invalidated_at = \$2`).
+		WithArgs("user-id", now).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO public\.password_recovery_challenges`).
+		WithArgs("challenge-id", "user-id", "person@example.com", "bcrypt-hash", challenge.ExpiresAt, now).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := st.CreatePasswordRecoveryCodeChallenge(context.Background(), challenge, time.Minute); err != nil {
+		t.Fatalf("create code challenge: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected SQL contract: %v", err)
+	}
+}
+
+func TestPostgresCreatePasswordRecoveryCodeChallengeRejectsCooldown(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("create sql mock: %v", err)
+	}
+	defer db.Close()
+	st := &postgresStore{db: db}
+	now := time.Date(2026, time.September, 27, 12, 0, 30, 0, time.UTC)
+	challenge := &PasswordRecoveryChallenge{
+		ID: "challenge-id", UserID: "user-id", Email: "person@example.com", Kind: "code",
+		SecretHash: "bcrypt-hash", ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now,
+	}
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(hashtextextended\(\$1, 0\)\)`).
+		WithArgs("person@example.com").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT max\(created_at\) FROM public\.password_recovery_challenges`).
+		WithArgs("person@example.com").WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(now.Add(-30 * time.Second)))
+	mock.ExpectRollback()
+
+	if err := st.CreatePasswordRecoveryCodeChallenge(context.Background(), challenge, time.Minute); !errors.Is(err, ErrPasswordRecoveryCooldown) {
+		t.Fatalf("expected cooldown error, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected SQL contract: %v", err)
+	}
+}
+
 func TestPostgresDeleteUserFailsClosedWithoutLifecycleSchema(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
