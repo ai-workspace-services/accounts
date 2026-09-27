@@ -374,6 +374,11 @@ type Store interface {
 	RecordPasswordRecoveryFailure(ctx context.Context, challengeID string, now time.Time, maxAttempts int, lockout time.Duration) (time.Time, error)
 	InvalidatePasswordRecoveryChallenge(ctx context.Context, challengeID string, now time.Time) error
 	CompletePasswordRecovery(ctx context.Context, challengeID, passwordHash string, now time.Time) error
+	ReplaceMFARecoveryCodes(ctx context.Context, userID string, codes []MFARecoveryCode) error
+	ListMFARecoveryCodes(ctx context.Context, userID string, now time.Time) ([]MFARecoveryCode, error)
+	RecordMFARecoveryCodeFailure(ctx context.Context, userID string, now time.Time, maxAttempts int, lockout time.Duration) (time.Time, error)
+	RevokeMFARecoveryCodes(ctx context.Context, userID string, now time.Time) error
+	CompleteMFAPasswordReset(ctx context.Context, userID, recoveryCodeID, passwordHash string, now time.Time) error
 
 	// OAuth exchange codes are short-lived, single-use credentials. They must
 	// live in the same durable store as sessions so callback and exchange
@@ -494,6 +499,7 @@ type memoryStore struct {
 	overlayConfigAcks       map[string]*OverlayConfigAck
 	sessions                map[string]*sessionRecord
 	passwordRecovery        map[string]*PasswordRecoveryChallenge
+	mfaRecoveryCodes        map[string]*MFARecoveryCode
 	oauthExchangeCodes      map[string]*oauthExchangeRecord
 	tenants                 map[string]*Tenant
 	tenantDomains           map[string]*TenantDomain
@@ -536,6 +542,23 @@ type PasswordRecoveryChallenge struct {
 	InvalidatedAt  time.Time
 }
 
+// MFARecoveryCode stores only a password-hash representation of a one-time
+// MFA recovery code. Raw codes are returned only when a batch is created.
+type MFARecoveryCode struct {
+	ID             string
+	UserID         string
+	BatchID        string
+	CodeHash       string
+	ExpiresAt      time.Time
+	FailedAttempts int
+	LockedUntil    time.Time
+	CreatedAt      time.Time
+	ConsumedAt     time.Time
+	RevokedAt      time.Time
+}
+
+var ErrMFARecoveryCodeInvalid = errors.New("MFA recovery code is invalid, expired, consumed, or revoked")
+
 type oauthExchangeRecord struct {
 	SessionToken     string
 	SessionExpiresAt time.Time
@@ -573,6 +596,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		overlayConfigAcks:       make(map[string]*OverlayConfigAck),
 		sessions:                make(map[string]*sessionRecord),
 		passwordRecovery:        make(map[string]*PasswordRecoveryChallenge),
+		mfaRecoveryCodes:        make(map[string]*MFARecoveryCode),
 		oauthExchangeCodes:      make(map[string]*oauthExchangeRecord),
 		tenants:                 make(map[string]*Tenant),
 		tenantDomains:           make(map[string]*TenantDomain),

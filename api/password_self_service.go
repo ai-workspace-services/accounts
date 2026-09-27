@@ -10,8 +10,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/pquerna/otp"
-	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 
 	"account/internal/store"
@@ -28,6 +26,7 @@ type passwordResetCodeConfirmRequest struct {
 }
 
 type mfaPasswordResetRequest struct {
+	Method   string `json:"method"`
 	Code     string `json:"code"`
 	Password string `json:"password"`
 }
@@ -221,6 +220,17 @@ func (h *handler) resetPasswordWithMFA(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if user.ArchivedAt != nil {
+		respondError(c, http.StatusForbidden, "account_archived", "archived accounts must be restored before changing credentials")
+		return
+	}
+	if h.isReadOnlyAccount(user) {
+		respondError(c, http.StatusForbidden, "read_only_account", "this account cannot change its password")
+		return
+	}
+	if !allowAuthProbe(c, h.mfaRecoveryByIP, h.mfaRecoveryByUser, user.ID) {
+		return
+	}
 	var req mfaPasswordResetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
@@ -230,32 +240,76 @@ func (h *handler) resetPasswordWithMFA(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "mfa_not_enabled", "multi-factor authentication is not enabled")
 		return
 	}
-	if len(strings.TrimSpace(req.Code)) != 6 || len(strings.TrimSpace(req.Password)) < 8 {
-		respondError(c, http.StatusBadRequest, "invalid_request", "a 6 digit MFA code and password of at least 8 characters are required")
+	password := strings.TrimSpace(req.Password)
+	if len(password) < 8 {
+		respondError(c, http.StatusBadRequest, "password_too_short", "password must be at least 8 characters")
 		return
 	}
-	valid, err := totp.ValidateCustom(strings.TrimSpace(req.Code), user.MFATOTPSecret, time.Now().UTC(), totp.ValidateOpts{
-		Period: 30, Skew: 1, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1,
-	})
-	if err != nil || !valid {
-		respondError(c, http.StatusUnauthorized, "invalid_mfa_code", "invalid totp code")
+	method := strings.ToLower(strings.TrimSpace(req.Method))
+	if method == "" {
+		method = "totp" // Preserve the existing endpoint contract.
+	}
+	code := strings.TrimSpace(req.Code)
+	var recoveryCodeID string
+	switch method {
+	case "totp":
+		if len(code) != 6 || strings.Trim(code, "0123456789") != "" || !verifyTOTPCode(user.MFATOTPSecret, code, time.Now().UTC()) {
+			respondError(c, http.StatusUnauthorized, "invalid_mfa_factor", "MFA verification failed")
+			return
+		}
+	case "recovery_code":
+		if len(normalizeMFARecoveryCode(code)) < minMFARecoveryCodeLength {
+			respondError(c, http.StatusUnauthorized, "invalid_mfa_factor", "MFA verification failed")
+			return
+		}
+		codes, err := h.store.ListMFARecoveryCodes(c.Request.Context(), user.ID, time.Now().UTC())
+		if err != nil {
+			respondError(c, http.StatusInternalServerError, "mfa_recovery_unavailable", "failed to verify recovery code")
+			return
+		}
+		for _, recoveryCode := range codes {
+			if time.Now().Before(recoveryCode.LockedUntil) {
+				respondError(c, http.StatusTooManyRequests, "rate_limited", "too many attempts, please try again later")
+				return
+			}
+		}
+		for _, recoveryCode := range codes {
+			if bcrypt.CompareHashAndPassword([]byte(recoveryCode.CodeHash), []byte(normalizeMFARecoveryCode(code))) == nil {
+				recoveryCodeID = recoveryCode.ID
+				break
+			}
+		}
+		if recoveryCodeID == "" {
+			lockedUntil, err := h.store.RecordMFARecoveryCodeFailure(c.Request.Context(), user.ID, time.Now().UTC(), maxMFAVerificationAttempts, mfaRecoveryCodeLockout)
+			if err != nil && !errors.Is(err, store.ErrMFARecoveryCodeInvalid) {
+				respondError(c, http.StatusInternalServerError, "mfa_recovery_unavailable", "failed to record recovery attempt")
+				return
+			}
+			if !lockedUntil.IsZero() {
+				respondError(c, http.StatusTooManyRequests, "rate_limited", "too many attempts, please try again later")
+				return
+			}
+			respondError(c, http.StatusUnauthorized, "invalid_mfa_factor", "MFA verification failed")
+			return
+		}
+	default:
+		respondError(c, http.StatusBadRequest, "invalid_mfa_method", "unsupported MFA method")
 		return
 	}
-	if err := h.replacePassword(c, user, strings.TrimSpace(req.Password)); err != nil {
+	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
 		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to reset password")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "password reset successful", "user": sanitizeUser(user, nil)})
-}
-
-func (h *handler) replacePassword(c *gin.Context, user *store.User, password string) error {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
+	if err := h.store.CompleteMFAPasswordReset(c.Request.Context(), user.ID, recoveryCodeID, string(hashed), time.Now().UTC()); err != nil {
+		if errors.Is(err, store.ErrMFARecoveryCodeInvalid) {
+			respondError(c, http.StatusUnauthorized, "invalid_mfa_factor", "MFA verification failed")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to reset password")
+		return
 	}
-	user.PasswordHash = string(hashed)
-	user.EmailVerified = true
-	return h.store.UpdateUser(c.Request.Context(), user)
+	c.JSON(http.StatusOK, gin.H{"message": "password reset successful", "sessionsRevoked": true})
 }
 
 func (h *handler) selfCancelFreeAccount(c *gin.Context) {
