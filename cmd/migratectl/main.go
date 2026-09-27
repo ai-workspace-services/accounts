@@ -80,7 +80,7 @@ func newCleanCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "clean",
-		Short: "Clean leftover database structures",
+		Short: "Remove invalid indexes while preserving tables and triggers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dsn == "" {
 				return errors.New("--dsn is required")
@@ -144,22 +144,14 @@ func newVerifyCmd() *cobra.Command {
 	return cmd
 }
 
-func newResetCmd(dir *string) *cobra.Command {
-	var dsn string
+func newResetCmd(_ *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reset",
-		Short: "Drop public schema and re-run migrations",
+		Short: "Disabled: destructive database reset is prohibited",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dsn == "" {
-				return errors.New("--dsn is required")
-			}
-			runner := migrate.NewRunner(*dir)
-			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
-			defer cancel()
-			return runner.Reset(ctx, dsn)
+			return errors.New("database reset is disabled; apply forward-only migrations with migratectl migrate")
 		},
 	}
-	cmd.Flags().StringVar(&dsn, "dsn", "", "PostgreSQL connection string")
 	return cmd
 }
 
@@ -355,7 +347,7 @@ func newImportCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&merge, "merge", false, "Enable additive merge behaviour")
 	cmd.Flags().StringVar(&mergeStrategy, "merge-strategy", "", "Merge strategy (replace, append, timestamp)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview the import without applying changes")
-	cmd.Flags().BoolVar(&preserveExistingUsers, "preserve-existing-users", false, "Do not modify existing target user profiles or proxy UUIDs")
+	cmd.Flags().BoolVar(&preserveExistingUsers, "preserve-existing-users", false, "Deprecated: merge mode always preserves existing user profiles")
 	cmd.Flags().BoolVar(&skipSessions, "skip-sessions", false, "Do not import source login sessions")
 	cmd.Flags().BoolVar(&regenerateUserUUIDs, "regenerate-user-uuids", false, "Assign new target identity UUIDs while preserving proxy UUIDs")
 	cmd.Flags().StringSliceVar(&mergeAllowlist, "merge-allowlist", nil, "User UUIDs allowed to merge (comma-separated or repeated)")

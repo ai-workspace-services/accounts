@@ -26,10 +26,17 @@ CREATE TABLE public.users (
 
 CREATE TABLE public.subscriptions (
   id BIGINT PRIMARY KEY,
-  user_uuid UUID NOT NULL REFERENCES public.users(uuid),
+  user_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
   plan_id TEXT NOT NULL,
   status TEXT NOT NULL,
   external_id TEXT NOT NULL
+);
+
+CREATE TABLE public.billing_ledger (
+  id BIGINT PRIMARY KEY,
+  account_uuid UUID NOT NULL REFERENCES public.users(uuid) ON DELETE CASCADE,
+  entry_type TEXT NOT NULL,
+  rated_bytes BIGINT NOT NULL DEFAULT 0
 );
 
 INSERT INTO public.users (
@@ -45,10 +52,15 @@ INSERT INTO public.users (
 INSERT INTO public.subscriptions (id, user_uuid, plan_id, status, external_id)
 VALUES (9, '00000000-0000-4000-8000-000000000009', 'legacy-pro', 'active', 'sentinel-subscription');
 
+INSERT INTO public.billing_ledger (id, account_uuid, entry_type, rated_bytes)
+VALUES (9, '00000000-0000-4000-8000-000000000009', 'usage', 4096);
+
 CREATE TEMP TABLE lifecycle_user_snapshot AS
 SELECT uuid, to_jsonb(users) AS row_data FROM public.users;
 CREATE TEMP TABLE lifecycle_subscription_snapshot AS
 SELECT id, to_jsonb(subscriptions) AS row_data FROM public.subscriptions;
+CREATE TEMP TABLE lifecycle_ledger_snapshot AS
+SELECT id, to_jsonb(billing_ledger) AS row_data FROM public.billing_ledger;
 
 \ir ../2026092301_account_lifecycle_states.up.sql
 \ir ../2026092301_account_lifecycle_states.up.sql
@@ -75,6 +87,14 @@ BEGIN
   WHERE old.row_data <> to_jsonb(current);
   IF affected <> 0 OR (SELECT count(*) FROM lifecycle_subscription_snapshot) <> (SELECT count(*) FROM public.subscriptions) THEN
     RAISE EXCEPTION 'subscription row changed during migration';
+  END IF;
+
+  SELECT count(*) INTO affected
+  FROM lifecycle_ledger_snapshot AS old
+  JOIN public.billing_ledger AS current USING (id)
+  WHERE old.row_data <> to_jsonb(current);
+  IF affected <> 0 OR (SELECT count(*) FROM lifecycle_ledger_snapshot) <> (SELECT count(*) FROM public.billing_ledger) THEN
+    RAISE EXCEPTION 'billing ledger row changed during migration';
   END IF;
 
   IF (SELECT account_lifecycle_state FROM public.users WHERE username = 'legacy-sentinel') <> 'active' THEN
@@ -199,6 +219,11 @@ BEGIN
       RAISE EXCEPTION 'user DELETE was rejected for an unexpected reason: %', error_message;
     END IF;
   END;
+
+  IF (SELECT count(*) FROM public.subscriptions WHERE id = 9) <> 1
+     OR (SELECT count(*) FROM public.billing_ledger WHERE id = 9) <> 1 THEN
+    RAISE EXCEPTION 'rejected user DELETE unexpectedly cascaded into billing history';
+  END IF;
 
   BEGIN
     TRUNCATE public.users, public.subscriptions;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -97,7 +98,7 @@ func TestValidateMergeUserConflictsRejectsExistingEmailBeforeWrites(t *testing.T
 	}
 }
 
-func TestUpsertUserMergeDoesNotDeleteConflictingUsers(t *testing.T) {
+func TestInsertImportedUserDoesNotDeleteOrOverwriteConflictingUsers(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("new sql mock: %v", err)
@@ -112,7 +113,7 @@ func TestUpsertUserMergeDoesNotDeleteConflictingUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transaction: %v", err)
 	}
-	err = upsertUser(context.Background(), tx, &UserRecord{
+	err = insertImportedUser(context.Background(), tx, &UserRecord{
 		UUID:         "incoming-user",
 		ProxyUUID:    "proxy-user",
 		Username:     "shared-name",
@@ -128,5 +129,91 @@ func TestUpsertUserMergeDoesNotDeleteConflictingUsers(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPrepareImportedUserPreservesExistingProfileForEveryMergeStrategy(t *testing.T) {
+	existing := UserRecord{
+		UUID:         "existing-user",
+		ProxyUUID:    "existing-proxy",
+		Username:     "local-name",
+		PasswordHash: "local-password-hash",
+		Email:        "local@example.test",
+		Level:        17,
+		Role:         "user",
+		Groups:       []string{"local-group"},
+		Permissions:  []string{"local-permission"},
+	}
+	incoming := UserRecord{
+		UUID:         "existing-user",
+		ProxyUUID:    "incoming-proxy",
+		Username:     "snapshot-name",
+		PasswordHash: "snapshot-password-hash",
+		Email:        "snapshot@example.test",
+		Level:        99,
+		Role:         "admin",
+		Groups:       []string{"snapshot-group"},
+		Permissions:  []string{"snapshot-permission"},
+	}
+
+	for _, strategy := range []MergeStrategy{MergeStrategyAppend, MergeStrategyTimestamp, MergeStrategyReplace} {
+		t.Run(string(strategy), func(t *testing.T) {
+			got, changed := prepareImportedUser(incoming, existing, ImportOptions{
+				Merge:         true,
+				MergeStrategy: strategy,
+			}, true)
+			if changed {
+				t.Fatal("existing profile must not be marked for update")
+			}
+			if !reflect.DeepEqual(got, existing) {
+				t.Fatalf("existing profile changed during import: got=%+v want=%+v", got, existing)
+			}
+		})
+	}
+}
+
+func TestRequireEmptyUsersForReplace(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hasUsers bool
+		wantErr  bool
+	}{
+		{name: "empty target"},
+		{name: "existing users", hasUsers: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("new sql mock: %v", err)
+			}
+			defer db.Close()
+			mock.ExpectBegin()
+			mock.ExpectExec(regexp.QuoteMeta(`LOCK TABLE public.users IN SHARE ROW EXCLUSIVE MODE`)).
+				WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (SELECT 1 FROM public.users)`)).
+				WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(tc.hasUsers))
+			tx, err := db.BeginTx(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("begin transaction: %v", err)
+			}
+			err = requireEmptyUsersForReplace(context.Background(), tx)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("requireEmptyUsersForReplace() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil {
+				mock.ExpectRollback()
+				if rollbackErr := tx.Rollback(); rollbackErr != nil {
+					t.Fatalf("rollback transaction: %v", rollbackErr)
+				}
+			} else {
+				mock.ExpectCommit()
+				if commitErr := tx.Commit(); commitErr != nil {
+					t.Fatalf("commit transaction: %v", commitErr)
+				}
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

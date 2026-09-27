@@ -75,8 +75,8 @@ type userUUIDRekey struct {
 type MergeStrategy string
 
 const (
-	// MergeStrategyReplace preserves the legacy behaviour where incoming records
-	// fully replace existing ones.
+	// MergeStrategyReplace replaces linked identity/session snapshots for
+	// selected users. Existing user profiles remain immutable.
 	MergeStrategyReplace MergeStrategy = "replace"
 	// MergeStrategyAppend performs additive merges, keeping existing data that is
 	// absent from the snapshot.
@@ -91,8 +91,8 @@ type ImportOptions struct {
 	Merge         bool
 	MergeStrategy MergeStrategy
 	DryRun        bool
-	// PreserveExistingUsers keeps target user profiles (including proxy UUIDs)
-	// untouched while allowing new users and their identities to be imported.
+	// PreserveExistingUsers is a deprecated compatibility option. Merge mode
+	// always preserves existing target profiles, whether this flag is set or not.
 	PreserveExistingUsers bool
 	// SkipSessions prevents production login sessions from entering UAT.
 	SkipSessions bool
@@ -186,9 +186,9 @@ func NewImporter() *Importer {
 	return &Importer{}
 }
 
-// Import restores account data from a dump into the target database using the
-// provided options. When merge mode is disabled the behaviour mirrors the
-// legacy implementation.
+// Import restores account data from a dump without replacing existing user
+// profiles. Non-merge mode is limited to an empty users table; merge mode
+// preserves target profiles and rejects username/email conflicts before writes.
 func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, opts ImportOptions) (*ImportReport, error) {
 	if dump == nil {
 		return nil, errors.New("dump is nil")
@@ -335,6 +335,11 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 			tx.Rollback()
 		}
 	}()
+	if !opts.Merge {
+		if err := requireEmptyUsersForReplace(ctx, tx); err != nil {
+			return nil, err
+		}
+	}
 
 	report := &ImportReport{}
 
@@ -362,30 +367,15 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 
 		existing, hasExisting := existingUsers[user.UUID]
 
-		if opts.PreserveExistingUsers && hasExisting {
+		mergedUser, changed := prepareImportedUser(user, existing, opts, hasExisting)
+		// Existing profiles are immutable import targets. Keep this invariant
+		// regardless of the deprecated PreserveExistingUsers option so an import
+		// cannot rewrite local account attributes or proxy credentials.
+		if opts.Merge && hasExisting {
 			report.UsersSkipped++
-			existingUsers[user.UUID] = existing
-		} else if opts.Merge && hasExisting && strategy == MergeStrategyTimestamp && existing.UpdatedAt.After(user.UpdatedAt) {
-			if existing.ProxyUUID != user.ProxyUUID || !timePtrEqual(existing.ProxyUUIDExpiresAt, user.ProxyUUIDExpiresAt) {
-				if !opts.DryRun {
-					if err := updateUserProxyUUID(ctx, tx, user.UUID, user.ProxyUUID, user.ProxyUUIDExpiresAt); err != nil {
-						return nil, err
-					}
-				}
-				existing.ProxyUUID = user.ProxyUUID
-				existing.ProxyUUIDExpiresAt = user.ProxyUUIDExpiresAt
-				existingUsers[user.UUID] = existing
-				report.UsersUpdated++
-				logf("update proxy UUID for %s despite newer target profile\n", user.UUID)
-			} else {
-				report.UsersSkipped++
-			}
 			report.ConflictsSkipped++
-			logf("skip profile for user %s: existing updated_at %s newer than snapshot %s\n", user.UUID, existing.UpdatedAt.Format(time.RFC3339), user.UpdatedAt.Format(time.RFC3339))
-			continue
+			existingUsers[user.UUID] = existing
 		} else {
-			mergedUser, changed := mergeUserRecord(user, existing, opts.Merge, hasExisting)
-
 			if !hasExisting {
 				report.UsersInserted++
 			} else if changed {
@@ -398,7 +388,7 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 			}
 
 			if changed && !opts.DryRun {
-				if err := upsertUser(ctx, tx, &mergedUser); err != nil {
+				if err := insertImportedUser(ctx, tx, &mergedUser); err != nil {
 					return nil, err
 				}
 			}
@@ -533,6 +523,20 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	}
 	committed = true
 	return report, nil
+}
+
+func requireEmptyUsersForReplace(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `LOCK TABLE public.users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		return fmt.Errorf("lock replace import target: %w", err)
+	}
+	var hasUsers bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM public.users)`).Scan(&hasUsers); err != nil {
+		return fmt.Errorf("check replace import target: %w", err)
+	}
+	if hasUsers {
+		return errors.New("replace import requires an empty users table; use merge mode to preserve existing account history")
+	}
+	return nil
 }
 
 // prepareIdentityUUIDIsolation assigns target-local identity UUIDs while
@@ -996,6 +1000,13 @@ func mergeUserRecord(incoming UserRecord, existing UserRecord, merge bool, hasEx
 	return incoming, changed
 }
 
+func prepareImportedUser(incoming, existing UserRecord, opts ImportOptions, hasExisting bool) (UserRecord, bool) {
+	if opts.Merge && hasExisting {
+		return existing, false
+	}
+	return mergeUserRecord(incoming, existing, opts.Merge, hasExisting)
+}
+
 func userDiffers(a, b UserRecord) bool {
 	if a.Username != b.Username {
 		return true
@@ -1336,7 +1347,7 @@ func buildInQuery(format string, uuids []string) (string, []any) {
 	return fmt.Sprintf(format, strings.Join(placeholders, ", ")), args
 }
 
-func upsertUser(ctx context.Context, tx *sql.Tx, user *UserRecord) error {
+func insertImportedUser(ctx context.Context, tx *sql.Tx, user *UserRecord) error {
 	groupsJSON, err := json.Marshal(user.Groups)
 	if err != nil {
 		return fmt.Errorf("encode groups for user %s: %w", user.UUID, err)
@@ -1364,23 +1375,7 @@ INSERT INTO users (
         $8, $9, $10::jsonb, $11::jsonb, $12, $13,
         $14, $15, $16, $17
 )
-ON CONFLICT (uuid) DO UPDATE SET
-        proxy_uuid = EXCLUDED.proxy_uuid,
-        proxy_uuid_expires_at = EXCLUDED.proxy_uuid_expires_at,
-        username = EXCLUDED.username,
-        password = EXCLUDED.password,
-        email = EXCLUDED.email,
-        email_verified_at = EXCLUDED.email_verified_at,
-        level = EXCLUDED.level,
-        role = EXCLUDED.role,
-        groups = EXCLUDED.groups,
-        permissions = EXCLUDED.permissions,
-        created_at = EXCLUDED.created_at,
-        updated_at = EXCLUDED.updated_at,
-        mfa_totp_secret = EXCLUDED.mfa_totp_secret,
-        mfa_enabled = EXCLUDED.mfa_enabled,
-		mfa_secret_issued_at = EXCLUDED.mfa_secret_issued_at,
-		mfa_confirmed_at = EXCLUDED.mfa_confirmed_at
+ON CONFLICT (uuid) DO NOTHING
 `,
 		user.UUID,
 		user.ProxyUUID,

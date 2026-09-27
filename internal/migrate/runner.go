@@ -110,23 +110,10 @@ func (r *Runner) Version(dsn string) (uint, bool, error) {
 	return version, dirty, nil
 }
 
-// Reset drops the public schema before replaying all migrations.
+// Reset is retained for CLI compatibility but destructive resets are disabled.
+// Production and UAT databases must be upgraded with forward-only migrations.
 func (r *Runner) Reset(ctx context.Context, dsn string) error {
-	db, err := openDB(ctx, dsn)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	fmt.Println("⚠️  Dropping public schema (preserving pglogical)...")
-	if _, err := db.ExecContext(ctx, "DROP SCHEMA IF EXISTS public CASCADE"); err != nil {
-		return fmt.Errorf("drop public schema: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS public"); err != nil {
-		return fmt.Errorf("recreate public schema: %w", err)
-	}
-
-	return r.Up(ctx, dsn)
+	return errors.New("database reset is disabled because it would delete retained account and billing history; apply forward-only migrations with migratectl migrate")
 }
 
 func (r *Runner) loadMigrations(absDir string) ([]*migrationFile, error) {

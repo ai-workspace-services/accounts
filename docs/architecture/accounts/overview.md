@@ -118,7 +118,7 @@ flowchart TB
 | Update role | `/api/auth/admin/users/:userId/role` | Change a user role | `users` | session token + admin/operator |
 | Reset role | `DELETE /api/auth/admin/users/:userId/role` | Reset a user role | `users` | session token + admin/operator |
 | Pause / resume | `/api/auth/admin/users/:userId/pause`, `/api/auth/admin/users/:userId/resume` | Disable / re-enable user | `users` | session token + admin/operator |
-| Delete user | `DELETE /api/auth/admin/users/:userId` | Delete user | `users`, `sessions`, `identities` | session token + admin/operator |
+| Archive user | `DELETE /api/auth/admin/users/:userId?reason=...` | Archive an eligible account with an immutable lifecycle event and operator audit; administrators, paid accounts, and repeat archives are rejected | `users`, `account_lifecycle_events`, `audit_logs` | session token + admin/operator |
 | Renew proxy access | `/api/auth/admin/users/:userId/renew-uuid` | Renew expiry metadata; keep `proxy_uuid = users.uuid` | `users` | session token + admin/operator |
 | Tenant bootstrap | `/api/auth/admin/tenants/bootstrap` | Bootstrap tenant records | `tenants`, `tenant_memberships` (migration-backed) | session token + admin/operator |
 | Blacklist | `/api/auth/admin/blacklist`, `/api/auth/admin/blacklist/:email` | Manage blocked email list | `email_blacklist` | session token + admin/operator |
@@ -154,6 +154,11 @@ flowchart TB
 - `agents` stores agent runtime status snapshots.
 - `nodes` stores proxy / node inventory.
 - `email_blacklist` stores blocked addresses.
+- User records and billing/usage history are retained. The admin DELETE route is a
+  soft archive operation with a required reason; it never deletes users or
+  cascaded subscription, payment, refund, or usage-ledger rows. PostgreSQL also
+  rejects user DELETE and TRUNCATE, while import rekeys and conflicting merges
+  abort before writes.
 - The codebase also defines migration-backed tenant / XWorkmate models such as `tenants`, `tenant_domains`, `tenant_memberships`, and `xworkmate_profiles`; those tables are part of the broader account domain even though they are not declared in the checked-in `sql/schema.sql` snapshot.
 
 ## Auth Layers
