@@ -46,6 +46,15 @@ migratectl export --dsn "$DB_URL" --output account-export.yaml
 migratectl import --dsn "$DB_URL" --file account-export.yaml
 ```
 
+migratectl reset is disabled because it would remove retained account and
+billing history. Use forward-only migratectl migrate upgrades. sql/schema.sql
+is a non-destructive bootstrap baseline; it never drops existing tables.
+
+Snapshot imports protect existing account profiles. Merge imports skip existing
+profiles and never replace their attributes or proxy UUIDs. A non-merge replace
+import is accepted only when the target users table is empty. Username/email
+conflicts and existing-user UUID rekeys abort before any writes.
+
 ## syncctl（跨环境同步）
 
 ```bash

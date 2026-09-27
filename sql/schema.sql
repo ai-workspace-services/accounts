@@ -7,19 +7,8 @@
 -- Ensure the public schema exists without dropping other extensions.
 CREATE SCHEMA IF NOT EXISTS public AUTHORIZATION CURRENT_USER;
 
--- Clean up existing tables so the script is idempotent without requiring
--- superuser privileges that would be needed to drop the entire schema.
-DROP TABLE IF EXISTS public.sessions CASCADE;
-DROP TABLE IF EXISTS public.identities CASCADE;
-DROP TABLE IF EXISTS public.overlay_config_acks CASCADE;
-DROP TABLE IF EXISTS public.overlay_devices CASCADE;
-DROP TABLE IF EXISTS public.overlay_nodes CASCADE;
-DROP TABLE IF EXISTS public.users CASCADE;
-DROP TABLE IF EXISTS public.admin_settings CASCADE;
-DROP TABLE IF EXISTS public.subscriptions CASCADE;
-DROP TABLE IF EXISTS public.rbac_role_permissions CASCADE;
-DROP TABLE IF EXISTS public.rbac_permissions CASCADE;
-DROP TABLE IF EXISTS public.rbac_roles CASCADE;
+-- This baseline is safe to re-run: it must never drop or rebuild an existing
+-- table. Changes to existing schemas belong in forward-only sql/migrations.
 
 -- =========================================
 -- Extensions
