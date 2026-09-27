@@ -79,6 +79,8 @@ const (
 	passwordRecoveryConfirmIPWindow    = 5 * time.Minute
 	passwordRecoveryConfirmEmailLimit  = 10
 	passwordRecoveryConfirmEmailWindow = 15 * time.Minute
+	mfaRecoveryAttemptLimit            = 20
+	mfaRecoveryAttemptWindow           = 15 * time.Minute
 	loginIPAttemptLimit                = 30
 	loginIPAttemptWindow               = 5 * time.Minute
 	loginIdentifierAttemptLimit        = 10
@@ -147,6 +149,8 @@ type handler struct {
 	passwordRecoveryByEmail        *auth.RateLimiter
 	passwordRecoveryConfirmByIP    *auth.RateLimiter
 	passwordRecoveryConfirmByEmail *auth.RateLimiter
+	mfaRecoveryByIP                *auth.RateLimiter
+	mfaRecoveryByUser              *auth.RateLimiter
 	loginAttemptsByIP              *auth.RateLimiter
 	loginAttemptsByIdentifier      *auth.RateLimiter
 }
@@ -418,6 +422,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		passwordRecoveryByEmail:        auth.NewRateLimiter(passwordRecoveryEmailLimit, passwordRecoveryEmailWindow),
 		passwordRecoveryConfirmByIP:    auth.NewRateLimiter(passwordRecoveryConfirmIPLimit, passwordRecoveryConfirmIPWindow),
 		passwordRecoveryConfirmByEmail: auth.NewRateLimiter(passwordRecoveryConfirmEmailLimit, passwordRecoveryConfirmEmailWindow),
+		mfaRecoveryByIP:                auth.NewRateLimiter(mfaRecoveryAttemptLimit, mfaRecoveryAttemptWindow),
+		mfaRecoveryByUser:              auth.NewRateLimiter(mfaRecoveryAttemptLimit, mfaRecoveryAttemptWindow),
 		loginAttemptsByIP:              auth.NewRateLimiter(loginIPAttemptLimit, loginIPAttemptWindow),
 		loginAttemptsByIdentifier:      auth.NewRateLimiter(loginIdentifierAttemptLimit, loginIdentifierAttemptWindow),
 	}
@@ -529,6 +535,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/mfa/totp/provision", h.provisionTOTP)
 	authProtected.POST("/mfa/totp/verify", h.verifyTOTP)
 	authProtected.POST("/mfa/disable", h.disableMFA)
+	authProtected.GET("/mfa/recovery-codes", h.getMFARecoveryCodeStatus)
+	authProtected.POST("/mfa/recovery-codes", h.rotateMFARecoveryCodes)
+	authProtected.DELETE("/mfa/recovery-codes", h.revokeMFARecoveryCodes)
 
 	authProtected.POST("/password/set", h.setPassword)
 	authProtected.POST("/password/reset", h.requestPasswordReset)
