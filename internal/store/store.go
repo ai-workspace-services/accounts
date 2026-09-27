@@ -367,6 +367,13 @@ type Store interface {
 	GetSession(ctx context.Context, token string) (string, time.Time, error)
 	DeleteSession(ctx context.Context, token string) error
 
+	CreatePasswordRecoveryChallenge(ctx context.Context, challenge *PasswordRecoveryChallenge) error
+	GetPasswordRecoveryChallengeByTokenHash(ctx context.Context, tokenHash string) (*PasswordRecoveryChallenge, error)
+	GetLatestPasswordRecoveryCode(ctx context.Context, email string) (*PasswordRecoveryChallenge, error)
+	RecordPasswordRecoveryFailure(ctx context.Context, challengeID string, now time.Time, maxAttempts int, lockout time.Duration) (time.Time, error)
+	InvalidatePasswordRecoveryChallenge(ctx context.Context, challengeID string, now time.Time) error
+	CompletePasswordRecovery(ctx context.Context, challengeID, passwordHash string, now time.Time) error
+
 	// OAuth exchange codes are short-lived, single-use credentials. They must
 	// live in the same durable store as sessions so callback and exchange
 	// requests can land on different service instances safely.
@@ -465,6 +472,7 @@ var (
 	ErrMFANotSupported            = errors.New("mfa is not supported by the current store schema")
 	ErrSuperAdminCountingDisabled = errors.New("super administrator counting is disabled")
 	ErrSubscriptionNotFound       = errors.New("subscription not found")
+	ErrPasswordRecoveryInvalid    = errors.New("password recovery challenge is invalid, expired, or consumed")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for
@@ -483,6 +491,7 @@ type memoryStore struct {
 	overlayNodes            map[string]*OverlayNode
 	overlayConfigAcks       map[string]*OverlayConfigAck
 	sessions                map[string]*sessionRecord
+	passwordRecovery        map[string]*PasswordRecoveryChallenge
 	oauthExchangeCodes      map[string]*oauthExchangeRecord
 	tenants                 map[string]*Tenant
 	tenantDomains           map[string]*TenantDomain
@@ -506,6 +515,23 @@ type memoryStore struct {
 type sessionRecord struct {
 	UserID    string
 	ExpiresAt time.Time
+}
+
+// PasswordRecoveryChallenge stores only a one-way representation of a reset
+// credential. SecretHash is SHA-256 for high-entropy tokens and bcrypt for
+// six-digit email codes.
+type PasswordRecoveryChallenge struct {
+	ID             string
+	UserID         string
+	Email          string
+	Kind           string
+	SecretHash     string
+	ExpiresAt      time.Time
+	FailedAttempts int
+	LockedUntil    time.Time
+	CreatedAt      time.Time
+	ConsumedAt     time.Time
+	InvalidatedAt  time.Time
 }
 
 type oauthExchangeRecord struct {
@@ -544,6 +570,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		overlayNodes:            make(map[string]*OverlayNode),
 		overlayConfigAcks:       make(map[string]*OverlayConfigAck),
 		sessions:                make(map[string]*sessionRecord),
+		passwordRecovery:        make(map[string]*PasswordRecoveryChallenge),
 		oauthExchangeCodes:      make(map[string]*oauthExchangeRecord),
 		tenants:                 make(map[string]*Tenant),
 		tenantDomains:           make(map[string]*TenantDomain),

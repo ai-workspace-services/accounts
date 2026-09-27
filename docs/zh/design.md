@@ -22,7 +22,7 @@
 ## 当前设计摘要
 
 - 运行时真相优先来自 store 与运行时契约，而不是本地 config-center 的重复状态。
-- session、MFA challenge、邮箱验证码、密码重置 token、OAuth exchange code 目前都是进程内状态。
+- session 与 OAuth exchange code 由数据库持久化；密码找回挑战由 `password_recovery_challenges` 持久化。MFA challenge、注册邮箱验证码仍为进程内状态。
 - 管理员权限矩阵和首页视频配置被有意拆到 GORM-backed service，而不是塞进主业务 store。
 - agent mode 与 server mode 复用同一套 Xray 生成能力，而不是引入第二套配置模型。
 

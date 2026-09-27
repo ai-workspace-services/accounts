@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
@@ -104,10 +106,6 @@ type handler struct {
 	registrationVerifications map[string]registrationVerification
 	registrationMu            sync.RWMutex
 	resetTTL                  time.Duration
-	passwordResets            map[string]passwordReset
-	resetMu                   sync.RWMutex
-	passwordResetCodes        map[string]passwordResetCode
-	passwordResetCodeMu       sync.RWMutex
 	reactivationCodes         map[string]accountReactivationCode
 	reactivationCodeMu        sync.RWMutex
 	oauthExchangeTTL          time.Duration
@@ -169,21 +167,6 @@ type mfaChallenge struct {
 }
 
 type emailVerification struct {
-	userID         string
-	email          string
-	code           string
-	expiresAt      time.Time
-	failedAttempts int
-	lockedUntil    time.Time
-}
-
-type passwordReset struct {
-	userID    string
-	email     string
-	expiresAt time.Time
-}
-
-type passwordResetCode struct {
 	userID         string
 	email          string
 	code           string
@@ -413,8 +396,6 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		verifications:             make(map[string]emailVerification),
 		registrationVerifications: make(map[string]registrationVerification),
 		resetTTL:                  defaultPasswordResetTTL,
-		passwordResets:            make(map[string]passwordReset),
-		passwordResetCodes:        make(map[string]passwordResetCode),
 		reactivationCodes:         make(map[string]accountReactivationCode),
 		oauthExchangeTTL:          defaultOAuthExchangeCodeTTL,
 		bridgeCredentials:         make(map[string]memoryBridgeCredential),
@@ -1209,26 +1190,34 @@ func (h *handler) confirmPasswordReset(c *gin.Context) {
 		return
 	}
 
-	reset, ok := h.lookupPasswordReset(token)
-	if !ok {
+	challenge, err := h.store.GetPasswordRecoveryChallengeByTokenHash(c.Request.Context(), passwordResetTokenHash(token))
+	if errors.Is(err, store.ErrPasswordRecoveryInvalid) {
+		respondError(c, http.StatusBadRequest, "invalid_token", "reset token is invalid or expired")
+		return
+	}
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to load password reset challenge")
+		return
+	}
+	if challenge == nil || !challenge.ExpiresAt.After(time.Now()) || !challenge.LockedUntil.IsZero() && time.Now().Before(challenge.LockedUntil) {
 		respondError(c, http.StatusBadRequest, "invalid_token", "reset token is invalid or expired")
 		return
 	}
 
-	user, err := h.store.GetUserByID(c.Request.Context(), reset.userID)
+	user, err := h.store.GetUserByID(c.Request.Context(), challenge.UserID)
 	if err != nil {
-		slog.Error("failed to load user for password reset", "err", err, "userID", reset.userID)
+		slog.Error("failed to load user for password reset", "err", err, "userID", challenge.UserID)
 		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to reset password")
 		return
 	}
 
-	if !strings.EqualFold(strings.TrimSpace(user.Email), reset.email) {
-		h.removePasswordReset(token)
+	if !strings.EqualFold(strings.TrimSpace(user.Email), challenge.Email) {
+		_ = h.store.InvalidatePasswordRecoveryChallenge(c.Request.Context(), challenge.ID, time.Now().UTC())
 		respondError(c, http.StatusBadRequest, "invalid_token", "reset token is invalid or expired")
 		return
 	}
 	if h.isReadOnlyAccount(user) {
-		h.removePasswordReset(token)
+		_ = h.store.InvalidatePasswordRecoveryChallenge(c.Request.Context(), challenge.ID, time.Now().UTC())
 		respondError(c, http.StatusForbidden, "read_only_account", "demo account cannot change password")
 		return
 	}
@@ -1239,15 +1228,15 @@ func (h *handler) confirmPasswordReset(c *gin.Context) {
 		return
 	}
 
-	user.PasswordHash = string(hashed)
-	user.EmailVerified = true
-	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
+	if err := h.store.CompletePasswordRecovery(c.Request.Context(), challenge.ID, string(hashed), time.Now().UTC()); err != nil {
+		if errors.Is(err, store.ErrPasswordRecoveryInvalid) {
+			respondError(c, http.StatusBadRequest, "invalid_token", "reset token is invalid or expired")
+			return
+		}
 		slog.Error("failed to update user during password reset", "err", err, "userID", user.ID)
 		respondError(c, http.StatusInternalServerError, "password_reset_failed", "failed to reset password")
 		return
 	}
-
-	h.removePasswordReset(token)
 
 	sessionToken, expiresAt, err := h.createSession(user.ID)
 	if err != nil {
@@ -2426,15 +2415,14 @@ func (h *handler) enqueuePasswordReset(ctx context.Context, locale mailLocale, u
 	}
 
 	expiresAt := time.Now().Add(ttl)
-	reset := passwordReset{
-		userID:    user.ID,
-		email:     strings.ToLower(email),
-		expiresAt: expiresAt,
+	challenge := &store.PasswordRecoveryChallenge{
+		ID: uuid.NewString(), UserID: user.ID, Email: strings.ToLower(email),
+		Kind: "token", SecretHash: passwordResetTokenHash(token), ExpiresAt: expiresAt,
+		CreatedAt: time.Now().UTC(),
 	}
-
-	h.resetMu.Lock()
-	h.passwordResets[token] = reset
-	h.resetMu.Unlock()
+	if err := h.store.CreatePasswordRecoveryChallenge(ctx, challenge); err != nil {
+		return err
+	}
 
 	name := strings.TrimSpace(user.Name)
 	if name == "" {
@@ -2462,38 +2450,16 @@ func (h *handler) enqueuePasswordReset(ctx context.Context, locale mailLocale, u
 	}
 
 	if err := h.emailSender.Send(ctx, msg); err != nil {
-		h.removePasswordReset(token)
+		_ = h.store.InvalidatePasswordRecoveryChallenge(ctx, challenge.ID, time.Now().UTC())
 		return err
 	}
 
 	return nil
 }
 
-func (h *handler) lookupPasswordReset(token string) (passwordReset, bool) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return passwordReset{}, false
-	}
-
-	h.resetMu.RLock()
-	reset, ok := h.passwordResets[token]
-	h.resetMu.RUnlock()
-	if !ok {
-		return passwordReset{}, false
-	}
-
-	if time.Now().After(reset.expiresAt) {
-		h.removePasswordReset(token)
-		return passwordReset{}, false
-	}
-
-	return reset, true
-}
-
-func (h *handler) removePasswordReset(token string) {
-	h.resetMu.Lock()
-	delete(h.passwordResets, strings.TrimSpace(token))
-	h.resetMu.Unlock()
+func passwordResetTokenHash(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(sum[:])
 }
 
 func (h *handler) removeMFAChallenge(token string) {

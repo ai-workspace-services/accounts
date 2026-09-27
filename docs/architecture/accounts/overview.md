@@ -12,6 +12,7 @@ flowchart TB
     HZ["GET /healthz"]
     REG["POST /api/auth/register\nPOST /api/auth/register/send\nPOST /api/auth/register/verify"]
     LOGIN["POST /api/auth/login\nPOST /api/auth/mfa/verify\nPOST /api/auth/token/exchange\nGET /api/auth/oauth/login/:provider\nGET /api/auth/oauth/callback/:provider\nPOST /api/auth/token/refresh\nPOST /api/auth/refresh"]
+    RECOVERY["POST /api/auth/password/forgot*\nPOST /api/auth/password/forgot/confirm*"]
     PUBLIC["GET /api/auth/mfa/status\nGET /api/auth/sync/config\nPOST /api/auth/sync/ack\nGET /api/auth/homepage-video\nGET /api/auth/sandbox/binding"]
     WEBHOOK["POST /api/billing/stripe/webhook"]
   end
@@ -36,6 +37,7 @@ flowchart TB
     USERS[("users")]
     IDS[("identities")]
     SESSIONS[("sessions")]
+    RECOVERYDB[("password_recovery_challenges")]
     SUBS[("subscriptions")]
     SETTINGS[("admin_settings")]
     ROLES[("rbac_roles")]
@@ -49,6 +51,9 @@ flowchart TB
   REG --> USERS
   LOGIN --> USERS
   LOGIN --> IDS
+  RECOVERY --> USERS
+  RECOVERY --> RECOVERYDB
+  RECOVERY --> SESSIONS
   SESSION --> SESSIONS
   MFA --> USERS
   RESET --> USERS
@@ -79,6 +84,7 @@ flowchart TB
 | Register email | `/api/auth/register/send` | Send registration verification email | `users` | none |
 | Register verify | `/api/auth/register/verify` | Confirm registration code / email | `users` | none |
 | Login | `/api/auth/login` | Issue session token or MFA challenge | `users`, `sessions` | none |
+| Password recovery | `/api/auth/password/forgot`, `/forgot/confirm`, `/forgot/send-code`, `/forgot/confirm-code` | Persist expiring single-use challenges; atomically update password and revoke the target user’s sessions | `users`, `password_recovery_challenges`, `sessions` | none |
 | MFA verify | `/api/auth/mfa/verify` | Finish MFA login | `users`, `sessions` | none |
 | OAuth login / callback | `/api/auth/oauth/login/:provider`, `/api/auth/oauth/callback/:provider` | OAuth entry and callback | `users`, `identities`, `sessions` | none |
 | Token exchange | `/api/auth/token/exchange` | One-time OAuth exchange to session token | `sessions` | none |
