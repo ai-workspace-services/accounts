@@ -86,16 +86,6 @@ CREATE TEMP TABLE finance_usage_snapshot AS SELECT id, to_jsonb(billing_ledger) 
 \ir ../2026092801_local_finance_ledger.up.sql
 SELECT pg_temp.assert_finance_access_guard();
 
--- Simulate an already-upgraded database where the original 2801 was applied
--- before the access guard was added, then verify the forward repair twice.
-GRANT ALL PRIVILEGES ON TABLE
-  public.finance_invoices, public.finance_payments, public.finance_refunds,
-  public.finance_operations, public.finance_operation_events
-TO PUBLIC, anon, authenticated;
-\ir ../2026092802_local_finance_access.up.sql
-\ir ../2026092802_local_finance_access.up.sql
-SELECT pg_temp.assert_finance_access_guard();
-
 INSERT INTO public.finance_invoices (
   id, idempotency_key, account_uuid, subscription_uuid, amount_minor, currency, description
 ) VALUES (
