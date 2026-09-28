@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -69,6 +70,83 @@ func (h *handler) ensureExpiredSubscriptionDowngrade(ctx context.Context, user *
 	return h.reconcileSubscriptionAccessAt(ctx, user, time.Now().UTC())
 }
 
+const (
+	subscriptionSweepPageSize = 100
+	subscriptionSweepMaxUsers = 500
+	subscriptionSweepInterval = time.Minute
+	subscriptionSweepTimeout  = 2 * time.Minute
+)
+
+// ReconcileSubscriptionAccessBatch advances one bounded keyset batch. The
+// cursor is the last successfully reconciled user ID; callers can persist it
+// in memory and wrap to the beginning when the returned page is short.
+func ReconcileSubscriptionAccessBatch(ctx context.Context, st store.Store, now time.Time, afterID string, maxUsers int) (string, int, error) {
+	if maxUsers <= 0 || maxUsers > subscriptionSweepMaxUsers {
+		return afterID, 0, errors.New("subscription sweep batch limit is out of range")
+	}
+	h := &handler{store: st}
+	processed := 0
+	cursor := afterID
+	for processed < maxUsers {
+		limit := subscriptionSweepPageSize
+		if remaining := maxUsers - processed; limit > remaining {
+			limit = remaining
+		}
+		users, err := st.ListUsersPage(ctx, cursor, limit)
+		if err != nil {
+			return cursor, processed, err
+		}
+		if len(users) == 0 {
+			return "", processed, nil
+		}
+		for i := range users {
+			user := &users[i]
+			if err := h.reconcileSubscriptionAccessAt(ctx, user, now); err != nil {
+				return cursor, processed, err
+			}
+			cursor = user.ID
+			processed++
+		}
+		if len(users) < limit {
+			return "", processed, nil
+		}
+	}
+	return cursor, processed, nil
+}
+
+// StartSubscriptionAccessReconciler sweeps every account in bounded batches,
+// independently of agent/client traffic. The cursor is intentionally
+// process-local; restart begins a fresh pass and reconciliation is idempotent.
+func StartSubscriptionAccessReconciler(ctx context.Context, st store.Store, logger *slog.Logger) {
+	go func() {
+		cursor := ""
+		run := func() {
+			batchCtx, cancel := context.WithTimeout(ctx, subscriptionSweepTimeout)
+			defer cancel()
+			next, count, err := ReconcileSubscriptionAccessBatch(batchCtx, st, time.Now().UTC(), cursor, subscriptionSweepMaxUsers)
+			if err != nil {
+				logger.Warn("subscription access reconciliation failed", "after_user_id", cursor, "err", err)
+				return
+			}
+			cursor = next
+			if count > 0 {
+				logger.Info("subscription access reconciliation processed accounts", "accounts", count)
+			}
+		}
+		run()
+		ticker := time.NewTicker(subscriptionSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+}
+
 func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store.User, now time.Time) error {
 	if user == nil {
 		return nil
@@ -96,7 +174,11 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 		if status == "active" || status == "trialing" {
 			periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
 			if periodEnd.IsZero() {
-				return nil // A quota-cycle boundary is not evidence of subscription expiry.
+				if !missingStripePeriodRetryExpired(sub, now) {
+					return nil
+				}
+				shouldDowngrade = true
+				continue
 			}
 			if now.Before(periodEnd) {
 				return nil
@@ -120,6 +202,13 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 			periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
 			if periodEnd.IsZero() && sub.CancelledAt != nil {
 				periodEnd = sub.CancelledAt.UTC()
+			}
+			if periodEnd.IsZero() {
+				if !missingStripePeriodRetryExpired(sub, now) {
+					return nil
+				}
+				shouldDowngrade = true
+				continue
 			}
 			if !periodEnd.IsZero() {
 				if now.Before(periodEnd) {
@@ -170,6 +259,17 @@ func subscriptionMetaTime(meta map[string]any, key string) time.Time {
 		return time.Time{}
 	}
 	return parsed.UTC()
+}
+
+func missingStripePeriodRetryExpired(sub *store.Subscription, now time.Time) bool {
+	if sub == nil {
+		return true
+	}
+	firstObserved := sub.CreatedAt
+	if firstObserved.IsZero() {
+		firstObserved = sub.UpdatedAt
+	}
+	return !firstObserved.IsZero() && !now.UTC().Before(firstObserved.UTC().Add(missingStripePeriodRetryWindow))
 }
 
 func (h *handler) updateSubscriptionValidity(c *gin.Context) {

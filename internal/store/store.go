@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const MaxUserListPageSize = 500
+
 // User represents an account within the account service domain.
 type User struct {
 	ID                string
@@ -352,6 +354,7 @@ type Store interface {
 	CancelSubscription(ctx context.Context, userID, externalID string, cancelledAt time.Time) (*Subscription, error)
 	CreateIdentity(ctx context.Context, identity *Identity) error
 	ListUsers(ctx context.Context) ([]User, error)
+	ListUsersPage(ctx context.Context, afterID string, limit int) ([]User, error)
 	// DeleteUser archives an account and atomically records the operator audit
 	// and lifecycle transition. Implementations must reject unsupported schemas.
 	DeleteUser(ctx context.Context, id string, audit *AuditLog, requestID string) error
@@ -1194,6 +1197,30 @@ func (s *memoryStore) ListUsers(ctx context.Context) ([]User, error) {
 	})
 
 	return result, nil
+}
+
+func (s *memoryStore) ListUsersPage(ctx context.Context, afterID string, limit int) ([]User, error) {
+	_ = ctx
+	if limit <= 0 || limit > MaxUserListPageSize {
+		return nil, errors.New("user page limit is out of range")
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := make([]string, 0, len(s.byID))
+	for id := range s.byID {
+		if id > afterID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	users := make([]User, 0, len(ids))
+	for _, id := range ids {
+		users = append(users, *cloneUser(s.byID[id]))
+	}
+	return users, nil
 }
 
 func (s *memoryStore) DeleteUser(ctx context.Context, id string, audit *AuditLog, requestID string) error {

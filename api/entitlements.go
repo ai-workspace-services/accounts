@@ -17,6 +17,10 @@ const defaultFreeQuotaBytes int64 = 5 * 1024 * 1024 * 1024
 // before an account is moved to Free.
 const subscriptionGracePeriod = 14 * 24 * time.Hour
 
+// Missing Stripe period metadata gets one bounded retry window from the first
+// persisted subscription observation; webhook updates cannot extend it.
+const missingStripePeriodRetryWindow = 24 * time.Hour
+
 // Entitlement sync (billing P1): translates subscription lifecycle events into
 // the account_billing_profiles / account_quota_states rows billing-service
 // rates against. Decisions (2026-07-11): sync lives inline in accounts and is
@@ -179,6 +183,13 @@ func (h *handler) resetQuotaForPlanOnce(ctx context.Context, userID string, plan
 // applyPlanUpgradeQuota grants only the increase in the plan's monthly
 // allowance, preserving usage already consumed in the current period.
 func (h *handler) applyPlanUpgradeQuota(ctx context.Context, userID string, previousIncluded, upgradedIncluded int64, start, end time.Time) error {
+	profile, profileErr := h.store.GetAccountBillingProfile(ctx, userID)
+	if profileErr != nil && !errors.Is(profileErr, store.ErrUserNotFound) {
+		return profileErr
+	}
+	if profile != nil && profile.IncludedQuotaBytes >= upgradedIncluded {
+		return nil // The plan projection is the durable replay marker for this upgrade.
+	}
 	state, err := h.store.GetAccountQuotaState(ctx, userID)
 	if err != nil {
 		if !errors.Is(err, store.ErrUserNotFound) {
@@ -197,7 +208,10 @@ func (h *handler) applyPlanUpgradeQuota(ctx context.Context, userID string, prev
 		return h.store.UpsertAccountQuotaState(ctx, state)
 	}
 	if !state.PeriodStart.Equal(start.UTC()) || !state.PeriodEnd.Equal(end.UTC()) {
-		return nil // The normal new-period grant path handles a different period.
+		currentMonthStart, currentMonthEnd := naturalMonthPeriod(time.Now().UTC())
+		if !state.PeriodStart.Equal(currentMonthStart) || !state.PeriodEnd.Equal(currentMonthEnd) {
+			return h.resetQuotaForPlan(ctx, userID, &store.BillingPlan{IncludedQuotaBytes: upgradedIncluded}, start, end)
+		}
 	}
 	if state.RemainingIncludedQuota > previousIncluded {
 		return nil // A concurrent delivery already applied this plan increase.
@@ -207,6 +221,8 @@ func (h *handler) applyPlanUpgradeQuota(ctx context.Context, userID string, prev
 		return nil
 	}
 	state.RemainingIncludedQuota += delta
+	periodStart, periodEnd := start.UTC(), end.UTC()
+	state.PeriodStart, state.PeriodEnd = &periodStart, &periodEnd
 	state.EffectiveAt = time.Now().UTC()
 	return h.store.UpsertAccountQuotaState(ctx, state)
 }
@@ -294,22 +310,51 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 	if profileErr != nil && !errors.Is(profileErr, store.ErrUserNotFound) {
 		return profileErr
 	}
+	existingQuota, quotaErr := h.store.GetAccountQuotaState(ctx, userID)
+	if quotaErr != nil && !errors.Is(quotaErr, store.ErrUserNotFound) {
+		return quotaErr
+	}
 	periodStart, periodEnd := naturalMonthPeriod(time.Now().UTC())
 	freePackage := strings.TrimSpace(plan.PackageName)
 	if freePackage == "" {
 		freePackage = "default"
 	}
 	if existingProfile != nil && existingProfile.PricingRuleVersion == fmt.Sprintf("plan:%s", store.BillingPlanFree) && existingProfile.PackageName == freePackage && existingProfile.IncludedQuotaBytes == plan.IncludedQuotaBytes {
-		if quota, err := h.store.GetAccountQuotaState(ctx, userID); err == nil && quota != nil && quota.PeriodStart != nil && quota.PeriodEnd != nil && quota.PeriodStart.Equal(periodStart) && quota.PeriodEnd.Equal(periodEnd) {
+		if existingQuota != nil && existingQuota.PeriodStart != nil && existingQuota.PeriodEnd != nil && existingQuota.PeriodStart.Equal(periodStart) && existingQuota.PeriodEnd.Equal(periodEnd) {
 			return nil
-		} else if err != nil && !errors.Is(err, store.ErrUserNotFound) {
-			return err
 		}
+	}
+	remaining := plan.IncludedQuotaBytes
+	if existingProfile != nil && existingQuota != nil {
+		alreadyFree := existingProfile.PricingRuleVersion == fmt.Sprintf("plan:%s", store.BillingPlanFree) && existingQuota.PeriodStart != nil && existingQuota.PeriodEnd != nil && !existingQuota.PeriodEnd.After(periodStart)
+		if !alreadyFree {
+			used := existingProfile.IncludedQuotaBytes - existingQuota.RemainingIncludedQuota
+			if used < 0 {
+				used = 0
+			}
+			remaining = plan.IncludedQuotaBytes - used
+		}
+	} else if existingQuota != nil && existingQuota.RemainingIncludedQuota < remaining {
+		// Without an old profile, retain the more restrictive recorded balance;
+		// never turn missing snapshot data into a fresh monthly grant.
+		remaining = existingQuota.RemainingIncludedQuota
 	}
 	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 		return err
 	}
-	return h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd)
+	state := existingQuota
+	if state == nil {
+		state = &store.AccountQuotaState{AccountUUID: userID}
+	}
+	state.RemainingIncludedQuota = remaining
+	state.Arrears = false
+	state.ArrearsSince = nil
+	state.ThrottleState = "normal"
+	state.SuspendState = "active"
+	state.PeriodStart = &periodStart
+	state.PeriodEnd = &periodEnd
+	state.EffectiveAt = time.Now().UTC()
+	return h.store.UpsertAccountQuotaState(ctx, state)
 }
 
 // revokeRefundedSubscription drops paid access only when the explicitly

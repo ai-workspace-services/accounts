@@ -898,12 +898,24 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			}
 			return err
 		}
+		previous, previousErr := h.store.GetAccountBillingProfile(ctx, userID)
+		if previousErr != nil && !errors.Is(previousErr, store.ErrUserNotFound) {
+			return previousErr
+		}
+		upgraded := previous != nil && plan.IncludedQuotaBytes > previous.IncludedQuotaBytes
+		periodStart, periodEnd := subscriptionQuotaPeriod(plan, sub, time.Now())
+		if upgraded {
+			if err := h.applyPlanUpgradeQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+				return err
+			}
+		}
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
-		periodStart, periodEnd := subscriptionQuotaPeriod(plan, sub, time.Now())
-		if err := h.resetQuotaForPlanOnce(ctx, userID, plan, periodStart, periodEnd); err != nil {
-			return err
+		if !upgraded {
+			if err := h.resetQuotaForPlanOnce(ctx, userID, plan, periodStart, periodEnd); err != nil {
+				return err
+			}
 		}
 		if err := h.restoreQuotaGroupForPlan(ctx, userID, plan); err != nil {
 			return err
@@ -965,10 +977,10 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		return previousErr
 	}
 	upgraded := previous != nil && plan.IncludedQuotaBytes > previous.IncludedQuotaBytes
-	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
-		return err
-	}
 	if created {
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+			return err
+		}
 		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
 		if err := h.resetQuotaForPlanOnce(ctx, userID, plan, periodStart, periodEnd); err != nil {
 			return err
@@ -978,6 +990,11 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		if err := h.applyPlanUpgradeQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
 			return err
 		}
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+			return err
+		}
+	} else if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+		return err
 	}
 	if err := h.restoreQuotaGroupForPlan(ctx, userID, plan); err != nil {
 		return err
