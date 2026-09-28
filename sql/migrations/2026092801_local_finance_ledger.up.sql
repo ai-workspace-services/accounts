@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS public.finance_payments (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT finance_payments_invoice_contract_fk FOREIGN KEY (invoice_id, account_uuid, amount_minor, currency)
     REFERENCES public.finance_invoices(id, account_uuid, amount_minor, currency) ON DELETE RESTRICT,
+  CONSTRAINT finance_payments_invoice_uk UNIQUE (invoice_id),
   CONSTRAINT finance_payments_id_currency_uk UNIQUE (id, currency),
   CONSTRAINT finance_payments_provider_external_uk UNIQUE (provider, provider_payment_id)
 );

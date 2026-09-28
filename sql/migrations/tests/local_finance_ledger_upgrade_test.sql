@@ -98,6 +98,30 @@ INSERT INTO public.finance_payments (
   '00000000-0000-4000-8000-000000000201', 'payment:sentinel',
   '00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000001', 1000, 'USD'
 );
+DO $$
+DECLARE
+  violated_constraint TEXT;
+BEGIN
+  BEGIN
+    INSERT INTO public.finance_payments (
+      id, idempotency_key, invoice_id, account_uuid, provider, provider_payment_id, amount_minor, currency
+    ) VALUES (
+      '00000000-0000-4000-8000-000000000202', 'payment:second',
+      '00000000-0000-4000-8000-000000000101', '00000000-0000-4000-8000-000000000001',
+      'stripe', 'pi_second', 1000, 'USD'
+    );
+    RAISE EXCEPTION 'second payment for one invoice was accepted';
+  EXCEPTION WHEN unique_violation THEN
+    GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+    IF violated_constraint <> 'finance_payments_invoice_uk' THEN
+      RAISE EXCEPTION 'unexpected payment uniqueness constraint: %', violated_constraint;
+    END IF;
+  END;
+  IF (SELECT count(*) FROM public.finance_payments WHERE invoice_id = '00000000-0000-4000-8000-000000000101') <> 1 THEN
+    RAISE EXCEPTION 'duplicate attempt changed payment facts';
+  END IF;
+END;
+$$;
 INSERT INTO public.finance_refunds (
   id, idempotency_key, payment_id, amount_minor, currency
 ) VALUES (

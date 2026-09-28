@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const financeInvoiceColumns = `id::text, idempotency_key, account_uuid::text, COALESCE(subscription_uuid::text, ''), provider, COALESCE(provider_invoice_id, ''), amount_minor, currency, description, issued_at, due_at, created_at`
@@ -147,6 +149,10 @@ ON CONFLICT (idempotency_key) DO NOTHING RETURNING created_at`
 		return true, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "finance_payments_invoice_uk" {
+			return false, ErrFinanceInvoiceAlreadyPaid
+		}
 		return false, err
 	}
 	var old FinancePayment

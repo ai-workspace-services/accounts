@@ -306,6 +306,7 @@ const (
 var (
 	ErrFinanceRecordNotFound        = errors.New("finance record not found")
 	ErrFinanceIdempotencyConflict   = errors.New("finance idempotency key conflicts with existing record")
+	ErrFinanceInvoiceAlreadyPaid    = errors.New("finance invoice already has a settled payment")
 	ErrFinanceRefundExceedsPayment  = errors.New("refund amount exceeds remaining payment amount")
 	ErrFinanceOperationInProgress   = errors.New("finance operation is already in progress")
 	ErrFinanceOperationNotRetryable = errors.New("finance operation is not retryable")
@@ -526,6 +527,7 @@ type Store interface {
 	CreateFinanceInvoice(ctx context.Context, invoice *FinanceInvoice) (inserted bool, err error)
 	GetFinanceInvoice(ctx context.Context, id string) (*FinanceInvoice, error)
 	ListFinanceInvoices(ctx context.Context, accountUUID, subscriptionUUID string, limit int) ([]FinanceInvoice, error)
+	// Each invoice accepts exactly one full-amount settled payment; distinct-key repeats fail.
 	RecordFinancePayment(ctx context.Context, payment *FinancePayment) (inserted bool, err error)
 	ListFinancePayments(ctx context.Context, accountUUID string, limit int) ([]FinancePayment, error)
 	RecordFinanceRefund(ctx context.Context, refund *FinanceRefund) (inserted bool, err error)

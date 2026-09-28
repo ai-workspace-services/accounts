@@ -196,6 +196,11 @@ func (s *memoryStore) RecordFinancePayment(ctx context.Context, payment *Finance
 	if !ok || invoice.AccountUUID != copy.AccountUUID || invoice.Currency != copy.Currency || invoice.AmountMinor != copy.AmountMinor {
 		return false, ErrFinanceIdempotencyConflict
 	}
+	for _, existing := range s.financePayments {
+		if existing.InvoiceID == copy.InvoiceID {
+			return false, ErrFinanceInvoiceAlreadyPaid
+		}
+	}
 	if _, exists := s.financePayments[copy.ID]; exists {
 		return false, ErrFinanceIdempotencyConflict
 	}

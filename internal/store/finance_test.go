@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func financeTestAccount(t *testing.T, st Store) (string, string) {
@@ -55,6 +56,19 @@ func TestFinanceLedgerIdempotencyRefundsAndAccountQueries(t *testing.T) {
 	if inserted, err := st.RecordFinancePayment(ctx, payment); err != nil || !inserted {
 		t.Fatalf("record payment: inserted=%v err=%v", inserted, err)
 	}
+	paymentReplay := *payment
+	paymentReplay.ID = ""
+	if inserted, err := st.RecordFinancePayment(ctx, &paymentReplay); err != nil || inserted || paymentReplay.ID != payment.ID {
+		t.Fatalf("same-key payment replay should resolve original: inserted=%v id=%q err=%v", inserted, paymentReplay.ID, err)
+	}
+	secondPayment := *payment
+	secondPayment.ID, secondPayment.IdempotencyKey, secondPayment.ProviderPaymentID = "", "payment:local-2", "pi_456"
+	if inserted, err := st.RecordFinancePayment(ctx, &secondPayment); inserted || !errors.Is(err, ErrFinanceInvoiceAlreadyPaid) {
+		t.Fatalf("distinct-key payment for settled invoice should fail: inserted=%v err=%v", inserted, err)
+	}
+	if payments, err := st.ListFinancePayments(ctx, accountID, 20); err != nil || len(payments) != 1 {
+		t.Fatalf("duplicate attempt wrote a second payment: payments=%#v err=%v", payments, err)
+	}
 	wrongCurrency := *payment
 	wrongCurrency.ID, wrongCurrency.IdempotencyKey, wrongCurrency.Currency = "", "payment:wrong-currency", "EUR"
 	if _, err := st.RecordFinancePayment(ctx, &wrongCurrency); !errors.Is(err, ErrFinanceIdempotencyConflict) {
@@ -87,6 +101,74 @@ func TestFinanceLedgerIdempotencyRefundsAndAccountQueries(t *testing.T) {
 	payments, err := st.ListFinancePayments(ctx, accountID, 20)
 	if err != nil || len(payments) != 1 || payments[0].ID != payment.ID {
 		t.Fatalf("list account payments: got %#v, err=%v", payments, err)
+	}
+}
+
+func TestPostgresFinancePaymentInvoiceUniqueConflict(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &postgresStore{db: db}
+	const invoiceID = "00000000-0000-4000-8000-000000000101"
+	const accountID = "00000000-0000-4000-8000-000000000001"
+	payment := &FinancePayment{
+		IdempotencyKey: "payment:second", InvoiceID: invoiceID, AccountUUID: accountID,
+		AmountMinor: 1000, Currency: "USD", Provider: "stripe", ProviderPaymentID: "pi_second",
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT account_uuid::text, currency, amount_minor FROM public\.finance_invoices`).
+		WithArgs(invoiceID).WillReturnRows(sqlmock.NewRows([]string{"account_uuid", "currency", "amount_minor"}).AddRow(accountID, "USD", int64(1000)))
+	mock.ExpectQuery(`INSERT INTO public\.finance_payments`).
+		WithArgs(sqlmock.AnyArg(), payment.IdempotencyKey, invoiceID, accountID, "stripe", "pi_second", int64(1000), "USD", sqlmock.AnyArg()).
+		WillReturnError(&pgconn.PgError{Code: "23505", ConstraintName: "finance_payments_invoice_uk"})
+	mock.ExpectRollback()
+	if inserted, err := st.RecordFinancePayment(context.Background(), payment); inserted || !errors.Is(err, ErrFinanceInvoiceAlreadyPaid) {
+		t.Fatalf("invoice unique violation should be a typed conflict: inserted=%v err=%v", inserted, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFinancePaymentConcurrentDistinctKeysOnlyOneSettles(t *testing.T) {
+	ctx := context.Background()
+	st := NewMemoryStore()
+	accountID, _ := financeTestAccount(t, st)
+	invoice := &FinanceInvoice{IdempotencyKey: "invoice:one-payment", AccountUUID: accountID, AmountMinor: 1000, Currency: "USD"}
+	if _, err := st.CreateFinanceInvoice(ctx, invoice); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var successes int
+	var successMu sync.Mutex
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			payment := &FinancePayment{
+				IdempotencyKey: "payment:parallel:" + string(rune('a'+i)), InvoiceID: invoice.ID,
+				AccountUUID: accountID, AmountMinor: 1000, Currency: "USD",
+			}
+			inserted, err := st.RecordFinancePayment(ctx, payment)
+			if inserted && err == nil {
+				successMu.Lock()
+				successes++
+				successMu.Unlock()
+				return
+			}
+			if inserted || !errors.Is(err, ErrFinanceInvoiceAlreadyPaid) {
+				t.Errorf("unexpected concurrent payment result: inserted=%v err=%v", inserted, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if successes != 1 {
+		t.Fatalf("expected exactly one settled payment, got %d", successes)
+	}
+	if payments, err := st.ListFinancePayments(ctx, accountID, 20); err != nil || len(payments) != 1 {
+		t.Fatalf("expected one durable payment fact: payments=%#v err=%v", payments, err)
 	}
 }
 
