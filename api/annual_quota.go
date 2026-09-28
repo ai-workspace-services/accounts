@@ -36,7 +36,8 @@ func ReconcileAnnualPlanQuotas(ctx context.Context, st store.Store, now time.Tim
 		}
 		for i := range subs {
 			sub := subs[i]
-			if !strings.EqualFold(sub.Provider, "stripe") || !strings.EqualFold(sub.Kind, "subscription") || !strings.EqualFold(sub.Status, "active") {
+			status := strings.ToLower(strings.TrimSpace(sub.Status))
+			if !strings.EqualFold(sub.Provider, "stripe") || !strings.EqualFold(sub.Kind, "subscription") || (status != "active" && status != "canceling" && status != "past_due") {
 				continue
 			}
 			plan, err := st.GetBillingPlan(ctx, sub.PlanID)
@@ -44,6 +45,15 @@ func ReconcileAnnualPlanQuotas(ctx context.Context, st store.Store, now time.Tim
 				continue
 			}
 			quota, err := st.GetAccountQuotaState(ctx, user.ID)
+			if status == "canceling" {
+				periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
+				if periodEnd.IsZero() || !now.UTC().Before(periodEnd) {
+					continue
+				}
+			}
+			if status == "past_due" && (quota == nil || !quota.Arrears || quota.ArrearsSince == nil || !now.UTC().Before(quota.ArrearsSince.Add(subscriptionGracePeriod))) {
+				continue
+			}
 			if err == nil && quota != nil && quota.PeriodEnd != nil && quota.PeriodEnd.After(now.UTC()) {
 				break
 			}

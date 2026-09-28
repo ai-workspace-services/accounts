@@ -62,3 +62,40 @@ func TestSubscriptionQuotaPeriodUsesMonthlyBoundsForAnnualPlan(t *testing.T) {
 		t.Fatalf("annual period = %s - %s", start, end)
 	}
 }
+
+func TestAnnualQuotaContinuesUntilScheduledCancellationPeriodEnd(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := &store.User{Name: "annual cancellation", Email: "annual-cancel@example.test", Active: true}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "PRO-YEARLY", Kind: "subscription", PriceUnit: "year", IncludedQuotaBytes: 20_000, Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, time.August, 28, 12, 0, 0, 0, time.UTC)
+	periodEnd := now.AddDate(0, 6, 0)
+	if err := st.UpsertSubscription(ctx, &store.Subscription{
+		UserID: user.ID, Provider: "stripe", Kind: "subscription", PlanID: "PRO-YEARLY", ExternalID: "sub_year_canceling", Status: "canceling",
+		Meta: map[string]any{"expiresAt": periodEnd.Format(time.RFC3339)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	expiredQuotaPeriod := now.Add(-time.Hour)
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: user.ID, RemainingIncludedQuota: 1, PeriodEnd: &expiredQuotaPeriod}); err != nil {
+		t.Fatal(err)
+	}
+	count, err := ReconcileAnnualPlanQuotas(ctx, st, now)
+	if err != nil || count != 1 {
+		t.Fatalf("scheduled cancellation stopped monthly quota before term end: count=%d err=%v", count, err)
+	}
+
+	quotaPeriodEnd := now.Add(-time.Hour)
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: user.ID, RemainingIncludedQuota: 1, PeriodEnd: &quotaPeriodEnd}); err != nil {
+		t.Fatal(err)
+	}
+	count, err = ReconcileAnnualPlanQuotas(ctx, st, periodEnd)
+	if err != nil || count != 0 {
+		t.Fatalf("annual monthly grant continued after subscription period end: count=%d err=%v", count, err)
+	}
+}

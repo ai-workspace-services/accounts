@@ -91,7 +91,7 @@ func newBillingWebhookHarness(t *testing.T) (*gin.Engine, store.Store, *store.Us
 		DisplayName:        "Free",
 		Kind:               "subscription",
 		PackageName:        "default",
-		IncludedQuotaBytes: 0,
+		IncludedQuotaBytes: defaultFreeQuotaBytes,
 		Active:             true,
 	}); err != nil {
 		t.Fatalf("seed free plan: %v", err)
@@ -335,14 +335,14 @@ func TestStripeSubscriptionDeletedDowngradesToFree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load profile: %v", err)
 	}
-	if profile.PackageName != "default" || profile.IncludedQuotaBytes != 0 {
+	if profile.PackageName != "default" || profile.IncludedQuotaBytes != defaultFreeQuotaBytes {
 		t.Fatalf("expected free downgrade, got %+v", profile)
 	}
 	quota, err := st.GetAccountQuotaState(ctx, user.ID)
 	if err != nil {
 		t.Fatalf("load quota: %v", err)
 	}
-	if quota.RemainingIncludedQuota != 0 {
+	if quota.RemainingIncludedQuota != defaultFreeQuotaBytes {
 		t.Fatalf("expected zeroed quota, got %+v", quota)
 	}
 }
