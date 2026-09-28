@@ -241,6 +241,62 @@ type AuditLogFilter struct {
 	Offset       int
 }
 
+// AdminPlanGroupChange is a compare-and-set update for an account's plan
+// group and optional subscription validity dates. The expected fields come
+// from the operator's preview and prevent stale previews from overwriting a
+// newer administrator change.
+type AdminPlanGroupChange struct {
+	UserID                       string
+	PlanID                       string
+	SetEntitlement               bool
+	ExpectedGroups               []string
+	Groups                       []string
+	ExpectedValidFrom            *time.Time
+	ExpectedValidUntil           *time.Time
+	SetValidFrom                 bool
+	ValidFrom                    *time.Time
+	SetValidUntil                bool
+	ValidUntil                   *time.Time
+	PackageName                  string
+	IncludedQuotaBytes           int64
+	RegionMultiplier             float64
+	LineMultiplier               float64
+	PeakMultiplier               float64
+	OffPeakMultiplier            float64
+	PricingRuleVersion           string
+	ExpectedProfileIncludedQuota int64
+	ExpectedQuotaRemaining       int64
+	ExpectedUsageBytes           int64
+	ExpectedPeriodStart          *time.Time
+	ExpectedPeriodEnd            *time.Time
+	ExpectedProfileUpdatedAt     *time.Time
+	ExpectedQuotaUpdatedAt       *time.Time
+	ProfileExisted               bool
+	QuotaExisted                 bool
+	UsedBytesPreserved           int64
+	RemainingAfter               int64
+}
+
+// AdminPlanGroupBatch is the complete, audited admin operation. RequestID is
+// the idempotency key and PreviewToken binds the apply to the reviewed state.
+type AdminPlanGroupBatch struct {
+	ActorUUID        string
+	Reason           string
+	RequestID        string
+	PreviewTokenHash string
+	ExpectedUserIDs  []string
+	Changes          []AdminPlanGroupChange
+}
+
+type AdminPlanGroupPreview struct {
+	ActorUUID string
+	Reason    string
+	RequestID string
+	TokenHash string
+	ExpiresAt time.Time
+	Changes   []AdminPlanGroupChange
+}
+
 // Audit action names. Kept as constants so a typo cannot silently create a
 // second, unqueryable action stream.
 const (
@@ -254,6 +310,9 @@ const (
 	AuditActionSubscriptionCancel    = "billing.subscription.cancel"
 	AuditActionUserArchive           = "account.user.archive"
 	AuditActionSegmentUpdate         = "account.segment.update"
+	AuditActionPlanGroupUpdate       = "account.plan_group.update"
+	AuditActionPlanGroupPreview      = "account.plan_group.preview"
+	AuditActionPlanGroupPreviewUsed  = "account.plan_group.preview.used"
 	AuditActionRoleUpdate            = "account.role.update"
 	AuditActionOverlayOwnerReconcile = "overlay.gateway.owner_reconcile"
 )
@@ -346,6 +405,8 @@ type Store interface {
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	GetUserByName(ctx context.Context, name string) (*User, error)
 	UpdateUser(ctx context.Context, user *User) error
+	CreateAdminPlanGroupPreview(ctx context.Context, preview AdminPlanGroupPreview) ([]AdminPlanGroupChange, error)
+	ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminPlanGroupBatch) (changes []AdminPlanGroupChange, replayed bool, err error)
 
 	UpsertSubscription(ctx context.Context, subscription *Subscription) error
 	ListSubscriptionsByUser(ctx context.Context, userID string) ([]Subscription, error)
@@ -475,6 +536,9 @@ var (
 	ErrUserProtected              = errors.New("user is protected from archive")
 	ErrUserAlreadyArchived        = errors.New("user is already archived")
 	ErrUserArchiveReplayConflict  = errors.New("user archive request key was reused with different input")
+	ErrAdminPlanGroupStale        = errors.New("admin plan group preview is stale")
+	ErrAdminPlanGroupReplay       = errors.New("admin plan group request key was reused with different input")
+	ErrAdminPlanGroupPreview      = errors.New("admin plan group preview is missing, expired, or already used")
 	ErrMFANotSupported            = errors.New("mfa is not supported by the current store schema")
 	ErrSuperAdminCountingDisabled = errors.New("super administrator counting is disabled")
 	ErrSubscriptionNotFound       = errors.New("subscription not found")
@@ -509,6 +573,8 @@ type memoryStore struct {
 	trafficMinuteBuckets    map[string]*TrafficMinuteBucket
 	billingLedgerEntries    map[string]*BillingLedgerEntry
 	auditLogs               []*AuditLog
+	adminPlanGroupPreviews  map[string]AdminPlanGroupPreview
+	adminPlanGroupConsumed  map[string]string
 	accountQuotaStates      map[string]*AccountQuotaState
 	accountBillingProfiles  map[string]*AccountBillingProfile
 	accountPolicySnapshots  map[string]*AccountPolicySnapshot
@@ -606,6 +672,8 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		trafficMinuteBuckets:    make(map[string]*TrafficMinuteBucket),
 		billingLedgerEntries:    make(map[string]*BillingLedgerEntry),
 		auditLogs:               make([]*AuditLog, 0),
+		adminPlanGroupPreviews:  make(map[string]AdminPlanGroupPreview),
+		adminPlanGroupConsumed:  make(map[string]string),
 		accountQuotaStates:      make(map[string]*AccountQuotaState),
 		accountBillingProfiles:  make(map[string]*AccountBillingProfile),
 		accountPolicySnapshots:  make(map[string]*AccountPolicySnapshot),
@@ -812,6 +880,291 @@ func (s *memoryStore) UpdateUser(ctx context.Context, user *User) error {
 
 	assignUser(user, &updated)
 	return nil
+}
+
+func (s *memoryStore) CreateAdminPlanGroupPreview(ctx context.Context, preview AdminPlanGroupPreview) ([]AdminPlanGroupChange, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if preview.TokenHash == "" || preview.RequestID == "" || len(preview.Changes) == 0 || !preview.ExpiresAt.After(time.Now()) {
+		return nil, errors.New("invalid admin plan group preview")
+	}
+	if _, exists := s.adminPlanGroupPreviews[preview.TokenHash]; exists {
+		return nil, errors.New("duplicate admin plan group preview token")
+	}
+	preview.Changes = cloneAdminPlanGroupChanges(preview.Changes)
+	seen := make(map[string]struct{}, len(preview.Changes))
+	for i := range preview.Changes {
+		change := &preview.Changes[i]
+		if _, duplicate := seen[change.UserID]; duplicate {
+			return nil, errors.New("duplicate user in admin plan group preview")
+		}
+		seen[change.UserID] = struct{}{}
+		user, ok := s.byID[change.UserID]
+		if !ok {
+			return nil, ErrUserNotFound
+		}
+		if IsRootRole(user.Role) {
+			return nil, ErrUserProtected
+		}
+		if !equalStoreStrings(user.Groups, change.ExpectedGroups) || !equalStoreTimes(user.SubscriptionValidFrom, change.ExpectedValidFrom) || !equalStoreTimes(user.SubscriptionValidUntil, change.ExpectedValidUntil) {
+			return nil, ErrAdminPlanGroupStale
+		}
+		profile := s.accountBillingProfiles[user.ID]
+		quota := s.accountQuotaStates[user.ID]
+		change.ProfileExisted = profile != nil
+		change.QuotaExisted = quota != nil
+		if profile != nil {
+			change.ExpectedProfileIncludedQuota = profile.IncludedQuotaBytes
+			updated := profile.UpdatedAt.UTC()
+			change.ExpectedProfileUpdatedAt = &updated
+		}
+		if quota != nil {
+			change.ExpectedQuotaRemaining = quota.RemainingIncludedQuota
+			change.ExpectedPeriodStart = cloneTimePointer(quota.PeriodStart)
+			change.ExpectedPeriodEnd = cloneTimePointer(quota.PeriodEnd)
+			updated := quota.UpdatedAt.UTC()
+			change.ExpectedQuotaUpdatedAt = &updated
+		}
+		if change.SetEntitlement {
+			used := change.ExpectedProfileIncludedQuota - change.ExpectedQuotaRemaining
+			if used < 0 {
+				used = 0
+			}
+			change.ExpectedUsageBytes = adminPlanGroupBucketUsage(s.trafficMinuteBuckets, user.ID, quota)
+			if change.ExpectedUsageBytes > used {
+				used = change.ExpectedUsageBytes
+			}
+			change.UsedBytesPreserved = used
+			change.RemainingAfter = change.IncludedQuotaBytes - used
+			if change.RemainingAfter < 0 {
+				change.RemainingAfter = 0
+			}
+		}
+	}
+	s.adminPlanGroupPreviews[preview.TokenHash] = preview
+	s.auditLogs = append(s.auditLogs, &AuditLog{
+		UUID: uuid.NewString(), Action: AuditActionPlanGroupPreview, ActorUUID: preview.ActorUUID,
+		Details:   map[string]any{"request_id": preview.RequestID, "reason": preview.Reason, "expires_at": preview.ExpiresAt.UTC()},
+		CreatedAt: time.Now().UTC(),
+	})
+	return cloneAdminPlanGroupChanges(preview.Changes), nil
+}
+
+func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminPlanGroupBatch) ([]AdminPlanGroupChange, bool, error) {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.auditLogs {
+		if existing.Action != AuditActionPlanGroupUpdate || existing.Details["request_id"] != batch.RequestID {
+			continue
+		}
+		if existing.ActorUUID != batch.ActorUUID || existing.Details["reason"] != batch.Reason || existing.Details["preview_token_hash"] != batch.PreviewTokenHash {
+			return nil, false, ErrAdminPlanGroupReplay
+		}
+		return nil, true, nil
+	}
+	preview, exists := s.adminPlanGroupPreviews[batch.PreviewTokenHash]
+	if !exists || preview.ExpiresAt.Before(time.Now()) || preview.ActorUUID != batch.ActorUUID ||
+		preview.RequestID != batch.RequestID || preview.Reason != batch.Reason ||
+		s.adminPlanGroupConsumed[batch.PreviewTokenHash] != "" {
+		return nil, false, ErrAdminPlanGroupPreview
+	}
+	changes := cloneAdminPlanGroupChanges(preview.Changes)
+	if len(batch.ExpectedUserIDs) > 0 {
+		expected := append([]string(nil), batch.ExpectedUserIDs...)
+		sort.Strings(expected)
+		if len(expected) != len(changes) {
+			return nil, false, ErrAdminPlanGroupPreview
+		}
+		actual := make([]string, len(changes))
+		for i := range changes {
+			actual[i] = changes[i].UserID
+		}
+		sort.Strings(actual)
+		for i := range expected {
+			if expected[i] != actual[i] {
+				return nil, false, ErrAdminPlanGroupPreview
+			}
+		}
+	}
+	prepared := make([]preparedAdminPlanGroupChange, 0, len(changes))
+	seen := make(map[string]struct{}, len(changes))
+	for _, change := range changes {
+		if _, duplicate := seen[change.UserID]; duplicate {
+			return nil, false, errors.New("duplicate user in admin plan group batch")
+		}
+		seen[change.UserID] = struct{}{}
+		user, ok := s.byID[change.UserID]
+		if !ok {
+			return nil, false, ErrUserNotFound
+		}
+		if IsRootRole(user.Role) {
+			return nil, false, ErrUserProtected
+		}
+		if !equalStoreStrings(user.Groups, change.ExpectedGroups) ||
+			!equalStoreTimes(user.SubscriptionValidFrom, change.ExpectedValidFrom) ||
+			!equalStoreTimes(user.SubscriptionValidUntil, change.ExpectedValidUntil) {
+			return nil, false, ErrAdminPlanGroupStale
+		}
+		profile := cloneBillingProfile(s.accountBillingProfiles[user.ID])
+		quota := cloneQuotaState(s.accountQuotaStates[user.ID])
+		if change.SetEntitlement && ((profile != nil) != change.ProfileExisted || (quota != nil) != change.QuotaExisted) {
+			return nil, false, ErrAdminPlanGroupStale
+		}
+		if profile == nil {
+			profile = &AccountBillingProfile{AccountUUID: user.ID, RegionMultiplier: 1, LineMultiplier: 1, PeakMultiplier: 1, OffPeakMultiplier: 1}
+		}
+		if quota == nil {
+			quota = &AccountQuotaState{AccountUUID: user.ID, ThrottleState: "normal", SuspendState: "active", ProxyAccessState: "active"}
+		}
+		if change.SetEntitlement && (profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota || quota.RemainingIncludedQuota != change.ExpectedQuotaRemaining ||
+			!equalStoreTimes(profileUpdatedAt(s.accountBillingProfiles[user.ID]), change.ExpectedProfileUpdatedAt) ||
+			!equalStoreTimes(quotaUpdatedAt(s.accountQuotaStates[user.ID]), change.ExpectedQuotaUpdatedAt) ||
+			!equalStoreTimes(quota.PeriodStart, change.ExpectedPeriodStart) || !equalStoreTimes(quota.PeriodEnd, change.ExpectedPeriodEnd)) {
+			return nil, false, ErrAdminPlanGroupStale
+		}
+		used := profile.IncludedQuotaBytes - quota.RemainingIncludedQuota
+		if used < 0 {
+			used = 0
+		}
+		// Buckets are authoritative when they include over-cap traffic that the
+		// remaining-quota counter can no longer represent.
+		bucketUsage := adminPlanGroupBucketUsage(s.trafficMinuteBuckets, user.ID, quota)
+		if change.SetEntitlement && bucketUsage != change.ExpectedUsageBytes {
+			return nil, false, ErrAdminPlanGroupStale
+		}
+		if bucketUsage > used {
+			used = bucketUsage
+		}
+		if change.SetEntitlement {
+			profile.AccountUUID = user.ID
+			profile.PackageName = change.PackageName
+			profile.IncludedQuotaBytes = change.IncludedQuotaBytes
+			profile.RegionMultiplier = change.RegionMultiplier
+			profile.LineMultiplier = change.LineMultiplier
+			profile.PeakMultiplier = change.PeakMultiplier
+			profile.OffPeakMultiplier = change.OffPeakMultiplier
+			profile.PricingRuleVersion = change.PricingRuleVersion
+			quota.RemainingIncludedQuota = change.IncludedQuotaBytes - used
+			if quota.RemainingIncludedQuota < 0 {
+				quota.RemainingIncludedQuota = 0
+			}
+			quota.EffectiveAt = time.Now().UTC()
+		}
+		prepared = append(prepared, preparedAdminPlanGroupChange{change: change, user: user, profile: profile, quota: quota, used: used})
+	}
+
+	now := time.Now().UTC()
+	for _, item := range prepared {
+		item.user.Groups = cloneStringSlice(normalizeStringSlice(item.change.Groups))
+		if item.change.SetValidFrom {
+			item.user.SubscriptionValidFrom = cloneTimePointer(item.change.ValidFrom)
+		}
+		if item.change.SetValidUntil {
+			item.user.SubscriptionValidUntil = cloneTimePointer(item.change.ValidUntil)
+		}
+		item.user.UpdatedAt = now
+		if item.change.SetEntitlement {
+			item.profile.UpdatedAt = now
+			item.quota.UpdatedAt = now
+			s.accountBillingProfiles[item.user.ID] = item.profile
+			s.accountQuotaStates[item.user.ID] = item.quota
+		}
+		before := map[string]any{"groups": item.change.ExpectedGroups, "valid_from": item.change.ExpectedValidFrom, "valid_until": item.change.ExpectedValidUntil,
+			"included_quota_bytes": item.change.ExpectedProfileIncludedQuota, "remaining_included_quota": item.change.ExpectedQuotaRemaining}
+		after := map[string]any{"groups": item.change.Groups, "valid_from": item.user.SubscriptionValidFrom, "valid_until": item.user.SubscriptionValidUntil,
+			"plan_id": item.change.PlanID, "included_quota_bytes": item.change.IncludedQuotaBytes, "remaining_included_quota": item.quota.RemainingIncludedQuota,
+			"used_bytes_preserved": item.used, "configuration_sync_paused": item.change.SetEntitlement && item.change.IncludedQuotaBytes > 0 && item.quota.RemainingIncludedQuota == 0}
+		s.auditLogs = append(s.auditLogs, &AuditLog{
+			UUID: uuid.NewString(), Action: AuditActionPlanGroupUpdate, ActorUUID: batch.ActorUUID,
+			Details: map[string]any{"target_uuid": item.user.ID, "reason": batch.Reason, "request_id": batch.RequestID,
+				"preview_token_hash": batch.PreviewTokenHash, "before": before, "after": after}, CreatedAt: now,
+		})
+	}
+	s.adminPlanGroupConsumed[batch.PreviewTokenHash] = batch.RequestID
+	s.auditLogs = append(s.auditLogs, &AuditLog{
+		UUID: uuid.NewString(), Action: AuditActionPlanGroupPreviewUsed, ActorUUID: batch.ActorUUID,
+		Details: map[string]any{"request_id": batch.RequestID, "preview_token_hash": batch.PreviewTokenHash}, CreatedAt: now,
+	})
+	return changes, false, nil
+}
+
+type preparedAdminPlanGroupChange struct {
+	change  AdminPlanGroupChange
+	user    *User
+	profile *AccountBillingProfile
+	quota   *AccountQuotaState
+	used    int64
+}
+
+func quotaPeriodStart(quota *AccountQuotaState, now time.Time) time.Time {
+	if quota != nil && quota.PeriodStart != nil {
+		return quota.PeriodStart.UTC()
+	}
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func adminPlanGroupBucketUsage(buckets map[string]*TrafficMinuteBucket, accountID string, quota *AccountQuotaState) int64 {
+	start := quotaPeriodStart(quota, time.Now().UTC())
+	var total int64
+	for _, bucket := range buckets {
+		if bucket.AccountUUID == accountID && !bucket.BucketStart.Before(start) && (quota == nil || quota.PeriodEnd == nil || bucket.BucketStart.Before(*quota.PeriodEnd)) && bucket.TotalBytes > 0 {
+			total += bucket.TotalBytes
+		}
+	}
+	return total
+}
+
+func profileUpdatedAt(profile *AccountBillingProfile) *time.Time {
+	if profile == nil || profile.UpdatedAt.IsZero() {
+		return nil
+	}
+	value := profile.UpdatedAt.UTC()
+	return &value
+}
+
+func quotaUpdatedAt(quota *AccountQuotaState) *time.Time {
+	if quota == nil || quota.UpdatedAt.IsZero() {
+		return nil
+	}
+	value := quota.UpdatedAt.UTC()
+	return &value
+}
+
+func cloneAdminPlanGroupChanges(changes []AdminPlanGroupChange) []AdminPlanGroupChange {
+	cloned := make([]AdminPlanGroupChange, len(changes))
+	for i, change := range changes {
+		cloned[i] = change
+		cloned[i].ExpectedGroups = cloneStringSlice(change.ExpectedGroups)
+		cloned[i].Groups = cloneStringSlice(change.Groups)
+		cloned[i].ExpectedValidFrom = cloneTimePointer(change.ExpectedValidFrom)
+		cloned[i].ExpectedValidUntil = cloneTimePointer(change.ExpectedValidUntil)
+		cloned[i].ValidFrom = cloneTimePointer(change.ValidFrom)
+		cloned[i].ValidUntil = cloneTimePointer(change.ValidUntil)
+	}
+	return cloned
+}
+
+func equalStoreStrings(a, b []string) bool {
+	a = normalizeStringSlice(a)
+	b = normalizeStringSlice(b)
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalStoreTimes(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
 }
 
 // UpsertSubscription creates or updates a subscription for a user.

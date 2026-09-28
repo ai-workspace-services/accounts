@@ -63,6 +63,12 @@ func TestUpdateUserGroups(t *testing.T) {
 	if err := st.CreateUser(context.Background(), rootUser); err != nil {
 		t.Fatalf("failed to seed root user: %v", err)
 	}
+	if err := st.UpsertBillingPlan(context.Background(), &store.BillingPlan{
+		PlanID: store.BillingPlanPlus, DisplayName: "Plus", Kind: "subscription", PackageName: "plus",
+		IncludedQuotaBytes: 20 * 1024 * 1024 * 1024, Active: true,
+	}); err != nil {
+		t.Fatalf("failed to seed Plus plan: %v", err)
+	}
 
 	loginPayload := map[string]string{"identifier": admin.Email, "password": testPass}
 	body, err := json.Marshal(loginPayload)
@@ -144,9 +150,10 @@ func TestUpdateUserGroups(t *testing.T) {
 
 	t.Run("batch updates selected users", func(t *testing.T) {
 		payload, err := json.Marshal(map[string]any{
+			"mode": "preview", "requestId": "batch-groups-1", "reason": "support request #42",
 			"updates": []map[string]any{{
 				"userId": target.ID,
-				"groups": []string{store.MonthlyPlusQuotaLimitGroup, "segment:beta"},
+				"planId": store.BillingPlanPlus,
 			}},
 		})
 		if err != nil {
@@ -160,11 +167,29 @@ func TestUpdateUserGroups(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 		}
+		var preview struct {
+			PreviewToken string `json:"previewToken"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil || preview.PreviewToken == "" {
+			t.Fatalf("expected preview token, payload=%s err=%v", rec.Body.String(), err)
+		}
+		payload, _ = json.Marshal(map[string]any{
+			"mode": "apply", "requestId": "batch-groups-1", "reason": "support request #42", "previewToken": preview.PreviewToken,
+			"updates": []map[string]any{{"userId": target.ID, "planId": store.BillingPlanPlus}},
+		})
+		req = httptest.NewRequest(http.MethodPut, "/api/auth/admin/users/groups/batch", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec = httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected apply 200, got %d: %s", rec.Code, rec.Body.String())
+		}
 		stored, err := st.GetUserByID(context.Background(), target.ID)
 		if err != nil {
 			t.Fatalf("failed to reload batch-updated user: %v", err)
 		}
-		if !equalStrings(stored.Groups, []string{store.MonthlyPlusQuotaLimitGroup, "segment:beta"}) {
+		if !equalStrings(stored.Groups, []string{store.MonthlyPlusQuotaLimitGroup}) {
 			t.Fatalf("expected batch groups to persist, got %v", stored.Groups)
 		}
 	})
