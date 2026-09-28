@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 )
 
 func financeTestAccount(t *testing.T, st Store) (string, string) {
@@ -226,6 +228,46 @@ func TestFinanceOperationFailureRetryAndAppendOnlyEvents(t *testing.T) {
 		TargetType: operation.TargetType, TargetID: operation.TargetID, Provider: "stripe", Request: json.RawMessage(`{"amount_minor":251}`),
 	}); !errors.Is(err, ErrFinanceIdempotencyConflict) {
 		t.Fatalf("operation idempotency key reused with different payload: %v", err)
+	}
+}
+
+func TestPostgresSucceededRefundOperationReplaySkipsRefundCapacityCheck(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &postgresStore{db: db}
+	const operationID = "00000000-0000-4000-8000-000000000401"
+	const paymentID = "00000000-0000-4000-8000-000000000201"
+	request := json.RawMessage(`{"amount_minor":1000,"currency":"USD"}`)
+	operation := &FinanceOperation{
+		IdempotencyKey: "refund:fully-refunded", OperationType: "refund", TargetType: "payment",
+		TargetID: paymentID, Provider: "stripe", Request: request,
+	}
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WithArgs(operation.IdempotencyKey).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO public\.finance_operations`).
+		WithArgs(sqlmock.AnyArg(), operation.IdempotencyKey, "refund", "payment", paymentID, "stripe", []byte(request)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(`FROM public\.finance_operations WHERE idempotency_key = \$1 FOR UPDATE`).
+		WithArgs(operation.IdempotencyKey).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "idempotency_key", "operation_type", "target_type", "target_id", "provider",
+			"provider_operation_id", "status", "attempt_count", "next_attempt_at", "last_error",
+			"request", "response", "created_at", "updated_at",
+		}).AddRow(operationID, operation.IdempotencyKey, "refund", "payment", paymentID, "stripe",
+			"re_123", FinanceOperationSucceeded, 1, nil, "", []byte(request), []byte(`{"ok":true}`), now, now))
+	mock.ExpectCommit()
+
+	claimed, err := st.BeginFinanceOperation(context.Background(), operation)
+	if err != nil || claimed || operation.ID != operationID || operation.Status != FinanceOperationSucceeded {
+		t.Fatalf("succeeded refund replay: claimed=%v operation=%#v err=%v", claimed, operation, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("replay queried payment capacity or changed state: %v", err)
 	}
 }
 

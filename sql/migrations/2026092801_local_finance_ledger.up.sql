@@ -108,6 +108,39 @@ CREATE TABLE IF NOT EXISTS public.finance_operation_events (
 CREATE INDEX IF NOT EXISTS finance_operation_events_operation_idx
   ON public.finance_operation_events (operation_id, id);
 
+-- Supabase exposes public-schema tables through its API roles by default.
+-- These financial facts and provider payloads are server-side only. RLS has
+-- no client policies, and grants to the client roles (including PUBLIC) are
+-- removed in the same transaction that creates the tables.
+ALTER TABLE public.finance_invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.finance_payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.finance_refunds ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.finance_operations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.finance_operation_events ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL PRIVILEGES ON TABLE
+  public.finance_invoices,
+  public.finance_payments,
+  public.finance_refunds,
+  public.finance_operations,
+  public.finance_operation_events
+FROM PUBLIC;
+
+DO $$
+DECLARE
+  client_role TEXT;
+BEGIN
+  FOREACH client_role IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = client_role) THEN
+      EXECUTE format(
+        'REVOKE ALL PRIVILEGES ON TABLE public.finance_invoices, public.finance_payments, public.finance_refunds, public.finance_operations, public.finance_operation_events FROM %I',
+        client_role
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.reject_finance_fact_mutation()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

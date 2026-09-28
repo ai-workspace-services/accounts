@@ -11,6 +11,58 @@ BEGIN
 END;
 $$;
 
+-- Model Supabase's client API roles and default public-table grants.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated NOLOGIN;
+  END IF;
+END;
+$$;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT ALL PRIVILEGES ON TABLES TO anon, authenticated;
+
+CREATE OR REPLACE FUNCTION pg_temp.assert_finance_access_guard()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  finance_table TEXT;
+  client_role TEXT;
+  qualified_table TEXT;
+  privilege_name TEXT;
+BEGIN
+  FOREACH finance_table IN ARRAY ARRAY[
+    'finance_invoices', 'finance_payments', 'finance_refunds',
+    'finance_operations', 'finance_operation_events'
+  ] LOOP
+    qualified_table := format('public.%I', finance_table);
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = finance_table AND c.relrowsecurity
+    ) THEN
+      RAISE EXCEPTION 'RLS is disabled on %', qualified_table;
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = finance_table
+    ) THEN
+      RAISE EXCEPTION 'client policy unexpectedly exposes %', qualified_table;
+    END IF;
+    FOREACH client_role IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+      FOREACH privilege_name IN ARRAY ARRAY[
+        'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+      ] LOOP
+        IF has_table_privilege(client_role, qualified_table, privilege_name) THEN
+          RAISE EXCEPTION '% retains % on %', client_role, privilege_name, qualified_table;
+        END IF;
+      END LOOP;
+    END LOOP;
+  END LOOP;
+END;
+$$;
+
 CREATE TABLE public.users (uuid UUID PRIMARY KEY, email TEXT NOT NULL);
 CREATE TABLE public.subscriptions (
   uuid UUID PRIMARY KEY,
@@ -32,6 +84,17 @@ CREATE TEMP TABLE finance_usage_snapshot AS SELECT id, to_jsonb(billing_ledger) 
 
 \ir ../2026092801_local_finance_ledger.up.sql
 \ir ../2026092801_local_finance_ledger.up.sql
+SELECT pg_temp.assert_finance_access_guard();
+
+-- Simulate an already-upgraded database where the original 2801 was applied
+-- before the access guard was added, then verify the forward repair twice.
+GRANT ALL PRIVILEGES ON TABLE
+  public.finance_invoices, public.finance_payments, public.finance_refunds,
+  public.finance_operations, public.finance_operation_events
+TO PUBLIC, anon, authenticated;
+\ir ../2026092802_local_finance_access.up.sql
+\ir ../2026092802_local_finance_access.up.sql
+SELECT pg_temp.assert_finance_access_guard();
 
 INSERT INTO public.finance_invoices (
   id, idempotency_key, account_uuid, subscription_uuid, amount_minor, currency, description

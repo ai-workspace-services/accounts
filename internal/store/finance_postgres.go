@@ -363,6 +363,16 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, 'pending', $7::jsonb) ON CONFLICT (idempot
 	if stored.OperationType != copy.OperationType || stored.TargetType != copy.TargetType || stored.TargetID != copy.TargetID || stored.Provider != copy.Provider || !jsonEqual(stored.Request, copy.Request) {
 		return false, ErrFinanceIdempotencyConflict
 	}
+	if stored.Status == FinanceOperationInProgress {
+		return false, ErrFinanceOperationInProgress
+	}
+	if stored.Status == FinanceOperationSucceeded {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		*operation = *stored
+		return false, nil
+	}
 	if copy.OperationType == "refund" {
 		var paymentAmount int64
 		var paymentCurrency string
@@ -391,16 +401,6 @@ WHERE o.operation_type = 'refund' AND o.target_type = 'payment' AND o.target_id 
 		if refundAmount > paymentAmount-refunded-reserved {
 			return false, ErrFinanceRefundExceedsPayment
 		}
-	}
-	if stored.Status == FinanceOperationInProgress {
-		return false, ErrFinanceOperationInProgress
-	}
-	if stored.Status == FinanceOperationSucceeded {
-		if err := tx.Commit(); err != nil {
-			return false, err
-		}
-		*operation = *stored
-		return false, nil
 	}
 	if stored.Status != FinanceOperationPending && stored.Status != FinanceOperationFailed && stored.Status != FinanceOperationReconciliationRequired {
 		return false, ErrFinanceOperationNotRetryable
