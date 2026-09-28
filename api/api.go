@@ -571,6 +571,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.GET("/admin/billing/ledger", h.adminBillingLedger)
 	authProtected.GET("/admin/billing/accounts/:accountUUID", h.adminGetBillingAccount)
 	authProtected.POST("/admin/billing/accounts/:accountUUID/plan", h.adminAssignPlan)
+	authProtected.PUT("/admin/users/:userId/plan-group", h.adminAssignPlanGroup)
+	authProtected.PUT("/admin/users/plan-groups/batch", h.adminAssignPlanGroupsBatch)
 	authProtected.POST("/admin/billing/accounts/:accountUUID/quota", h.adminAdjustQuota)
 	authProtected.POST("/admin/billing/accounts/:accountUUID/balance", h.adminAdjustBalance)
 	authProtected.GET("/admin/audit", h.adminListAuditLogs)
@@ -3498,7 +3500,17 @@ func (h *handler) updateUserGroups(c *gin.Context) {
 		return
 	}
 
+	currentPlanGroup := store.MonthlyQuotaGroup(user)
+	for _, requested := range req.Groups {
+		if isMonthlyQuotaGroup(requested) && strings.TrimSpace(requested) != currentPlanGroup {
+			respondError(c, http.StatusBadRequest, "plan_group_requires_plan_id", "managed quota groups must be changed through plan-group operations")
+			return
+		}
+	}
 	user.Groups = normalizeGroups(req.Groups)
+	if currentPlanGroup != "" {
+		user.Groups = replaceMonthlyQuotaGroup(user.Groups, currentPlanGroup)
+	}
 	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
 		respondError(c, http.StatusInternalServerError, "update_failed", "failed to update user")
 		return

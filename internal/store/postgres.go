@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -643,6 +644,382 @@ func (s *postgresStore) UpdateUser(ctx context.Context, user *User) error {
 	user.CreatedAt = createdAt.UTC()
 	user.UpdatedAt = updatedAt.UTC()
 	return nil
+}
+
+func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview AdminPlanGroupPreview) ([]AdminPlanGroupChange, error) {
+	if preview.TokenHash == "" || preview.RequestID == "" || len(preview.Changes) == 0 || !preview.ExpiresAt.After(time.Now()) {
+		return nil, errors.New("invalid admin plan group preview")
+	}
+	caps, err := s.capabilities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !caps.hasGroups || !caps.hasSubscriptionValidFrom || !caps.hasSubscriptionValidUntil {
+		return nil, errors.New("admin plan group updates are not supported by the current user schema")
+	}
+	changes := cloneAdminPlanGroupChanges(preview.Changes)
+	sort.Slice(changes, func(i, j int) bool { return changes[i].UserID < changes[j].UserID })
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	seen := make(map[string]struct{}, len(changes))
+	for i := range changes {
+		change := &changes[i]
+		if _, duplicate := seen[change.UserID]; duplicate {
+			return nil, errors.New("duplicate user in admin plan group preview")
+		}
+		seen[change.UserID] = struct{}{}
+		var groupsRaw []byte
+		var validFrom, validUntil sql.NullTime
+		var role string
+		var level int
+		roleExpr, levelExpr := "'user'", fmt.Sprintf("%d", LevelUser)
+		if caps.hasRole {
+			roleExpr = "coalesce(role, 'user')"
+		}
+		if caps.hasLevel {
+			levelExpr = fmt.Sprintf("coalesce(level, %d)", LevelUser)
+		}
+		query := fmt.Sprintf("SELECT groups, subscription_valid_from, subscription_valid_until, %s, %s FROM public.users WHERE uuid = $1 FOR UPDATE", roleExpr, levelExpr)
+		err := tx.QueryRowContext(ctx, query, change.UserID).Scan(&groupsRaw, &validFrom, &validUntil, &role, &level)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		if err != nil {
+			return nil, err
+		}
+		currentGroups := decodeStringSlice(groupsRaw)
+		var currentFrom, currentUntil *time.Time
+		if validFrom.Valid {
+			value := validFrom.Time.UTC()
+			currentFrom = &value
+		}
+		if validUntil.Valid {
+			value := validUntil.Time.UTC()
+			currentUntil = &value
+		}
+		if IsRootRole(role) {
+			return nil, ErrUserProtected
+		}
+		if !equalStoreStrings(currentGroups, change.ExpectedGroups) || !equalStoreTimes(currentFrom, change.ExpectedValidFrom) || !equalStoreTimes(currentUntil, change.ExpectedValidUntil) {
+			return nil, ErrAdminPlanGroupStale
+		}
+		change.ExpectedGroups = currentGroups
+		change.ExpectedValidFrom, change.ExpectedValidUntil = currentFrom, currentUntil
+		var profileUpdated sql.NullTime
+		err = tx.QueryRowContext(ctx, `SELECT included_quota_bytes, updated_at FROM public.account_billing_profiles WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&change.ExpectedProfileIncludedQuota, &profileUpdated)
+		if errors.Is(err, sql.ErrNoRows) {
+			change.ProfileExisted = false
+		} else if err != nil {
+			return nil, err
+		} else {
+			change.ProfileExisted = true
+			value := profileUpdated.Time.UTC()
+			change.ExpectedProfileUpdatedAt = &value
+		}
+		var periodStart, periodEnd, quotaUpdated sql.NullTime
+		err = tx.QueryRowContext(ctx, `SELECT remaining_included_quota, period_start, period_end, updated_at FROM public.account_quota_states WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&change.ExpectedQuotaRemaining, &periodStart, &periodEnd, &quotaUpdated)
+		if errors.Is(err, sql.ErrNoRows) {
+			change.QuotaExisted = false
+		} else if err != nil {
+			return nil, err
+		} else {
+			change.QuotaExisted = true
+			value := quotaUpdated.Time.UTC()
+			change.ExpectedQuotaUpdatedAt = &value
+			if periodStart.Valid {
+				value := periodStart.Time.UTC()
+				change.ExpectedPeriodStart = &value
+			}
+			if periodEnd.Valid {
+				value := periodEnd.Time.UTC()
+				change.ExpectedPeriodEnd = &value
+			}
+		}
+		if change.SetEntitlement {
+			start := adminPlanGroupPeriodStart(change.ExpectedPeriodStart, time.Now().UTC())
+			var usage int64
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_bytes), 0) FROM public.traffic_minute_buckets WHERE account_uuid = $1 AND bucket_start >= $2 AND ($3::timestamptz IS NULL OR bucket_start < $3)`, change.UserID, start, change.ExpectedPeriodEnd).Scan(&usage); err != nil {
+				return nil, err
+			}
+			if usage < 0 {
+				usage = 0
+			}
+			change.ExpectedUsageBytes = usage
+			used := change.ExpectedProfileIncludedQuota - change.ExpectedQuotaRemaining
+			if used < 0 {
+				used = 0
+			}
+			if usage > used {
+				used = usage
+			}
+			change.UsedBytesPreserved = used
+			change.RemainingAfter = change.IncludedQuotaBytes - used
+			if change.RemainingAfter < 0 {
+				change.RemainingAfter = 0
+			}
+		}
+	}
+	details, err := json.Marshal(map[string]any{"request_id": preview.RequestID, "reason": preview.Reason, "preview_token_hash": preview.TokenHash,
+		"expires_at": preview.ExpiresAt.UTC(), "changes": changes})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.audit_logs (uuid, action, actor_uuid, details, created_at) VALUES ($1, $2, $3, $4, $5)`,
+		uuid.NewString(), AuditActionPlanGroupPreview, preview.ActorUUID, details, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
+func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminPlanGroupBatch) ([]AdminPlanGroupChange, bool, error) {
+	if strings.TrimSpace(batch.RequestID) == "" || strings.TrimSpace(batch.PreviewTokenHash) == "" {
+		return nil, false, errors.New("request id and preview token are required")
+	}
+	caps, err := s.capabilities(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if !caps.hasGroups || !caps.hasSubscriptionValidFrom || !caps.hasSubscriptionValidUntil {
+		return nil, false, errors.New("admin plan group updates are not supported by the current user schema")
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "admin-plan-group:"+batch.RequestID); err != nil {
+		return nil, false, err
+	}
+	var priorActor string
+	var priorRaw []byte
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(actor_uuid::text, ''), details FROM public.audit_logs WHERE action = $1 AND details->>'request_id' = $2 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, AuditActionPlanGroupUpdate, batch.RequestID).Scan(&priorActor, &priorRaw)
+	if err == nil {
+		var prior map[string]any
+		if err := json.Unmarshal(priorRaw, &prior); err != nil {
+			return nil, false, err
+		}
+		if priorActor != batch.ActorUUID || prior["reason"] != batch.Reason || prior["preview_token_hash"] != batch.PreviewTokenHash {
+			return nil, false, ErrAdminPlanGroupReplay
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		return nil, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+	var previewActor string
+	var previewRaw []byte
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(actor_uuid::text, ''), details FROM public.audit_logs WHERE action = $1 AND details->>'request_id' = $2 AND details->>'preview_token_hash' = $3 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`, AuditActionPlanGroupPreview, batch.RequestID, batch.PreviewTokenHash).Scan(&previewActor, &previewRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, ErrAdminPlanGroupPreview
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var storedPreview struct {
+		Reason    string                 `json:"reason"`
+		TokenHash string                 `json:"preview_token_hash"`
+		ExpiresAt time.Time              `json:"expires_at"`
+		Changes   []AdminPlanGroupChange `json:"changes"`
+	}
+	if err := json.Unmarshal(previewRaw, &storedPreview); err != nil {
+		return nil, false, err
+	}
+	if previewActor != batch.ActorUUID || storedPreview.Reason != batch.Reason || storedPreview.TokenHash != batch.PreviewTokenHash || !storedPreview.ExpiresAt.After(time.Now().UTC()) {
+		return nil, false, ErrAdminPlanGroupPreview
+	}
+	var consumed bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.audit_logs WHERE action = $1 AND details->>'preview_token_hash' = $2)`, AuditActionPlanGroupPreviewUsed, batch.PreviewTokenHash).Scan(&consumed); err != nil {
+		return nil, false, err
+	}
+	if consumed {
+		return nil, false, ErrAdminPlanGroupPreview
+	}
+	changes := storedPreview.Changes
+	sort.Slice(changes, func(i, j int) bool { return changes[i].UserID < changes[j].UserID })
+	if len(batch.ExpectedUserIDs) > 0 {
+		expected := append([]string(nil), batch.ExpectedUserIDs...)
+		sort.Strings(expected)
+		if len(expected) != len(changes) {
+			return nil, false, ErrAdminPlanGroupPreview
+		}
+		for i := range expected {
+			if expected[i] != changes[i].UserID {
+				return nil, false, ErrAdminPlanGroupPreview
+			}
+		}
+	}
+	type currentState struct {
+		change                     AdminPlanGroupChange
+		groups                     []string
+		validFrom, validUntil      *time.Time
+		profile                    AccountBillingProfile
+		quota                      AccountQuotaState
+		profileExists, quotaExists bool
+	}
+	states := make([]currentState, 0, len(changes))
+	seen := make(map[string]struct{}, len(changes))
+	for _, change := range changes {
+		if _, ok := seen[change.UserID]; ok {
+			return nil, false, errors.New("duplicate user in admin plan group preview")
+		}
+		seen[change.UserID] = struct{}{}
+		var groupsRaw []byte
+		var validFrom, validUntil sql.NullTime
+		var role string
+		var level int
+		roleExpr, levelExpr := "'user'", fmt.Sprintf("%d", LevelUser)
+		if caps.hasRole {
+			roleExpr = "coalesce(role, 'user')"
+		}
+		if caps.hasLevel {
+			levelExpr = fmt.Sprintf("coalesce(level, %d)", LevelUser)
+		}
+		query := fmt.Sprintf("SELECT groups, subscription_valid_from, subscription_valid_until, %s, %s FROM public.users WHERE uuid = $1 FOR UPDATE", roleExpr, levelExpr)
+		err := tx.QueryRowContext(ctx, query, change.UserID).Scan(&groupsRaw, &validFrom, &validUntil, &role, &level)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, ErrUserNotFound
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if IsRootRole(role) {
+			return nil, false, ErrUserProtected
+		}
+		state := currentState{change: change, groups: decodeStringSlice(groupsRaw)}
+		if validFrom.Valid {
+			value := validFrom.Time.UTC()
+			state.validFrom = &value
+		}
+		if validUntil.Valid {
+			value := validUntil.Time.UTC()
+			state.validUntil = &value
+		}
+		if !equalStoreStrings(state.groups, change.ExpectedGroups) || !equalStoreTimes(state.validFrom, change.ExpectedValidFrom) || !equalStoreTimes(state.validUntil, change.ExpectedValidUntil) {
+			return nil, false, ErrAdminPlanGroupStale
+		}
+		var pUpdated sql.NullTime
+		err = tx.QueryRowContext(ctx, `SELECT package_name, included_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version, updated_at FROM public.account_billing_profiles WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&state.profile.PackageName, &state.profile.IncludedQuotaBytes, &state.profile.BasePricePerByte, &state.profile.RegionMultiplier, &state.profile.LineMultiplier, &state.profile.PeakMultiplier, &state.profile.OffPeakMultiplier, &state.profile.PricingRuleVersion, &pUpdated)
+		if errors.Is(err, sql.ErrNoRows) {
+			state.profileExists = false
+		} else if err != nil {
+			return nil, false, err
+		} else {
+			state.profileExists = true
+			state.profile.AccountUUID = change.UserID
+			state.profile.UpdatedAt = pUpdated.Time.UTC()
+		}
+		var qUpdated, qStart, qEnd sql.NullTime
+		err = tx.QueryRowContext(ctx, `SELECT remaining_included_quota, period_start, period_end, updated_at FROM public.account_quota_states WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&state.quota.RemainingIncludedQuota, &qStart, &qEnd, &qUpdated)
+		if errors.Is(err, sql.ErrNoRows) {
+			state.quotaExists = false
+		} else if err != nil {
+			return nil, false, err
+		} else {
+			state.quotaExists = true
+			state.quota.AccountUUID = change.UserID
+			state.quota.UpdatedAt = qUpdated.Time.UTC()
+			if qStart.Valid {
+				value := qStart.Time.UTC()
+				state.quota.PeriodStart = &value
+			}
+			if qEnd.Valid {
+				value := qEnd.Time.UTC()
+				state.quota.PeriodEnd = &value
+			}
+		}
+		if change.SetEntitlement && (state.profileExists != change.ProfileExisted || state.quotaExists != change.QuotaExisted || state.profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota || state.quota.RemainingIncludedQuota != change.ExpectedQuotaRemaining ||
+			!equalStoreTimes(nullableTimePointer(pUpdated), change.ExpectedProfileUpdatedAt) || !equalStoreTimes(nullableTimePointer(qUpdated), change.ExpectedQuotaUpdatedAt) || !equalStoreTimes(state.quota.PeriodStart, change.ExpectedPeriodStart) || !equalStoreTimes(state.quota.PeriodEnd, change.ExpectedPeriodEnd)) {
+			return nil, false, ErrAdminPlanGroupStale
+		}
+		if change.SetEntitlement {
+			start := adminPlanGroupPeriodStart(state.quota.PeriodStart, time.Now().UTC())
+			var usage int64
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_bytes), 0) FROM public.traffic_minute_buckets WHERE account_uuid = $1 AND bucket_start >= $2 AND ($3::timestamptz IS NULL OR bucket_start < $3)`, change.UserID, start, state.quota.PeriodEnd).Scan(&usage); err != nil {
+				return nil, false, err
+			}
+			if usage != change.ExpectedUsageBytes {
+				return nil, false, ErrAdminPlanGroupStale
+			}
+		}
+		states = append(states, state)
+	}
+	now := time.Now().UTC()
+	for _, state := range states {
+		change := state.change
+		groups, err := encodeStringSlice(change.Groups)
+		if err != nil {
+			return nil, false, err
+		}
+		validFrom, validUntil := state.validFrom, state.validUntil
+		if change.SetValidFrom {
+			validFrom = change.ValidFrom
+		}
+		if change.SetValidUntil {
+			validUntil = change.ValidUntil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE public.users SET groups = $1, subscription_valid_from = $2, subscription_valid_until = $3, updated_at = $4 WHERE uuid = $5`, groups, validFrom, validUntil, now, change.UserID); err != nil {
+			return nil, false, err
+		}
+		used := int64(0)
+		remaining := int64(0)
+		if change.SetEntitlement {
+			used = state.profile.IncludedQuotaBytes - state.quota.RemainingIncludedQuota
+			if used < 0 {
+				used = 0
+			}
+			if change.ExpectedUsageBytes > used {
+				used = change.ExpectedUsageBytes
+			}
+			remaining = change.IncludedQuotaBytes - used
+			if remaining < 0 {
+				remaining = 0
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_billing_profiles (account_uuid, package_name, included_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (account_uuid) DO UPDATE SET package_name=EXCLUDED.package_name, included_quota_bytes=EXCLUDED.included_quota_bytes, region_multiplier=EXCLUDED.region_multiplier, line_multiplier=EXCLUDED.line_multiplier, peak_multiplier=EXCLUDED.peak_multiplier, offpeak_multiplier=EXCLUDED.offpeak_multiplier, pricing_rule_version=EXCLUDED.pricing_rule_version, updated_at=now()`, change.UserID, change.PackageName, change.IncludedQuotaBytes, state.profile.BasePricePerByte, change.RegionMultiplier, change.LineMultiplier, change.PeakMultiplier, change.OffPeakMultiplier, change.PricingRuleVersion); err != nil {
+				return nil, false, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_quota_states (account_uuid, remaining_included_quota, effective_at) VALUES ($1,$2,$3) ON CONFLICT (account_uuid) DO UPDATE SET remaining_included_quota=EXCLUDED.remaining_included_quota, effective_at=EXCLUDED.effective_at, updated_at=now()`, change.UserID, remaining, now); err != nil {
+				return nil, false, err
+			}
+		}
+		before, _ := json.Marshal(map[string]any{"groups": state.groups, "valid_from": state.validFrom, "valid_until": state.validUntil, "included_quota_bytes": state.profile.IncludedQuotaBytes, "remaining_included_quota": state.quota.RemainingIncludedQuota})
+		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "used_bytes_preserved": used, "remaining_included_quota": remaining, "configuration_sync_paused": change.IncludedQuotaBytes > 0 && remaining == 0})
+		details, _ := json.Marshal(map[string]any{"target_uuid": change.UserID, "reason": batch.Reason, "request_id": batch.RequestID, "preview_token_hash": batch.PreviewTokenHash, "before": json.RawMessage(before), "after": json.RawMessage(after)})
+		if _, err := tx.ExecContext(ctx, `INSERT INTO public.audit_logs (uuid, action, actor_uuid, details, created_at) VALUES ($1,$2,$3,$4,$5)`, uuid.NewString(), AuditActionPlanGroupUpdate, batch.ActorUUID, details, now); err != nil {
+			return nil, false, err
+		}
+	}
+	usedDetails, _ := json.Marshal(map[string]any{"request_id": batch.RequestID, "preview_token_hash": batch.PreviewTokenHash})
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.audit_logs (uuid, action, actor_uuid, details, created_at) VALUES ($1,$2,$3,$4,$5)`, uuid.NewString(), AuditActionPlanGroupPreviewUsed, batch.ActorUUID, usedDetails, now); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return changes, false, nil
+}
+
+func adminPlanGroupPeriodStart(start *time.Time, now time.Time) time.Time {
+	if start != nil {
+		return start.UTC()
+	}
+	return time.Date(now.UTC().Year(), now.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func nullableTimePointer(value sql.NullTime) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	result := value.Time.UTC()
+	return &result
 }
 
 func (s *postgresStore) CountSuperAdmins(ctx context.Context) (int, error) {
