@@ -1591,6 +1591,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 
 	api.RegisterRoutes(r, options...)
 	api.StartAnnualQuotaReconciler(ctx, st, logger.With("component", "annual-quota"))
+	api.StartSubscriptionAccessReconciler(ctx, st, logger.With("component", "subscription-access"))
 
 	var tlsConfig *tls.Config
 	if useTLS {

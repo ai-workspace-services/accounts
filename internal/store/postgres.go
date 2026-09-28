@@ -1714,6 +1714,39 @@ func (s *postgresStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, nil
 }
 
+func (s *postgresStore) ListUsersPage(ctx context.Context, afterID string, limit int) ([]User, error) {
+	if limit <= 0 || limit > MaxUserListPageSize {
+		return nil, errors.New("user page limit is out of range")
+	}
+	caps, err := s.capabilities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := s.selectUserQuery(caps, "ORDER BY uuid ASC LIMIT $1")
+	args := []any{limit}
+	if strings.TrimSpace(afterID) != "" {
+		query = s.selectUserQuery(caps, "WHERE uuid > $1 ORDER BY uuid ASC LIMIT $2")
+		args = []any{strings.TrimSpace(afterID), limit}
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := make([]User, 0, limit)
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, *user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 func (s *postgresStore) DeleteUser(ctx context.Context, id string, audit *AuditLog, requestID string) error {
 	if err := validateUserArchiveAudit(id, audit); err != nil {
 		return err

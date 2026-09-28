@@ -117,6 +117,18 @@ type stripeInvoice struct {
 	PaymentIntent any    `json:"payment_intent"`
 }
 
+type stripeCharge struct {
+	Invoice        any   `json:"invoice"`
+	Refunded       bool  `json:"refunded"`
+	Amount         int64 `json:"amount"`
+	AmountRefunded int64 `json:"amount_refunded"`
+	Refunds        struct {
+		Data []struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	} `json:"refunds"`
+}
+
 func newStripeClient(cfg StripeConfig) *stripeClient {
 	secretKey := strings.TrimSpace(cfg.SecretKey)
 	if secretKey == "" {
@@ -452,6 +464,15 @@ func (c *stripeClient) cancelSubscription(ctx context.Context, subscriptionID st
 	return c.doForm(ctx, http.MethodDelete, "/subscriptions/"+url.PathEscape(strings.TrimSpace(subscriptionID)), url.Values{}, nil)
 }
 
+func (c *stripeClient) scheduleSubscriptionCancellation(ctx context.Context, subscriptionID string) (*stripeSubscription, error) {
+	form := url.Values{"cancel_at_period_end": []string{"true"}}
+	var subscription stripeSubscription
+	if err := c.doForm(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(strings.TrimSpace(subscriptionID)), form, &subscription); err != nil {
+		return nil, err
+	}
+	return &subscription, nil
+}
+
 func (c *stripeClient) fetchSubscription(ctx context.Context, subscriptionID string) (*stripeSubscription, error) {
 	var sub stripeSubscription
 	if err := c.doJSON(ctx, http.MethodGet, "/subscriptions/"+url.PathEscape(strings.TrimSpace(subscriptionID)), &sub); err != nil {
@@ -779,7 +800,11 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			return err
 		}
 		if userID := strings.TrimSpace(subscription.Metadata["user_id"]); userID != "" {
-			if err := h.downgradeToFreePlan(ctx, userID); err != nil {
+			if user, err := h.store.GetUserByID(ctx, userID); err == nil {
+				if err := h.reconcileSubscriptionAccessAt(ctx, user, time.Now().UTC()); err != nil {
+					return err
+				}
+			} else if !errors.Is(err, store.ErrUserNotFound) {
 				return err
 			}
 			h.publishBillingEvent(ctx, &store.BillingEvent{
@@ -788,6 +813,47 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 				PriceID: subscriptionPriceID(&subscription), ExternalID: subscription.ID,
 			})
 		}
+		return nil
+	case "charge.refunded":
+		var charge stripeCharge
+		if err := json.Unmarshal(event.Data.Object, &charge); err != nil {
+			return err
+		}
+		if !charge.Refunded || charge.Amount <= 0 || charge.AmountRefunded < charge.Amount {
+			return nil // Partial refunds do not revoke the subscription entitlement.
+		}
+		for _, refund := range charge.Refunds.Data {
+			if !strings.EqualFold(strings.TrimSpace(refund.Status), "succeeded") {
+				return nil // Pending or failed refund states never revoke access.
+			}
+		}
+		invoiceID := customerIDFromAny(charge.Invoice)
+		if invoiceID == "" || h.stripe == nil {
+			return nil
+		}
+		invoice, err := h.stripe.fetchInvoice(ctx, invoiceID)
+		if err != nil {
+			return err
+		}
+		subscriptionID := customerIDFromAny(invoice.Subscription)
+		if subscriptionID == "" {
+			return nil
+		}
+		subscription, err := h.stripe.fetchSubscription(ctx, subscriptionID)
+		if err != nil {
+			return err
+		}
+		userID := strings.TrimSpace(subscription.Metadata["user_id"])
+		if userID == "" {
+			return nil
+		}
+		if err := h.upsertStripeSubscription(ctx, subscription, customerIDFromAny(subscription.Customer)); err != nil {
+			return err
+		}
+		if err := h.revokeRefundedSubscription(ctx, userID, subscriptionID); err != nil {
+			return err
+		}
+		h.publishBillingEvent(ctx, &store.BillingEvent{Type: "subscription_refunded", UserID: userID, PlanID: subscription.Metadata["plan_id"], PriceID: subscriptionPriceID(subscription), ExternalID: subscriptionID})
 		return nil
 	case "invoice.paid", "invoice.payment_failed":
 		var invoice stripeInvoice
@@ -832,11 +898,26 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			}
 			return err
 		}
+		previous, previousErr := h.store.GetAccountBillingProfile(ctx, userID)
+		if previousErr != nil && !errors.Is(previousErr, store.ErrUserNotFound) {
+			return previousErr
+		}
+		upgraded := previous != nil && plan.IncludedQuotaBytes > previous.IncludedQuotaBytes
+		periodStart, periodEnd := subscriptionQuotaPeriod(plan, sub, time.Now())
+		if upgraded {
+			if err := h.applyPlanUpgradeQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+				return err
+			}
+		}
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
-		periodStart, periodEnd := subscriptionQuotaPeriod(plan, sub, time.Now())
-		if err := h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd); err != nil {
+		if !upgraded {
+			if err := h.resetQuotaForPlanOnce(ctx, userID, plan, periodStart, periodEnd); err != nil {
+				return err
+			}
+		}
+		if err := h.restoreQuotaGroupForPlan(ctx, userID, plan); err != nil {
 			return err
 		}
 		h.publishBillingEvent(ctx, &store.BillingEvent{
@@ -891,14 +972,32 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		}
 		return err
 	}
-	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
-		return err
+	previous, previousErr := h.store.GetAccountBillingProfile(ctx, userID)
+	if previousErr != nil && !errors.Is(previousErr, store.ErrUserNotFound) {
+		return previousErr
 	}
+	upgraded := previous != nil && plan.IncludedQuotaBytes > previous.IncludedQuotaBytes
 	if created {
-		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
-		if err := h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd); err != nil {
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
+		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
+		if err := h.resetQuotaForPlanOnce(ctx, userID, plan, periodStart, periodEnd); err != nil {
+			return err
+		}
+	} else if upgraded {
+		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
+		if err := h.applyPlanUpgradeQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+			return err
+		}
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+			return err
+		}
+	} else if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+		return err
+	}
+	if err := h.restoreQuotaGroupForPlan(ctx, userID, plan); err != nil {
+		return err
 	}
 	if !strings.EqualFold(strings.TrimSpace(plan.Kind), "trial") {
 		h.supersedeActiveTrials(ctx, userID)
@@ -938,13 +1037,17 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 		status = "cancelled"
 	}
 	meta := buildStripeMeta(nil, map[string]string{
-		"price_id":     priceID,
-		"customer_id":  firstNonEmpty(customerID, customerIDFromAny(source.Customer)),
-		"product_slug": source.Metadata["product_slug"],
-		"user_email":   source.Metadata["user_email"],
-		"startsAt":     epochToRFC3339(source.CurrentPeriodStart),
-		"expiresAt":    epochToRFC3339(source.CurrentPeriodEnd),
+		"price_id":          priceID,
+		"customer_id":       firstNonEmpty(customerID, customerIDFromAny(source.Customer)),
+		"product_slug":      source.Metadata["product_slug"],
+		"user_email":        source.Metadata["user_email"],
+		"startsAt":          epochToRFC3339(source.CurrentPeriodStart),
+		"expiresAt":         epochToRFC3339(source.CurrentPeriodEnd),
+		"cancelAtPeriodEnd": strconv.FormatBool(source.CancelAtPeriodEnd),
 	})
+	if source.CancelAtPeriodEnd && status != "cancelled" {
+		status = "canceling"
+	}
 	subscription := &store.Subscription{
 		UserID:        userID,
 		Provider:      "stripe",
@@ -955,7 +1058,7 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 		Status:        status,
 		Meta:          meta,
 	}
-	if status == "cancelled" || source.CancelAtPeriodEnd {
+	if status == "cancelled" {
 		cancelledAt := time.Now().UTC()
 		subscription.CancelledAt = &cancelledAt
 	}

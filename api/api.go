@@ -3045,33 +3045,51 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 		return
 	}
 
-	if h.stripe != nil && h.stripe.enabled() {
-		subscriptions, err := h.store.ListSubscriptionsByUser(c.Request.Context(), user.ID)
-		if err == nil {
-			for i := range subscriptions {
-				subscription := subscriptions[i]
-				if strings.TrimSpace(subscription.ExternalID) != externalID {
-					continue
-				}
-				if strings.EqualFold(strings.TrimSpace(subscription.Provider), "stripe") && strings.EqualFold(strings.TrimSpace(subscription.Kind), "subscription") {
-					if err := h.stripe.cancelSubscription(c.Request.Context(), externalID); err != nil {
-						respondError(c, http.StatusBadGateway, "stripe_cancel_failed", "failed to cancel stripe subscription")
-						return
-					}
-				}
-				break
-			}
+	subscriptions, err := h.store.ListSubscriptionsByUser(c.Request.Context(), user.ID)
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "subscriptions_unavailable", "failed to load subscriptions")
+		return
+	}
+	var sub *store.Subscription
+	for i := range subscriptions {
+		if strings.TrimSpace(subscriptions[i].ExternalID) == externalID {
+			sub = &subscriptions[i]
+			break
 		}
 	}
-
-	sub, err := h.store.CancelSubscription(c.Request.Context(), user.ID, externalID, time.Now().UTC())
-	if err != nil {
-		if errors.Is(err, store.ErrSubscriptionNotFound) {
-			respondError(c, http.StatusNotFound, "subscription_not_found", "subscription not found")
+	if sub == nil {
+		respondError(c, http.StatusNotFound, "subscription_not_found", "subscription not found")
+		return
+	}
+	now := time.Now().UTC()
+	if strings.EqualFold(strings.TrimSpace(sub.Provider), "stripe") && strings.EqualFold(strings.TrimSpace(sub.Kind), "subscription") {
+		if h.stripe == nil || !h.stripe.enabled() {
+			respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
 			return
 		}
-		respondError(c, http.StatusInternalServerError, "subscription_cancel_failed", "failed to update subscription")
-		return
+		remote, err := h.stripe.scheduleSubscriptionCancellation(c.Request.Context(), externalID)
+		if err != nil {
+			respondError(c, http.StatusBadGateway, "stripe_cancel_failed", "failed to schedule cancellation at period end")
+			return
+		}
+		sub.Status = "canceling"
+		if sub.Meta == nil {
+			sub.Meta = make(map[string]any)
+		}
+		sub.Meta["cancelAtPeriodEnd"] = "true"
+		if remote != nil && remote.CurrentPeriodEnd > 0 {
+			sub.Meta["expiresAt"] = epochToRFC3339(remote.CurrentPeriodEnd)
+		}
+		if err := h.store.UpsertSubscription(c.Request.Context(), sub); err != nil {
+			respondError(c, http.StatusInternalServerError, "subscription_cancel_failed", "failed to update subscription")
+			return
+		}
+	} else {
+		sub, err = h.store.CancelSubscription(c.Request.Context(), user.ID, externalID, now)
+		if err != nil {
+			respondError(c, http.StatusInternalServerError, "subscription_cancel_failed", "failed to update subscription")
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"subscription": sanitizeSubscription(sub)})

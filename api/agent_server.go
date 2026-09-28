@@ -75,11 +75,6 @@ func (h *handler) authorizedAgentClients(ctx context.Context) ([]xrayconfig.Clie
 		return nil, "", err
 	}
 
-	blocked, err := h.store.ListProxyBlockedAccountUUIDs(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-
 	for _, u := range users {
 		if err := h.archiveInactiveFreeUser(ctx, &u); err != nil {
 			return nil, "", err
@@ -87,6 +82,17 @@ func (h *handler) authorizedAgentClients(ctx context.Context) ([]xrayconfig.Clie
 		if err := h.ensureExpiredSubscriptionDowngrade(ctx, &u); err != nil {
 			return nil, "", err
 		}
+	}
+
+	// Reconciliation can turn an account's remaining quota negative. Read the
+	// blocked projection only after every user has been reconciled so this
+	// response enforces newly-effective downgrades immediately.
+	blocked, err := h.store.ListProxyBlockedAccountUUIDs(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+
+	for _, u := range users {
 		if !u.Active {
 			continue
 		}

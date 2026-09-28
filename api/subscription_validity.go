@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -37,8 +38,7 @@ func subscriptionDateString(value *time.Time) any {
 }
 
 // subscriptionValidityExpired treats the configured end date as inclusive.
-// The UI only edits dates, so a subscription remains valid through 23:59:59
-// UTC on validUntil and expires at the following midnight.
+// Manual validity expires at the following midnight UTC without a payment grace.
 func subscriptionValidityExpired(user *store.User, now time.Time) bool {
 	if user == nil || user.SubscriptionValidUntil == nil {
 		return false
@@ -48,35 +48,228 @@ func subscriptionValidityExpired(user *store.User, now time.Time) bool {
 	return !now.UTC().Before(expiresAt)
 }
 
+// A local validity grant remains authoritative through its inclusive end date,
+// but it cannot extend an active Stripe subscription.
+func subscriptionValidityActive(user *store.User, now time.Time) bool {
+	if user == nil || user.SubscriptionValidUntil == nil {
+		return false
+	}
+	if user.SubscriptionValidFrom != nil && now.UTC().Before(user.SubscriptionValidFrom.UTC()) {
+		return false
+	}
+	end := user.SubscriptionValidUntil.UTC()
+	expiresAt := time.Date(end.Year(), end.Month(), end.Day()+1, 0, 0, 0, 0, time.UTC)
+	return now.UTC().Before(expiresAt)
+}
+
 // ensureExpiredSubscriptionDowngrade is deliberately lazy and event-driven:
 // every config sync and agent refresh evaluates the expiry, so no Xray or
 // Caddy restart is needed. It only replaces the quota group and never deletes
 // or disables the user record.
 func (h *handler) ensureExpiredSubscriptionDowngrade(ctx context.Context, user *store.User) error {
-	if !subscriptionValidityExpired(user, time.Now().UTC()) {
+	return h.reconcileSubscriptionAccessAt(ctx, user, time.Now().UTC())
+}
+
+const (
+	subscriptionSweepPageSize = 100
+	subscriptionSweepMaxUsers = 500
+	subscriptionSweepInterval = time.Minute
+	subscriptionSweepTimeout  = 2 * time.Minute
+)
+
+// ReconcileSubscriptionAccessBatch advances one bounded keyset batch. The
+// cursor is the last successfully reconciled user ID; callers can persist it
+// in memory and wrap to the beginning when the returned page is short.
+func ReconcileSubscriptionAccessBatch(ctx context.Context, st store.Store, now time.Time, afterID string, maxUsers int) (string, int, error) {
+	if maxUsers <= 0 || maxUsers > subscriptionSweepMaxUsers {
+		return afterID, 0, errors.New("subscription sweep batch limit is out of range")
+	}
+	h := &handler{store: st}
+	processed := 0
+	cursor := afterID
+	for processed < maxUsers {
+		limit := subscriptionSweepPageSize
+		if remaining := maxUsers - processed; limit > remaining {
+			limit = remaining
+		}
+		users, err := st.ListUsersPage(ctx, cursor, limit)
+		if err != nil {
+			return cursor, processed, err
+		}
+		if len(users) == 0 {
+			return "", processed, nil
+		}
+		for i := range users {
+			user := &users[i]
+			if err := h.reconcileSubscriptionAccessAt(ctx, user, now); err != nil {
+				return cursor, processed, err
+			}
+			cursor = user.ID
+			processed++
+		}
+		if len(users) < limit {
+			return "", processed, nil
+		}
+	}
+	return cursor, processed, nil
+}
+
+// StartSubscriptionAccessReconciler sweeps every account in bounded batches,
+// independently of agent/client traffic. The cursor is intentionally
+// process-local; restart begins a fresh pass and reconciliation is idempotent.
+func StartSubscriptionAccessReconciler(ctx context.Context, st store.Store, logger *slog.Logger) {
+	go func() {
+		cursor := ""
+		run := func() {
+			batchCtx, cancel := context.WithTimeout(ctx, subscriptionSweepTimeout)
+			defer cancel()
+			next, count, err := ReconcileSubscriptionAccessBatch(batchCtx, st, time.Now().UTC(), cursor, subscriptionSweepMaxUsers)
+			if err != nil {
+				logger.Warn("subscription access reconciliation failed", "after_user_id", cursor, "err", err)
+				return
+			}
+			cursor = next
+			if count > 0 {
+				logger.Info("subscription access reconciliation processed accounts", "accounts", count)
+			}
+		}
+		run()
+		ticker := time.NewTicker(subscriptionSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				run()
+			}
+		}
+	}()
+}
+
+func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store.User, now time.Time) error {
+	if user == nil {
+		return nil
+	}
+	now = now.UTC()
+	shouldDowngrade := subscriptionValidityExpired(user, now)
+	quota, quotaErr := h.store.GetAccountQuotaState(ctx, user.ID)
+	if quotaErr != nil && !errors.Is(quotaErr, store.ErrUserNotFound) {
+		return quotaErr
+	}
+	paymentGraceExpired := quota != nil && quota.Arrears && quota.ArrearsSince != nil && !now.Before(quota.ArrearsSince.Add(subscriptionGracePeriod))
+	if paymentGraceExpired {
+		shouldDowngrade = true
+	}
+	subscriptions, err := h.store.ListSubscriptionsByUser(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	for i := range subscriptions {
+		sub := &subscriptions[i]
+		if !strings.EqualFold(strings.TrimSpace(sub.Provider), "stripe") || !strings.EqualFold(strings.TrimSpace(sub.Kind), "subscription") {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(sub.Status))
+		if status == "active" || status == "trialing" {
+			periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
+			if periodEnd.IsZero() {
+				if !missingStripePeriodRetryExpired(sub, now) {
+					return nil
+				}
+				shouldDowngrade = true
+				continue
+			}
+			if now.Before(periodEnd) {
+				return nil
+			}
+			if quota != nil && quota.Arrears && quota.ArrearsSince != nil && !paymentGraceExpired {
+				return nil
+			}
+			shouldDowngrade = true
+		}
+		if status == "past_due" {
+			periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
+			if !periodEnd.IsZero() && now.Before(periodEnd) {
+				return nil
+			}
+			if quota == nil || !quota.Arrears || quota.ArrearsSince == nil || !paymentGraceExpired {
+				return nil // An untracked dunning start must not revoke access.
+			}
+			shouldDowngrade = true
+		}
+		if status == "canceling" || status == "cancelled" || status == "canceled" {
+			periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
+			if periodEnd.IsZero() && sub.CancelledAt != nil {
+				periodEnd = sub.CancelledAt.UTC()
+			}
+			if periodEnd.IsZero() {
+				if !missingStripePeriodRetryExpired(sub, now) {
+					return nil
+				}
+				shouldDowngrade = true
+				continue
+			}
+			if !periodEnd.IsZero() {
+				if now.Before(periodEnd) {
+					return nil
+				}
+				shouldDowngrade = true
+			}
+		}
+	}
+	// A current manual validity grant outranks an expired Stripe record. The
+	// billing profile and quota rows are projections; they never establish
+	// entitlement on their own.
+	if subscriptionValidityActive(user, now) {
+		return nil
+	}
+	if !shouldDowngrade {
 		return nil
 	}
 
-	if store.MonthlyQuotaGroup(user) == store.MonthlyFreeQuotaLimitGroup {
-		return nil
-	}
-	groups := make([]string, 0, len(user.Groups)+1)
-	for _, group := range user.Groups {
-		if group == store.MonthlyFreeQuotaLimitGroup ||
-			group == store.MonthlyPlusQuotaLimitGroup ||
-			group == store.MonthlyUnlimitedBetaQuotaGroup {
-			continue
+	if store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup {
+		groups := make([]string, 0, len(user.Groups)+1)
+		for _, group := range user.Groups {
+			if group == store.MonthlyFreeQuotaLimitGroup ||
+				group == store.MonthlyPlusQuotaLimitGroup ||
+				group == store.MonthlyUnlimitedBetaQuotaGroup {
+				continue
+			}
+			groups = append(groups, group)
 		}
-		groups = append(groups, group)
-	}
-	groups = append(groups, store.MonthlyFreeQuotaLimitGroup)
-	user.Groups = normalizeGroups(groups)
-	if err := h.store.UpdateUser(ctx, user); err != nil {
-		return err
+		groups = append(groups, store.MonthlyFreeQuotaLimitGroup)
+		user.Groups = normalizeGroups(groups)
+		if err := h.store.UpdateUser(ctx, user); err != nil {
+			return err
+		}
 	}
 	// The group controls config eligibility; the billing profile must also be
 	// reset so an expired paid account receives the actual Free 5GB allowance.
 	return h.downgradeToFreePlan(ctx, user.ID)
+}
+
+func subscriptionMetaTime(meta map[string]any, key string) time.Time {
+	value, ok := meta[key].(string)
+	if !ok {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
+}
+
+func missingStripePeriodRetryExpired(sub *store.Subscription, now time.Time) bool {
+	if sub == nil {
+		return true
+	}
+	firstObserved := sub.CreatedAt
+	if firstObserved.IsZero() {
+		firstObserved = sub.UpdatedAt
+	}
+	return !firstObserved.IsZero() && !now.UTC().Before(firstObserved.UTC().Add(missingStripePeriodRetryWindow))
 }
 
 func (h *handler) updateSubscriptionValidity(c *gin.Context) {
