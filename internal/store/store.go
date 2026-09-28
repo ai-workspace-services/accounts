@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -219,6 +220,97 @@ type BillingLedgerEntry struct {
 	CreatedAt          time.Time `json:"createdAt"`
 }
 
+// FinanceInvoice, FinancePayment, and FinanceRefund are immutable local
+// financial facts. Amounts use the currency's minor unit (for example cents).
+type FinanceInvoice struct {
+	ID                string
+	IdempotencyKey    string
+	AccountUUID       string
+	SubscriptionUUID  string
+	Provider          string
+	ProviderInvoiceID string
+	AmountMinor       int64
+	Currency          string
+	Description       string
+	IssuedAt          time.Time
+	DueAt             *time.Time
+	CreatedAt         time.Time
+}
+
+type FinancePayment struct {
+	ID                string
+	IdempotencyKey    string
+	InvoiceID         string
+	AccountUUID       string
+	Provider          string
+	ProviderPaymentID string
+	AmountMinor       int64
+	Currency          string
+	PaidAt            time.Time
+	CreatedAt         time.Time
+}
+
+type FinanceRefund struct {
+	ID               string
+	IdempotencyKey   string
+	PaymentID        string
+	Provider         string
+	ProviderRefundID string
+	AmountMinor      int64
+	Currency         string
+	Reason           string
+	RefundedAt       time.Time
+	CreatedAt        time.Time
+}
+
+// FinanceOperation is the durable retry/reconciliation projection. Every
+// start and result is also captured in an append-only FinanceOperationEvent.
+type FinanceOperation struct {
+	ID                  string
+	IdempotencyKey      string
+	OperationType       string
+	TargetType          string
+	TargetID            string
+	Provider            string
+	ProviderOperationID string
+	Status              string
+	AttemptCount        int
+	NextAttemptAt       *time.Time
+	LastError           string
+	Request             json.RawMessage
+	Response            json.RawMessage
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+type FinanceOperationEvent struct {
+	ID                  string
+	OperationID         string
+	Attempt             int
+	EventType           string
+	Status              string
+	ProviderOperationID string
+	Payload             json.RawMessage
+	Error               string
+	OccurredAt          time.Time
+}
+
+const (
+	FinanceOperationPending                = "pending"
+	FinanceOperationInProgress             = "in_progress"
+	FinanceOperationSucceeded              = "succeeded"
+	FinanceOperationFailed                 = "failed"
+	FinanceOperationReconciliationRequired = "reconcile_needed"
+)
+
+var (
+	ErrFinanceRecordNotFound        = errors.New("finance record not found")
+	ErrFinanceIdempotencyConflict   = errors.New("finance idempotency key conflicts with existing record")
+	ErrFinanceRefundExceedsPayment  = errors.New("refund amount exceeds remaining payment amount")
+	ErrFinanceOperationInProgress   = errors.New("finance operation is already in progress")
+	ErrFinanceOperationNotRetryable = errors.New("finance operation is not retryable")
+)
+
 // AuditLog is one operator-initiated change. Reads are never audited — only
 // writes — so the table stays proportional to operator activity rather than
 // to traffic.
@@ -431,6 +523,21 @@ type Store interface {
 	GetBillingPlanByPriceID(ctx context.Context, stripePriceID string) (*BillingPlan, error)
 	UpsertBillingPlan(ctx context.Context, plan *BillingPlan) error
 	DeleteBillingPlan(ctx context.Context, planID string) error
+	CreateFinanceInvoice(ctx context.Context, invoice *FinanceInvoice) (inserted bool, err error)
+	GetFinanceInvoice(ctx context.Context, id string) (*FinanceInvoice, error)
+	ListFinanceInvoices(ctx context.Context, accountUUID, subscriptionUUID string, limit int) ([]FinanceInvoice, error)
+	RecordFinancePayment(ctx context.Context, payment *FinancePayment) (inserted bool, err error)
+	ListFinancePayments(ctx context.Context, accountUUID string, limit int) ([]FinancePayment, error)
+	RecordFinanceRefund(ctx context.Context, refund *FinanceRefund) (inserted bool, err error)
+	ListFinanceRefunds(ctx context.Context, accountUUID string, limit int) ([]FinanceRefund, error)
+	// Refund operations use operation_type="refund", target_type="payment",
+	// target_id=local payment UUID, and request JSON amount_minor/currency.
+	// Their outstanding amount is reserved until failed or materialized as a refund fact.
+	BeginFinanceOperation(ctx context.Context, operation *FinanceOperation) (claimed bool, err error)
+	FinishFinanceOperation(ctx context.Context, operationID, status, providerOperationID string, response json.RawMessage, operationErr error, nextAttemptAt *time.Time) error
+	GetFinanceOperation(ctx context.Context, idempotencyKey string) (*FinanceOperation, error)
+	ListFinanceOperationsForReconciliation(ctx context.Context, limit int) ([]FinanceOperation, error)
+	ListFinanceOperationEvents(ctx context.Context, operationID string) ([]FinanceOperationEvent, error)
 	// BeginStripeWebhookEvent records an inbound event before processing and
 	// reports whether it was already processed (idempotent replay guard).
 	BeginStripeWebhookEvent(ctx context.Context, event *StripeWebhookEvent) (alreadyProcessed bool, err error)
@@ -518,6 +625,15 @@ type memoryStore struct {
 	billingPlans            map[string]*BillingPlan
 	stripeWebhookEvents     map[string]*StripeWebhookEvent
 	billingEvents           []BillingEvent
+	financeInvoices         map[string]*FinanceInvoice
+	financeInvoiceKeys      map[string]string
+	financePayments         map[string]*FinancePayment
+	financePaymentKeys      map[string]string
+	financeRefunds          map[string]*FinanceRefund
+	financeRefundKeys       map[string]string
+	financeOperations       map[string]*FinanceOperation
+	financeOperationKeys    map[string]string
+	financeOperationEvents  map[string][]FinanceOperationEvent
 }
 
 type sessionRecord struct {
@@ -614,6 +730,15 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		blacklistedEmails:       make(map[string]bool),
 		billingPlans:            make(map[string]*BillingPlan),
 		stripeWebhookEvents:     make(map[string]*StripeWebhookEvent),
+		financeInvoices:         make(map[string]*FinanceInvoice),
+		financeInvoiceKeys:      make(map[string]string),
+		financePayments:         make(map[string]*FinancePayment),
+		financePaymentKeys:      make(map[string]string),
+		financeRefunds:          make(map[string]*FinanceRefund),
+		financeRefundKeys:       make(map[string]string),
+		financeOperations:       make(map[string]*FinanceOperation),
+		financeOperationKeys:    make(map[string]string),
+		financeOperationEvents:  make(map[string][]FinanceOperationEvent),
 	}
 }
 
