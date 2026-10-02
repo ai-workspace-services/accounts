@@ -28,6 +28,9 @@ const (
 
 type VlessNode struct {
 	Name           string   `json:"name"`
+	Region         string   `json:"region,omitempty"`
+	PoolCount      int      `json:"pool_count,omitempty"`
+	OpenToUsers    bool     `json:"open_to_users"`
 	Address        string   `json:"address"`
 	Port           int      `json:"port,omitempty"`
 	Users          []string `json:"users,omitempty"`
@@ -98,14 +101,7 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		}
 	}()
 
-	registeredHosts, registeredNames := registeredNodeMetadata(h.agentStatusReader)
-	hosts := parseProxyNodeHosts(registeredHosts)
-
-	if len(hosts) == 0 {
-		c.JSON(http.StatusOK, []VlessNode{})
-		return
-	}
-
+	pools := registeredRegionalPools(h.agentStatusReader, time.Now().UTC())
 	xhttpPath := envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath)
 	xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
 	xhttpPort := envIntOrDefault("XRAY_XHTTP_PORT", defaultXHTTPPort)
@@ -115,22 +111,29 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 	tcpScheme := xrayconfig.VLESSTCPScheme()
 
 	users := []string{proxyUUID}
-	nodes := make([]VlessNode, 0, len(hosts))
-	for _, host := range hosts {
-		nodeName := resolveNodeName(host, registeredNames)
+	nodes := make([]VlessNode, 0, len(pools))
+	for _, pool := range pools {
+		if !pool.OpenToUsers {
+			continue
+		}
+		host := pool.Entry
+		nodeName := pool.Code
 		nodes = append(nodes, VlessNode{
-			Name:       nodeName,
-			Address:    host,
-			Port:       xhttpPort,
-			Users:      users,
-			Transport:  "xhttp",
-			Path:       xhttpPath,
-			Mode:       xhttpMode,
-			Security:   "tls",
-			Flow:       defaultTCPFlow,
-			ServerName: host,
-			XHTTPPort:  xhttpPort,
-			TCPPort:    tcpPort,
+			Name:        nodeName,
+			Region:      pool.Code,
+			PoolCount:   pool.PoolCount,
+			OpenToUsers: true,
+			Address:     host,
+			Port:        xhttpPort,
+			Users:       users,
+			Transport:   "xhttp",
+			Path:        xhttpPath,
+			Mode:        xhttpMode,
+			Security:    "tls",
+			Flow:        defaultTCPFlow,
+			ServerName:  host,
+			XHTTPPort:   xhttpPort,
+			TCPPort:     tcpPort,
 			URISchemeXHTTP: renderVLESSURIScheme(xhttpScheme, map[string]string{
 				"UUID":   proxyUUID,
 				"DOMAIN": host,
@@ -153,54 +156,7 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		})
 	}
 
-	// Final safety for Sandbox: if no nodes are available, the UI will be blocked.
-	email := strings.ToLower(strings.TrimSpace(user.Email))
-	if len(nodes) == 0 && email == sandboxUserEmail {
-		host := normalizeHost(h.publicURL)
-		if host == "" {
-			host = normalizeHost(c.Request.Host)
-		}
-		if host == "" {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "proxy_endpoint_unavailable"})
-			return
-		}
-
-		nodeName := nodeNameForHost(host)
-		nodes = append(nodes, VlessNode{
-			Name:       nodeName,
-			Address:    host,
-			Port:       xhttpPort,
-			Users:      users,
-			Transport:  "xhttp",
-			Path:       xhttpPath,
-			Mode:       xhttpMode,
-			Security:   "tls",
-			Flow:       defaultTCPFlow,
-			ServerName: host,
-			XHTTPPort:  xhttpPort,
-			TCPPort:    tcpPort,
-			URISchemeXHTTP: renderVLESSURIScheme(xhttpScheme, map[string]string{
-				"UUID":   proxyUUID,
-				"DOMAIN": host,
-				"NODE":   host,
-				"PATH":   url.QueryEscape(xhttpPath),
-				"MODE":   url.QueryEscape(xhttpMode),
-				"SNI":    host,
-				"FP":     defaultTLSFP,
-				"TAG":    url.QueryEscape(nodeName),
-			}),
-			URISchemeTCP: renderVLESSURIScheme(tcpScheme, map[string]string{
-				"UUID":   proxyUUID,
-				"DOMAIN": host,
-				"NODE":   host,
-				"SNI":    host,
-				"FP":     defaultTLSFP,
-				"FLOW":   defaultTCPFlow,
-				"TAG":    url.QueryEscape(nodeName),
-			}),
-		})
-	}
-
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, nodes)
 }
 

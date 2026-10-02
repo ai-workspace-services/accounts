@@ -685,6 +685,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	// stay outside token middleware to support dashboard session tokens.
 	agentServerGroup := r.Group("/api/agent-server/v1")
 	agentServerGroup.GET("/nodes", h.listAgentNodes)
+	agentServerGroup.GET("/regional-pools", h.listRegionalPools)
 	agentServerGroup.GET("/users", h.listAgentUsers)
 	agentServerGroup.GET("/users/events", h.watchAgentUsers)
 	agentServerGroup.POST("/status", h.reportAgentStatus)
