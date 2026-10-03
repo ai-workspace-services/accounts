@@ -242,6 +242,10 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 		identity = h.agentRegistry.RegisterAgent(agentID, identity.Groups)
 	}
 
+	if report.Overlay != nil && (len(report.Overlay.Paths) > 256 || len(report.Overlay.Capabilities) > 8 || len(report.Overlay.DeviceID) > 128 || len(report.Overlay.NetworkID) > 128) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_overlay_status"})
+		return
+	}
 	// Ensure report uses the resolved agent id.
 	report.AgentID = identity.ID
 	h.agentRegistry.ReportStatus(identity, report)

@@ -26,6 +26,7 @@ import (
 var overlayDeviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 
 type Service struct {
+	meshNetworks    map[string]bool
 	repo            *Repository
 	keyID           string
 	privateKey      ed25519.PrivateKey
@@ -82,7 +83,13 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{repo: repo, keyID: cfg.SigningKeyID, privateKey: key, enrollmentTTL: cfg.EnrollmentTTL, credentialTTL: cfg.CredentialTTL, signedConfigTTL: cfg.SignedConfigTTL, localProxyPort: cfg.LocalProxyPort, clock: cfg.Clock}, nil
+	meshNetworks := map[string]bool{}
+	for _, id := range cfg.MeshNetworks {
+		if id = strings.TrimSpace(id); id != "" {
+			meshNetworks[id] = true
+		}
+	}
+	return &Service{meshNetworks: meshNetworks, repo: repo, keyID: cfg.SigningKeyID, privateKey: key, enrollmentTTL: cfg.EnrollmentTTL, credentialTTL: cfg.CredentialTTL, signedConfigTTL: cfg.SignedConfigTTL, localProxyPort: cfg.LocalProxyPort, clock: cfg.Clock}, nil
 }
 
 // ConfigFromEnv is intended for the account service entrypoint. The private
@@ -100,7 +107,7 @@ func ConfigFromEnv() (Config, error) {
 	}
 	keyText := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY"))
 	if keyText == "" {
-		return Config{SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), LocalProxyPort: localProxyPort}, nil
+		return Config{MeshNetworks: strings.Split(os.Getenv("XCONNECT_OVERLAY_MESH_NETWORKS"), ","), SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), LocalProxyPort: localProxyPort}, nil
 	}
 	key, err := base64.StdEncoding.DecodeString(keyText)
 	if err != nil {
@@ -109,7 +116,7 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil || len(key) != ed25519.PrivateKeySize {
 		return Config{}, errors.New("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY must be base64 Ed25519 private key")
 	}
-	return Config{SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), SigningPrivateKey: ed25519.PrivateKey(key), LocalProxyPort: localProxyPort}, nil
+	return Config{MeshNetworks: strings.Split(os.Getenv("XCONNECT_OVERLAY_MESH_NETWORKS"), ","), SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), SigningPrivateKey: ed25519.PrivateKey(key), LocalProxyPort: localProxyPort}, nil
 }
 
 func (s *Service) Repository() *Repository { return s.repo }
@@ -504,7 +511,21 @@ func (s *Service) AdminRevokeDevice(ctx context.Context, ownerUserID, deviceID s
 		if result.RowsAffected == 0 {
 			return ErrNotFound
 		}
-		return tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", deviceID).Update("revoked_at", now).Error
+		if err := tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", deviceID).Update("revoked_at", now).Error; err != nil {
+			return err
+		}
+		var revoked DeviceRecord
+		if err := tx.Where("id = ?", deviceID).First(&revoked).Error; err != nil {
+			return err
+		}
+		if s.meshNetworks[revoked.NetworkID] {
+			network, err := s.repo.networkTx(tx, revoked.NetworkID)
+			if err != nil {
+				return err
+			}
+			return advanceNetworkGeneration(tx, &network)
+		}
+		return nil
 	})
 }
 
@@ -1008,6 +1029,12 @@ func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string) (Ga
 		return GatewaySignedConfig{}, "", err
 	}
 	config := GatewaySignedConfig{SchemaVersion: 1, Role: RoleGateway, ConfigID: configID(network.ID, network.GatewayID, network.ConfigGeneration), NetworkID: network.ID, GatewayID: network.GatewayID, Generation: network.ConfigGeneration, IssuedAt: now, ExpiresAt: canonicalTime(now.Add(s.signedConfigTTL)), InterfaceName: "xconzero0", Address: address, ListenPort: network.GatewayEndpointPort, MTU: 1420, Peers: peers, Transport: GatewayTransport{Kind: transport.Kind, ServerName: network.TransportServerName, Port: network.TransportPort, AuthID: network.TransportAuthID, Path: transport.Path, Mode: transport.Mode, Host: transport.Host, Frontend: frontend, ListenSocket: listenSocket}}
+	if s.meshNetworks[network.ID] {
+		config.Mesh, err = s.relaySpec(context.Background(), network)
+		if err != nil {
+			return GatewaySignedConfig{}, "", err
+		}
+	}
 	payload, err := gatewaySigningBytes(config)
 	if err != nil {
 		return GatewaySignedConfig{}, "", err
@@ -1137,6 +1164,16 @@ func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, 
 		config.SchemaVersion = 2
 		config.Policy = &PolicyReference{Generation: generation, Digest: digest, Path: fmt.Sprintf("/api/overlay/v1/enrollment/policy-artifacts/%d/%s", generation, digest), MediaType: PolicyMediaType}
 	}
+	if v2 && s.meshNetworks[network.ID] {
+		mesh, err := s.oneMeshSpec(context.Background(), device, network)
+		config.Mesh = mesh
+		if config.Mesh != nil {
+			config.WireGuard.MTU = 1280
+		}
+		if err != nil {
+			return SignedConfig{}, "", err
+		}
+	}
 	payload, err := signingBytes(config)
 	if err != nil {
 		return SignedConfig{}, "", err
@@ -1196,7 +1233,8 @@ func signingBytes(config SignedConfig) ([]byte, error) {
 		Transport     Transport        `json:"transport"`
 		WireGuard     WireGuard        `json:"wireguard"`
 		Policy        *PolicyReference `json:"policy"`
-	}{config.SchemaVersion, config.ConfigID, config.NetworkID, config.DeviceID, config.Generation, config.IssuedAt, config.ExpiresAt, config.ProxyCore, config.Transport, config.WireGuard, config.Policy}
+		Mesh          *MeshSpec        `json:"mesh,omitempty"`
+	}{config.SchemaVersion, config.ConfigID, config.NetworkID, config.DeviceID, config.Generation, config.IssuedAt, config.ExpiresAt, config.ProxyCore, config.Transport, config.WireGuard, config.Policy, config.Mesh}
 	if config.SchemaVersion == 1 {
 		return json.Marshal(struct {
 			SchemaVersion int       `json:"schema_version"`
@@ -1230,7 +1268,8 @@ func gatewaySigningBytes(config GatewaySignedConfig) ([]byte, error) {
 		MTU           int              `json:"mtu"`
 		Peers         []GatewayPeer    `json:"peers"`
 		Transport     GatewayTransport `json:"transport"`
-	}{config.SchemaVersion, config.Role, config.ConfigID, config.NetworkID, config.GatewayID, config.Generation, config.IssuedAt, config.ExpiresAt, config.InterfaceName, config.Address, config.ListenPort, config.MTU, config.Peers, config.Transport})
+		Mesh          *RelaySpec       `json:"mesh,omitempty"`
+	}{config.SchemaVersion, config.Role, config.ConfigID, config.NetworkID, config.GatewayID, config.Generation, config.IssuedAt, config.ExpiresAt, config.InterfaceName, config.Address, config.ListenPort, config.MTU, config.Peers, config.Transport, config.Mesh})
 }
 
 func validateExchange(request ExchangeRequest) error {
