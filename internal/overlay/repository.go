@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"strings"
@@ -425,10 +426,9 @@ func (r *Repository) createDevice(ctx context.Context, tokenHash string, request
 		if err := tx.Create(&device).Error; err != nil {
 			return err
 		}
-		if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).UpdateColumn("config_generation", gorm.Expr("config_generation + 1")).Error; err != nil {
+		if err := advanceNetworkGeneration(tx, &network); err != nil {
 			return err
 		}
-		network.ConfigGeneration++
 		credential.DeviceID = device.ID
 		enrollment.DeviceID = device.ID
 		if err := tx.Create(&credential).Error; err != nil {
@@ -545,4 +545,36 @@ func (r *Repository) ackUser(ctx context.Context, request SignedConfigAckRequest
 		return SignedConfigAckResponse{}, err
 	}
 	return r.ack(ctx, request, device, network, now)
+}
+
+// Membership changes advance the signed snapshot and keep an existing ACL
+// artifact bound to that generation, without changing its rules.
+func advanceNetworkGeneration(tx *gorm.DB, network *NetworkRecord) error {
+	next := network.ConfigGeneration + 1
+	updates := map[string]any{"config_generation": next}
+	if strings.TrimSpace(network.PolicyJSON) != "" {
+		var policy PolicyArtifact
+		if err := json.Unmarshal([]byte(network.PolicyJSON), &policy); err != nil {
+			return err
+		}
+		if policy.NetworkID != network.ID || policy.Revision != network.ConfigGeneration {
+			return ErrGenerationConflict
+		}
+		policy.Revision = next
+		raw, err := json.Marshal(policy)
+		if err != nil {
+			return err
+		}
+		network.PolicyJSON = string(raw)
+		updates["policy_json"] = network.PolicyJSON
+	}
+	result := tx.Model(&NetworkRecord{}).Where("id = ? AND config_generation = ?", network.ID, network.ConfigGeneration).Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrGenerationConflict
+	}
+	network.ConfigGeneration = next
+	return nil
 }

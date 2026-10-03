@@ -167,6 +167,23 @@ type Signature struct {
 	Value     string `json:"value"`
 }
 
+type MeshPeer struct {
+	DeviceID  string `json:"device_id"`
+	PublicKey string `json:"public_key"`
+	Address   string `json:"address"`
+}
+type MeshSpec struct {
+	Peers []MeshPeer `json:"peers"`
+}
+type RelayPeer struct {
+	DeviceID     string   `json:"device_id"`
+	PublicKey    string   `json:"public_key"`
+	AllowedPeers []string `json:"allowed_peers"`
+}
+type RelaySpec struct {
+	Peers []RelayPeer `json:"peers"`
+}
+
 type SignedConfig struct {
 	SchemaVersion int              `json:"schema_version"`
 	ConfigID      string           `json:"config_id"`
@@ -179,6 +196,7 @@ type SignedConfig struct {
 	Transport     Transport        `json:"transport"`
 	WireGuard     WireGuard        `json:"wireguard"`
 	Policy        *PolicyReference `json:"policy,omitempty"`
+	Mesh          *MeshSpec        `json:"mesh,omitempty"`
 	Signature     Signature        `json:"signature"`
 }
 
@@ -340,6 +358,7 @@ type GatewaySignedConfig struct {
 	MTU           int              `json:"mtu"`
 	Peers         []GatewayPeer    `json:"peers"`
 	Transport     GatewayTransport `json:"transport"`
+	Mesh          *RelaySpec       `json:"mesh,omitempty"`
 	Signature     Signature        `json:"signature"`
 }
 
@@ -366,6 +385,7 @@ type PolicyArtifact struct {
 }
 
 type PolicyRule struct {
+	WholeDevice        bool     `json:"whole_device,omitempty"`
 	ID                 string   `json:"id"`
 	Action             string   `json:"action"`
 	SourceDevices      []string `json:"source_devices"`
@@ -487,6 +507,7 @@ type BootstrapInvite struct {
 }
 
 type Config struct {
+	MeshNetworks      []string
 	SigningKeyID      string
 	SigningPrivateKey ed25519.PrivateKey
 	LocalProxyPort    int
