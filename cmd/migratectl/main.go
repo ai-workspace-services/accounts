@@ -55,21 +55,61 @@ func newRootCmd() *cobra.Command {
 }
 
 func newMigrateCmd(dir *string) *cobra.Command {
-	var dsn string
+	var (
+		dsn              string
+		dsnEnv           string
+		expectedVersion  uint
+		targetVersion    uint
+		migrationSHA256  string
+		lockTimeout      time.Duration
+		statementTimeout time.Duration
+	)
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Apply database migrations",
+		Short: "Apply database migrations (or one reviewed bounded upgrade)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dsn != "" && dsnEnv != "" {
+				return errors.New("--dsn and --dsn-env are mutually exclusive")
+			}
+			if dsnEnv != "" {
+				dsn = strings.TrimSpace(os.Getenv(dsnEnv))
+			}
 			if dsn == "" {
 				return errors.New("--dsn is required")
 			}
 			runner := migrate.NewRunner(*dir)
 			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 			defer cancel()
+			bounded := expectedVersion != 0 || targetVersion != 0 || migrationSHA256 != "" ||
+				cmd.Flags().Changed("lock-timeout") || cmd.Flags().Changed("statement-timeout")
+			if bounded {
+				if expectedVersion == 0 || targetVersion == 0 || migrationSHA256 == "" {
+					return errors.New("bounded migration requires --expected-version, --target-version, and --migration-sha256")
+				}
+				if lockTimeout == 0 {
+					lockTimeout = 15 * time.Second
+				}
+				if statementTimeout == 0 {
+					statementTimeout = 5 * time.Minute
+				}
+				return runner.Upgrade(ctx, dsn, migrate.UpgradeOptions{
+					ExpectedVersion:  expectedVersion,
+					TargetVersion:    targetVersion,
+					MigrationSHA256:  migrationSHA256,
+					LockTimeout:      lockTimeout,
+					StatementTimeout: statementTimeout,
+				})
+			}
 			return runner.Up(ctx, dsn)
 		},
 	}
 	cmd.Flags().StringVar(&dsn, "dsn", "", "PostgreSQL connection string")
+	cmd.Flags().StringVar(&dsnEnv, "dsn-env", "", "Environment variable containing the PostgreSQL connection string")
+	cmd.Flags().UintVar(&expectedVersion, "expected-version", 0, "Exact clean schema version before a bounded upgrade")
+	cmd.Flags().UintVar(&targetVersion, "target-version", 0, "Exact schema version to apply in a bounded upgrade")
+	cmd.Flags().StringVar(&migrationSHA256, "migration-sha256", "", "Lowercase SHA-256 of the one reviewed migration")
+	cmd.Flags().DurationVar(&lockTimeout, "lock-timeout", 0, "Maximum advisory-lock wait for a bounded upgrade")
+	cmd.Flags().DurationVar(&statementTimeout, "statement-timeout", 0, "PostgreSQL statement timeout for a bounded upgrade")
 	return cmd
 }
 
