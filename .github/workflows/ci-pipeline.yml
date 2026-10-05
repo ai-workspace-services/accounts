@@ -72,8 +72,23 @@ jobs:
     steps:
       - name: Check Out Repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Go
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4.3.0
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run controlled migration PostgreSQL integration test (required)
+        env:
+          PGPASSWORD: postgres
+          CONTROLLED_TEST_DB: controlled_migration_test_${{ github.run_id }}_${{ github.run_attempt }}
+          ACCOUNTS_TEST_POSTGRES_DSN_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          createdb --host localhost --port 5432 --username postgres "$CONTROLLED_TEST_DB"
+          export ACCOUNTS_TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/${CONTROLLED_TEST_DB}?sslmode=disable"
+          go test -count=1 -v ./internal/migrate -run '^TestControlledMigratePostgresIntegration$'
       - name: Apply lifecycle migration fixture twice and verify guards
         env:
           PGPASSWORD: postgres

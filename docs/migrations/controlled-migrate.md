@@ -36,7 +36,9 @@ reference and full commit identity recorded by the release workflow; this
 command does not build or select an image.
 
 The runner checks the expected starting version, refuses dirty migration
-state, and permits only one forward step. SQL, `schema_migrations` version,
+state, and permits only one forward step. The standard `schema_migrations`
+table and its single version row must already exist; even an expected version
+of `0` does not initialize migration state. SQL, `schema_migrations` version,
 and checksum history commit in one transaction. It takes the same PostgreSQL
 advisory lock ID as golang-migrate for the current database, schema, and
 `schema_migrations` table. Lock acquisition and each SQL statement have

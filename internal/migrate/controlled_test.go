@@ -100,9 +100,26 @@ func TestControlledMigrateRejectsSkippedVersionAndBadChecksumBeforeConnecting(t 
 	}
 }
 
+func TestControlledMigrateRejectsUnboundedTimeoutBeforeConnecting(t *testing.T) {
+	files := fstest.MapFS{"0000000010_first.up.sql": {Data: []byte("SELECT 10;\n")}}
+	if err := ControlledMigrate(t.Context(), "postgres://secret@invalid/test", files, ControlledOptions{
+		ExpectedVersion: 0, TargetVersion: 10, SHA256: checksum("SELECT 10;\n"), LockTimeout: MaxControlledLockTimeout + time.Nanosecond, StatementTimeout: time.Second,
+	}); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("unbounded lock timeout should fail safely before connection: %v", err)
+	}
+	if err := ControlledMigrate(t.Context(), "postgres://secret@invalid/test", files, ControlledOptions{
+		ExpectedVersion: 0, TargetVersion: 10, SHA256: checksum("SELECT 10;\n"), LockTimeout: time.Second, StatementTimeout: MaxControlledStatementTimeout + time.Nanosecond,
+	}); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("unbounded statement timeout should fail safely before connection: %v", err)
+	}
+}
+
 func TestControlledMigratePostgresIntegration(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("ACCOUNTS_TEST_POSTGRES_DSN"))
 	if dsn == "" {
+		if os.Getenv("ACCOUNTS_TEST_POSTGRES_DSN_REQUIRED") == "1" {
+			t.Fatal("ACCOUNTS_TEST_POSTGRES_DSN is required for this integration run")
+		}
 		t.Skip("set ACCOUNTS_TEST_POSTGRES_DSN to a disposable PostgreSQL database whose name contains 'test'")
 	}
 	config, err := pgx.ParseConfig(dsn)

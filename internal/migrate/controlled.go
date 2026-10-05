@@ -20,7 +20,6 @@ import (
 const controlledHistoryTable = "accounts_controlled_migration_history"
 const MaxControlledLockTimeout = 5 * time.Minute
 const MaxControlledStatementTimeout = 30 * time.Minute
-const advisoryLockIDSalt uint32 = 1486364155
 
 var migrationFilename = regexp.MustCompile(`^(\d+)_([a-zA-Z0-9][a-zA-Z0-9_.-]*)\.up\.sql$`)
 
@@ -119,15 +118,7 @@ func ControlledMigrate(ctx context.Context, dsn string, files fs.FS, opts Contro
 		return errors.New("unable to inspect migration version state")
 	}
 	if relation == nil {
-		if opts.ExpectedVersion != 0 {
-			return errors.New("database version does not match the expected starting version")
-		}
-		if _, err := tx.Exec(ctx, "CREATE TABLE "+quotedSchema+".schema_migrations (version bigint NOT NULL, dirty boolean NOT NULL)"); err != nil {
-			return errors.New("unable to initialize migration version state")
-		}
-		if _, err := tx.Exec(ctx, "INSERT INTO "+quotedSchema+".schema_migrations (version, dirty) VALUES (0, false)"); err != nil {
-			return errors.New("unable to initialize migration version state")
-		}
+		return errors.New("schema_migrations is missing; controlled migration will not initialize version state")
 	}
 	if _, err := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS "+quotedSchema+"."+controlledHistoryTable+" (from_version bigint NOT NULL, to_version bigint PRIMARY KEY, sql_sha256 text NOT NULL CHECK (sql_sha256 ~ '^[0-9a-f]{64}$'), applied_at timestamptz NOT NULL DEFAULT now())"); err != nil {
 		return errors.New("unable to prepare controlled migration history")
