@@ -46,6 +46,13 @@ migratectl export --dsn "$DB_URL" --output account-export.yaml
 migratectl import --dsn "$DB_URL" --file account-export.yaml
 ```
 
+For one explicitly reviewed database upgrade, use `controlled-migrate`. It
+reads only the checked-in embedded `sql/migrations/*.up.sql` files, selects one
+file by `--target-version`, requires its exact SHA-256, and reads its DSN only
+from `ACCOUNTS_MIGRATION_DSN`. It requires the exact current version and the
+immediate next checked-in migration; it never forces dirty state, skips steps,
+or downgrades. See [the controlled migration runbook](../migrations/controlled-migrate.md).
+
 migratectl reset is disabled because it would remove retained account and
 billing history. Use forward-only migratectl migrate upgrades. sql/schema.sql
 is a non-destructive bootstrap baseline; it never drops existing tables.

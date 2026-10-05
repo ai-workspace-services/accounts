@@ -25,6 +25,14 @@ Cloud 时，由部署运行时注入 `SUPABASE_CONNECT_URI`，它会覆盖文件
 运行时应注入 `DATABASE_SESSION_POOLER_URL` 对应的 Session pooler URI；
 `DATABASE_DIRECT_URL` 只供 schema/DDL、迁移和备份作业使用，不得注入普通服务。
 
+### 有界数据库升级
+
+UAT 等需要一次只执行一个已审查迁移的场景，使用
+`migratectl controlled-migrate`，并通过 `ACCOUNTS_MIGRATION_DSN` 注入迁移专用
+连接。该命令要求精确起始版本、紧邻的目标版本及对应 `.up.sql` SHA-256；普通
+`migratectl migrate` 保持现有行为。接口、镜像内二进制和执行步骤见
+[有界迁移 Runbook](docs/migrations/controlled-migrate.md)。
+
 当注入 `SUPABASE_CONNECT_URI`（或兼容别名 `SUPABASE_CONNECT_URL`）时，容器会直连
 Supabase pooler，且不会启动或等待本地 stunnel。stunnel client 只用于自建 PostgreSQL
 经 `DB_TLS_HOST` / `DB_TLS_PORT` 连接远端 stunnel server 的部署形态。
