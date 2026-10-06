@@ -30,6 +30,8 @@ Cloud Run 和 Selfhost 都经管理的 HTTPS ingress/Caddy 终止 TLS，应用�
 后台 true 时正常业务后台写入仍可能发生。所有探针仍使用同一个 IMAGE 解析器，不接收独立 COMMIT_ID。
 
 资格范围：新的 PostgreSQL 17 隔离测试以 SELECT-only 角色启动原生数据集，比对所有业务行及 schema 摘要；
+临时目标测试角色使用 BYPASSRLS 获得原生 RLS 表的完整读取权限，仍没有 ownership/CREATE/DML 权限。
+这不适用于来源合同：PROD Supabase 的 `readonly_release` 仍必须 NOBYPASSRLS 并通过逐表 SELECT 策略核验。
 待机测试使用不存在的 DB，验证不会连接或启动 Agent。CI 和这些回执不代替生产源冻结、53 表最终一致性、单写者或实际入口验收。
 生产当前仍保持 Serverless 主库。
 

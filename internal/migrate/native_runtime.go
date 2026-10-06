@@ -40,6 +40,10 @@ func VerifyNativeRuntime(ctx context.Context, db *sql.DB) error {
 		if err = validateBusinessTarget(ctx, tx, name, tables[name]); err != nil {
 			return err
 		}
+		var readable bool
+		if tx.QueryRowContext(ctx, `SELECT has_table_privilege(current_user,to_regclass($1),'SELECT')`, "public."+name).Scan(&readable) != nil || !readable {
+			return errors.New("native runtime requires SELECT on every business table")
+		}
 	}
 	return tx.Commit()
 }

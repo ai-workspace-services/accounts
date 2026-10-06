@@ -238,6 +238,20 @@ UNION ALL SELECT pg_get_functiondef(p.oid) FROM pg_proc p WHERE pronamespace='pu
 	if before != fingerprint() {
 		t.Fatal("managed startup changed a business fact or schema")
 	}
+	readonlyDB, err := sql.Open("pgx", parsed.String())
+	if err != nil {
+		t.Fatal("readonly target fixture unavailable")
+	}
+	defer readonlyDB.Close()
+	if _, err = db.ExecContext(ctx, "REVOKE SELECT ON public.users FROM runtime_readonly_ci"); err != nil {
+		t.Fatal("fixture read privilege tamper failed")
+	}
+	if migrate.VerifyNativeRuntime(ctx, readonlyDB) == nil {
+		t.Fatal("runtime accepted an unreadable business table")
+	}
+	if _, err = db.ExecContext(ctx, "GRANT SELECT ON public.users TO runtime_readonly_ci"); err != nil {
+		t.Fatal("fixture read privilege restoration failed")
+	}
 	if err = migrate.VerifyNativeRuntime(ctx, db); err != nil {
 		t.Fatal("exact native runtime refused")
 	}
