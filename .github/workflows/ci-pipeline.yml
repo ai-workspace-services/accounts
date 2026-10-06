@@ -54,6 +54,41 @@ defaults:
     shell: bash
 
 jobs:
+  native_schema_initialization:
+    name: Native Schema Initialization (PostgreSQL 17)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - name: Set Up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Prepare isolated account fixture
+        env:
+          PGPASSWORD: postgres
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          createdb --host localhost --port 5432 --username postgres account
+      - name: Qualify compiled schema and native initialization guards
+        env:
+          MIGRATECTL_NATIVE_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
+        run: go test -v ./sql ./cmd/migratectl ./internal/migrate
+
   account_lifecycle_migration:
     name: Account Lifecycle Migration (PostgreSQL 17)
     runs-on: ubuntu-latest
@@ -72,6 +107,8 @@ jobs:
     steps:
       - name: Check Out Repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Apply lifecycle migration fixture twice and verify guards
@@ -129,7 +166,7 @@ jobs:
 
   build:
     name: Build
-    needs: prep
+    needs: [prep, native_schema_initialization, account_lifecycle_migration]
     # A production snapshot promotion only needs the independent Artifact
     # Registry job below. Skipping the GHCR build avoids requesting the
     # tag-bound production Vault role from its main-branch dispatch.
@@ -223,6 +260,7 @@ jobs:
 
   publish_artifact_registry:
     name: Publish Cloud Run image to Artifact Registry
+    needs: [native_schema_initialization, account_lifecycle_migration]
     # Production snapshots use immutable v* tags; UAT snapshots use
     # daily-build-* tags. Both must publish the Cloud Run image consumed by
     # platform-ops-toolkit.
