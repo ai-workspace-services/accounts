@@ -54,6 +54,8 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newImportXrayCredentialsCmd())
 	cmd.AddCommand(newNativeSchemaCmd())
 	cmd.AddCommand(newNativeInitCmd())
+	cmd.AddCommand(newFullBusinessCmd(false))
+	cmd.AddCommand(newFullBusinessCmd(true))
 
 	return cmd
 }
