@@ -91,6 +91,16 @@ jobs:
             --set ON_ERROR_STOP=1 \
             --file sql/migrations/tests/local_finance_ledger_upgrade_test.sql
 
+      - name: Preserve full-business legacy compatibility across repeated upgrades
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          createdb --host localhost --port 5432 --username postgres full_business_compat_test
+          psql "postgres://postgres@localhost:5432/full_business_compat_test?sslmode=disable" \
+            --set ON_ERROR_STOP=1 \
+            --file sql/migrations/tests/full_business_legacy_compat_upgrade_test.sql
+
   prep:
     name: Prep
     runs-on: ubuntu-latest
