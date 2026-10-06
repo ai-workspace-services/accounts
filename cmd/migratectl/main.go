@@ -95,21 +95,61 @@ func newControlledMigrateCmd() *cobra.Command {
 }
 
 func newMigrateCmd(dir *string) *cobra.Command {
-	var dsn string
+	var (
+		dsn              string
+		dsnEnv           string
+		expectedVersion  uint
+		targetVersion    uint
+		migrationSHA256  string
+		lockTimeout      time.Duration
+		statementTimeout time.Duration
+	)
 	cmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Apply database migrations",
+		Short: "Apply database migrations (or one reviewed bounded upgrade)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if dsn != "" && dsnEnv != "" {
+				return errors.New("--dsn and --dsn-env are mutually exclusive")
+			}
+			if dsnEnv != "" {
+				dsn = strings.TrimSpace(os.Getenv(dsnEnv))
+			}
 			if dsn == "" {
 				return errors.New("--dsn is required")
 			}
 			runner := migrate.NewRunner(*dir)
 			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
 			defer cancel()
+			bounded := expectedVersion != 0 || targetVersion != 0 || migrationSHA256 != "" ||
+				cmd.Flags().Changed("lock-timeout") || cmd.Flags().Changed("statement-timeout")
+			if bounded {
+				if expectedVersion == 0 || targetVersion == 0 || migrationSHA256 == "" {
+					return errors.New("bounded migration requires --expected-version, --target-version, and --migration-sha256")
+				}
+				if lockTimeout == 0 {
+					lockTimeout = 15 * time.Second
+				}
+				if statementTimeout == 0 {
+					statementTimeout = 5 * time.Minute
+				}
+				return runner.Upgrade(ctx, dsn, migrate.UpgradeOptions{
+					ExpectedVersion:  expectedVersion,
+					TargetVersion:    targetVersion,
+					MigrationSHA256:  migrationSHA256,
+					LockTimeout:      lockTimeout,
+					StatementTimeout: statementTimeout,
+				})
+			}
 			return runner.Up(ctx, dsn)
 		},
 	}
 	cmd.Flags().StringVar(&dsn, "dsn", "", "PostgreSQL connection string")
+	cmd.Flags().StringVar(&dsnEnv, "dsn-env", "", "Environment variable containing the PostgreSQL connection string")
+	cmd.Flags().UintVar(&expectedVersion, "expected-version", 0, "Exact clean schema version before a bounded upgrade")
+	cmd.Flags().UintVar(&targetVersion, "target-version", 0, "Exact schema version to apply in a bounded upgrade")
+	cmd.Flags().StringVar(&migrationSHA256, "migration-sha256", "", "Lowercase SHA-256 of the one reviewed migration")
+	cmd.Flags().DurationVar(&lockTimeout, "lock-timeout", 0, "Maximum advisory-lock wait for a bounded upgrade")
+	cmd.Flags().DurationVar(&statementTimeout, "statement-timeout", 0, "PostgreSQL statement timeout for a bounded upgrade")
 	return cmd
 }
 
@@ -223,10 +263,12 @@ func newVersionCmd(dir *string) *cobra.Command {
 
 func newExportCmd() *cobra.Command {
 	var (
-		dsn     string
-		email   string
-		output  string
-		timeout time.Duration
+		dsn          string
+		dsnEnv       string
+		accountsOnly bool
+		email        string
+		output       string
+		timeout      time.Duration
 	)
 
 	output = "account-export.yaml"
@@ -236,6 +278,11 @@ func newExportCmd() *cobra.Command {
 		Use:   "export",
 		Short: "Export user data to a YAML snapshot",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var err error
+			dsn, err = resolveTransferDSN(dsn, dsnEnv)
+			if err != nil {
+				return err
+			}
 			if dsn == "" {
 				return errors.New("--dsn is required")
 			}
@@ -244,7 +291,15 @@ func newExportCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
 
-			dump, err := exporter.Export(ctx, dsn, email)
+			var dump *migrate.AccountDump
+			if accountsOnly {
+				if email != "" || output == "-" {
+					return errors.New("accounts-only forbids partial email exports and stdout snapshots")
+				}
+				dump, err = exporter.ExportAccountsOnly(ctx, dsn)
+			} else {
+				dump, err = exporter.Export(ctx, dsn, email)
+			}
 			if err != nil {
 				return err
 			}
@@ -270,7 +325,11 @@ func newExportCmd() *cobra.Command {
 				if err := os.WriteFile(output, buf.Bytes(), 0o600); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Exported %d users to %s\n", len(dump.Users), output)
+				count := len(dump.Users)
+				if dump.ThreeTables != nil {
+					count = len(dump.ThreeTables.Rows["users"])
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Exported %d users to protected snapshot file\n", count)
 				return nil
 			}
 		},
@@ -278,6 +337,8 @@ func newExportCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&dsn, "dsn", "", "PostgreSQL connection string")
 	cmd.Flags().StringVar(&email, "email", "", "Case-insensitive email keyword filter")
+	cmd.Flags().StringVar(&dsnEnv, "dsn-env", "", "Environment variable containing transfer DSN (not supported by migrate)")
+	cmd.Flags().BoolVar(&accountsOnly, "accounts-only", false, "Export all three account tables without dropping source fields")
 	cmd.Flags().StringVar(&output, "output", output, "Output file path or '-' for stdout")
 	cmd.Flags().DurationVar(&timeout, "timeout", timeout, "Export operation timeout")
 
@@ -286,7 +347,10 @@ func newExportCmd() *cobra.Command {
 
 func newImportCmd() *cobra.Command {
 	var (
+		targetDatabase        string
 		dsn                   string
+		dsnEnv                string
+		accountsOnly          bool
 		file                  string
 		timeout               time.Duration
 		merge                 bool
@@ -304,6 +368,11 @@ func newImportCmd() *cobra.Command {
 		Use:   "import",
 		Short: "Import user data from a YAML snapshot",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var resolveErr error
+			dsn, resolveErr = resolveTransferDSN(dsn, dsnEnv)
+			if resolveErr != nil {
+				return resolveErr
+			}
 			if dsn == "" {
 				return errors.New("--dsn is required")
 			}
@@ -326,8 +395,14 @@ func newImportCmd() *cobra.Command {
 			}
 
 			var dump migrate.AccountDump
-			if err := yaml.Unmarshal(data, &dump); err != nil {
-				return fmt.Errorf("parse yaml: %w", err)
+			decoder := yaml.NewDecoder(bytes.NewReader(data))
+			decoder.KnownFields(true)
+			if err := decoder.Decode(&dump); err != nil {
+				return errors.New("invalid snapshot YAML or unknown field (details suppressed)")
+			}
+			var extra any
+			if err := decoder.Decode(&extra); err != io.EOF {
+				return errors.New("snapshot must contain exactly one YAML document")
 			}
 
 			importer := migrate.NewImporter()
@@ -354,6 +429,8 @@ func newImportCmd() *cobra.Command {
 			defer cancel()
 
 			report, err := importer.Import(ctx, dsn, &dump, migrate.ImportOptions{
+				TargetDatabase:        targetDatabase,
+				AccountsOnly:          accountsOnly,
 				Merge:                 merge,
 				MergeStrategy:         migrate.MergeStrategy(mergeStrategy),
 				DryRun:                dryRun,
@@ -383,6 +460,9 @@ func newImportCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&dsn, "dsn", "", "PostgreSQL connection string")
 	cmd.Flags().StringVar(&file, "file", "", "YAML file path or '-' for stdin")
+	cmd.Flags().StringVar(&targetDatabase, "target-database", "", "Explicit independent accounts_rebuild_<id> database identity for accounts-only")
+	cmd.Flags().StringVar(&dsnEnv, "dsn-env", "", "Environment variable containing transfer DSN (not supported by migrate)")
+	cmd.Flags().BoolVar(&accountsOnly, "accounts-only", false, "Lossless three-table import into an independent target; exact replay only")
 	cmd.Flags().DurationVar(&timeout, "timeout", timeout, "Import operation timeout")
 	cmd.Flags().BoolVar(&merge, "merge", false, "Enable additive merge behaviour")
 	cmd.Flags().StringVar(&mergeStrategy, "merge-strategy", "", "Merge strategy (replace, append, timestamp)")
@@ -393,4 +473,23 @@ func newImportCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&mergeAllowlist, "merge-allowlist", nil, "User UUIDs allowed to merge (comma-separated or repeated)")
 
 	return cmd
+}
+
+func resolveTransferDSN(dsn, name string) (string, error) {
+	if name == "" {
+		return dsn, nil
+	}
+	if dsn != "" {
+		return "", errors.New("choose --dsn or --dsn-env, not both")
+	}
+	for i, r := range name {
+		if !(r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9') {
+			return "", errors.New("invalid DSN environment variable name")
+		}
+	}
+	value := os.Getenv(name)
+	if value == "" {
+		return "", errors.New("DSN environment variable is empty")
+	}
+	return value, nil
 }

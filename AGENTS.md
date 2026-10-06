@@ -2,7 +2,7 @@
 
 Default local skill references for this repository:
 
-- Release traceability: [skills/release-traceability/SKILL.md](/Users/shenlan/workspaces/cloud-neutral-toolkit/accounts.svc.plus/skills/release-traceability/SKILL.md)
+- Release traceability: [skills/release-traceability/SKILL.md](skills/release-traceability/SKILL.md)
 
 ## Default Rule
 
