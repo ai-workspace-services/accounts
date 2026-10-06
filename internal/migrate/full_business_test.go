@@ -210,6 +210,9 @@ func TestFullBusinessInvalidContractsDoNotConnect(t *testing.T) {
 			t.Fatal("unsafe source accepted")
 		}
 	}
+	if e := validateBusinessConnections("postgres://readonly_release.projectref:fixture@localhost/source?sslmode=disable", "postgres://postgres:fixture@localhost/account?sslmode=disable"); e != nil {
+		t.Fatal("pooler readonly role rejected before actual current_user proof")
+	}
 	if e := validateBusinessConnections("postgres://readonly_release:fixture@localhost/account?sslmode=disable", "postgres://postgres:fixture@localhost/account?sslmode=disable"); e == nil {
 		t.Fatal("same database accepted")
 	}

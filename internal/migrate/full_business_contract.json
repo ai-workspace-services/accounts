@@ -815,7 +815,7 @@
       {"generated": false,"name": "mfa_secret_issued_at","nullable": true,"type": "timestamp with time zone"},
       {"generated": false,"name": "mfa_confirmed_at","nullable": true,"type": "timestamp with time zone"},
       {"generated": false,"name": "email_verified_at","nullable": true,"type": "timestamp with time zone"},
-      {"generated": true,"name": "email_verified","nullable": false,"type": "boolean"},
+      {"generated": true,"name": "email_verified","nullable": true,"type": "boolean"},
       {"generated": false,"name": "active","nullable": false,"type": "boolean"},
       {"generated": false,"name": "proxy_uuid","nullable": false,"type": "uuid"},
       {"generated": false,"name": "proxy_uuid_expires_at","nullable": true,"type": "timestamp with time zone"},

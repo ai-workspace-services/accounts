@@ -338,8 +338,13 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 	} else {
 		receipt.FullBusinessEqual = true
 		receipt.Result = "equal"
+		if options.CompareOnly {
+			if err = businessSequences(ctx, dst, false); err != nil {
+				return receipt, err
+			}
+		}
 		if !options.CompareOnly {
-			if err = advanceBusinessSequences(ctx, dst); err != nil {
+			if err = businessSequences(ctx, dst, true); err != nil {
 				return receipt, err
 			}
 			receipt.TargetWrites = true
@@ -360,7 +365,7 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 func validateBusinessConnections(source, target string) error {
 	src, e1 := pgx.ParseConfig(source)
 	dst, e2 := pgx.ParseConfig(target)
-	if e1 != nil || e2 != nil || src.Database == "" || dst.Database != "account" || src.User != "readonly_release" || dst.User == "readonly_release" {
+	if e1 != nil || e2 != nil || src.Database == "" || dst.Database != "account" || strings.Split(src.User, ".")[0] != "readonly_release" || dst.User == "readonly_release" {
 		return errors.New("invalid readonly source or native target connection contract")
 	}
 	local := src.Host == "localhost" || src.Host == "127.0.0.1" || src.Host == "::1"
@@ -448,7 +453,7 @@ func validateBusinessTarget(ctx context.Context, tx *sql.Tx, name string, table 
 	for i, c := range cols {
 		expected := table.Columns[i]
 		if c.Name != expected.Name || c.Type != expected.Type || c.Nullable != expected.Nullable || c.Generated != expected.Generated {
-			return fmt.Errorf("native target public.%s column definition differs", name)
+			return fmt.Errorf("native target public.%s.%s column definition differs", name, expected.Name)
 		}
 	}
 	var visible bool
@@ -524,7 +529,7 @@ func businessUsers(ctx context.Context, tx *sql.Tx) (map[string]businessUser, er
 		key := strings.ToLower(strings.TrimSpace(u.Email))
 		id, e1 := uuid.Parse(u.ID)
 		proxy, e2 := uuid.Parse(u.Proxy)
-		if key == "" || users[key].ID != "" || proxies[u.Proxy] || e1 != nil || e2 != nil || id.String() != u.ID || proxy.String() != u.Proxy {
+		if key == "" || users[key].ID != "" || proxies[u.Proxy] || e1 != nil || e2 != nil || id.String() != u.ID || proxy.String() != u.Proxy || id == uuid.Nil || proxy == uuid.Nil {
 			return nil, errors.New("user email or Proxy UUID uniqueness is invalid")
 		}
 		users[key] = u
@@ -796,7 +801,7 @@ func writeBusinessCanonical(out io.Writer, value any) error {
 	}
 	return nil
 }
-func advanceBusinessSequences(ctx context.Context, tx *sql.Tx) error {
+func businessSequences(ctx context.Context, tx *sql.Tx, advance bool) error {
 	for _, item := range [][2]string{{"sandbox_bindings", "id"}, {"finance_operation_events", "id"}} {
 		var sequence string
 		var maximum int64
@@ -812,6 +817,9 @@ func advanceBusinessSequences(ctx context.Context, tx *sql.Tx) error {
 			return errors.New("cannot read target sequence checkpoint")
 		}
 		if maximum > 0 && (maximum > current || (maximum == current && !called)) {
+			if !advance {
+				return errors.New("target business sequence is below copied maximum")
+			}
 			if _, err := tx.ExecContext(ctx, `SELECT setval($1::regclass,$2,true)`, sequence, maximum); err != nil {
 				return errors.New("cannot advance target business sequence")
 			}
