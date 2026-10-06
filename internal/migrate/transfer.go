@@ -18,10 +18,13 @@ import (
 
 // AccountDump represents the serialized snapshot of account-related tables.
 type AccountDump struct {
-	Metadata   *SnapshotMetadata `yaml:"metadata,omitempty"`
-	Users      []UserRecord      `yaml:"users"`
-	Identities []IdentityRecord  `yaml:"identities,omitempty"`
-	Sessions   []SessionRecord   `yaml:"sessions,omitempty"`
+	Metadata *SnapshotMetadata `yaml:"metadata,omitempty"`
+	// ThreeTables is the lossless accounts-only format. Each row is JSON so
+	// explicit NULL, absent columns and bigint precision survive YAML transport.
+	ThreeTables *ThreeTableSnapshot `yaml:"threeTables,omitempty"`
+	Users       []UserRecord        `yaml:"users"`
+	Identities  []IdentityRecord    `yaml:"identities,omitempty"`
+	Sessions    []SessionRecord     `yaml:"sessions,omitempty"`
 }
 
 // UserRecord captures the exported representation of a user row.
@@ -88,9 +91,11 @@ const (
 
 // ImportOptions configures how snapshot imports should be applied.
 type ImportOptions struct {
-	Merge         bool
-	MergeStrategy MergeStrategy
-	DryRun        bool
+	AccountsOnly   bool
+	TargetDatabase string
+	Merge          bool
+	MergeStrategy  MergeStrategy
+	DryRun         bool
 	// PreserveExistingUsers is a deprecated compatibility option. Merge mode
 	// always preserves existing target profiles, whether this flag is set or not.
 	PreserveExistingUsers bool
@@ -190,6 +195,12 @@ func NewImporter() *Importer {
 // profiles. Non-merge mode is limited to an empty users table; merge mode
 // preserves target profiles and rejects username/email conflicts before writes.
 func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, opts ImportOptions) (*ImportReport, error) {
+	if opts.AccountsOnly {
+		return importThreeTables(ctx, dsn, dump, opts)
+	}
+	if dump != nil && dump.ThreeTables != nil {
+		return nil, errors.New("three-table snapshot requires accounts-only import")
+	}
 	if dump == nil {
 		return nil, errors.New("dump is nil")
 	}
