@@ -17,6 +17,7 @@ COPY . .
 
 # 编译
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o account ./cmd/accountsvc/main.go
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o migratectl ./cmd/migratectl
 
 # ------------------------------
 # Stage 2 — Runtime
@@ -32,6 +33,7 @@ RUN apt-get update \
     && chown -R nobody:nogroup /var/run/stunnel
 
 COPY --from=builder /src/account /usr/local/bin/account
+COPY --from=builder /src/migratectl /usr/local/bin/migratectl
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY config /app/config
 
