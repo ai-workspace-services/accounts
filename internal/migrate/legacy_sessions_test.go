@@ -49,6 +49,40 @@ func TestSessionMergeUsesTargetKey(t *testing.T) {
 	}
 }
 
+func TestLegacySessionReplayIgnoresUnstorableTimestamps(t *testing.T) {
+	created := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+	updated := created.Add(time.Hour)
+	incoming := SessionRecord{UUID: "source-id", Token: "synthetic-session-token", UserUUID: "target-user", ExpiresAt: updated, CreatedAt: &created, UpdatedAt: &updated}
+	existing := incoming
+	existing.UUID = "synthetic-target-id"
+	existing.UpdatedAt = nil
+	caps := tableColumnCapabilities{hasCreatedAt: true}
+	projected := sessionForTarget(incoming, caps)
+	if sessionDiffers(projected, existing) {
+		t.Fatal("a token-keyed row without updated_at must converge after import")
+	}
+	if incoming.UpdatedAt == nil {
+		t.Fatal("target projection must not mutate the source snapshot")
+	}
+	projected.ExpiresAt = projected.ExpiresAt.Add(time.Hour)
+	if !sessionDiffers(projected, existing) {
+		t.Fatal("stored session expiry differences must still be detected")
+	}
+}
+
+func TestModernSessionReplayPreservesTimestampComparison(t *testing.T) {
+	now := time.Now().UTC()
+	incoming := SessionRecord{Token: "synthetic-session-token", UpdatedAt: &now, CreatedAt: &now}
+	projected := sessionForTarget(incoming, tableColumnCapabilities{hasUUID: true, hasCreatedAt: true, hasUpdatedAt: true})
+	if projected.UpdatedAt == nil || projected.CreatedAt == nil || !sessionDiffers(projected, SessionRecord{Token: incoming.Token}) {
+		t.Fatal("modern timestamp differences must remain meaningful")
+	}
+	projected = sessionForTarget(incoming, tableColumnCapabilities{})
+	if projected.CreatedAt != nil || projected.UpdatedAt != nil {
+		t.Fatal("tables without either timestamp must not report phantom updates")
+	}
+}
+
 func TestUpsertLegacySessionUsesTokenConstraint(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
