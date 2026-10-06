@@ -60,6 +60,9 @@ type BusinessEquality struct {
 	SHA256 string `json:"sha256"`
 }
 type FullBusinessReceipt struct {
+	SourceIdentitySHA256    string                      `json:"source_identity_sha256"`
+	SourceSnapshotSHA256    string                      `json:"source_snapshot_sha256"`
+	SourceCatalogSHA256     string                      `json:"source_catalog_sha256"`
 	Format                  int                         `json:"format"`
 	Result                  string                      `json:"result"`
 	Environment             string                      `json:"environment"`
@@ -196,6 +199,21 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 		}
 	}
 	receipt.SnapshotStartedAt = time.Now().UTC()
+	srcCfg, _ := pgx.ParseConfig(sourceDSN)
+	identity, _ := json.Marshal(struct {
+		Host     string
+		Port     uint16
+		Database string
+		Role     string
+	}{srcCfg.Host, srcCfg.Port, srcCfg.Database, "readonly_release"})
+	identitySum := sha256.Sum256(identity)
+	receipt.SourceIdentitySHA256 = hex.EncodeToString(identitySum[:])
+	var snapshot string
+	if err = src.QueryRowContext(ctx, `SELECT pg_current_snapshot()::text`).Scan(&snapshot); err != nil {
+		return receipt, errors.New("cannot identify readonly source snapshot")
+	}
+	snapshotSum := sha256.Sum256([]byte(snapshot))
+	receipt.SourceSnapshotSHA256 = hex.EncodeToString(snapshotSum[:])
 	if err = businessSourceRole(ctx, src); err != nil {
 		return receipt, err
 	}
@@ -223,10 +241,10 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 		return receipt, errors.New("target requires the exact clean native Billing checkpoint")
 	}
 	if !options.CompareOnly && !options.DryRun {
-		if _, err = dst.ExecContext(ctx, `SELECT pg_advisory_xact_lock(20261007,53)`); err != nil {
+		if _, err = dst.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1::bigint)`, migrationAdvisoryLockKey); err != nil {
 			return receipt, errors.New("cannot lock full-business initialization")
 		}
-		names := make([]string, 0, len(order))
+		names := []string{"public.schema_migrations"}
 		for _, name := range order {
 			names = append(names, "public."+quoteBusiness(name))
 		}
@@ -245,6 +263,20 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 			}
 		}
 	}
+	sourceCatalog := map[string][]ColumnDefinition{}
+	for name := range sourceTables {
+		cols, err := catalogColumns(ctx, src, name)
+		if err != nil {
+			return receipt, fmt.Errorf("cannot inspect source public.%s", name)
+		}
+		if err = validateBusinessSourceColumns(name, cols, tables[name]); err != nil {
+			return receipt, err
+		}
+		sourceCatalog[name] = cols
+	}
+	catalogData, _ := json.Marshal(sourceCatalog)
+	catalogSum := sha256.Sum256(catalogData)
+	receipt.SourceCatalogSHA256 = hex.EncodeToString(catalogSum[:])
 	sourceUsers, err := businessUsers(ctx, src)
 	if err != nil {
 		return receipt, err
@@ -265,19 +297,7 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 	}
 	receipt.UserCount = len(sourceUsers)
 	for _, name := range order {
-		var sourceColumns []ColumnDefinition
-		if sourceTables[name] {
-			if err = businessSourceVisibility(ctx, src, name); err != nil {
-				return receipt, err
-			}
-			sourceColumns, err = catalogColumns(ctx, src, name)
-			if err != nil {
-				return receipt, fmt.Errorf("cannot inspect source public.%s", name)
-			}
-			if err = validateBusinessSourceColumns(name, sourceColumns, tables[name]); err != nil {
-				return receipt, err
-			}
-		}
+		sourceColumns := sourceCatalog[name]
 		// A preview inspects catalogs/privileges and user matching; it never reads
 		// the large ledger or transfers a row. Counts in preview are not equality.
 		if options.DryRun {

@@ -82,6 +82,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		if optionalBusinessTables[name] {
 			continue
 		}
+		exec(sourceAdmin, "ALTER TABLE public."+quoteBusiness(name)+" ENABLE ROW LEVEL SECURITY")
 		exec(sourceAdmin, "CREATE POLICY release_initialization_readonly ON public."+quoteBusiness(name)+" FOR SELECT TO readonly_release USING (true)")
 	}
 	const sourceID = "00000000-0000-0000-0000-000000000101"
