@@ -174,5 +174,65 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	if strings.Contains(string(raw), "fixture-password") || strings.Contains(string(raw), "@example.invalid") || strings.Contains(string(raw), proxyID) {
 		t.Fatal("receipt contains private business records")
 	}
+	t.Run("native53_finance_and_late_trigger", func(t *testing.T) {
+		// Explicit synthetic fixture reset, behind the loopback-only test DSN.
+		// No runtime migration function contains DROP or disables a constraint.
+		exec(target, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`)
+		if _, e = InitializeNative(context.Background(), targetDSN, NativeInitOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, LockTimeout: time.Second, StatementTimeout: time.Minute}); e != nil {
+			t.Fatal(e)
+		}
+		exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=2026100701`)
+		nativeDSN := "postgres://" + cfg.User + ":" + cfg.Password + "@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/full_business_native_source?sslmode=disable"
+		native, e := sql.Open("pgx", nativeDSN)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer native.Close()
+		exec(native, string(body))
+		exec(native, string(billing))
+		exec(native, `GRANT USAGE ON SCHEMA public TO readonly_release; GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_release`)
+		for name := range tables {
+			exec(native, "ALTER TABLE public."+quoteBusiness(name)+" ENABLE ROW LEVEL SECURITY; CREATE POLICY release_initialization_readonly ON public."+quoteBusiness(name)+" FOR SELECT TO readonly_release USING(true)")
+		}
+		exec(native, `INSERT INTO public.users(uuid,username,password,email,proxy_uuid,email_verified_at) VALUES('`+sourceID+`','native-full-business','isolated-password','Native@example.invalid','`+proxyID+`','2026-10-01T00:00:00Z')`)
+		exec(native, `INSERT INTO public.finance_invoices(id,idempotency_key,account_uuid,amount_minor,currency) VALUES('00000000-0000-0000-0000-000000000501','invoice','`+sourceID+`',9007199254740993,'USD');
+        INSERT INTO public.finance_payments(id,idempotency_key,invoice_id,account_uuid,amount_minor,currency) VALUES('00000000-0000-0000-0000-000000000502','payment','00000000-0000-0000-0000-000000000501','`+sourceID+`',9007199254740993,'USD');
+        INSERT INTO public.finance_refunds(id,idempotency_key,payment_id,amount_minor,currency) VALUES('00000000-0000-0000-0000-000000000503','refund','00000000-0000-0000-0000-000000000502',123,'USD');
+        INSERT INTO public.finance_operations(id,idempotency_key,operation_type,status) VALUES('00000000-0000-0000-0000-000000000504','operation','payment','succeeded');
+        INSERT INTO public.finance_operation_events(id,operation_id,attempt,event_type,status) OVERRIDING SYSTEM VALUE VALUES(44,'00000000-0000-0000-0000-000000000504',1,'qualification','succeeded');
+        INSERT INTO public.account_lifecycle_events(transition_id,user_uuid,from_state,to_state,actor_type,actor_ref) VALUES('00000000-0000-0000-0000-000000000505','`+sourceID+`','active','archived','user','`+sourceID+`');
+        INSERT INTO public.password_recovery_challenges(id,user_uuid,email_snapshot,challenge_kind,secret_hash,expires_at) VALUES('00000000-0000-0000-0000-000000000506','`+sourceID+`','Native@example.invalid','token','isolated-hash','2026-11-01T00:00:00Z');
+        INSERT INTO public.cloud_vendor_costs(id,provider,account_id,service_name,usage_start_time,usage_end_time,cost_amount) VALUES('00000000-0000-0000-0000-000000000507','gcp','fixture','compute','2026-10-01T00:00:00Z','2026-10-02T00:00:00Z',12.75)`)
+		readonlyNative := "postgres://readonly_release:isolated-readonly-fixture@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/full_business_native_source?sslmode=disable"
+		copyOptions := options
+		copyOptions.CompareOnly = false
+		copyOptions.DryRun = false
+		// A later insert mutates an earlier table. End-of-transaction whole
+		// scope verification must catch it, even though row counts match.
+		exec(target, `CREATE FUNCTION public.fixture_late_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE public.cloud_vendor_costs SET cost_amount=99; RETURN NEW; END $$;
+        CREATE TRIGGER fixture_late_mutation AFTER INSERT ON public.users FOR EACH ROW EXECUTE FUNCTION public.fixture_late_mutation()`)
+		if _, e = CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions); e == nil {
+			t.Fatal("late insert trigger mutation accepted")
+		}
+		if e = target.QueryRow(`SELECT count(*) FROM public.cloud_vendor_costs`).Scan(&count); e != nil || count != 0 {
+			t.Fatal("late equality failure retained target facts")
+		}
+		exec(target, `DROP TRIGGER fixture_late_mutation ON public.users; DROP FUNCTION public.fixture_late_mutation()`)
+		copied, e := CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions)
+		if e != nil || copied.SourceTables != 53 || len(copied.Tables) != 53 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
+			t.Fatalf("native finance copy failed: %v", e)
+		}
+		if e = target.QueryRow(`SELECT amount_minor FROM public.finance_payments`).Scan(&minimum); e != nil || minimum != 9007199254740993 {
+			t.Fatal("finance minor integer precision lost")
+		}
+		if e = target.QueryRow(`SELECT nextval('public.finance_operation_events_id_seq')`).Scan(&minimum); e != nil || minimum != 45 {
+			t.Fatal("finance identity sequence not advanced")
+		}
+		copyOptions.CompareOnly = true
+		if _, e = CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions); e != nil {
+			t.Fatalf("native53 compare failed: %v", e)
+		}
+	})
+
 }
 func fmtPort(port uint16) string { return strconv.FormatUint(uint64(port), 10) }

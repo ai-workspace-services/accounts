@@ -205,7 +205,7 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 		Port     uint16
 		Database string
 		Role     string
-	}{srcCfg.Host, srcCfg.Port, srcCfg.Database, "readonly_release"})
+	}{srcCfg.Host, srcCfg.Port, srcCfg.Database, srcCfg.User})
 	identitySum := sha256.Sum256(identity)
 	receipt.SourceIdentitySHA256 = hex.EncodeToString(identitySum[:])
 	var snapshot string

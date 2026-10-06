@@ -121,6 +121,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y postgresql-client
           createdb --host localhost --port 5432 --username postgres account
           createdb --host localhost --port 5432 --username postgres full_business_source
+          createdb --host localhost --port 5432 --username postgres full_business_native_source
       - name: Qualify readonly visibility, full fields, batching and rollback
         env:
           MIGRATECTL_FULL_BUSINESS_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable

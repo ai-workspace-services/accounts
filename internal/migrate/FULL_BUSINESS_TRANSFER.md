@@ -69,7 +69,7 @@ may leave an empty target sequence advanced, which is safe for a retry. The tool
 reports this sequence policy, not equality with unobservable source sequence
 caches. Any batch/constraint/equality failure rolls back target business rows.
 
-Receipts contain only schema identities, times, scope/counts, hashes and flags.
+Receipts contain only schema identities, source connection/snapshot/catalog hashes, times, scope/counts and flags. Pooler project-role logins distinguish source project identities without emitting connection details.
 `database_cutover_approved` remains false even after copy/compare success. A
 point-in-time snapshot cannot authorize a primary switch while source writers
 continue. Playbooks and Edge still require final source writer freeze/catch-up,
@@ -85,4 +85,4 @@ email/Proxy preservation, restrictive RLS refusal, transactional failure rollbac
 source user immutability, sequence advancement, populated-target refusal,
 email-based UUID equality, whole-field ledger mismatch rejection and unknown
 source table refusal. Fixtures are synthetic and use only loopback databases.
-These checks qualify the implementation; they are not production acceptance.
+A second 53-table native fixture covers invoice/payment/refund composite constraints, exact minor amounts, identity sequence advancement, and detection/rollback of a later insert trigger mutating an earlier table. These checks qualify the implementation; they are not production acceptance.
