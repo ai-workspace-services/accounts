@@ -189,12 +189,15 @@ INSERT INTO public.billing_ledger(id,account_uuid,bucket_start,bucket_end,entry_
 VALUES('00000000-0000-0000-0000-000000000301','00000000-0000-0000-0000-000000000101','2026-10-01T00:00:00Z','2026-10-01T00:01:00Z','usage',9007199254740993,0.125,12.75)`); err != nil {
 		t.Fatal("synthetic facts seed failed")
 	}
-	if _, err = db.ExecContext(ctx, `CREATE ROLE runtime_readonly_ci LOGIN PASSWORD 'synthetic-runtime' NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+	if _, err = db.ExecContext(ctx, `CREATE ROLE runtime_readonly_ci LOGIN PASSWORD 'synthetic-runtime' NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
 GRANT CONNECT ON DATABASE account TO runtime_readonly_ci;
 GRANT USAGE ON SCHEMA public TO runtime_readonly_ci;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO runtime_readonly_ci`); err != nil {
 		t.Fatal("fixture readonly runtime role failed")
 	}
+	// This is a disposable TARGET runtime role: SELECT-only, with full native
+	// RLS visibility and no ownership/CREATE/DML. It is never a migration source
+	// role; readonly_release remains NOBYPASSRLS with reviewed SELECT policies.
 	// Full row and schema/control-catalog hashes. No raw rows leave the test.
 	fingerprint := func() string {
 		t.Helper()
