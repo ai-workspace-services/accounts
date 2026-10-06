@@ -45,6 +45,27 @@ acceptance. Keep target Accounts/Billing and CD paused through the copy gate.
 
 ## Snapshot qualification
 
+Use `scripts/native-schema-render` only against a disposable local PostgreSQL 17
+fixture named `accounts_native_render`. It refuses other database names and
+nonlocal targets. Create the empty fixture yourself, supply its DSN through
+`NATIVE_SCHEMA_RENDER_DSN`, then run:
+
+```bash
+go run ./scripts/native-schema-render
+# Use a PostgreSQL 17 client and local PGHOST/PGPORT/PGUSER environment values.
+PGDATABASE=accounts_native_render pg_dump --schema-only --schema=public \
+  --no-owner --no-acl > /tmp/accounts-native-schema-candidate.sql
+```
+
+The dump is a candidate, not an approved release artifact. Review it, remove
+dump-only session settings, public schema creation and psql metacommands, and
+retain the explicit pgcrypto extension prerequisite. Preserve function bodies;
+do not remove their transactional statements. Update the checked-in SQL,
+manifest table list/version/hash and source checksums together, then run the
+source-drift and isolated PostgreSQL 17 initialization checks before approval.
+CI checks the same source ref as the image build, and image publication depends
+on successful native and incremental migration qualification.
+
 The initial snapshot was assembled in an isolated PostgreSQL 17 database from
 `sql/schema.sql`, runtime RBAC/Billing DDL, current model/overlay AutoMigrate,
 `tasksession.PostgresSchemaStatements` and all committed incremental migrations.
