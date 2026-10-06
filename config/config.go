@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"account/internal/dbruntime"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,17 +23,18 @@ type Log struct {
 
 // Config holds configuration for the account service.
 type Config struct {
-	Mode          string        `yaml:"mode"`
-	Log           Log           `yaml:"log"`
-	Server        Server        `yaml:"server"`
-	Store         Store         `yaml:"store"`
-	Session       Session       `yaml:"session"`
-	Auth          Auth          `yaml:"auth"`
-	SMTP          SMTP          `yaml:"smtp"`
-	Xray          Xray          `yaml:"xray"`
-	Agent         Agent         `yaml:"agent"`
-	Agents        Agents        `yaml:"agents"`
-	ReviewAccount ReviewAccount `yaml:"reviewAccount"`
+	DatabaseRuntime dbruntime.Config `yaml:"-"`
+	Mode            string           `yaml:"mode"`
+	Log             Log              `yaml:"log"`
+	Server          Server           `yaml:"server"`
+	Store           Store            `yaml:"store"`
+	Session         Session          `yaml:"session"`
+	Auth            Auth             `yaml:"auth"`
+	SMTP            SMTP             `yaml:"smtp"`
+	Xray            Xray             `yaml:"xray"`
+	Agent           Agent            `yaml:"agent"`
+	Agents          Agents           `yaml:"agents"`
+	ReviewAccount   ReviewAccount    `yaml:"reviewAccount"`
 }
 
 // Server defines HTTP server configuration.
@@ -66,10 +69,11 @@ func (t TLS) IsEnabled() bool {
 
 // Store defines persistence configuration for the account service.
 type Store struct {
-	Driver       string `yaml:"driver"`
-	DSN          string `yaml:"dsn"`
-	MaxOpenConns int    `yaml:"maxOpenConns"`
-	MaxIdleConns int    `yaml:"maxIdleConns"`
+	SchemaManaged bool   `yaml:"-"`
+	Driver        string `yaml:"driver"`
+	DSN           string `yaml:"dsn"`
+	MaxOpenConns  int    `yaml:"maxOpenConns"`
+	MaxIdleConns  int    `yaml:"maxIdleConns"`
 }
 
 // Session defines session management configuration.
@@ -203,18 +207,28 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
+	runtime, managedDSN, err := dbruntime.FromEnvironment()
+	if err != nil {
+		return nil, err
+	}
 	b, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &Config{}, nil
+			if !runtime.Managed() {
+				return &Config{}, nil
+			}
+			b = nil
+		} else {
+			return nil, err
 		}
-		return nil, err
 	}
 
 	var cfg Config
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, err
 	}
+	cfg.DatabaseRuntime = runtime
+	cfg.Store.SchemaManaged = runtime.Managed()
 
 	// Supabase connection settings are injected by the deployment runtime and
 	// take precedence over the file DSN. URI is the canonical Supabase name;
@@ -227,7 +241,15 @@ func Load(path string) (*Config, error) {
 	if supabaseConnectURI == "" {
 		supabaseConnectURI = strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	}
-	if supabaseConnectURI != "" {
+	if runtime.Managed() {
+		cfg.Store.DSN = managedDSN
+		if cfg.Store.Driver == "" {
+			cfg.Store.Driver = "postgres"
+		}
+		if cfg.Store.Driver != "postgres" && cfg.Store.Driver != "postgresql" && cfg.Store.Driver != "pgx" {
+			return nil, errors.New("managed database runtime requires PostgreSQL")
+		}
+	} else if supabaseConnectURI != "" {
 		cfg.Store.DSN = supabaseConnectURI
 	}
 

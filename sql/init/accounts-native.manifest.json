@@ -6,7 +6,7 @@
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "2d520d0e6ec2bad368f5a2fddf066870e4f68342cd0f033e64873543048c1c4b"
+      "sha256": "ad2ffa6e4f63e846bb9f809fe235cc4fb0ef02fb76625f1322b64182db05d8e6"
     },
     {
       "path": "internal/tasksession/postgres_schema.go",
