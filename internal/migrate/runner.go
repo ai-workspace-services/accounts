@@ -149,7 +149,10 @@ func (r *Runner) Upgrade(ctx context.Context, dsn string, options UpgradeOptions
 	if err != nil {
 		return err
 	}
-	m, err := migrate.New(fmt.Sprintf("file://%s", absDir), boundedDSN)
+	m, err := migrate.NewWithSourceInstance("reviewed-forward", &reviewedSource{
+		expected: options.ExpectedVersion, target: options.TargetVersion,
+		name: target.name, body: append([]byte(nil), target.reviewedSQL...),
+	}, boundedDSN)
 	if err != nil {
 		return err
 	}
@@ -240,6 +243,7 @@ func reviewedTargetMigration(absDir string, migrations []*migrationFile, options
 	if hex.EncodeToString(digest[:]) != options.MigrationSHA256 {
 		return nil, fmt.Errorf("reviewed migration %s checksum differs from the requested digest", target.name)
 	}
+	target.reviewedSQL = append([]byte(nil), content...)
 	return target, nil
 }
 
@@ -334,6 +338,7 @@ func closeMigrator(m *migrate.Migrate) {
 }
 
 type migrationFile struct {
-	version uint
-	name    string
+	version     uint
+	name        string
+	reviewedSQL []byte
 }
