@@ -12,6 +12,7 @@ import (
 	"time"
 
 	schema "account/sql"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/jackc/pgx/v5"
 )
 
