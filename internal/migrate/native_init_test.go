@@ -2,13 +2,17 @@ package migrate
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	schema "account/sql"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -82,6 +86,31 @@ func TestNativeInitPostgres17(t *testing.T) {
 	var dirty bool
 	if err = db.QueryRow("SELECT version,dirty FROM public.schema_migrations").Scan(&migrationVersion, &dirty); err != nil || migrationVersion != manifest.MigrationVersion || dirty {
 		t.Fatal("native initialization did not establish clean latest migration version")
+	}
+	// Only the next reviewed SQL exists on disk; the directly initialized
+	// version has no historical up/down files. Qualification must not replay it.
+	dir := t.TempDir()
+	body := []byte("CREATE TABLE public.native_upgrade_fixture(id integer PRIMARY KEY);\n")
+	if err = os.WriteFile(filepath.Join(dir, "2026100701_fixture.up.sql"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(body)
+	upgrade := UpgradeOptions{ExpectedVersion: manifest.MigrationVersion, TargetVersion: 2026100701,
+		MigrationSHA256: hex.EncodeToString(digest[:]), LockTimeout: time.Second, StatementTimeout: 30 * time.Second}
+	runner := NewRunner(dir)
+	if err = runner.Upgrade(ctx, dsn, upgrade); err != nil {
+		t.Fatalf("native checkpoint forward upgrade without historical files: %v", err)
+	}
+	if err = db.QueryRow("SELECT version,dirty FROM public.schema_migrations").Scan(&migrationVersion, &dirty); err != nil || migrationVersion != upgrade.TargetVersion || dirty {
+		t.Fatal("bounded native upgrade did not establish the exact clean target")
+	}
+	if err = runner.Upgrade(ctx, dsn, upgrade); err != nil {
+		t.Fatalf("already-applied native upgrade must be idempotent: %v", err)
+	}
+	wrong := upgrade
+	wrong.MigrationSHA256 = strings.Repeat("0", 64)
+	if err = runner.Upgrade(ctx, dsn, wrong); err == nil {
+		t.Fatal("wrong target digest must fail before applying any SQL")
 	}
 	if _, err = db.Exec(`INSERT INTO public.users(uuid,username,password,email,proxy_uuid,email_verified_at) VALUES('00000000-0000-0000-0000-000000000101','native-fixture','fixture-password','native@example.invalid','00000000-0000-0000-0000-000000000201','2026-10-01T00:00:00Z')`); err != nil {
 		t.Fatal("native user fixture rejected")
