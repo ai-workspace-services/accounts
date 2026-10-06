@@ -362,6 +362,7 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 	incomingSessionsByUser := make(map[string][]SessionRecord)
 	if !opts.SkipSessions {
 		for _, session := range dump.Sessions {
+			session = sessionForTarget(session, sessionCaps)
 			incomingSessionsByUser[session.UserUUID] = append(incomingSessionsByUser[session.UserUUID], session)
 		}
 	}
@@ -1148,6 +1149,18 @@ func preferExistingIdentity(existing, incoming IdentityRecord) bool {
 	}
 
 	return false
+}
+
+// Compare only timestamps the target can actually store. Otherwise replaying a
+// modern snapshot against a legacy token-keyed table reports updates forever.
+func sessionForTarget(session SessionRecord, caps tableColumnCapabilities) SessionRecord {
+	if !caps.hasCreatedAt {
+		session.CreatedAt = nil
+	}
+	if !caps.hasUpdatedAt {
+		session.UpdatedAt = nil
+	}
+	return session
 }
 
 func sessionDiffers(a, b SessionRecord) bool {
