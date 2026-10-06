@@ -241,7 +241,7 @@ jobs:
 
   build:
     name: Build
-    needs: [prep, native_schema_initialization, account_lifecycle_migration, full_business_transfer]
+    needs: [prep, native_schema_initialization, account_lifecycle_migration, full_business_transfer, managed_database_runtime]
     # A production snapshot promotion only needs the independent Artifact
     # Registry job below. Skipping the GHCR build avoids requesting the
     # tag-bound production Vault role from its main-branch dispatch.
@@ -335,7 +335,7 @@ jobs:
 
   publish_artifact_registry:
     name: Publish Cloud Run image to Artifact Registry
-    needs: [native_schema_initialization, account_lifecycle_migration, full_business_transfer]
+    needs: [native_schema_initialization, account_lifecycle_migration, full_business_transfer, managed_database_runtime]
     # Production snapshots use immutable v* tags; UAT snapshots use
     # daily-build-* tags. Both must publish the Cloud Run image consumed by
     # platform-ops-toolkit.
@@ -396,7 +396,7 @@ jobs:
           IMAGE_REFS: ghcr.io/${{ github.repository_owner }}/accounts:${{ github.ref_name }}
           RELEASE_BUILD_COMMAND: >-
             CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w"
-            -o "$RUNNER_TEMP/release-assets/accounts" ./cmd/accountsvc/main.go
+            -o "$RUNNER_TEMP/release-assets/accounts" ./cmd/accountsvc
             && zip -j "$RUNNER_TEMP/release-assets/accounts-${{ github.ref_name }}.zip"
             "$RUNNER_TEMP/release-assets/accounts"
           GH_TOKEN: ${{ github.token }}

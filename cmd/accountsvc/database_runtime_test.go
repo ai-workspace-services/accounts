@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"github.com/jackc/pgx/v5/pgconn"
 	"io"
 	"log/slog"
 	"net"
@@ -13,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +56,23 @@ func managedFixtureConfig(t *testing.T, role, dsn string) *config.Config {
 	return cfg
 }
 
+// Return only reviewed catalog diagnostics or SQLSTATE, never a driver message,
+// connection string, user value or arbitrary startup error.
+func managedFixtureFailure(err error) string {
+	if err == nil {
+		return "unexpected normal exit"
+	}
+	var pgError *pgconn.PgError
+	if errors.As(err, &pgError) {
+		return "SQLSTATE " + pgError.Code
+	}
+	message := err.Error()
+	if regexp.MustCompile(`^(native (runtime|target|public\.)|complete target visibility|cannot (verify|read complete|decode target)|incomplete business scope|managed runtime configuration|config is nil)`).MatchString(message) && regexp.MustCompile(`^[A-Za-z0-9_. -]{1,200}$`).MatchString(message) {
+		return message
+	}
+	return "unclassified startup failure"
+}
+
 func startManagedFixture(t *testing.T, cfg *config.Config) (string, func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,9 +94,9 @@ func startManagedFixture(t *testing.T, cfg *config.Config) (string, func()) {
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
-		case <-done:
+		case err := <-done:
 			cancel()
-			t.Fatal("managed server stopped before qualified probe")
+			t.Fatalf("managed server stopped before qualified probe: %s", managedFixtureFailure(err))
 		default:
 		}
 		resp, err := client.Get(base + "/api/ping")
