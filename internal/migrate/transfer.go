@@ -250,6 +250,20 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		return nil, err
 	}
 
+	if !sessionCaps.hasUUID {
+		var uniqueToken bool
+		err := db.QueryRowContext(ctx, `SELECT EXISTS (
+ SELECT 1 FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0]
+ WHERE i.indrelid='sessions'::regclass AND i.indisunique AND i.indisvalid
+ AND i.indnkeyatts=1 AND i.indpred IS NULL AND i.indexprs IS NULL AND a.attname='token')`).Scan(&uniqueToken)
+		if err != nil {
+			return nil, err
+		}
+		if !uniqueToken {
+			return nil, errors.New("legacy sessions require a unique token key")
+		}
+	}
+
 	userUUIDMap := map[string]string{}
 	targetToSource := map[string]string{}
 	var rekeys []userUUIDRekey
@@ -261,6 +275,27 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		}
 		if err := rejectUserUUIDRekeys(rekeys); err != nil {
 			return nil, err
+		}
+	}
+
+	if !sessionCaps.hasUUID && !opts.SkipSessions {
+		seen := map[string]bool{}
+		for _, session := range dump.Sessions {
+			if strings.TrimSpace(session.Token) == "" {
+				return nil, errors.New("legacy session token must not be empty")
+			}
+			if seen[session.Token] {
+				return nil, errors.New("duplicate session token in snapshot")
+			}
+			seen[session.Token] = true
+			var owner string
+			err := db.QueryRowContext(ctx, `SELECT user_uuid::text FROM sessions WHERE token=$1`, session.Token).Scan(&owner)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+			if err == nil && owner != session.UserUUID {
+				return nil, errors.New("session token belongs to another target user")
+			}
 		}
 	}
 
@@ -306,7 +341,7 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		if targetUUID, ok := userUUIDMap[session.UserUUID]; ok {
 			session.UserUUID = targetUUID
 		}
-		existingSessionsByUUID[session.UUID] = session
+		existingSessionsByUUID[sessionMergeKey(session, sessionCaps)] = session
 		existingSessionsByUser[session.UserUUID] = append(existingSessionsByUser[session.UserUUID], session)
 	}
 	for source, target := range userUUIDMap {
@@ -441,7 +476,7 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 			}
 
 			for _, session := range incomingSessions {
-				if _, ok := existingSessionsByUUID[session.UUID]; ok {
+				if _, ok := existingSessionsByUUID[sessionMergeKey(session, sessionCaps)]; ok {
 					report.SessionsUpdated++
 				} else {
 					report.SessionsInserted++
@@ -489,7 +524,7 @@ func (i *Importer) Import(ctx context.Context, dsn string, dump *AccountDump, op
 		}
 
 		for _, session := range incomingSessions {
-			existingSession, ok := existingSessionsByUUID[session.UUID]
+			existingSession, ok := existingSessionsByUUID[sessionMergeKey(session, sessionCaps)]
 			if !ok {
 				report.SessionsInserted++
 				if !opts.DryRun {
@@ -1273,6 +1308,9 @@ func loadSessions(ctx context.Context, db *sql.DB, uuids []string) ([]SessionRec
 	}
 
 	columns := []string{"uuid", "token", "expires_at", "user_uuid"}
+	if !caps.hasUUID {
+		columns[0] = "''::text AS uuid"
+	}
 	if caps.hasCreatedAt {
 		columns = append(columns, "created_at")
 	}
@@ -1281,6 +1319,9 @@ func loadSessions(ctx context.Context, db *sql.DB, uuids []string) ([]SessionRec
 	}
 
 	orderClause := " ORDER BY uuid ASC"
+	if !caps.hasUUID {
+		orderClause = " ORDER BY token ASC"
+	}
 	if caps.hasCreatedAt {
 		orderClause = " ORDER BY created_at ASC"
 	}
@@ -1322,6 +1363,9 @@ func loadSessions(ctx context.Context, db *sql.DB, uuids []string) ([]SessionRec
 		if caps.hasUpdatedAt && updatedAt.Valid {
 			ts := updatedAt.Time
 			session.UpdatedAt = &ts
+		}
+		if !caps.hasUUID {
+			session.UUID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("accounts-session:"+session.Token)).String()
 		}
 		sessions = append(sessions, session)
 	}
@@ -1446,12 +1490,26 @@ ON CONFLICT (uuid) DO UPDATE SET
 	return err
 }
 
+func sessionMergeKey(session SessionRecord, caps tableColumnCapabilities) string {
+	if caps.hasUUID {
+		return session.UUID
+	}
+	return session.Token
+}
+
 func upsertSession(ctx context.Context, tx *sql.Tx, session *SessionRecord, caps tableColumnCapabilities) error {
 	columns := []string{"uuid", "token", "expires_at", "user_uuid"}
 	placeholders := []string{"$1", "$2", "$3", "$4"}
 	args := []any{session.UUID, session.Token, session.ExpiresAt, session.UserUUID}
 
-	nextIdx := 5
+	conflictKey := "uuid"
+	if !caps.hasUUID {
+		columns = columns[1:]
+		args = args[1:]
+		placeholders = []string{"$1", "$2", "$3"}
+		conflictKey = "token"
+	}
+	nextIdx := len(args) + 1
 	if caps.hasCreatedAt {
 		columns = append(columns, "created_at")
 		placeholders = append(placeholders, fmt.Sprintf("$%d", nextIdx))
@@ -1468,13 +1526,14 @@ func upsertSession(ctx context.Context, tx *sql.Tx, session *SessionRecord, caps
 	query := fmt.Sprintf(`
 INSERT INTO sessions (%s)
 VALUES (%s)
-ON CONFLICT (uuid) DO UPDATE SET
+ON CONFLICT (%s) DO UPDATE SET
         token = EXCLUDED.token,
         expires_at = EXCLUDED.expires_at,
         user_uuid = EXCLUDED.user_uuid%s%s
 `,
 		strings.Join(columns, ", "),
 		strings.Join(placeholders, ", "),
+		conflictKey,
 		updateColumnClause(caps.hasCreatedAt, "created_at"),
 		updateColumnClause(caps.hasUpdatedAt, "updated_at"),
 	)
@@ -1498,6 +1557,7 @@ func nullableTime(t *time.Time) any {
 }
 
 type tableColumnCapabilities struct {
+	hasUUID      bool
 	hasCreatedAt bool
 	hasUpdatedAt bool
 }
@@ -1508,7 +1568,7 @@ SELECT column_name
 FROM information_schema.columns
 WHERE table_schema = ANY (current_schemas(false))
   AND table_name = $1
-  AND column_name IN ('created_at', 'updated_at')
+  AND column_name IN ('uuid', 'created_at', 'updated_at')
 `
 
 	rows, err := db.QueryContext(ctx, query, table)
@@ -1524,6 +1584,8 @@ WHERE table_schema = ANY (current_schemas(false))
 			return tableColumnCapabilities{}, err
 		}
 		switch name {
+		case "uuid":
+			caps.hasUUID = true
 		case "created_at":
 			caps.hasCreatedAt = true
 		case "updated_at":
