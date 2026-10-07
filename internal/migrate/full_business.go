@@ -64,6 +64,7 @@ type FullBusinessReceipt struct {
 	SourceSnapshotSHA256    string                      `json:"source_snapshot_sha256"`
 	SourceCatalogSHA256     string                      `json:"source_catalog_sha256"`
 	Format                  int                         `json:"format"`
+	Scope                   string                      `json:"scope,omitempty"`
 	Result                  string                      `json:"result"`
 	Environment             string                      `json:"environment"`
 	SchemaSHA256            string                      `json:"schema_sha256"`
