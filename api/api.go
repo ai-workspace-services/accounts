@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -464,14 +463,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	})
 
 	r.GET("/api/ping", func(c *gin.Context) {
-		info := parseImageVersionInfo(os.Getenv("IMAGE"))
-		c.JSON(http.StatusOK, gin.H{
-			"status":  "ok",
-			"image":   info.ImageRef,
-			"tag":     info.Tag,
-			"commit":  info.Commit,
-			"version": info.Version,
-		})
+		c.JSON(http.StatusOK, RuntimeImageMetadata())
 	})
 
 	authGroup := r.Group("/api/auth")

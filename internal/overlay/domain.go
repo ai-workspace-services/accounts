@@ -507,6 +507,7 @@ type BootstrapInvite struct {
 }
 
 type Config struct {
+	SchemaManaged     bool
 	MeshNetworks      []string
 	SigningKeyID      string
 	SigningPrivateKey ed25519.PrivateKey

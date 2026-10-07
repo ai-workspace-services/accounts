@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"account/internal/migrate"
+	schema "account/sql"
 	accountmigrations "account/sql/migrations"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
@@ -52,6 +54,10 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newExportCmd())
 	cmd.AddCommand(newImportCmd())
 	cmd.AddCommand(newImportXrayCredentialsCmd())
+	cmd.AddCommand(newNativeSchemaCmd())
+	cmd.AddCommand(newNativeInitCmd())
+	cmd.AddCommand(newFullBusinessCmd(false))
+	cmd.AddCommand(newFullBusinessCmd(true))
 
 	return cmd
 }
@@ -91,6 +97,47 @@ func newControlledMigrateCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("expected-version")
 	_ = cmd.MarkFlagRequired("target-version")
 	_ = cmd.MarkFlagRequired("sha256")
+	return cmd
+}
+
+func newNativeSchemaCmd() *cobra.Command {
+	return &cobra.Command{Use: "native-schema", Short: "Print the compiled native initialization manifest without database access",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, manifest, err := schema.NativeArtifact()
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(manifest)
+		}}
+}
+
+func newNativeInitCmd() *cobra.Command {
+	var dsnEnv string
+	options := migrate.NativeInitOptions{}
+	cmd := &cobra.Command{Use: "init", Short: "Initialize the reviewed latest native schema in an empty account database",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(dsnEnv) == "" {
+				return errors.New("--dsn-env is required; connection strings are not command line inputs")
+			}
+			dsn := strings.TrimSpace(os.Getenv(dsnEnv))
+			if dsn == "" {
+				return errors.New("target DSN environment variable is empty")
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), 6*time.Minute)
+			defer cancel()
+			receipt, err := migrate.InitializeNative(ctx, dsn, options)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(receipt)
+		}}
+	cmd.Flags().StringVar(&dsnEnv, "dsn-env", "", "Environment variable containing the target-only PostgreSQL DSN")
+	cmd.Flags().StringVar(&options.Environment, "environment", "", "Explicit uat or prod target")
+	cmd.Flags().StringVar(&options.SchemaSHA256, "schema-sha256", "", "Exact reviewed SHA-256 of the compiled native SQL")
+	cmd.Flags().BoolVar(&options.WritersPaused, "writers-paused", false, "Acknowledge the execution owner independently verified paused target writers")
+	cmd.Flags().BoolVar(&options.DryRun, "dry-run", true, "Inspect empty-target eligibility without applying SQL; explicit false is required for initialization")
+	cmd.Flags().DurationVar(&options.LockTimeout, "lock-timeout", 15*time.Second, "Maximum initialization/migration lock wait, at most one minute")
+	cmd.Flags().DurationVar(&options.StatementTimeout, "statement-timeout", 5*time.Minute, "Per-statement timeout, at most five minutes")
 	return cmd
 }
 

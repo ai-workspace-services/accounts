@@ -61,8 +61,10 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 	if db == nil {
 		return nil, errors.New("overlay service requires a database")
 	}
-	if err := AutoMigrate(db); err != nil {
-		return nil, fmt.Errorf("migrate overlay schema: %w", err)
+	if !cfg.SchemaManaged {
+		if err := AutoMigrate(db); err != nil {
+			return nil, fmt.Errorf("migrate overlay schema: %w", err)
+		}
 	}
 	cfg = cfg.withDefaults()
 	if cfg.LocalProxyPort < 1024 || cfg.LocalProxyPort > 65535 {

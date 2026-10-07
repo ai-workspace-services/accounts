@@ -1,0 +1,142 @@
+{
+  "format": 1,
+  "migration_version": 2026100601,
+  "schema_sha256": "842cef3beb98ef819dc854ecdf5f85683233641a0cd85a9156b30ad59f7e0206",
+  "business_table_count": 52,
+  "source_files": [
+    {
+      "path": "cmd/accountsvc/main.go",
+      "sha256": "ad2ffa6e4f63e846bb9f809fe235cc4fb0ef02fb76625f1322b64182db05d8e6"
+    },
+    {
+      "path": "internal/tasksession/postgres_schema.go",
+      "sha256": "50e869c28d886533f5f2dfe157c75ae4b6011fedec5cd9ba076a0a3860170ae2"
+    },
+    {
+      "path": "internal/overlay/repository.go",
+      "sha256": "7e256b6f33a4364302eefbca3ffb3636e4024fe55c14ebb031d9184cb645d60d"
+    },
+    {
+      "path": "sql/schema.sql",
+      "sha256": "6b23017e3e4c76f35867e666dbeeca2c867828dc306fee5be0cc7dfec372fbb0"
+    },
+    {
+      "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
+      "sha256": "4492cf7c3e74973a25f34081808eb498690f58b7180bbcfcbded2a4032572ed2"
+    },
+    {
+      "path": "sql/migrations/2026090802_overlay_registrations.up.sql",
+      "sha256": "59c6690652b4b29b7383a020f7c215b79a0434af1cffe92a6b81345c0c91202f"
+    },
+    {
+      "path": "sql/migrations/2026091301_subscription_validity.up.sql",
+      "sha256": "f52c81b238c58009f97f4eb67fa0a9a60d77e8e98f1ee44f623416c73ce068b2"
+    },
+    {
+      "path": "sql/migrations/2026091401_overlay_xhttp_transport.up.sql",
+      "sha256": "73fa2e28689bbbe72ccc238f37ba845267cc9eb921b2cc7b6e4b47ad9e92f092"
+    },
+    {
+      "path": "sql/migrations/2026092301_account_lifecycle_states.up.sql",
+      "sha256": "8018b47d8508d95be42d6af6b1306f19b481f157e8d43e419482f10ba76ebcf3"
+    },
+    {
+      "path": "sql/migrations/2026092601_overlay_gateway_frontend.up.sql",
+      "sha256": "e0dafef38535f37ca103565dc16e4380dcaf56b71a643a02669859ce07becc1b"
+    },
+    {
+      "path": "sql/migrations/2026092701_quota_plan_groups.up.sql",
+      "sha256": "3721d65466fa75acc62cab58d55275412abdc0db1f08c70e31e3e429969b90a1"
+    },
+    {
+      "path": "sql/migrations/2026092702_password_recovery_challenges.up.sql",
+      "sha256": "bdd6214518458a8f171f4482fdf89990be0831c6053ede94999852a8edcbec2b"
+    },
+    {
+      "path": "sql/migrations/2026092703_mfa_recovery_codes.up.sql",
+      "sha256": "141a69a4981b4fce6c4344a195cd8c68ddf0701644a6a41fa2a6ca1b1cb16c59"
+    },
+    {
+      "path": "sql/migrations/2026092801_local_finance_ledger.up.sql",
+      "sha256": "d066e223641b4eccbb65a00dce70f717b6dce02491d1d54edc1099baf2071433"
+    },
+    {
+      "path": "sql/migrations/2026100601_full_business_legacy_compat.up.sql",
+      "sha256": "a4ce2510f34974800444558ce44cdd84c9ea180396d9aeb1317e253e25b1c9a9"
+    },
+    {
+      "path": "internal/model/admin_setting.go",
+      "sha256": "03c367e2f17733d6a34a2f4e4f6a439e4de1ce639c4ca3814b68ff3050ae3aac"
+    },
+    {
+      "path": "internal/model/homepage_video_setting.go",
+      "sha256": "771e15d9a896a300126e2234fdebd8d549ca6b07cf93d2a69a17ec5baa124e03"
+    },
+    {
+      "path": "internal/model/sandbox_binding.go",
+      "sha256": "514ae4a0beac8b3beefa6b6e7b8b81d93da7fd5490cb44085ea243574e5a5e79"
+    },
+    {
+      "path": "internal/model/xworkmate_tenant.go",
+      "sha256": "a388e03fc427d705d582256c7ffc51eaf21e35e0c6dfd34614260a414be0bba1"
+    },
+    {
+      "path": "scripts/native-schema-render/main.go",
+      "sha256": "52af49d9c7b8e54943d56d797915a97bd5cb4542c1e2f2ba412c3e9dae74f012"
+    }
+  ],
+  "business_tables": [
+    "account_billing_profiles",
+    "account_lifecycle_events",
+    "account_policy_snapshots",
+    "account_quota_states",
+    "admin_settings",
+    "agents",
+    "audit_logs",
+    "billing_ledger",
+    "billing_plans",
+    "billing_source_sync_state",
+    "bridge_credentials",
+    "email_blacklist",
+    "finance_invoices",
+    "finance_operation_events",
+    "finance_operations",
+    "finance_payments",
+    "finance_refunds",
+    "homepage_video_settings",
+    "identities",
+    "mfa_recovery_codes",
+    "node_health_snapshots",
+    "nodes",
+    "oauth_exchange_codes",
+    "overlay_config_acks",
+    "overlay_device_credentials",
+    "overlay_devices",
+    "overlay_enrollment_sessions",
+    "overlay_invites",
+    "overlay_networks",
+    "overlay_nodes",
+    "overlay_registrations",
+    "overlay_signed_config_acks",
+    "password_recovery_challenges",
+    "rbac_permissions",
+    "rbac_role_permissions",
+    "rbac_roles",
+    "sandbox_bindings",
+    "scheduler_decisions",
+    "sessions",
+    "stripe_webhook_events",
+    "subscriptions",
+    "task_namespaces",
+    "task_runs",
+    "task_session_events",
+    "task_sessions",
+    "tenant_domains",
+    "tenant_memberships",
+    "tenants",
+    "traffic_minute_buckets",
+    "traffic_stat_checkpoints",
+    "users",
+    "xworkmate_profiles"
+  ]
+}

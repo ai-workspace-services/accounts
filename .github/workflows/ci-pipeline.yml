@@ -54,6 +54,116 @@ defaults:
     shell: bash
 
 jobs:
+  native_schema_initialization:
+    name: Native Schema Initialization (PostgreSQL 17)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - name: Set Up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Prepare isolated account fixture
+        env:
+          PGPASSWORD: postgres
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          createdb --host localhost --port 5432 --username postgres account
+      - name: Qualify compiled schema and native initialization guards
+        env:
+          MIGRATECTL_NATIVE_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
+        run: go test -v ./sql ./cmd/migratectl ./internal/migrate
+
+
+  managed_database_runtime:
+    name: Managed Database Runtime (PostgreSQL 17)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - name: Set Up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+      - name: Prepare isolated native account fixture
+        env:
+          PGPASSWORD: postgres
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          createdb --host localhost --port 5432 --username postgres account
+      - name: Qualify managed startup, readonly facts and standby isolation
+        env:
+          ACCOUNTS_MANAGED_RUNTIME_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
+        run: go test -v ./config ./internal/dbruntime ./cmd/accountsvc -run 'TestManaged|TestDatabaseRole'
+      - name: Compile the same complete server package as the prebuilt image
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/accounts-runtime-fixture" ./cmd/accountsvc
+
+  full_business_transfer:
+    name: Full Business Transfer (PostgreSQL 17)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+      - name: Set Up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Prepare isolated full-business fixtures
+        env:
+          PGPASSWORD: postgres
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          createdb --host localhost --port 5432 --username postgres account
+          createdb --host localhost --port 5432 --username postgres full_business_source
+          createdb --host localhost --port 5432 --username postgres full_business_native_source
+      - name: Qualify readonly visibility, full fields, batching and rollback
+        env:
+          MIGRATECTL_FULL_BUSINESS_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
+        run: go test -v ./internal/migrate -run '^TestFullBusiness'
+
   account_lifecycle_migration:
     name: Account Lifecycle Migration (PostgreSQL 17)
     runs-on: ubuntu-latest
@@ -72,8 +182,10 @@ jobs:
     steps:
       - name: Check Out Repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
       - name: Set up Go
-        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4.3.0
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache: true
@@ -106,6 +218,16 @@ jobs:
             --set ON_ERROR_STOP=1 \
             --file sql/migrations/tests/local_finance_ledger_upgrade_test.sql
 
+      - name: Preserve full-business legacy compatibility across repeated upgrades
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          createdb --host localhost --port 5432 --username postgres full_business_compat_test
+          psql "postgres://postgres@localhost:5432/full_business_compat_test?sslmode=disable" \
+            --set ON_ERROR_STOP=1 \
+            --file sql/migrations/tests/full_business_legacy_compat_upgrade_test.sql
+
   prep:
     name: Prep
     runs-on: ubuntu-latest
@@ -134,7 +256,7 @@ jobs:
 
   build:
     name: Build
-    needs: prep
+    needs: [prep, native_schema_initialization, account_lifecycle_migration, full_business_transfer, managed_database_runtime]
     # A production snapshot promotion only needs the independent Artifact
     # Registry job below. Skipping the GHCR build avoids requesting the
     # tag-bound production Vault role from its main-branch dispatch.
@@ -228,6 +350,7 @@ jobs:
 
   publish_artifact_registry:
     name: Publish Cloud Run image to Artifact Registry
+    needs: [native_schema_initialization, account_lifecycle_migration, full_business_transfer, managed_database_runtime]
     # Production snapshots use immutable v* tags; UAT snapshots use
     # daily-build-* tags. Both must publish the Cloud Run image consumed by
     # platform-ops-toolkit.
@@ -288,7 +411,7 @@ jobs:
           IMAGE_REFS: ghcr.io/${{ github.repository_owner }}/accounts:${{ github.ref_name }}
           RELEASE_BUILD_COMMAND: >-
             CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w"
-            -o "$RUNNER_TEMP/release-assets/accounts" ./cmd/accountsvc/main.go
+            -o "$RUNNER_TEMP/release-assets/accounts" ./cmd/accountsvc
             && zip -j "$RUNNER_TEMP/release-assets/accounts-${{ github.ref_name }}.zip"
             "$RUNNER_TEMP/release-assets/accounts"
           GH_TOKEN: ${{ github.token }}

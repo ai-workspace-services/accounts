@@ -1,0 +1,856 @@
+{
+  "account_billing_profiles": {
+    "columns": [
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "package_name","nullable": false,"type": "text"},
+      {"generated": false,"name": "included_quota_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "base_price_per_byte","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "region_multiplier","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "line_multiplier","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "peak_multiplier","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "offpeak_multiplier","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "pricing_rule_version","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["account_uuid"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "account_lifecycle_events": {
+    "columns": [
+      {"generated": false,"name": "transition_id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "from_state","nullable": true,"type": "text"},
+      {"generated": false,"name": "to_state","nullable": false,"type": "text"},
+      {"generated": false,"name": "actor_type","nullable": false,"type": "text"},
+      {"generated": false,"name": "actor_ref","nullable": true,"type": "text"},
+      {"generated": false,"name": "reason","nullable": false,"type": "text"},
+      {"generated": false,"name": "request_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "metadata","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "occurred_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["transition_id"],
+    "foreign_keys": [{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "account_policy_snapshots": {
+    "columns": [
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "policy_version","nullable": false,"type": "text"},
+      {"generated": false,"name": "auth_state","nullable": false,"type": "text"},
+      {"generated": false,"name": "rate_profile","nullable": false,"type": "text"},
+      {"generated": false,"name": "conn_profile","nullable": false,"type": "text"},
+      {"generated": false,"name": "eligible_node_groups","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "preferred_strategy","nullable": false,"type": "text"},
+      {"generated": false,"name": "degrade_mode","nullable": false,"type": "text"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["account_uuid"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "account_quota_states": {
+    "columns": [
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "remaining_included_quota","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "current_balance","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "arrears","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "throttle_state","nullable": false,"type": "text"},
+      {"generated": false,"name": "suspend_state","nullable": false,"type": "text"},
+      {"generated": false,"name": "proxy_access_state","nullable": false,"type": "text"},
+      {"generated": false,"name": "last_rated_bucket_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "effective_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "arrears_since","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "period_start","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "period_end","nullable": true,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["account_uuid"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "admin_settings": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "module_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "role","nullable": false,"type": "text"},
+      {"generated": false,"name": "enabled","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "version","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "origin_node","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": []
+  },
+  "agents": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "name","nullable": false,"type": "text"},
+      {"generated": false,"name": "groups","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "healthy","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "last_heartbeat","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "clients_count","nullable": false,"type": "integer"},
+      {"generated": false,"name": "sync_revision","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "audit_logs": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "action","nullable": false,"type": "text"},
+      {"generated": false,"name": "actor_uuid","nullable": true,"type": "uuid"},
+      {"generated": false,"name": "details","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": []
+  },
+  "billing_ledger": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "bucket_start","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "bucket_end","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "entry_type","nullable": false,"type": "text"},
+      {"generated": false,"name": "rated_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "amount_delta","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "balance_after","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "pricing_rule_version","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "billing_plans": {
+    "columns": [
+      {"generated": false,"name": "plan_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "stripe_price_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "display_name","nullable": false,"type": "text"},
+      {"generated": false,"name": "kind","nullable": false,"type": "text"},
+      {"generated": false,"name": "included_quota_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "package_name","nullable": false,"type": "text"},
+      {"generated": false,"name": "price_amount","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "price_currency","nullable": false,"type": "text"},
+      {"generated": false,"name": "price_unit","nullable": false,"type": "text"},
+      {"generated": false,"name": "price_multipliers","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "features","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "trial_days","nullable": false,"type": "integer"},
+      {"generated": false,"name": "active","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "sort_order","nullable": false,"type": "integer"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["plan_id"],
+    "foreign_keys": []
+  },
+  "billing_source_sync_state": {
+    "columns": [
+      {"generated": false,"name": "source_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "last_completed_until","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "last_attempted_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "last_succeeded_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "last_error","nullable": false,"type": "text"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["source_id"],
+    "foreign_keys": []
+  },
+  "bridge_credentials": {
+    "columns": [
+      {"generated": false,"name": "credential_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "tenant_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "token_hash","nullable": true,"type": "text"},
+      {"generated": false,"name": "token_prefix","nullable": false,"type": "text"},
+      {"generated": false,"name": "status","nullable": false,"type": "text"},
+      {"generated": false,"name": "source","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "revoked_at","nullable": true,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["credential_uuid"],
+    "foreign_keys": [{"columns": ["tenant_id"],"parent": "tenants","parent_columns": ["id"]},{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "cloud_vendor_costs": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "provider","nullable": false,"type": "character varying(50)"},
+      {"generated": false,"name": "account_id","nullable": false,"type": "character varying(100)"},
+      {"generated": false,"name": "service_name","nullable": false,"type": "character varying(100)"},
+      {"generated": false,"name": "region","nullable": false,"type": "character varying(100)"},
+      {"generated": false,"name": "usage_start_time","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "usage_end_time","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "cost_amount","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "currency","nullable": false,"type": "character varying(10)"},
+      {"generated": false,"name": "usage_quantity","nullable": true,"type": "double precision"},
+      {"generated": false,"name": "usage_unit","nullable": true,"type": "character varying(50)"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "email_blacklist": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "email","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": []
+  },
+  "finance_invoices": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "idempotency_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "subscription_uuid","nullable": true,"type": "uuid"},
+      {"generated": false,"name": "provider","nullable": false,"type": "text"},
+      {"generated": false,"name": "provider_invoice_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "amount_minor","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "currency","nullable": false,"type": "character(3)"},
+      {"generated": false,"name": "description","nullable": false,"type": "text"},
+      {"generated": false,"name": "issued_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "due_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]},{"columns": ["subscription_uuid"],"parent": "subscriptions","parent_columns": ["uuid"]}]
+  },
+  "finance_operation_events": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "operation_id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "attempt","nullable": false,"type": "integer"},
+      {"generated": false,"name": "event_type","nullable": false,"type": "text"},
+      {"generated": false,"name": "status","nullable": false,"type": "text"},
+      {"generated": false,"name": "provider_operation_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "payload","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "error","nullable": false,"type": "text"},
+      {"generated": false,"name": "occurred_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["operation_id"],"parent": "finance_operations","parent_columns": ["id"]}]
+  },
+  "finance_operations": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "idempotency_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "operation_type","nullable": false,"type": "text"},
+      {"generated": false,"name": "target_type","nullable": false,"type": "text"},
+      {"generated": false,"name": "target_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "provider","nullable": false,"type": "text"},
+      {"generated": false,"name": "provider_operation_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "status","nullable": false,"type": "text"},
+      {"generated": false,"name": "attempt_count","nullable": false,"type": "integer"},
+      {"generated": false,"name": "next_attempt_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "last_error","nullable": false,"type": "text"},
+      {"generated": false,"name": "request","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "response","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "finance_payments": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "idempotency_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "invoice_id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "provider","nullable": false,"type": "text"},
+      {"generated": false,"name": "provider_payment_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "amount_minor","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "currency","nullable": false,"type": "character(3)"},
+      {"generated": false,"name": "paid_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["invoice_id","account_uuid","amount_minor","currency"],"parent": "finance_invoices","parent_columns": ["id","account_uuid","amount_minor","currency"]}]
+  },
+  "finance_refunds": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "idempotency_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "payment_id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "provider","nullable": false,"type": "text"},
+      {"generated": false,"name": "provider_refund_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "amount_minor","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "currency","nullable": false,"type": "character(3)"},
+      {"generated": false,"name": "reason","nullable": false,"type": "text"},
+      {"generated": false,"name": "refunded_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["payment_id","currency"],"parent": "finance_payments","parent_columns": ["id","currency"]},{"columns": ["payment_id"],"parent": "finance_payments","parent_columns": ["id"]}]
+  },
+  "homepage_video_settings": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "domain_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "video_url","nullable": false,"type": "text"},
+      {"generated": false,"name": "poster_url","nullable": false,"type": "text"},
+      {"generated": false,"name": "updated_by","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": []
+  },
+  "identities": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "provider","nullable": false,"type": "text"},
+      {"generated": false,"name": "external_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "version","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "origin_node","nullable": false,"type": "text"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": [{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "mfa_recovery_codes": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "batch_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "code_hash","nullable": false,"type": "text"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "failed_attempts","nullable": false,"type": "integer"},
+      {"generated": false,"name": "locked_until","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "consumed_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "revoked_at","nullable": true,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "node_health_snapshots": {
+    "columns": [
+      {"generated": false,"name": "node_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "region","nullable": false,"type": "text"},
+      {"generated": false,"name": "line_code","nullable": false,"type": "text"},
+      {"generated": false,"name": "pricing_group","nullable": false,"type": "text"},
+      {"generated": false,"name": "stats_enabled","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "xray_revision","nullable": false,"type": "text"},
+      {"generated": false,"name": "healthy","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "latency_ms","nullable": false,"type": "integer"},
+      {"generated": false,"name": "error_rate","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "active_connections","nullable": false,"type": "integer"},
+      {"generated": false,"name": "health_score","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "sampled_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["node_id"],
+    "foreign_keys": []
+  },
+  "nodes": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "name","nullable": false,"type": "text"},
+      {"generated": false,"name": "location","nullable": false,"type": "text"},
+      {"generated": false,"name": "address","nullable": false,"type": "text"},
+      {"generated": false,"name": "port","nullable": false,"type": "integer"},
+      {"generated": false,"name": "server_name","nullable": true,"type": "text"},
+      {"generated": false,"name": "protocols","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "available","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "version","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "origin_node","nullable": false,"type": "text"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": []
+  },
+  "oauth_exchange_codes": {
+    "columns": [
+      {"generated": false,"name": "code","nullable": false,"type": "text"},
+      {"generated": false,"name": "session_token","nullable": false,"type": "text"},
+      {"generated": false,"name": "session_expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["code"],
+    "foreign_keys": []
+  },
+  "overlay_config_acks": {
+    "columns": [
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "device_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "network_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "revision","nullable": false,"type": "text"},
+      {"generated": false,"name": "digest","nullable": false,"type": "text"},
+      {"generated": false,"name": "applied_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "received_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["user_uuid", "device_id"],
+    "foreign_keys": [{"columns": ["user_uuid","device_id"],"parent": "overlay_devices","parent_columns": ["user_uuid","id"]},{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "overlay_device_credentials": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "device_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "credential_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "token_hash","nullable": false,"type": "text"},
+      {"generated": false,"name": "issued_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "revoked_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "overlay_devices": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "network_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "name","nullable": false,"type": "text"},
+      {"generated": false,"name": "platform","nullable": false,"type": "text"},
+      {"generated": false,"name": "hostname","nullable": false,"type": "text"},
+      {"generated": false,"name": "wireguard_public_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "wireguard_address","nullable": false,"type": "text"},
+      {"generated": false,"name": "last_seen_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "user_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "role","nullable": false,"type": "text"},
+      {"generated": false,"name": "status","nullable": false,"type": "text"}
+    ],
+    "primary_key": ["user_uuid", "id"],
+    "foreign_keys": [{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "overlay_enrollment_sessions": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "device_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "token_hash","nullable": false,"type": "text"},
+      {"generated": false,"name": "issued_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "consumed_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "overlay_invites": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "network_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "token_hash","nullable": false,"type": "text"},
+      {"generated": false,"name": "device_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "platform","nullable": true,"type": "text"},
+      {"generated": false,"name": "role","nullable": false,"type": "text"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "remaining_uses","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "consumed_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "overlay_networks": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "display_name","nullable": false,"type": "text"},
+      {"generated": false,"name": "cidr","nullable": false,"type": "text"},
+      {"generated": false,"name": "gateway_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "gateway_wireguard_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "gateway_wireguard_address","nullable": false,"type": "text"},
+      {"generated": false,"name": "gateway_endpoint_host","nullable": false,"type": "text"},
+      {"generated": false,"name": "gateway_endpoint_port","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "transport_server_name","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_port","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "transport_auth_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_kind","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_path","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_mode","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_host","nullable": false,"type": "text"},
+      {"generated": false,"name": "gateway_frontend","nullable": false,"type": "text"},
+      {"generated": false,"name": "gateway_listen_socket","nullable": false,"type": "text"},
+      {"generated": false,"name": "owner_user_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "policy_json","nullable": false,"type": "text"},
+      {"generated": false,"name": "config_generation","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "overlay_nodes": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "network_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "name","nullable": false,"type": "text"},
+      {"generated": false,"name": "role","nullable": false,"type": "text"},
+      {"generated": false,"name": "region","nullable": false,"type": "text"},
+      {"generated": false,"name": "wireguard_public_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "wireguard_address","nullable": false,"type": "text"},
+      {"generated": false,"name": "endpoint_host","nullable": false,"type": "text"},
+      {"generated": false,"name": "endpoint_port","nullable": false,"type": "integer"},
+      {"generated": false,"name": "transport_type","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_security","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_path","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_mode","nullable": false,"type": "text"},
+      {"generated": false,"name": "transport_uuid","nullable": false,"type": "text"},
+      {"generated": false,"name": "healthy","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "last_heartbeat","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "overlay_registrations": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "network_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "owner_user_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "device_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "name","nullable": false,"type": "text"},
+      {"generated": false,"name": "hostname","nullable": false,"type": "text"},
+      {"generated": false,"name": "platform","nullable": false,"type": "text"},
+      {"generated": false,"name": "wireguard_public_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "wireguard_public_key_fingerprint","nullable": false,"type": "text"},
+      {"generated": false,"name": "token_hash","nullable": false,"type": "text"},
+      {"generated": false,"name": "status","nullable": false,"type": "text"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "approved_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "rejected_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "consumed_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "overlay_signed_config_acks": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "device_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "network_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "generation","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "config_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "applied_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "received_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "password_recovery_challenges": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "email_snapshot","nullable": false,"type": "text"},
+      {"generated": false,"name": "challenge_kind","nullable": false,"type": "text"},
+      {"generated": false,"name": "secret_hash","nullable": false,"type": "text"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "failed_attempts","nullable": false,"type": "integer"},
+      {"generated": false,"name": "locked_until","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "consumed_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "invalidated_at","nullable": true,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "rbac_permissions": {
+    "columns": [
+      {"generated": false,"name": "permission_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "description","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["permission_key"],
+    "foreign_keys": []
+  },
+  "rbac_role_permissions": {
+    "columns": [
+      {"generated": false,"name": "role_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "permission_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "enabled","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["role_key", "permission_key"],
+    "foreign_keys": [{"columns": ["permission_key"],"parent": "rbac_permissions","parent_columns": ["permission_key"]},{"columns": ["role_key"],"parent": "rbac_roles","parent_columns": ["role_key"]}]
+  },
+  "rbac_roles": {
+    "columns": [
+      {"generated": false,"name": "role_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "description","nullable": false,"type": "text"},
+      {"generated": false,"name": "priority","nullable": false,"type": "integer"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["role_key"],
+    "foreign_keys": []
+  },
+  "sandbox_bindings": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "agent_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "scheduler_decisions": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "account_uuid","nullable": true,"type": "uuid"},
+      {"generated": false,"name": "node_group","nullable": false,"type": "text"},
+      {"generated": false,"name": "strategy","nullable": false,"type": "text"},
+      {"generated": false,"name": "decision","nullable": false,"type": "text"},
+      {"generated": false,"name": "generated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "sessions": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "token","nullable": false,"type": "text"},
+      {"generated": false,"name": "expires_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "version","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "origin_node","nullable": false,"type": "text"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": [{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "stripe_webhook_events": {
+    "columns": [
+      {"generated": false,"name": "event_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "event_type","nullable": false,"type": "text"},
+      {"generated": false,"name": "payload","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "status","nullable": false,"type": "text"},
+      {"generated": false,"name": "last_error","nullable": false,"type": "text"},
+      {"generated": false,"name": "received_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "processed_at","nullable": true,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["event_id"],
+    "foreign_keys": []
+  },
+  "subscriptions": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "user_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "provider","nullable": false,"type": "text"},
+      {"generated": false,"name": "payment_method","nullable": false,"type": "text"},
+      {"generated": false,"name": "kind","nullable": false,"type": "text"},
+      {"generated": false,"name": "plan_id","nullable": true,"type": "text"},
+      {"generated": false,"name": "external_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "status","nullable": false,"type": "text"},
+      {"generated": false,"name": "payment_qr","nullable": true,"type": "text"},
+      {"generated": false,"name": "meta","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "cancelled_at","nullable": true,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": [{"columns": ["user_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "task_namespaces": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "slug","nullable": false,"type": "text"},
+      {"generated": false,"name": "display_name","nullable": false,"type": "text"},
+      {"generated": false,"name": "max_active_runs","nullable": false,"type": "integer"},
+      {"generated": false,"name": "last_claimed_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "task_runs": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "namespace_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "session_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "client_request_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "state","nullable": false,"type": "text"},
+      {"generated": false,"name": "priority","nullable": false,"type": "integer"},
+      {"generated": false,"name": "not_before","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "attempt","nullable": false,"type": "integer"},
+      {"generated": false,"name": "lease_owner","nullable": false,"type": "text"},
+      {"generated": false,"name": "lease_token_hash","nullable": false,"type": "text"},
+      {"generated": false,"name": "lease_expires_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "fence","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "routing","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "bridge_task_ref","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]},{"columns": ["namespace_id"],"parent": "task_namespaces","parent_columns": ["id"]},{"columns": ["session_id"],"parent": "task_sessions","parent_columns": ["id"]}]
+  },
+  "task_session_events": {
+    "columns": [
+      {"generated": false,"name": "session_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "seq","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "event_type","nullable": false,"type": "text"},
+      {"generated": false,"name": "payload","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "actor_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "client_request_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["session_id", "seq"],
+    "foreign_keys": [{"columns": ["session_id"],"parent": "task_sessions","parent_columns": ["id"]}]
+  },
+  "task_sessions": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "namespace_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "title","nullable": false,"type": "text"},
+      {"generated": false,"name": "snapshot_version","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "last_event_seq","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "lifecycle_state","nullable": false,"type": "text"},
+      {"generated": false,"name": "context_summary","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]},{"columns": ["namespace_id"],"parent": "task_namespaces","parent_columns": ["id"]}]
+  },
+  "tenant_domains": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "tenant_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "domain","nullable": false,"type": "text"},
+      {"generated": false,"name": "kind","nullable": false,"type": "text"},
+      {"generated": false,"name": "is_primary","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "status","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": [{"columns": ["tenant_id"],"parent": "tenants","parent_columns": ["id"]}]
+  },
+  "tenant_memberships": {
+    "columns": [
+      {"generated": false,"name": "tenant_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "user_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "role","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["tenant_id", "user_id"],
+    "foreign_keys": [{"columns": ["tenant_id"],"parent": "tenants","parent_columns": ["id"]}]
+  },
+  "tenants": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "name","nullable": false,"type": "text"},
+      {"generated": false,"name": "edition","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
+  "traffic_minute_buckets": {
+    "columns": [
+      {"generated": false,"name": "bucket_start","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "node_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "region","nullable": false,"type": "text"},
+      {"generated": false,"name": "line_code","nullable": false,"type": "text"},
+      {"generated": false,"name": "uplink_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "downlink_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "total_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "multiplier","nullable": false,"type": "double precision"},
+      {"generated": false,"name": "rating_status","nullable": false,"type": "text"},
+      {"generated": false,"name": "source_revision","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["bucket_start", "node_id", "account_uuid", "region", "line_code"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "traffic_stat_checkpoints": {
+    "columns": [
+      {"generated": false,"name": "node_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "last_uplink_total","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "last_downlink_total","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "last_seen_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "xray_revision","nullable": false,"type": "text"},
+      {"generated": false,"name": "reset_epoch","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["node_id", "account_uuid"],
+    "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
+  },
+  "users": {
+    "columns": [
+      {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "username","nullable": false,"type": "text"},
+      {"generated": false,"name": "password","nullable": false,"type": "text"},
+      {"generated": false,"name": "email","nullable": true,"type": "text"},
+      {"generated": false,"name": "role","nullable": false,"type": "text"},
+      {"generated": false,"name": "level","nullable": false,"type": "integer"},
+      {"generated": false,"name": "groups","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "permissions","nullable": false,"type": "jsonb"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "version","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "origin_node","nullable": false,"type": "text"},
+      {"generated": false,"name": "mfa_totp_secret","nullable": true,"type": "text"},
+      {"generated": false,"name": "mfa_enabled","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "mfa_secret_issued_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "mfa_confirmed_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "email_verified_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": true,"name": "email_verified","nullable": true,"type": "boolean"},
+      {"generated": false,"name": "active","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "proxy_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "proxy_uuid_expires_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "subscription_valid_from","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "subscription_valid_until","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "last_active_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "archived_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "account_lifecycle_state","nullable": false,"type": "text"},
+      {"generated": false,"name": "account_lifecycle_changed_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "account_lifecycle_actor_type","nullable": true,"type": "text"},
+      {"generated": false,"name": "account_lifecycle_actor_ref","nullable": true,"type": "text"},
+      {"generated": false,"name": "account_lifecycle_reason","nullable": true,"type": "text"},
+      {"generated": false,"name": "account_lifecycle_transition_id","nullable": true,"type": "uuid"}
+    ],
+    "primary_key": ["uuid"],
+    "foreign_keys": []
+  },
+  "xworkmate_profiles": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "tenant_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "user_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "scope","nullable": false,"type": "text"},
+      {"generated": false,"name": "openclaw_url","nullable": false,"type": "text"},
+      {"generated": false,"name": "openclaw_origin","nullable": false,"type": "text"},
+      {"generated": false,"name": "vault_url","nullable": false,"type": "text"},
+      {"generated": false,"name": "vault_namespace","nullable": false,"type": "text"},
+      {"generated": false,"name": "vault_secret_path","nullable": false,"type": "text"},
+      {"generated": false,"name": "vault_secret_key","nullable": false,"type": "text"},
+      {"generated": false,"name": "secret_locators","nullable": false,"type": "text"},
+      {"generated": false,"name": "apisix_url","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  }
+}

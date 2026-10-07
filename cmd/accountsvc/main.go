@@ -31,7 +31,9 @@ import (
 	"account/internal/agentmode"
 	"account/internal/agentserver"
 	"account/internal/auth"
+	"account/internal/dbruntime"
 	"account/internal/mailer"
+	"account/internal/migrate"
 	"account/internal/model"
 	"account/internal/observability"
 	"account/internal/overlay"
@@ -1078,6 +1080,20 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if cfg == nil {
 		return errors.New("config is nil")
 	}
+	runtimeConfig := cfg.DatabaseRuntime
+	if cfg.DatabaseRuntime.Managed() {
+		reviewed, dsn, err := dbruntime.FromEnvironment()
+		if err != nil {
+			return err
+		}
+		if reviewed != cfg.DatabaseRuntime || dsn != cfg.Store.DSN || !cfg.Store.SchemaManaged {
+			return errors.New("managed runtime configuration differs from explicit deployment controls")
+		}
+		if reviewed.Role == dbruntime.Standby {
+			return runDatabaseStandby(ctx, cfg)
+		}
+	}
+
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -1124,6 +1140,8 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 				logger.Warn("failed to close account service listener", "err", cerr)
 			}
 		}()
+		stopOnCancel := context.AfterFunc(ctx, func() { _ = gate.close() })
+		defer stopOnCancel()
 		logger.Info("listening before dependencies are ready", "addr", gate.addr())
 	}
 
@@ -1179,67 +1197,85 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			}
 		}
 	}()
+	if cfg.DatabaseRuntime.Managed() {
+		sqlDB, err := gormDB.DB()
+		if err != nil {
+			return errors.New("native runtime database unavailable")
+		}
+		verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err = migrate.VerifyNativeRuntime(verifyCtx, sqlDB)
+		cancel()
+		if err != nil {
+			return err
+		}
+		runtimeConfig.SchemaVersion = migrate.FullBusinessVersion
+	}
+
 	service.SetDB(gormDB)
 	overlayConfig, err := overlay.ConfigFromEnv()
 	if err != nil {
 		return err
 	}
+	overlayConfig.SchemaManaged = cfg.DatabaseRuntime.Managed()
 	overlayService, err := overlay.NewService(gormDB, overlayConfig)
 	if err != nil {
 		return err
 	}
 
-	// The root-account check below reads public.users. Bootstrap the core
-	// account/RBAC schema first so a new environment can start without a
-	// separately pre-applied schema migration.
-	if err := applyRBACSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
-		return fmt.Errorf("apply rbac schema: %w", err)
-	}
+	if !cfg.DatabaseRuntime.Managed() {
+		// The root-account check below reads public.users. Bootstrap the core
+		// account/RBAC schema first so a new environment can start without a
+		// separately pre-applied schema migration.
+		if err := applyRBACSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
+			return fmt.Errorf("apply rbac schema: %w", err)
+		}
 
-	if err := ensureRootUser(ctx, st, logger); err != nil {
-		return err
-	}
+		if err := ensureRootUser(ctx, st, logger); err != nil {
+			return err
+		}
 
-	if err := ensureSandboxUser(ctx, st, logger); err != nil {
-		logger.Warn("failed to ensure sandbox user", "err", err)
-	}
-	startSandboxUUIDRotator(ctx, st, logger)
-	if err := ensureReviewUser(ctx, st, cfg.ReviewAccount, logger); err != nil {
-		logger.Warn("failed to ensure review user", "err", err)
-	}
-	if err := st.EnsureTenant(ctx, &store.Tenant{
-		ID:      store.SharedXWorkmateTenantID,
-		Name:    store.SharedXWorkmateTenantName,
-		Edition: store.SharedPublicTenantEdition,
-	}); err != nil {
-		return fmt.Errorf("ensure shared xworkmate tenant: %w", err)
-	}
-	sharedTenantDomain := resolveSharedXWorkmateDomain()
-	if sharedTenantDomain == "" {
-		return errors.New("XWORKMATE_SHARED_TENANT_DOMAIN is required for the shared XWorkmate tenant")
-	}
-	if err := st.EnsureTenantDomain(ctx, &store.TenantDomain{
-		TenantID:  store.SharedXWorkmateTenantID,
-		Domain:    sharedTenantDomain,
-		Kind:      store.TenantDomainKindGenerated,
-		IsPrimary: true,
-		Status:    store.TenantDomainStatusVerified,
-	}); err != nil {
-		return fmt.Errorf("ensure shared xworkmate tenant domain: %w", err)
-	}
-	for _, domain := range store.ConfiguredSharedTenantDomains() {
-		if domain == sharedTenantDomain {
-			continue
+		if err := ensureSandboxUser(ctx, st, logger); err != nil {
+			logger.Warn("failed to ensure sandbox user", "err", err)
+		}
+		startSandboxUUIDRotator(ctx, st, logger)
+		if err := ensureReviewUser(ctx, st, cfg.ReviewAccount, logger); err != nil {
+			logger.Warn("failed to ensure review user", "err", err)
+		}
+		if err := st.EnsureTenant(ctx, &store.Tenant{
+			ID:      store.SharedXWorkmateTenantID,
+			Name:    store.SharedXWorkmateTenantName,
+			Edition: store.SharedPublicTenantEdition,
+		}); err != nil {
+			return fmt.Errorf("ensure shared xworkmate tenant: %w", err)
+		}
+		sharedTenantDomain := resolveSharedXWorkmateDomain()
+		if sharedTenantDomain == "" {
+			return errors.New("XWORKMATE_SHARED_TENANT_DOMAIN is required for the shared XWorkmate tenant")
 		}
 		if err := st.EnsureTenantDomain(ctx, &store.TenantDomain{
 			TenantID:  store.SharedXWorkmateTenantID,
-			Domain:    domain,
-			Kind:      store.TenantDomainKindCustom,
-			IsPrimary: false,
+			Domain:    sharedTenantDomain,
+			Kind:      store.TenantDomainKindGenerated,
+			IsPrimary: true,
 			Status:    store.TenantDomainStatusVerified,
 		}); err != nil {
-			return fmt.Errorf("ensure configured shared xworkmate tenant domain %q: %w", domain, err)
+			return fmt.Errorf("ensure shared xworkmate tenant domain: %w", err)
 		}
+		for _, domain := range store.ConfiguredSharedTenantDomains() {
+			if domain == sharedTenantDomain {
+				continue
+			}
+			if err := st.EnsureTenantDomain(ctx, &store.TenantDomain{
+				TenantID:  store.SharedXWorkmateTenantID,
+				Domain:    domain,
+				Kind:      store.TenantDomainKindCustom,
+				IsPrimary: false,
+				Status:    store.TenantDomainStatusVerified,
+			}); err != nil {
+				return fmt.Errorf("ensure configured shared xworkmate tenant domain %q: %w", domain, err)
+			}
+		}
+
 	}
 
 	r := gin.New()
@@ -1328,8 +1364,10 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		logger.Info("token service initialized", "auth_enabled", cfg.Auth.Enable)
 	}
 
-	if err := applyBillingSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
-		return fmt.Errorf("apply billing schema: %w", err)
+	if !cfg.DatabaseRuntime.Managed() {
+		if err := applyBillingSchema(ctx, gormDB, cfg.Store.Driver); err != nil {
+			return fmt.Errorf("apply billing schema: %w", err)
+		}
 	}
 
 	// Bridge is the task-session runtime owner. Accounts only provisions and
@@ -1343,9 +1381,12 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		if err != nil {
 			return fmt.Errorf("open task session database: %w", err)
 		}
-		if err := tasksession.ApplyPostgresSchema(ctx, sqlDB); err != nil {
-			return fmt.Errorf("apply task session schema: %w", err)
+		if !cfg.DatabaseRuntime.Managed() {
+			if err := tasksession.ApplyPostgresSchema(ctx, sqlDB); err != nil {
+				return fmt.Errorf("apply task session schema: %w", err)
+			}
 		}
+
 		postgresTaskSessions, err := tasksession.NewPostgresStore(sqlDB)
 		if err != nil {
 			return fmt.Errorf("initialize task session store: %w", err)
@@ -1353,17 +1394,20 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		taskSessionStore = postgresTaskSessions
 	}
 
-	if err := ensureDefaultBillingPlans(ctx, st); err != nil {
-		logger.Warn("failed to seed default billing plans", "err", err)
-	}
+	if !cfg.DatabaseRuntime.Managed() {
+		if err := ensureDefaultBillingPlans(ctx, st); err != nil {
+			logger.Warn("failed to seed default billing plans", "err", err)
+		}
 
-	if enabled, err := st.EnsureBillingEventQueue(ctx); err != nil {
-		logger.Warn("failed to prepare billing event queue", "err", err)
-	} else if enabled {
-		logger.Info("billing event queue ready", "queue", store.BillingEventQueueName)
-	} else {
-		logger.Warn("pgmq extension unavailable; billing event publishing disabled",
-			"hint", "run CREATE EXTENSION pgmq as superuser (image ships pgmq v1.8.0)")
+		if enabled, err := st.EnsureBillingEventQueue(ctx); err != nil {
+			logger.Warn("failed to prepare billing event queue", "err", err)
+		} else if enabled {
+			logger.Info("billing event queue ready", "queue", store.BillingEventQueueName)
+		} else {
+			logger.Warn("pgmq extension unavailable; billing event publishing disabled",
+				"hint", "run CREATE EXTENSION pgmq as superuser (image ships pgmq v1.8.0)")
+		}
+
 	}
 
 	gormSource, err := xrayconfig.NewGormClientSource(gormDB)
@@ -1415,29 +1459,31 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		}
 
 		// Start background sync task to keep in-memory registry updated from DB
-		go func() {
-			ticker := time.NewTicker(1 * time.Minute)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-					if err := agentRegistry.Load(ctx); err != nil {
-						logger.Warn("failed to reload agents from store", "err", err)
-					} else {
-						// logger.Debug("reloaded agents from store", "count", len(agentRegistry.Agents()))
+		if cfg.DatabaseRuntime.MayRunBackgroundWriters() {
+			go func() {
+				ticker := time.NewTicker(1 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if err := agentRegistry.Load(ctx); err != nil {
+							logger.Warn("failed to reload agents from store", "err", err)
+						} else {
+							// logger.Debug("reloaded agents from store", "count", len(agentRegistry.Agents()))
+						}
 					}
 				}
-			}
-		}()
+			}()
 
-		// Start background cleanup task for stale agents (e.g., those that haven't heartbeated for 10 minutes)
-		go runAgentCleanup(ctx, st, logger)
+			// Start background cleanup task for stale agents (e.g., those that haven't heartbeated for 10 minutes)
+			go runAgentCleanup(ctx, st, logger)
+		}
 	}
 
 	var stopXraySync func(context.Context) error
-	if cfg.Xray.Sync.Enabled {
+	if cfg.Xray.Sync.Enabled && cfg.DatabaseRuntime.MayRunBackgroundWriters() {
 		syncInterval := cfg.Xray.Sync.Interval
 		if syncInterval <= 0 {
 			syncInterval = 5 * time.Minute
@@ -1495,13 +1541,16 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if err != nil {
 		return err
 	}
-	if err := ensureSharedXWorkmateProfile(
-		ctx,
-		st,
-		resolveSharedXWorkmateBootstrapConfig(),
-		logger,
-	); err != nil {
-		logger.Warn("failed to ensure shared xworkmate profile", "err", err)
+	if !cfg.DatabaseRuntime.Managed() {
+		if err := ensureSharedXWorkmateProfile(
+			ctx,
+			st,
+			resolveSharedXWorkmateBootstrapConfig(),
+			logger,
+		); err != nil {
+			logger.Warn("failed to ensure shared xworkmate profile", "err", err)
+		}
+
 	}
 
 	options := []api.Option{
@@ -1590,8 +1639,11 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}
 
 	api.RegisterRoutes(r, options...)
-	api.StartAnnualQuotaReconciler(ctx, st, logger.With("component", "annual-quota"))
-	api.StartSubscriptionAccessReconciler(ctx, st, logger.With("component", "subscription-access"))
+	if cfg.DatabaseRuntime.MayRunBackgroundWriters() {
+		api.StartAnnualQuotaReconciler(ctx, st, logger.With("component", "annual-quota"))
+		api.StartSubscriptionAccessReconciler(ctx, st, logger.With("component", "subscription-access"))
+	}
+	runtimeHandler := runtimeConfig.Wrap(r, api.RuntimeImageMetadata)
 
 	var tlsConfig *tls.Config
 	if useTLS {
@@ -1669,7 +1721,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		// store was reached; only TLS still binds its own.
 		srv := &http.Server{
 			Addr:         addr,
-			Handler:      r,
+			Handler:      runtimeHandler,
 			ReadTimeout:  cfg.Server.ReadTimeout,
 			WriteTimeout: cfg.Server.WriteTimeout,
 			TLSConfig:    tlsConfig,
@@ -1712,7 +1764,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	} else {
 		// The listener is already open; installing the router is what flips
 		// /readyz positive and starts admitting business traffic.
-		gate.promote(r)
+		gate.promote(runtimeHandler)
 		if err := gate.wait(); err != nil {
 			logger.Error("account service shutdown", "err", err)
 			return err
@@ -1798,6 +1850,10 @@ func runServerAndAgent(ctx context.Context, cfg *config.Config, logger *slog.Log
 	if cfg == nil {
 		return errors.New("config is nil")
 	}
+	if cfg.DatabaseRuntime.Managed() {
+		// Managed Accounts owns the API; the agent has a separate lifecycle.
+		return runServer(ctx, cfg, logger)
+	}
 
 	agentCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1839,6 +1895,9 @@ func runServerAndAgent(ctx context.Context, cfg *config.Config, logger *slog.Log
 func runAgent(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if cfg == nil {
 		return errors.New("config is nil")
+	}
+	if cfg.DatabaseRuntime.Managed() {
+		return errors.New("managed database runtime is an Accounts API server role")
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -1986,17 +2045,19 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		return nil, nil, fmt.Errorf("admin settings db connection failed after sidecar wait: %w", err)
 	}
 
-	if err := db.AutoMigrate(
-		&model.AdminSetting{},
-		&model.HomepageVideoSetting{},
-		&model.SandboxBinding{},
-		&model.Tenant{},
-		&model.TenantDomain{},
-		&model.TenantMembership{},
-		&model.XWorkmateProfile{},
-	); err != nil {
-		_ = sqlDB.Close()
-		return nil, nil, err
+	if !cfg.SchemaManaged {
+		if err := db.AutoMigrate(
+			&model.AdminSetting{},
+			&model.HomepageVideoSetting{},
+			&model.SandboxBinding{},
+			&model.Tenant{},
+			&model.TenantDomain{},
+			&model.TenantMembership{},
+			&model.XWorkmateProfile{},
+		); err != nil {
+			_ = sqlDB.Close()
+			return nil, nil, err
+		}
 	}
 
 	cleanup := func(context.Context) error {
