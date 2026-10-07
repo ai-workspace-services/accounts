@@ -145,6 +145,24 @@ func TestFullBusinessEmailAndProxyAuthority(t *testing.T) {
 	}
 }
 
+func TestCoreUsersReconciliationAllowsMissingAndRefusesExtraEmails(t *testing.T) {
+	source := map[string]businessUser{
+		"a@example.invalid": {ID: "source-a", Email: "a@example.invalid"},
+		"b@example.invalid": {ID: "source-b", Email: "b@example.invalid"},
+	}
+	target := map[string]businessUser{
+		"a@example.invalid": {ID: "target-a", Email: "a@example.invalid"},
+	}
+	missing, err := coreUserMissing(source, target)
+	if err != nil || len(missing) != 1 || missing[0] != "b@example.invalid" {
+		t.Fatalf("missing source email was not identified: %#v %v", missing, err)
+	}
+	target["extra@example.invalid"] = businessUser{ID: "target-extra", Email: "extra@example.invalid"}
+	if _, err = coreUserMissing(source, target); err == nil {
+		t.Fatal("target-only email was accepted")
+	}
+}
+
 func TestCoreUsersDigestCoversEmailPasswordHashAndProxy(t *testing.T) {
 	source := map[string]businessUser{
 		"a@example.invalid": {Email: "a@example.invalid", PasswordHash: "hash-a", Proxy: "proxy-a"},
