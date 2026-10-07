@@ -96,6 +96,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	exec(sourceAdmin, `INSERT INTO public.sandbox_bindings(id,agent_id,created_at,updated_at) VALUES(42,'fixture-agent','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')`)
 	// Build DSNs explicitly: Config.Copy retains the parsed original connString.
 	sourceDSN := "postgres://readonly_release:isolated-readonly-fixture@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/full_business_source?sslmode=disable"
+	serverlessDSN := "postgres://" + cfg.User + ":" + cfg.Password + "@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/full_business_source?sslmode=disable"
 	var before string
 	if e = sourceAdmin.QueryRow(`SELECT md5(string_agg(to_jsonb(u)::text,'' ORDER BY uuid)) FROM public.users u`).Scan(&before); e != nil {
 		t.Fatal(e)
@@ -104,6 +105,18 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	if e != nil || preview.Result != "eligible" || preview.SourceTables != 44 || preview.FullBusinessEqual || preview.TargetWrites || len(preview.Tables) != 0 {
 		t.Fatalf("preview: %#v %v", preview, e)
 	}
+	serverlessPreview, e := CopyFullBusiness(context.Background(), serverlessDSN, targetDSN, options)
+	if e != nil || serverlessPreview.Result != "eligible" || !serverlessPreview.SourceReadOnly || serverlessPreview.TargetWrites {
+		t.Fatalf("existing Serverless DSN was not constrained to readonly preview: %#v %v", serverlessPreview, e)
+	}
+	readonlyTx, e := sourceAdmin.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if e != nil {
+		t.Fatal("could not open read-only source transaction")
+	}
+	if _, e = readonlyTx.ExecContext(context.Background(), `UPDATE public.users SET email='mutated@example.invalid' WHERE uuid='`+sourceID+`'`); e == nil {
+		t.Fatal("source write succeeded inside the migration readonly transaction")
+	}
+	_ = readonlyTx.Rollback()
 	// Prove restrictive RLS rejection before any data can be written.
 	exec(sourceAdmin, `CREATE POLICY hidden_release_rows ON public.users AS RESTRICTIVE FOR SELECT TO readonly_release USING(false)`)
 	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
