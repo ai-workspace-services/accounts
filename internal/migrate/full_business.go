@@ -80,6 +80,23 @@ type FullBusinessReceipt struct {
 	TargetWrites            bool                        `json:"target_writes"`
 	SequencePolicy          string                      `json:"sequence_policy"`
 	DatabaseCutoverApproved bool                        `json:"database_cutover_approved"`
+	CoreUsers               CoreUsersEvidence           `json:"core_users"`
+}
+
+// CoreUsersEquality is the deliberately small identity contract consumed by
+// the edge cutover gate.  It contains only non-reversible digests: email,
+// password hash and authoritative Proxy UUID remain aligned without placing
+// user rows or password material in a workflow artifact.
+type CoreUsersEquality struct {
+	Count              int    `json:"count"`
+	EmailSHA256        string `json:"email_sha256"`
+	PasswordHashSHA256 string `json:"password_hash_sha256"`
+	EmailProxySHA256   string `json:"email_proxy_sha256"`
+}
+
+type CoreUsersEvidence struct {
+	Source CoreUsersEquality `json:"source"`
+	Target CoreUsersEquality `json:"target"`
 }
 
 func fullBusinessContract() (map[string]businessTable, []string, error) {
@@ -314,6 +331,21 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 		return receipt, err
 	}
 	receipt.UserCount = len(sourceUsers)
+	sourceCore, err := coreUsersDigest(sourceUsers)
+	if err != nil {
+		return receipt, err
+	}
+	receipt.CoreUsers.Source = sourceCore
+	if options.CompareOnly {
+		targetCore, err := coreUsersDigest(targetUsers)
+		if err != nil {
+			return receipt, err
+		}
+		if !equalCoreUsers(sourceUsers, targetUsers) {
+			return receipt, errors.New("core user email, password hash or Proxy UUID differs")
+		}
+		receipt.CoreUsers.Target = targetCore
+	}
 	for _, name := range order {
 		sourceColumns := sourceCatalog[name]
 		// A preview inspects catalogs/privileges and user matching; it never reads
@@ -374,6 +406,15 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 				return receipt, fmt.Errorf("full-field equality failed for public.%s", name)
 			}
 		}
+		targetAfter, err := businessUsers(ctx, dst)
+		if err != nil {
+			return receipt, err
+		}
+		targetCore, err := coreUsersDigest(targetAfter)
+		if err != nil || !equalCoreUsers(sourceUsers, targetAfter) {
+			return receipt, errors.New("core user email, password hash or Proxy UUID differs after target copy")
+		}
+		receipt.CoreUsers.Target = targetCore
 	}
 	if options.DryRun {
 		receipt.Result = "eligible"
@@ -589,10 +630,10 @@ func validateBusinessSourceColumns(name string, source []ColumnDefinition, targe
 	return nil
 }
 
-type businessUser struct{ ID, Email, Proxy string }
+type businessUser struct{ ID, Email, PasswordHash, Proxy string }
 
 func businessUsers(ctx context.Context, tx *sql.Tx) (map[string]businessUser, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT uuid::text,email,proxy_uuid::text FROM public.users ORDER BY uuid`)
+	rows, err := tx.QueryContext(ctx, `SELECT uuid::text,email,password,proxy_uuid::text FROM public.users ORDER BY uuid`)
 	if err != nil {
 		return nil, errors.New("cannot read user matching keys")
 	}
@@ -601,7 +642,7 @@ func businessUsers(ctx context.Context, tx *sql.Tx) (map[string]businessUser, er
 	proxies := map[string]bool{}
 	for rows.Next() {
 		var u businessUser
-		if rows.Scan(&u.ID, &u.Email, &u.Proxy) != nil {
+		if rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Proxy) != nil {
 			return nil, errors.New("user email/Proxy key is missing")
 		}
 		key := strings.ToLower(strings.TrimSpace(u.Email))
@@ -617,6 +658,47 @@ func businessUsers(ctx context.Context, tx *sql.Tx) (map[string]businessUser, er
 		return nil, errors.New("incomplete user matching keys")
 	}
 	return users, nil
+}
+
+func coreUsersDigest(users map[string]businessUser) (CoreUsersEquality, error) {
+	if len(users) == 0 {
+		return CoreUsersEquality{}, errors.New("core user contract requires a non-empty source population")
+	}
+	keys := make([]string, 0, len(users))
+	for key := range users {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	digest := func(value func(businessUser) string, label string) string {
+		h := sha256.New()
+		fmt.Fprintf(h, "core-users-v1:%s:%d:", label, len(keys))
+		for _, key := range keys {
+			user := users[key]
+			fmt.Fprintf(h, "%d:%s", len(key), key)
+			valueBytes := []byte(value(user))
+			fmt.Fprintf(h, "%d:", len(valueBytes))
+			h.Write(valueBytes)
+		}
+		return hex.EncodeToString(h.Sum(nil))
+	}
+	return CoreUsersEquality{Count: len(keys),
+		EmailSHA256:        digest(func(u businessUser) string { return u.Email }, "email"),
+		PasswordHashSHA256: digest(func(u businessUser) string { return u.PasswordHash }, "password-hash"),
+		EmailProxySHA256:   digest(func(u businessUser) string { return u.Proxy }, "email-proxy"),
+	}, nil
+}
+
+func equalCoreUsers(source, target map[string]businessUser) bool {
+	if len(source) != len(target) {
+		return false
+	}
+	for key, user := range source {
+		other, ok := target[key]
+		if !ok || user.Email != other.Email || user.PasswordHash != other.PasswordHash || user.Proxy != other.Proxy {
+			return false
+		}
+	}
+	return true
 }
 func businessUserMap(source, target map[string]businessUser) (map[string]string, error) {
 	if len(source) != len(target) {

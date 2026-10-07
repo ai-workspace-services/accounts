@@ -145,6 +145,32 @@ func TestFullBusinessEmailAndProxyAuthority(t *testing.T) {
 	}
 }
 
+func TestCoreUsersDigestCoversEmailPasswordHashAndProxy(t *testing.T) {
+	source := map[string]businessUser{
+		"a@example.invalid": {Email: "a@example.invalid", PasswordHash: "hash-a", Proxy: "proxy-a"},
+		"b@example.invalid": {Email: "b@example.invalid", PasswordHash: "hash-b", Proxy: "proxy-b"},
+	}
+	target := map[string]businessUser{
+		"a@example.invalid": {Email: "a@example.invalid", PasswordHash: "hash-a", Proxy: "proxy-a"},
+		"b@example.invalid": {Email: "b@example.invalid", PasswordHash: "hash-b", Proxy: "proxy-b"},
+	}
+	a, err := coreUsersDigest(source)
+	if err != nil || a.Count != 2 {
+		t.Fatalf("latest source user count was not captured: %+v %v", a, err)
+	}
+	b, err := coreUsersDigest(target)
+	if err != nil || a != b || !equalCoreUsers(source, target) {
+		t.Fatalf("core identity contract did not match: %+v %+v", a, b)
+	}
+	target["b@example.invalid"] = businessUser{Email: "b@example.invalid", PasswordHash: "changed", Proxy: "proxy-b"}
+	if equalCoreUsers(source, target) {
+		t.Fatal("password hash mismatch accepted")
+	}
+	if target["b@example.invalid"].PasswordHash == "" {
+		t.Fatal("test fixture did not include a password hash")
+	}
+}
+
 func TestFullBusinessProjectionReferencesAndLatestFields(t *testing.T) {
 	tables, _, _ := fullBusinessContract()
 	mapping := map[string]string{"source": "uat"}
