@@ -116,10 +116,23 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	if e != nil {
 		t.Fatal("could not open read-only source transaction")
 	}
+	if e = businessSourceRole(context.Background(), readonlyTx); e == nil {
+		t.Fatal("unverified session readonly default accepted")
+	}
+	if _, e = readonlyTx.ExecContext(context.Background(), `SET LOCAL default_transaction_read_only=on`); e != nil {
+		t.Fatal("transaction-local source connection default could not be enforced")
+	}
+	if e = businessSourceRole(context.Background(), readonlyTx); e != nil {
+		t.Fatal("both verified readonly settings were refused")
+	}
 	if _, e = readonlyTx.ExecContext(context.Background(), `UPDATE public.users SET email='mutated@example.invalid' WHERE uuid='`+sourceID+`'`); e == nil {
 		t.Fatal("source write succeeded inside the migration readonly transaction")
 	}
 	_ = readonlyTx.Rollback()
+	var restored string
+	if e = sourceAdmin.QueryRow(`SHOW default_transaction_read_only`).Scan(&restored); e != nil || restored != "off" {
+		t.Fatal("source connection default leaked past migration transaction")
+	}
 	// Prove restrictive RLS rejection before any data can be written.
 	exec(sourceAdmin, `CREATE POLICY hidden_release_rows ON public.users AS RESTRICTIVE FOR SELECT TO readonly_release USING(false)`)
 	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
