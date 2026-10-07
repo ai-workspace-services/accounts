@@ -689,6 +689,22 @@ func coreUsersDigest(users map[string]businessUser) (CoreUsersEquality, error) {
 	}, nil
 }
 
+func coreUserMissing(source, target map[string]businessUser) ([]string, error) {
+	missing := make([]string, 0)
+	for key := range target {
+		if _, ok := source[key]; !ok {
+			return nil, errors.New("target contains a user email absent from source")
+		}
+	}
+	for key := range source {
+		if _, ok := target[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	sort.Strings(missing)
+	return missing, nil
+}
+
 func equalCoreUsers(source, target map[string]businessUser) bool {
 	if len(source) != len(target) {
 		return false

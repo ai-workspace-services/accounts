@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	schema "account/sql"
@@ -21,9 +22,10 @@ type CoreUsersOptions struct {
 	CompareOnly   bool
 }
 
-// CopyCoreUsers copies users rows into an empty native target, assigning new
-// user UUIDs while preserving email, password hash and authoritative Proxy
-// UUID. CompareOnly validates a populated target by the same three fields.
+// CopyCoreUsers reconciles users by normalized email. Existing target UUIDs are
+// retained while only email, password hash and authoritative Proxy UUID are
+// updated; missing source users receive new target UUIDs. Target-only emails
+// are refused so the operation never deletes users or unrelated references.
 func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options CoreUsersOptions) (FullBusinessReceipt, error) {
 	receipt := FullBusinessReceipt{Format: 1, Scope: "core_users", Environment: options.Environment,
 		MigrationVersion: FullBusinessVersion, Tables: map[string]BusinessEquality{},
@@ -113,8 +115,9 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if err != nil {
 		return receipt, err
 	}
-	if !options.CompareOnly && len(targetUsers) != 0 {
-		return receipt, errors.New("core-user copy requires an empty target users table")
+	missing, err := coreUserMissing(sourceUsers, targetUsers)
+	if err != nil {
+		return receipt, err
 	}
 	if options.CompareOnly {
 		if !equalCoreUsers(sourceUsers, targetUsers) {
@@ -127,23 +130,50 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 		if _, err = dst.ExecContext(ctx, `LOCK TABLE public.schema_migrations, public.users IN ACCESS EXCLUSIVE MODE`); err != nil {
 			return receipt, errors.New("cannot exclusively lock target users table")
 		}
-		mapping := map[string]string{}
-		for _, user := range sourceUsers {
-			mapping[user.ID] = uuid.NewString()
+		// Refresh after the lock so the email set and retained UUIDs are based on
+		// the same target state that receives the reconciliation.
+		targetUsers, err = businessUsers(ctx, dst)
+		if err != nil {
+			return receipt, err
+		}
+		missing, err = coreUserMissing(sourceUsers, targetUsers)
+		if err != nil {
+			return receipt, err
+		}
+		for key, targetUser := range targetUsers {
+			sourceUser := sourceUsers[key]
+			if _, err = dst.ExecContext(ctx, `UPDATE public.users SET email=$1,password=$2,proxy_uuid=$3 WHERE uuid=$4::uuid`,
+				sourceUser.Email, sourceUser.PasswordHash, sourceUser.Proxy, targetUser.ID); err != nil {
+				return receipt, errors.New("cannot reconcile existing core user")
+			}
+		}
+		missingSet := map[string]bool{}
+		for _, key := range missing {
+			missingSet[key] = true
 		}
 		if err = streamBusiness(ctx, src, "users", usersTable.PrimaryKey, func(page []rawRow) error {
+			filtered := make([]rawRow, 0, len(page))
 			for _, row := range page {
+				key := strings.ToLower(strings.TrimSpace(rowString(row, "email")))
+				if !missingSet[key] {
+					continue
+				}
+				mapping := map[string]string{rowString(row, "uuid"): uuid.NewString()}
 				if err := projectBusinessRow("users", row, columns, usersTable, mapping); err != nil {
 					return err
 				}
+				filtered = append(filtered, row)
 			}
-			return insertBusiness(ctx, dst, "users", usersTable, page)
+			if len(filtered) == 0 {
+				return nil
+			}
+			return insertBusiness(ctx, dst, "users", usersTable, filtered)
 		}); err != nil {
 			return receipt, err
 		}
 		targetUsers, err = businessUsers(ctx, dst)
 		if err != nil || !equalCoreUsers(sourceUsers, targetUsers) {
-			return receipt, errors.New("core user email, password hash or Proxy UUID differs after target copy")
+			return receipt, errors.New("core user email, password hash or Proxy UUID differs after target reconciliation")
 		}
 	}
 	receipt.CoreUsers.Target, err = coreUsersDigest(targetUsers)
