@@ -76,6 +76,9 @@ func TestFullBusinessPostgres17(t *testing.T) {
 			exec(sourceAdmin, "ALTER TABLE public.users DROP COLUMN "+quoteBusiness(c.Name)+" CASCADE")
 		}
 	}
+	exec(sourceAdmin, `ALTER TABLE public.email_blacklist DROP COLUMN uuid CASCADE;
+ ALTER TABLE public.email_blacklist ADD PRIMARY KEY(email);
+ INSERT INTO public.email_blacklist(email,created_at) VALUES('Blocked@example.invalid','2026-01-01T00:00:00Z')`)
 	exec(sourceAdmin, `CREATE ROLE readonly_release LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'isolated-readonly-fixture'`)
 	exec(sourceAdmin, `GRANT USAGE ON SCHEMA public TO readonly_release; GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_release`)
 	for name := range tables {
@@ -152,6 +155,10 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	var email, proxy string
 	if e = target.QueryRow(`SELECT email,proxy_uuid::text FROM public.users`).Scan(&email, &proxy); e != nil || email != " User@example.invalid " || proxy != proxyID {
 		t.Fatal("authoritative source user facts changed")
+	}
+	var blacklistUUID string
+	if e = target.QueryRow(`SELECT uuid::text FROM public.email_blacklist WHERE email='Blocked@example.invalid'`).Scan(&blacklistUUID); e != nil || blacklistUUID != "ee5affdd-9684-56a0-84a3-3df3be74caa6" || receipt.Tables["email_blacklist"].Rows != 1 {
+		t.Fatal("email-keyed blacklist did not retain stable native identity")
 	}
 	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
 		t.Fatal("populated target replay accepted")

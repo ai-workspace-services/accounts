@@ -224,6 +224,33 @@ func TestFullBusinessNewMetadataNeverOverridesExistingValues(t *testing.T) {
 	}
 }
 
+func TestFullBusinessLegacyBlacklistKeepsExactEmailAndStableUUID(t *testing.T) {
+	tables, _, _ := fullBusinessContract()
+	table := tables["email_blacklist"]
+	columns := []ColumnDefinition{{Name: "email", Type: "text"}, {Name: "created_at", Type: "timestamp with time zone"}}
+	if err := validateBusinessSourceColumns("email_blacklist", columns, table); err != nil {
+		t.Fatal(err)
+	}
+	row := rawRow{"email": json.RawMessage(`"Blocked@example.invalid"`), "created_at": json.RawMessage(`"2026-01-01T00:00:00Z"`)}
+	if err := projectBusinessRow("email_blacklist", row, columns, table, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rowString(row, "uuid") != "ee5affdd-9684-56a0-84a3-3df3be74caa6" || rowString(row, "email") != "Blocked@example.invalid" || rowString(row, "created_at") != "2026-01-01T00:00:00Z" {
+		t.Fatal("legacy blacklist projection changed historical key or timestamp")
+	}
+	row["uuid"] = json.RawMessage(`"00000000-0000-0000-0000-000000000123"`)
+	columns = append(columns, ColumnDefinition{Name: "uuid", Type: "uuid"})
+	if legacyBlacklistSource(columns) {
+		t.Fatal("native UUID source must use its native cursor key")
+	}
+	if err := projectBusinessRow("email_blacklist", row, columns, table, nil); err != nil || rowString(row, "uuid") != "00000000-0000-0000-0000-000000000123" {
+		t.Fatal("existing source blacklist UUID changed")
+	}
+	if absentBlacklistUUID("users", businessColumn{Name: "uuid", Type: "uuid"}) {
+		t.Fatal("user UUID omission must remain refused")
+	}
+}
+
 func TestFullBusinessInvalidContractsDoNotConnect(t *testing.T) {
 	_, manifest, _ := schema.NativeArtifact()
 	good := FullBusinessOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, BillingSHA256: FullBusinessBillingSHA256, WritersPaused: true}
