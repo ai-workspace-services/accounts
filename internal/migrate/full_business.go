@@ -520,6 +520,17 @@ func validateBusinessTarget(ctx context.Context, tx *sql.Tx, name string, table 
 	return nil
 }
 
+// These nullable fields were introduced by 2026091301. An older source that
+// never had the columns has no values to preserve; use that migration's NULL
+// defaults without changing subscriptions, quota, ledger or existing fields.
+func absentNativeUserMetadata(c businessColumn) bool {
+	switch c.Name {
+	case "subscription_valid_from", "subscription_valid_until", "last_active_at", "archived_at":
+		return c.Nullable && c.Type == "timestamp with time zone"
+	}
+	return false
+}
+
 func validateBusinessSourceColumns(name string, source []ColumnDefinition, target businessTable) error {
 	expected := map[string]businessColumn{}
 	for _, c := range target.Columns {
@@ -532,8 +543,8 @@ func validateBusinessSourceColumns(name string, source []ColumnDefinition, targe
 		}
 		delete(expected, c.Name)
 	}
-	for key := range expected {
-		if name != "users" || !strings.HasPrefix(key, "account_lifecycle_") {
+	for key, column := range expected {
+		if name != "users" || (!strings.HasPrefix(key, "account_lifecycle_") && !absentNativeUserMetadata(column)) {
 			return fmt.Errorf("missing source column public.%s.%s requires explicit projection review", name, key)
 		}
 	}
@@ -599,7 +610,7 @@ func projectBusinessRow(name string, row rawRow, source []ColumnDefinition, tabl
 	}
 	for _, c := range table.Columns {
 		if _, ok := row[c.Name]; !ok {
-			if name != "users" || !strings.HasPrefix(c.Name, "account_lifecycle_") {
+			if name != "users" || (!strings.HasPrefix(c.Name, "account_lifecycle_") && !absentNativeUserMetadata(c)) {
 				return errors.New("unreviewed source field omission")
 			}
 			row[c.Name] = json.RawMessage("null")

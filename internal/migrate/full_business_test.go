@@ -166,7 +166,7 @@ func TestFullBusinessProjectionReferencesAndLatestFields(t *testing.T) {
 	row := rawRow{}
 	cols := []ColumnDefinition{}
 	for _, c := range table.Columns {
-		if strings.HasPrefix(c.Name, "account_lifecycle_") {
+		if strings.HasPrefix(c.Name, "account_lifecycle_") || absentNativeUserMetadata(c) {
 			continue
 		}
 		row[c.Name] = json.RawMessage("null")
@@ -181,6 +181,11 @@ func TestFullBusinessProjectionReferencesAndLatestFields(t *testing.T) {
 	if e := projectBusinessRow("users", row, cols, table, mapping); e != nil || rowString(row, "account_lifecycle_state") != "active" || rowString(row, "uuid") != "uat" || rowString(row, "proxy_uuid") != "prod-proxy" {
 		t.Fatal("latest projection changed authoritative fields")
 	}
+	for _, key := range []string{"subscription_valid_from", "subscription_valid_until", "last_active_at", "archived_at"} {
+		if string(row[key]) != "null" {
+			t.Fatalf("absent new metadata %s must retain native NULL default", key)
+		}
+	}
 	row["email_verified"] = json.RawMessage(`true`)
 	if e := projectBusinessRow("users", row, append(cols, ColumnDefinition{}), table, mapping); e == nil {
 		t.Fatal("inconsistent verification accepted")
@@ -188,6 +193,34 @@ func TestFullBusinessProjectionReferencesAndLatestFields(t *testing.T) {
 	cols = append(cols, ColumnDefinition{Name: "legacy_unreviewed", Type: "text"})
 	if e := validateBusinessSourceColumns("users", cols, table); e == nil {
 		t.Fatal("unknown source column silently omitted")
+	}
+}
+
+func TestFullBusinessNewMetadataNeverOverridesExistingValues(t *testing.T) {
+	tables, _, _ := fullBusinessContract()
+	table := tables["users"]
+	row := rawRow{}
+	cols := []ColumnDefinition{}
+	for _, c := range table.Columns {
+		row[c.Name] = json.RawMessage("null")
+		cols = append(cols, ColumnDefinition{Name: c.Name, Type: c.Type})
+	}
+	row["email_verified"] = json.RawMessage("false")
+	row["subscription_valid_until"] = json.RawMessage(`"2027-01-01T00:00:00Z"`)
+	if err := projectBusinessRow("users", row, cols, table, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if string(row["subscription_valid_until"]) != `"2027-01-01T00:00:00Z"` {
+		t.Fatal("existing authoritative subscription expiry changed")
+	}
+	for _, c := range []businessColumn{
+		{Name: "subscription_valid_until", Type: "text", Nullable: true},
+		{Name: "subscription_valid_until", Type: "timestamp with time zone", Nullable: false},
+		{Name: "proxy_uuid", Type: "timestamp with time zone", Nullable: true},
+	} {
+		if absentNativeUserMetadata(c) {
+			t.Fatal("unreviewed omission accepted")
+		}
 	}
 }
 
