@@ -177,9 +177,42 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
 		t.Fatal("populated target replay accepted")
 	}
+
+	options.CompareOnly = true
+	equal, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
+	if e != nil || !equal.FullBusinessEqual || equal.TargetWrites || equal.Result != "equal" {
+		t.Fatalf("full comparison: %v", e)
+	}
+	// Compare the same email with a different source UUID. These are fixture-only
+	// admin writes after proving transfer source immutability. Runtime transfer
+	// never disables a source trigger or holds an admin connection.
+	const otherID = "00000000-0000-0000-0000-000000000111"
+	exec(sourceAdmin, `SET session_replication_role=replica; UPDATE public.users SET uuid='`+otherID+`' WHERE uuid='`+sourceID+`'; UPDATE public.billing_ledger SET account_uuid='`+otherID+`'; UPDATE public.traffic_minute_buckets SET account_uuid='`+otherID+`'; UPDATE public.audit_logs SET actor_uuid='`+otherID+`'; SET session_replication_role=origin`)
+	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e != nil {
+		t.Fatalf("email-based UUID comparison: %v", e)
+	}
+	exec(sourceAdmin, `SET session_replication_role=replica; UPDATE public.users SET proxy_uuid='00000000-0000-0000-0000-000000000222'; SET session_replication_role=origin`)
+	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
+		t.Fatal("different Proxy UUID accepted")
+	}
+	exec(sourceAdmin, `SET session_replication_role=replica; UPDATE public.users SET proxy_uuid='`+proxyID+`'; SET session_replication_role=origin`)
+	// A row field mismatch is insufficient for equality despite equal counts.
+	exec(target, `UPDATE public.billing_ledger SET amount_delta=0.5 WHERE id=md5('ledger-1')::uuid`)
+	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
+		t.Fatal("equal-count unequal-ledger accepted")
+	}
+	exec(sourceAdmin, `CREATE TABLE public.unreviewed_business(id integer PRIMARY KEY)`)
+	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
+		t.Fatal("unreviewed source table accepted")
+	}
+	raw, _ := json.Marshal(receipt)
+	if strings.Contains(string(raw), "fixture-password") || strings.Contains(string(raw), "@example.invalid") || strings.Contains(string(raw), proxyID) {
+		t.Fatal("receipt contains private business records")
+	}
 	t.Run("populated_core_user_receipt", func(t *testing.T) {
 		// Core reconciliation changes only the three source-authoritative fields;
-		// the already-populated target UUID and dynamic business data stay intact.
+		// the already-populated target UUID is retained; dynamic business rows
+		// are outside the core equality contract. User triggers may bump metadata.
 		var originalUUID string
 		if e = target.QueryRow(`SELECT uuid::text FROM public.users`).Scan(&originalUUID); e != nil {
 			t.Fatal("target core fixture unavailable")
@@ -212,41 +245,10 @@ func TestFullBusinessPostgres17(t *testing.T) {
 			t.Fatal("existing target user UUID changed")
 		}
 		raw, _ := json.Marshal(r)
-		if strings.Contains(string(raw), "fixture-password") || strings.Contains(string(raw), "@example.invalid") || strings.Contains(string(raw), proxyID) {
+		if strings.Contains(string(raw), "isolated-password") || strings.Contains(string(raw), "@example.invalid") || strings.Contains(string(raw), proxyID) {
 			t.Fatal("core-user receipt contains private user fields")
 		}
 	})
-	options.CompareOnly = true
-	equal, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
-	if e != nil || !equal.FullBusinessEqual || equal.TargetWrites || equal.Result != "equal" {
-		t.Fatalf("full comparison: %v", e)
-	}
-	// Compare the same email with a different source UUID. These are fixture-only
-	// admin writes after proving transfer source immutability. Runtime transfer
-	// never disables a source trigger or holds an admin connection.
-	const otherID = "00000000-0000-0000-0000-000000000111"
-	exec(sourceAdmin, `SET session_replication_role=replica; UPDATE public.users SET uuid='`+otherID+`' WHERE uuid='`+sourceID+`'; UPDATE public.billing_ledger SET account_uuid='`+otherID+`'; UPDATE public.traffic_minute_buckets SET account_uuid='`+otherID+`'; UPDATE public.audit_logs SET actor_uuid='`+otherID+`'; SET session_replication_role=origin`)
-	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e != nil {
-		t.Fatalf("email-based UUID comparison: %v", e)
-	}
-	exec(sourceAdmin, `SET session_replication_role=replica; UPDATE public.users SET proxy_uuid='00000000-0000-0000-0000-000000000222'; SET session_replication_role=origin`)
-	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
-		t.Fatal("different Proxy UUID accepted")
-	}
-	exec(sourceAdmin, `SET session_replication_role=replica; UPDATE public.users SET proxy_uuid='`+proxyID+`'; SET session_replication_role=origin`)
-	// A row field mismatch is insufficient for equality despite equal counts.
-	exec(target, `UPDATE public.billing_ledger SET amount_delta=0.5 WHERE id=md5('ledger-1')::uuid`)
-	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
-		t.Fatal("equal-count unequal-ledger accepted")
-	}
-	exec(sourceAdmin, `CREATE TABLE public.unreviewed_business(id integer PRIMARY KEY)`)
-	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
-		t.Fatal("unreviewed source table accepted")
-	}
-	raw, _ := json.Marshal(receipt)
-	if strings.Contains(string(raw), "fixture-password") || strings.Contains(string(raw), "@example.invalid") || strings.Contains(string(raw), proxyID) {
-		t.Fatal("receipt contains private business records")
-	}
 	t.Run("native53_finance_and_late_trigger", func(t *testing.T) {
 		// Explicit synthetic fixture reset, behind the loopback-only test DSN.
 		// No runtime migration function contains DROP or disables a constraint.
