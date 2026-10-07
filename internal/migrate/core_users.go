@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"account/internal/dbruntime"
 	schema "account/sql"
 	"github.com/google/uuid"
 )
@@ -50,6 +51,10 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	}
 	if err = validateBusinessConnections(sourceDSN, targetDSN); err != nil {
 		return receipt, err
+	}
+	receipt.SourceIdentitySHA256, err = dbruntime.ConnectionIdentity(sourceDSN)
+	if err != nil {
+		return receipt, errors.New("core-user source connection identity is invalid")
 	}
 	source, err := openDB(ctx, sourceDSN)
 	if err != nil {
