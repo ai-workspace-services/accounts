@@ -205,10 +205,13 @@ func TestFullBusinessInvalidContractsDoNotConnect(t *testing.T) {
 			t.Fatal("invalid or leaking contract")
 		}
 	}
-	for _, src := range []string{"postgres://postgres:fixture@localhost/source?sslmode=disable", "postgres://readonly_release:fixture@remote/source?sslmode=disable", "postgres://readonly_release:fixture@remote/source?sslmode=prefer"} {
+	for _, src := range []string{"postgres://admin:fixture@localhost/source?sslmode=disable", "postgres://readonly_release:fixture@remote/source?sslmode=disable", "postgres://readonly_release:fixture@remote/source?sslmode=prefer"} {
 		if e := validateBusinessConnections(src, "postgres://postgres:fixture@localhost/account?sslmode=disable"); e == nil {
 			t.Fatal("unsafe source accepted")
 		}
+	}
+	if e := validateBusinessConnections("postgres://postgres.projectref:fixture@localhost/source?sslmode=disable", "postgres://postgres:fixture@localhost/account?sslmode=disable"); e != nil {
+		t.Fatal("existing Serverless session-pooler role rejected")
 	}
 	if e := validateBusinessConnections("postgres://readonly_release.projectref:fixture@localhost/source?sslmode=disable", "postgres://postgres:fixture@localhost/account?sslmode=disable"); e != nil {
 		t.Fatal("pooler readonly role rejected before actual current_user proof")

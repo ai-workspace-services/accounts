@@ -152,7 +152,8 @@ var optionalBusinessTables = map[string]bool{
 // CopyFullBusiness streams one read-only source snapshot into one empty target
 // transaction. CompareOnly permits a populated target and maps UUIDs by email.
 // The host owner must prove paused writers and the exact image/schema first.
-// No source connection is ever opened with an administrator role.
+// A Supabase session-pooler postgres login is accepted only for a read-only
+// repeatable-read transaction; no source write is part of this operation.
 func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options FullBusinessOptions) (FullBusinessReceipt, error) {
 	receipt := FullBusinessReceipt{Format: 1, Environment: options.Environment, MigrationVersion: FullBusinessVersion,
 		Tables: map[string]BusinessEquality{}, BatchSize: fullBusinessBatch, SequencePolicy: "next value above copied maximum; never read nextval on source"}
@@ -385,7 +386,12 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 func validateBusinessConnections(source, target string) error {
 	src, e1 := pgx.ParseConfig(source)
 	dst, e2 := pgx.ParseConfig(target)
-	if e1 != nil || e2 != nil || src.Database == "" || dst.Database != "account" || strings.Split(src.User, ".")[0] != "readonly_release" || dst.User == "readonly_release" {
+	sourceRole := ""
+	if e1 == nil {
+		sourceRole = strings.Split(src.User, ".")[0]
+	}
+	if e1 != nil || e2 != nil || src.Database == "" || dst.Database != "account" ||
+		(sourceRole != "readonly_release" && sourceRole != "postgres") || dst.User == "readonly_release" {
 		return errors.New("invalid readonly source or native target connection contract")
 	}
 	local := src.Host == "localhost" || src.Host == "127.0.0.1" || src.Host == "::1"
@@ -438,22 +444,25 @@ func businessScope(ctx context.Context, tx *sql.Tx, tables map[string]businessTa
 
 func businessSourceRole(ctx context.Context, tx *sql.Tx) error {
 	var valid bool
-	err := tx.QueryRowContext(ctx, `SELECT current_setting('transaction_read_only')='on' AND EXISTS (
+	err := tx.QueryRowContext(ctx, `SELECT current_setting('transaction_read_only')='on' AND (
+ (current_user='postgres' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname=current_user AND (rolsuper OR rolbypassrls))) OR
+ (current_user='readonly_release' AND EXISTS (
  SELECT 1 FROM pg_roles WHERE rolname=current_user AND current_user='readonly_release' AND rolcanlogin
  AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND NOT rolinherit)
  AND NOT EXISTS (SELECT 1 FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user))
  AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relkind IN ('r','p')
  AND (has_table_privilege(current_user,c.oid,'INSERT') OR has_table_privilege(current_user,c.oid,'UPDATE') OR has_table_privilege(current_user,c.oid,'DELETE') OR has_table_privilege(current_user,c.oid,'TRUNCATE')))
- AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relkind='S' AND has_sequence_privilege(current_user,c.oid,'USAGE,UPDATE'))`).Scan(&valid)
+ AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relkind='S' AND has_sequence_privilege(current_user,c.oid,'USAGE,UPDATE'))))`).Scan(&valid)
 	if err != nil || !valid {
-		return errors.New("source requires the approved non-inheriting readonly_release role without writes, sequence mutation, bypass or memberships")
+		return errors.New("source requires an enforced read-only transaction and a readonly_release or Supabase postgres session-pooler role")
 	}
 	return nil
 }
 
 func businessSourceVisibility(ctx context.Context, tx *sql.Tx, name string) error {
 	var valid bool
-	err := tx.QueryRowContext(ctx, `SELECT has_table_privilege(current_user,c.oid,'SELECT') AND (NOT c.relrowsecurity OR (
+	err := tx.QueryRowContext(ctx, `SELECT has_table_privilege(current_user,c.oid,'SELECT') AND (
+ (EXISTS (SELECT 1 FROM pg_roles WHERE rolname=current_user AND (rolsuper OR rolbypassrls))) OR NOT c.relrowsecurity OR (
  EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='release_initialization_readonly' AND p.polcmd='r' AND p.polpermissive
  AND p.polroles=ARRAY[(SELECT oid FROM pg_roles WHERE rolname=current_user)] AND pg_get_expr(p.polqual,p.polrelid)='true' AND p.polwithcheck IS NULL)
  AND NOT EXISTS(SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND NOT p.polpermissive AND p.polcmd IN ('r','*') AND (0::oid=ANY(p.polroles) OR (SELECT oid FROM pg_roles WHERE rolname=current_user)=ANY(p.polroles)))))
