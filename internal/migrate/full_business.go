@@ -273,6 +273,16 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 		if err = validateBusinessSourceColumns(name, cols, tables[name]); err != nil {
 			return receipt, err
 		}
+		if name == "email_blacklist" && legacyBlacklistSource(cols) {
+			var emailKey bool
+			err = src.QueryRowContext(ctx, `SELECT count(*)=1 FROM pg_constraint c
+ WHERE c.conrelid='public.email_blacklist'::regclass AND c.contype='p'
+ AND c.conkey=ARRAY[(SELECT attnum FROM pg_attribute
+ WHERE attrelid=c.conrelid AND attname='email' AND NOT attisdropped)]`).Scan(&emailKey)
+			if err != nil || !emailKey {
+				return receipt, errors.New("legacy email blacklist requires the exact email primary key")
+			}
+		}
 		sourceCatalog[name] = cols
 	}
 	catalogData, _ := json.Marshal(sourceCatalog)
@@ -306,7 +316,11 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 		}
 		sourceDigest := businessDigest{}
 		if sourceTables[name] {
-			err = streamBusiness(ctx, src, name, tables[name].PrimaryKey, func(page []rawRow) error {
+			sourceKey := tables[name].PrimaryKey
+			if name == "email_blacklist" && legacyBlacklistSource(sourceColumns) {
+				sourceKey = []string{"email"}
+			}
+			err = streamBusiness(ctx, src, name, sourceKey, func(page []rawRow) error {
 				for _, row := range page {
 					if err := projectBusinessRow(name, row, sourceColumns, tables[name], uuidMap); err != nil {
 						return err
@@ -531,6 +545,19 @@ func absentNativeUserMetadata(c businessColumn) bool {
 	return false
 }
 
+func legacyBlacklistSource(columns []ColumnDefinition) bool {
+	for _, c := range columns {
+		if c.Name == "uuid" {
+			return false
+		}
+	}
+	return true
+}
+
+func absentBlacklistUUID(name string, c businessColumn) bool {
+	return name == "email_blacklist" && c.Name == "uuid" && c.Type == "uuid" && !c.Nullable
+}
+
 func validateBusinessSourceColumns(name string, source []ColumnDefinition, target businessTable) error {
 	expected := map[string]businessColumn{}
 	for _, c := range target.Columns {
@@ -544,6 +571,9 @@ func validateBusinessSourceColumns(name string, source []ColumnDefinition, targe
 		delete(expected, c.Name)
 	}
 	for key, column := range expected {
+		if absentBlacklistUUID(name, column) {
+			continue
+		}
 		if name != "users" || (!strings.HasPrefix(key, "account_lifecycle_") && !absentNativeUserMetadata(column)) {
 			return fmt.Errorf("missing source column public.%s.%s requires explicit projection review", name, key)
 		}
@@ -610,6 +640,17 @@ func projectBusinessRow(name string, row rawRow, source []ColumnDefinition, tabl
 	}
 	for _, c := range table.Columns {
 		if _, ok := row[c.Name]; !ok {
+			if absentBlacklistUUID(name, c) {
+				var email string
+				if json.Unmarshal(row["email"], &email) != nil || bytes.Equal(row["email"], []byte("null")) {
+					return errors.New("legacy email blacklist key is invalid")
+				}
+				// UUIDv5 is stable across copy/compare snapshots. Use the exact
+				// original email bytes, preserving case and historical key identity.
+				row[c.Name], _ = json.Marshal(uuid.NewSHA1(uuid.NameSpaceOID,
+					[]byte("accounts:email_blacklist:"+email)).String())
+				continue
+			}
 			if name != "users" || (!strings.HasPrefix(c.Name, "account_lifecycle_") && !absentNativeUserMetadata(c)) {
 				return errors.New("unreviewed source field omission")
 			}
