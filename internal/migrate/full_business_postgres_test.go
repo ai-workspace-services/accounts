@@ -72,7 +72,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 	}
 	for _, c := range tables["users"].Columns {
-		if strings.HasPrefix(c.Name, "account_lifecycle_") {
+		if strings.HasPrefix(c.Name, "account_lifecycle_") || absentNativeUserMetadata(c) {
 			exec(sourceAdmin, "ALTER TABLE public.users DROP COLUMN "+quoteBusiness(c.Name)+" CASCADE")
 		}
 	}
