@@ -189,6 +189,13 @@ func CopyFullBusiness(ctx context.Context, sourceDSN, targetDSN string, options 
 		return receipt, errors.New("cannot start read-only business snapshot")
 	}
 	defer src.Rollback()
+	// Session poolers can ignore startup GUCs. Enforce the connection's readonly
+	// default inside this already-readonly snapshot, then verify both settings.
+	// LOCAL automatically restores the prior state on commit/rollback and cannot
+	// leave a shared pooler's backend readonly for the live Serverless service.
+	if _, err = src.ExecContext(ctx, `SET LOCAL default_transaction_read_only=on`); err != nil {
+		return receipt, errors.New("cannot enforce readonly source connection within snapshot")
+	}
 	dst, err := target.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: options.CompareOnly || options.DryRun})
 	if err != nil {
 		return receipt, errors.New("cannot start business target transaction")
@@ -458,7 +465,8 @@ func businessScope(ctx context.Context, tx *sql.Tx, tables map[string]businessTa
 
 func businessSourceRole(ctx context.Context, tx *sql.Tx) error {
 	var valid bool
-	err := tx.QueryRowContext(ctx, `SELECT current_setting('transaction_read_only')='on' AND (
+	err := tx.QueryRowContext(ctx, `SELECT current_setting('transaction_read_only')='on'
+ AND current_setting('default_transaction_read_only')='on' AND (
  (current_user='postgres' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname=current_user AND (rolsuper OR rolbypassrls))) OR
  (current_user='readonly_release' AND EXISTS (
  SELECT 1 FROM pg_roles WHERE rolname=current_user AND current_user='readonly_release' AND rolcanlogin
