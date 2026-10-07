@@ -147,6 +147,10 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 		}
 		for key, targetUser := range targetUsers {
 			sourceUser := sourceUsers[key]
+			if targetUser.Email == sourceUser.Email && targetUser.PasswordHash == sourceUser.PasswordHash && targetUser.Proxy == sourceUser.Proxy {
+				// Replays must not fire metadata triggers for already-aligned users.
+				continue
+			}
 			if _, err = dst.ExecContext(ctx, `UPDATE public.users SET email=$1,password=$2,proxy_uuid=$3 WHERE uuid=$4::uuid`,
 				sourceUser.Email, sourceUser.PasswordHash, sourceUser.Proxy, targetUser.ID); err != nil {
 				return receipt, errors.New("cannot reconcile existing core user")

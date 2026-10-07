@@ -237,6 +237,15 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		r, e := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
 		check(r, false, e)
+		var versionBefore, versionAfter int64
+		if e = target.QueryRow(`SELECT version FROM public.users`).Scan(&versionBefore); e != nil {
+			t.Fatal("target version fixture unavailable")
+		}
+		r, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		check(r, false, e)
+		if e = target.QueryRow(`SELECT version FROM public.users`).Scan(&versionAfter); e != nil || versionAfter != versionBefore {
+			t.Fatal("already-aligned core replay fired user metadata triggers")
+		}
 		coreOptions.CompareOnly = true
 		r, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
 		check(r, true, e)
