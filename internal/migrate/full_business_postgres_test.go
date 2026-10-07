@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"account/internal/dbruntime"
 	schema "account/sql"
 	"github.com/jackc/pgx/v5"
 )
@@ -176,6 +177,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	if _, e = CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options); e == nil {
 		t.Fatal("populated target replay accepted")
 	}
+
 	options.CompareOnly = true
 	equal, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
 	if e != nil || !equal.FullBusinessEqual || equal.TargetWrites || equal.Result != "equal" {
@@ -207,6 +209,55 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	if strings.Contains(string(raw), "fixture-password") || strings.Contains(string(raw), "@example.invalid") || strings.Contains(string(raw), proxyID) {
 		t.Fatal("receipt contains private business records")
 	}
+	t.Run("populated_core_user_receipt", func(t *testing.T) {
+		// Core reconciliation changes only the three source-authoritative fields;
+		// the already-populated target UUID is retained; dynamic business rows
+		// are outside the core equality contract. User triggers may bump metadata.
+		var originalUUID string
+		if e = target.QueryRow(`SELECT uuid::text FROM public.users`).Scan(&originalUUID); e != nil {
+			t.Fatal("target core fixture unavailable")
+		}
+		exec(target, `UPDATE public.users SET email='user@example.invalid',password='stale-core-fixture',proxy_uuid='00000000-0000-0000-0000-000000000333'`)
+		coreOptions := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256,
+			BillingSHA256: FullBusinessBillingSHA256, WritersPaused: true}
+		expectedIdentity, e := dbruntime.ConnectionIdentity(sourceDSN)
+		if e != nil {
+			t.Fatal("fixture source identity unavailable")
+		}
+		check := func(r FullBusinessReceipt, compare bool, e error) {
+			t.Helper()
+			if e != nil || r.Scope != "core_users" || r.SourceIdentitySHA256 != expectedIdentity ||
+				r.SourceIdentitySHA256 == "" || r.SourceTables != 1 || r.UserCount != 1 || r.BatchSize != 1000 ||
+				!r.SourceReadOnly || r.TargetWrites == compare || !r.FullBusinessEqual ||
+				r.DatabaseCutoverApproved || len(r.Tables) != 0 || r.CoreUsers.Source != r.CoreUsers.Target ||
+				r.SourceSnapshotSHA256 != "" || r.SourceCatalogSHA256 != "" ||
+				r.SnapshotStartedAt.IsZero() || r.CompletedAt.Before(r.SnapshotStartedAt) {
+				t.Fatalf("core-user receipt does not satisfy the execution owner contract: %v", e)
+			}
+		}
+		r, e := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		check(r, false, e)
+		var versionBefore, versionAfter int64
+		if e = target.QueryRow(`SELECT version FROM public.users`).Scan(&versionBefore); e != nil {
+			t.Fatal("target version fixture unavailable")
+		}
+		r, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		check(r, false, e)
+		if e = target.QueryRow(`SELECT version FROM public.users`).Scan(&versionAfter); e != nil || versionAfter != versionBefore {
+			t.Fatal("already-aligned core replay fired user metadata triggers")
+		}
+		coreOptions.CompareOnly = true
+		r, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		check(r, true, e)
+		var retainedUUID string
+		if e = target.QueryRow(`SELECT uuid::text FROM public.users`).Scan(&retainedUUID); e != nil || retainedUUID != originalUUID {
+			t.Fatal("existing target user UUID changed")
+		}
+		raw, _ := json.Marshal(r)
+		if strings.Contains(string(raw), "isolated-password") || strings.Contains(string(raw), "@example.invalid") || strings.Contains(string(raw), proxyID) {
+			t.Fatal("core-user receipt contains private user fields")
+		}
+	})
 	t.Run("native53_finance_and_late_trigger", func(t *testing.T) {
 		// Explicit synthetic fixture reset, behind the loopback-only test DSN.
 		// No runtime migration function contains DROP or disables a constraint.
