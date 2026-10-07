@@ -58,6 +58,8 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newNativeInitCmd())
 	cmd.AddCommand(newFullBusinessCmd(false))
 	cmd.AddCommand(newFullBusinessCmd(true))
+	cmd.AddCommand(newCoreUsersCmd(false))
+	cmd.AddCommand(newCoreUsersCmd(true))
 
 	return cmd
 }
