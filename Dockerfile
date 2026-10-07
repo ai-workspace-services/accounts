@@ -34,6 +34,7 @@ RUN apt-get update \
 
 COPY --from=builder /src/account /usr/local/bin/account
 COPY --from=builder /src/migratectl /usr/local/bin/migratectl
+COPY --from=builder /src/sql/migrations /app/sql/migrations
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY config /app/config
 

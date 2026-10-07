@@ -13,6 +13,7 @@ import (
 
 	"account/internal/migrate"
 	schema "account/sql"
+	accountmigrations "account/sql/migrations"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/spf13/cobra"
@@ -44,6 +45,7 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&migrationDir, "dir", migrationDir, "directory containing migration files")
 
 	cmd.AddCommand(newMigrateCmd(&migrationDir))
+	cmd.AddCommand(newControlledMigrateCmd())
 	cmd.AddCommand(newCleanCmd())
 	cmd.AddCommand(newCheckCmd())
 	cmd.AddCommand(newVerifyCmd())
@@ -57,6 +59,44 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newFullBusinessCmd(false))
 	cmd.AddCommand(newFullBusinessCmd(true))
 
+	return cmd
+}
+
+func newControlledMigrateCmd() *cobra.Command {
+	var expected, target uint
+	var checksum string
+	var lockTimeout, statementTimeout time.Duration
+	cmd := &cobra.Command{
+		Use:   "controlled-migrate",
+		Short: "Apply one checksum-pinned forward migration",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dsn := os.Getenv("ACCOUNTS_MIGRATION_DSN")
+			if strings.TrimSpace(dsn) == "" {
+				return errors.New("ACCOUNTS_MIGRATION_DSN is required")
+			}
+			if lockTimeout <= 0 || lockTimeout > migrate.MaxControlledLockTimeout || statementTimeout <= 0 || statementTimeout > migrate.MaxControlledStatementTimeout {
+				return errors.New("lock timeout must be at most 5 minutes and statement timeout at most 30 minutes")
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), statementTimeout+lockTimeout+30*time.Second)
+			defer cancel()
+			return migrate.ControlledMigrate(ctx, dsn, accountmigrations.Files, migrate.ControlledOptions{
+				ExpectedVersion:  expected,
+				TargetVersion:    target,
+				SHA256:           checksum,
+				LockTimeout:      lockTimeout,
+				StatementTimeout: statementTimeout,
+			})
+		},
+	}
+	cmd.Flags().UintVar(&expected, "expected-version", 0, "required exact starting migration version")
+	cmd.Flags().UintVar(&target, "target-version", 0, "one checked-in migration version to apply")
+	cmd.Flags().StringVar(&checksum, "sha256", "", "reviewed SHA-256 of the checked-in .up.sql file")
+	cmd.Flags().DurationVar(&lockTimeout, "lock-timeout", 10*time.Second, "maximum wait for database locks")
+	cmd.Flags().DurationVar(&statementTimeout, "statement-timeout", 2*time.Minute, "maximum duration for each SQL statement")
+	_ = cmd.MarkFlagRequired("expected-version")
+	_ = cmd.MarkFlagRequired("target-version")
+	_ = cmd.MarkFlagRequired("sha256")
 	return cmd
 }
 

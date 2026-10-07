@@ -18,6 +18,22 @@ func TestVersionRegistersFileSourceDriver(t *testing.T) {
 	}
 }
 
+func TestControlledMigrateUsesEnvironmentDSNOnly(t *testing.T) {
+	root := newRootCmd()
+	cmd, _, err := root.Find([]string{"controlled-migrate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Flags().Lookup("dsn") != nil {
+		t.Fatal("controlled-migrate must not accept a DSN flag")
+	}
+	for _, name := range []string{"expected-version", "target-version", "sha256", "lock-timeout", "statement-timeout"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("missing --%s flag", name)
+		}
+	}
+}
+
 func TestMigrateDSNEnvironmentContract(t *testing.T) {
 	dir := t.TempDir()
 	t.Run("requires a value", func(t *testing.T) {
