@@ -84,9 +84,8 @@ func (h *handler) authorizedAgentClients(ctx context.Context) ([]xrayconfig.Clie
 		}
 	}
 
-	// Reconciliation can turn an account's remaining quota negative. Read the
-	// blocked projection only after every user has been reconciled so this
-	// response enforces newly-effective downgrades immediately.
+	// Read access pauses after reconciliation. Remaining quota may be negative,
+	// but quota exhaustion alone must not withhold otherwise authorized clients.
 	blocked, err := h.store.ListProxyBlockedAccountUUIDs(ctx)
 	if err != nil {
 		return nil, "", err
@@ -125,8 +124,8 @@ func (h *handler) authorizedAgentClients(ctx context.Context) ([]xrayconfig.Clie
 			continue
 		}
 
-		// Pause configuration synchronization for exhausted monthly quota,
-		// prolonged billing suspension, or an operator pause. The account and its
+		// Pause configuration synchronization for prolonged billing suspension
+		// or an operator pause. The account and its
 		// billing history remain intact; only the node-local Xray credential is
 		// withheld until the pause clears. Caddy cannot apply this policy because
 		// the VLESS account identity is visible only inside Xray.

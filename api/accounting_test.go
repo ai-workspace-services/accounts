@@ -121,7 +121,7 @@ func TestAgentUsersExcludeOperatorPausedVLESSAccess(t *testing.T) {
 	}
 }
 
-func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
+func TestAgentUsersIncludeExhaustedMonthlyQuota(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	st := store.NewMemoryStore()
 	ctx := context.Background()
@@ -132,10 +132,17 @@ func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
 	remaining := &store.User{Name: "Remaining", Email: "remaining@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "remaining-proxy-id"}
 	unselected := &store.User{Name: "Unselected", Email: "unselected@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "unselected-proxy-id"}
 	legacy := &store.User{Name: "Legacy", Email: "legacy@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: true, ProxyUUID: "legacy-proxy-id"}
-	for _, user := range []*store.User{exhausted, plusExhausted, internalBeta, remaining, unselected, legacy} {
+	unverified := &store.User{Name: "Unverified", Email: "unverified@example.com", PasswordHash: "hashed", Role: store.RoleUser, Active: true, ProxyUUID: "unverified-proxy-id", Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
+	inactive := &store.User{Name: "Inactive", Email: "inactive@example.com", PasswordHash: "hashed", EmailVerified: true, Role: store.RoleUser, Active: false, ProxyUUID: "inactive-proxy-id"}
+	for _, user := range []*store.User{exhausted, plusExhausted, internalBeta, remaining, unselected, legacy, unverified, inactive} {
 		if err := st.CreateUser(ctx, user); err != nil {
 			t.Fatalf("create user %s: %v", user.Email, err)
 		}
+	}
+	// CreateUser defaults new accounts to active; explicitly disable this fixture.
+	inactive.Active = false
+	if err := st.UpdateUser(ctx, inactive); err != nil {
+		t.Fatalf("disable fixture: %v", err)
 	}
 	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{
 		AccountUUID: exhausted.ID, RemainingIncludedQuota: 0,
@@ -206,7 +213,7 @@ func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
 		t.Fatalf("new registry: %v", err)
 	}
 	router := gin.New()
-	RegisterRoutes(router, WithStore(st), WithAgentRegistry(registry), WithEmailVerification(false))
+	RegisterRoutes(router, WithStore(st), WithAgentRegistry(registry), WithEmailVerification(true))
 	req := httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/users", nil)
 	req.Header.Set("Authorization", "Bearer agent-token")
 	rec := httptest.NewRecorder()
@@ -216,11 +223,14 @@ func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
 	}
 
 	body := rec.Body.String()
-	if strings.Contains(body, exhausted.ProxyUUID) {
-		t.Fatalf("quota-exhausted client leaked into agent config: %s", body)
+	if strings.Contains(body, unverified.ProxyUUID) || strings.Contains(body, inactive.ProxyUUID) {
+		t.Fatalf("unverified or inactive client leaked into agent config: %s", body)
 	}
-	if strings.Contains(body, plusExhausted.ProxyUUID) {
-		t.Fatalf("plus quota-exhausted client leaked into agent config: %s", body)
+	if !strings.Contains(body, exhausted.ProxyUUID) {
+		t.Fatalf("quota-exhausted free client was removed from agent config: %s", body)
+	}
+	if !strings.Contains(body, plusExhausted.ProxyUUID) {
+		t.Fatalf("quota-exhausted plus client was removed from agent config: %s", body)
 	}
 	if !strings.Contains(body, internalBeta.ProxyUUID) {
 		t.Fatalf("unlimited internal beta client was removed: %s", body)
@@ -247,14 +257,20 @@ func TestAgentUsersExcludeExhaustedMonthlyQuota(t *testing.T) {
 	}
 	var access struct {
 		QuotaExhausted      bool   `json:"quotaExhausted"`
+		IncludedQuotaBytes  int64  `json:"includedQuotaBytes"`
+		RemainingQuota      int64  `json:"remainingIncludedQuota"`
+		UsedBytes           int64  `json:"usedBytes"`
 		NetworkAccessState  string `json:"networkAccessState"`
 		NetworkAccessReason string `json:"networkAccessReason"`
 	}
 	if err := json.Unmarshal(usageRec.Body.Bytes(), &access); err != nil {
 		t.Fatalf("decode access state: %v", err)
 	}
-	if !access.QuotaExhausted || access.NetworkAccessState != "paused" || access.NetworkAccessReason != "quota_exhausted" {
+	if !access.QuotaExhausted || access.NetworkAccessState != "active" || access.NetworkAccessReason != "" {
 		t.Fatalf("unexpected exhausted access state: %+v", access)
+	}
+	if access.IncludedQuotaBytes != 5<<30 || access.RemainingQuota != 0 || access.UsedBytes != 5<<30 {
+		t.Fatalf("quota statistics must remain intact: %+v", access)
 	}
 	if persisted, err := st.GetUserByID(ctx, exhausted.ID); err != nil || persisted.Email != exhausted.Email {
 		t.Fatalf("quota pause must retain the user record: user=%+v err=%v", persisted, err)

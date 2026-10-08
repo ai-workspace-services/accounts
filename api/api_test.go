@@ -823,7 +823,7 @@ func TestSyncConfigSnapshotReturnsRenderedJSON(t *testing.T) {
 	}
 }
 
-func TestSyncConfigSnapshotPausesSelectedFreeUserAtQuotaLimit(t *testing.T) {
+func TestSyncConfigSnapshotAllowsSelectedFreeUserAtQuotaLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	ctx := context.Background()
@@ -862,21 +862,20 @@ func TestSyncConfigSnapshotPausesSelectedFreeUserAtQuotaLimit(t *testing.T) {
 	}
 
 	router := gin.New()
-	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(true), WithXrayConfigRenderer(func(*store.User) (string, string, []string, error) {
+		return `{"outbounds":[{"tag":"proxy","protocol":"vless"}]}`, "quota-sync-digest", nil, nil
+	}))
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/sync/config?since_version=0", nil)
 	req.Header.Set("Authorization", "Bearer selected-free-session")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("expected exhausted selected free user to be paused, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected exhausted selected free user to sync, got %d: %s", rr.Code, rr.Body.String())
 	}
-	var resp apiResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode quota pause response: %v", err)
-	}
-	if resp.Error != "quota_exhausted" {
-		t.Fatalf("expected quota_exhausted, got %#v", resp.Error)
+	resp := decodeSyncConfigResponse(t, rr)
+	if !resp.Changed || resp.RenderedJSON == "" || resp.Digest != "quota-sync-digest" {
+		t.Fatalf("expected usable config at zero quota, got %#v", resp)
 	}
 	if _, err := st.GetUserByID(ctx, user.ID); err != nil {
 		t.Fatalf("expected selected free user to remain stored: %v", err)

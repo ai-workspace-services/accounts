@@ -73,6 +73,10 @@ func TestAgentUsersExcludeSuspendedAccounts(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("agent users status: %d body=%s", rec.Code, rec.Body.String())
 	}
+	quota, err := st.GetAccountQuotaState(context.Background(), cut.ID)
+	if err != nil || quota == nil || quota.SuspendState != "suspended" {
+		t.Fatalf("agent reconciliation must retain billing suspension: state=%+v err=%v", quota, err)
+	}
 
 	var payload struct {
 		Clients []struct {

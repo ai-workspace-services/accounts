@@ -350,7 +350,10 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 	state.Arrears = false
 	state.ArrearsSince = nil
 	state.ThrottleState = "normal"
-	state.SuspendState = "active"
+	// A plan downgrade does not settle an explicit billing suspension.
+	if state.SuspendState != "suspended" {
+		state.SuspendState = "active"
+	}
 	state.PeriodStart = &periodStart
 	state.PeriodEnd = &periodEnd
 	state.EffectiveAt = time.Now().UTC()
