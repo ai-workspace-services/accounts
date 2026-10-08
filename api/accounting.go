@@ -114,9 +114,6 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	case suspendState == "suspended":
 		networkAccessState = "paused"
 		networkAccessReason = "billing_suspended"
-	case quotaExhausted:
-		networkAccessState = "paused"
-		networkAccessReason = "quota_exhausted"
 	}
 
 	syncDelaySeconds := 0

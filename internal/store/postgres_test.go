@@ -14,6 +14,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+func TestProxyBlockedAccountsOnlyUseExplicitAccessPauses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := &postgresStore{db: db}
+	query := `SELECT q.account_uuid FROM account_quota_states q
+		WHERE q.suspend_state = 'suspended' OR q.proxy_access_state = 'paused'`
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WillReturnRows(
+		sqlmock.NewRows([]string{"account_uuid"}).AddRow("suspended-user").AddRow("paused-user"),
+	)
+	blocked, err := s.ListProxyBlockedAccountUUIDs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked) != 2 || !blocked["suspended-user"] || !blocked["paused-user"] {
+		t.Fatalf("unexpected blocked accounts: %v", blocked)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFormatIdentifier(t *testing.T) {
 	id := uuid.New()
 	arr := [16]byte(id)
