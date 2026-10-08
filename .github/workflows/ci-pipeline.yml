@@ -39,6 +39,16 @@ on:
         required: false
         default: ""
         type: string
+      push_image:
+        description: Publish the built Accounts image to the configured registries
+        required: false
+        default: ""
+        type: string
+      push_latest:
+        description: Also update the latest image tag when publishing
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -255,12 +265,15 @@ jobs:
         run: bash ./scripts/github-actions/resolve-pipeline-flags.sh >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build
+    name: Build Accounts image (${{ matrix.platform }})
     needs: [prep, native_schema_initialization, account_lifecycle_migration, full_business_transfer, managed_database_runtime]
-    # A production snapshot promotion only needs the independent Artifact
-    # Registry job below. Skipping the GHCR build avoids requesting the
-    # tag-bound production Vault role from its main-branch dispatch.
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'prod' && inputs.source_ref != '' && inputs.image_tag != '') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            artifact_name: accounts-image-linux-amd64
+            archive_name: accounts-linux-amd64.tar
     runs-on: ubuntu-latest
     env:
       SERVICE_REGISTRY: ghcr.io
@@ -283,29 +296,13 @@ jobs:
       - name: Set Up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
-      - name: Load Vault Secrets
-        id: vault
-        if: needs.prep.outputs.push_image == 'true'
-        uses: hashicorp/vault-action@v4
-        with:
-          url: https://vault.svc.plus
-          method: jwt
-          role: github-actions-accounts-${{ needs.prep.outputs.deploy_env }}
-          jwtGithubAudience: vault
-          exportEnv: false
-          # GHCR 推送凭据在 kv/data/CICD(第 ① 层公共服务 secret, 三个环境
-          # role 共读)。kv/data/github-actions 这个路径不存在, 返回 403 ——
-          # 而 403 与"role 没建"、"绑定不匹配"完全同形, 日志里看不出区别。
-          secrets: |
-            kv/data/CICD GHCR_TOKEN | GHCR_TOKEN ;
-
-      - name: Log In To GHCR
-        if: needs.prep.outputs.push_image == 'true'
-        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
-        with:
-          registry: ghcr.io
-          username: ${{ vars.GHCR_USERNAME || github.repository_owner }}
-          password: ${{ steps.vault.outputs.GHCR_TOKEN || github.token }}
+      - name: Resolve checked out source commit
+        id: source
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Resolve Service Image Repository
         id: service_image
@@ -321,58 +318,180 @@ jobs:
             type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/') || github.ref_type == 'tag' }}
             type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/release/') }}
             type=raw,value=latest,enable=${{ needs.prep.outputs.push_latest == 'true' || github.ref == 'refs/heads/main' }}
-            type=sha,format=long
+            type=raw,value=sha-${{ steps.source.outputs.commit }}
 
       - name: Resolve Service Image Ref
         id: service_ref
+        env:
+          SERVICE_IMAGE_REPO: ${{ steps.service_image.outputs.repo }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           set -euo pipefail
-          image_ref="$(bash .github/scripts/utils/preferred-image-ref.sh "${{ steps.service_meta.outputs.tags }}")"
-          image_no_digest="${image_ref%@*}"
-          image_tag="${image_no_digest##*:}"
-          image_commit=""
-          if [[ "${image_tag}" =~ ^[0-9a-f]{7,40}$ ]]; then
-            image_commit="${image_tag}"
-          fi
+          image_tag="sha-${SOURCE_COMMIT}"
+          image_ref="${SERVICE_IMAGE_REPO}:${image_tag}"
           echo "image_tag=${image_tag}" >> "$GITHUB_OUTPUT"
-          echo "image_commit=${image_commit}" >> "$GITHUB_OUTPUT"
+          echo "image_commit=${SOURCE_COMMIT}" >> "$GITHUB_OUTPUT"
           echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
 
-      - name: Build And Push Service Image
+      - name: Build Accounts image archive
         uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64
-          push: ${{ needs.prep.outputs.push_image == 'true' }}
-          tags: ${{ steps.service_meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.archive_name }}
+          tags: ${{ steps.service_ref.outputs.image_ref }}
           labels: ${{ steps.service_meta.outputs.labels }}
 
+      - name: Upload Accounts image archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ runner.temp }}/${{ matrix.archive_name }}
+          if-no-files-found: error
+          retention-days: 1
+
   publish_artifact_registry:
-    name: Publish Cloud Run image to Artifact Registry
-    needs: [native_schema_initialization, account_lifecycle_migration, full_business_transfer, managed_database_runtime]
-    # Production snapshots use immutable v* tags; UAT snapshots use
-    # daily-build-* tags. Both must publish the Cloud Run image consumed by
-    # platform-ops-toolkit.
-    if: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || (github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'prod' && inputs.source_ref != '' && inputs.image_tag != '') }}
+    name: Publish ${{ matrix.target_name }} image
+    needs: [prep, build]
+    if: >-
+      ${{ needs.build.result == 'success' &&
+          (needs.prep.outputs.push_image == 'true' ||
+           (github.event_name == 'push' && github.ref_type == 'tag') ||
+           (github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'prod' && inputs.source_ref != '' && inputs.image_tag != '')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: github
+            target_name: GitHub Container Registry
+            artifact_name: accounts-image-linux-amd64
+            archive_name: accounts-linux-amd64.tar
+          - target: artifact_registry
+            target_name: Google Artifact Registry
+            artifact_name: accounts-image-linux-amd64
+            archive_name: accounts-linux-amd64.tar
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: write
       id-token: write
     steps:
+      - name: Resolve publish target
+        id: target
+        env:
+          PUBLISH_TARGET: ${{ matrix.target }}
+          PUSH_IMAGE: ${{ needs.prep.outputs.push_image }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          DEPLOY_ENV: ${{ inputs.deploy_env }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          enabled=false
+          promotion=false
+          if [[ "$EVENT_NAME" == workflow_dispatch && "$DEPLOY_ENV" == prod && \
+                -n "$SOURCE_REF" && -n "$IMAGE_TAG" ]]; then
+            promotion=true
+          fi
+          if [[ "$PUBLISH_TARGET" == github && "$PUSH_IMAGE" == true && \
+                "$promotion" != true ]]; then
+            enabled=true
+          elif [[ "$PUBLISH_TARGET" == artifact_registry && \
+                  "$EVENT_NAME" == push && "$REF_TYPE" == tag ]] || \
+               [[ "$PUBLISH_TARGET" == artifact_registry && "$promotion" == true ]]; then
+            enabled=true
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+
       - name: Check Out Repository
+        if: steps.target.outputs.enabled == 'true'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.source_ref || github.ref }}
 
-      - name: Set Up QEMU
-        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - name: Download Accounts image archive
+        if: steps.target.outputs.enabled == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ runner.temp }}/accounts-image
 
-      - name: Set Up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Resolve checked out source commit
+        id: source
+        if: steps.target.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Load Accounts image archive
+        if: steps.target.outputs.enabled == 'true'
+        env:
+          IMAGE_ARCHIVE: ${{ runner.temp }}/accounts-image/${{ matrix.archive_name }}
+        run: docker load --input "$IMAGE_ARCHIVE"
+
+      - name: Verify built Accounts image
+        if: steps.target.outputs.enabled == 'true'
+        env:
+          SOURCE_IMAGE_REF: ${{ needs.build.outputs.service_image_ref }}
+        run: docker image inspect "$SOURCE_IMAGE_REF" >/dev/null
+
+      - name: Load Vault Secrets for GHCR
+        id: vault
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'github'
+        uses: hashicorp/vault-action@v4
+        with:
+          url: https://vault.svc.plus
+          method: jwt
+          role: github-actions-accounts-${{ needs.prep.outputs.deploy_env }}
+          jwtGithubAudience: vault
+          exportEnv: false
+          # GHCR 推送凭据在 kv/data/CICD(第 ① 层公共服务 secret, 三个环境
+          # role 共读)。kv/data/github-actions 这个路径不存在, 返回 403 ——
+          # 而 403 与"role 没建"、"绑定不匹配"完全同形, 日志里看不出区别。
+          secrets: |
+            kv/data/CICD GHCR_TOKEN | GHCR_TOKEN ;
+
+      - name: Log In To GHCR
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'github'
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ vars.GHCR_USERNAME || github.repository_owner }}
+          password: ${{ steps.vault.outputs.GHCR_TOKEN || github.token }}
+
+      - name: Compute GHCR image tags
+        id: service_meta
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'github'
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        with:
+          images: ghcr.io/${{ vars.IMAGE_REPO_OWNER || github.repository_owner }}/accounts
+          tags: |
+            type=ref,event=tag
+            type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/') || github.ref_type == 'tag' }}
+            type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/release/') }}
+            type=raw,value=latest,enable=${{ needs.prep.outputs.push_latest == 'true' || github.ref == 'refs/heads/main' }}
+            type=raw,value=sha-${{ steps.source.outputs.commit }}
+
+      - name: Push Accounts image to GHCR
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'github'
+        env:
+          SOURCE_IMAGE_REF: ${{ needs.build.outputs.service_image_ref }}
+          GHCR_TAGS: ${{ steps.service_meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            docker tag "$SOURCE_IMAGE_REF" "$tag"
+            docker push "$tag"
+          done <<< "$GHCR_TAGS"
 
       - name: Authenticate to Google Cloud
         id: gcp
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'artifact_registry'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: projects/1004637461064/locations/global/workloadIdentityPools/github-actions/providers/github-actions-platform-ops
@@ -380,20 +499,22 @@ jobs:
           token_format: access_token
 
       - name: Log In To Artifact Registry
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'artifact_registry'
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           registry: asia-northeast1-docker.pkg.dev
           username: oauth2accesstoken
           password: ${{ steps.gcp.outputs.access_token }}
 
-      - name: Build And Push Cloud Run Image
-        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: asia-northeast1-docker.pkg.dev/xworktech/serverless/accounts:${{ inputs.image_tag || github.ref_name }}
+      - name: Push Accounts image to Artifact Registry
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'artifact_registry'
+        env:
+          SOURCE_IMAGE_REF: ${{ needs.build.outputs.service_image_ref }}
+          DESTINATION_IMAGE: asia-northeast1-docker.pkg.dev/xworktech/serverless/accounts:${{ inputs.image_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          docker tag "$SOURCE_IMAGE_REF" "$DESTINATION_IMAGE"
+          docker push "$DESTINATION_IMAGE"
 
   release:
     name: Publish release manifest and assets
@@ -408,7 +529,7 @@ jobs:
         id: assets
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-          IMAGE_REFS: ghcr.io/${{ github.repository_owner }}/accounts:${{ github.ref_name }}
+          IMAGE_REFS: ${{ needs.build.outputs.service_image_ref }}
           RELEASE_BUILD_COMMAND: >-
             CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w"
             -o "$RUNNER_TEMP/release-assets/accounts" ./cmd/accountsvc
