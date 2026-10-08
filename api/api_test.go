@@ -2586,6 +2586,9 @@ func TestPingEndpointDerivesVersionFromImageEnv(t *testing.T) {
 	if got := resp["image"]; got != "ghcr.io/example/accounts:abcdef1234567890abcdef1234567890abcdef12" {
 		t.Fatalf("expected image ref from env, got %q", got)
 	}
+	if resp["regional_discovery"] != "availability-v1" {
+		t.Fatalf("missing regional release contract: %#v", resp)
+	}
 	if got := resp["tag"]; got != "abcdef1234567890abcdef1234567890abcdef12" {
 		t.Fatalf("expected tag derived from image ref, got %q", got)
 	}

@@ -6,5 +6,5 @@ import "os"
 // remains the single release identity; a separate commit variable is not used.
 func RuntimeImageMetadata() map[string]any {
 	info := parseImageVersionInfo(os.Getenv("IMAGE"))
-	return map[string]any{"status": "ok", "image": info.ImageRef, "tag": info.Tag, "commit": info.Commit, "version": info.Version}
+	return map[string]any{"status": "ok", "image": info.ImageRef, "tag": info.Tag, "commit": info.Commit, "version": info.Version, "regional_discovery": regionalDiscoveryVersion}
 }
