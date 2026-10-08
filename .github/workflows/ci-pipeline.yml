@@ -73,6 +73,8 @@ jobs:
         include:
           - check: prep
             name: Prep
+          - check: regional_discovery
+            name: Regional Discovery and Agent Event Stream
           - check: native_schema_initialization
             name: Native Schema Initialization (PostgreSQL 17)
           - check: managed_database_runtime
@@ -125,8 +127,15 @@ jobs:
         run: bash ./scripts/github-actions/resolve-pipeline-flags.sh >> "$GITHUB_OUTPUT"
 
       - name: Install PostgreSQL client
-        if: matrix.check != 'prep'
+        if: matrix.check != 'prep' && matrix.check != 'regional_discovery'
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Qualify filtered regional discovery and release identity
+        if: matrix.check == 'regional_discovery'
+        run: |
+          test -s api/regional_pools.go
+          go test -count=1 ./api -run 'TestAgentEventStream|TestRegional|TestPingEndpoint'
+          python3 -m unittest discover -s scripts/tests -p validate_deploy_test.py
 
       - name: Prepare native account fixture
         if: matrix.check == 'native_schema_initialization' || matrix.check == 'managed_database_runtime'

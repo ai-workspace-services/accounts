@@ -168,6 +168,14 @@ func (h *handler) watchAgentUsers(c *gin.Context) {
 		return
 	}
 
+	// The server's finite WriteTimeout protects ordinary API requests, but it
+	// must not expire an authenticated SSE stream while it waits for changes.
+	controller := http.NewResponseController(c.Writer)
+	if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "event_stream_unavailable"})
+		return
+	}
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
@@ -184,10 +192,12 @@ func (h *handler) watchAgentUsers(c *gin.Context) {
 			return
 		}
 		if revision != lastRevision {
-			_, _ = c.Writer.WriteString("id: " + revision + "\n")
-			_, _ = c.Writer.WriteString("event: users-changed\n")
-			_, _ = c.Writer.WriteString("data: " + revision + "\n\n")
-			c.Writer.Flush()
+			if _, err := c.Writer.WriteString("id: " + revision + "\nevent: users-changed\ndata: " + revision + "\n\n"); err != nil {
+				return
+			}
+			if err := controller.Flush(); err != nil {
+				return
+			}
 			lastRevision = revision
 		}
 
@@ -197,8 +207,12 @@ func (h *handler) watchAgentUsers(c *gin.Context) {
 		case <-ticker.C:
 			heartbeats++
 			if heartbeats%3 == 0 {
-				_, _ = c.Writer.WriteString(": keepalive\n\n")
-				c.Writer.Flush()
+				if _, err := c.Writer.WriteString(": keepalive\n\n"); err != nil {
+					return
+				}
+				if err := controller.Flush(); err != nil {
+					return
+				}
 			}
 		}
 	}

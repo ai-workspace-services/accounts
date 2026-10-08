@@ -19,10 +19,15 @@ fi
 commit=""
 version="${tag}"
 
-if [[ "${tag}" =~ ^[0-9a-f]{7,40}$ ]]; then
+if [[ "${tag}" =~ ^[0-9a-f]{40}$ ]]; then
   commit="${tag}"
-elif [[ "${tag}" =~ ^sha-([0-9a-f]{7,40})$ ]]; then
+elif [[ "${tag}" =~ ^sha-([0-9a-f]{40})$ ]]; then
   commit="${BASH_REMATCH[1]}"
+fi
+
+if [[ -z "${commit}" ]]; then
+  echo "image_ref must identify a full 40-character commit SHA" >&2
+  exit 1
 fi
 
 ping_json="$(
@@ -45,6 +50,9 @@ payload = json.loads(os.environ["PING_JSON"])
 
 if payload.get("status") != "ok":
     raise SystemExit("ping status not ok")
+
+if payload.get("regional_discovery") != "availability-v1":
+    raise SystemExit("runtime is missing filtered regional discovery with closure reasons")
 
 runtime_image = payload.get("image") or ""
 runtime_tag = payload.get("tag") or ""

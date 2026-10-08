@@ -2,14 +2,18 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
 	"account/internal/agentproto"
 	"account/internal/agentserver"
+	"account/internal/store"
+	"github.com/gin-gonic/gin"
 )
 
 func TestRegionalPoolsAggregateReportsAndAvailability(t *testing.T) {
@@ -110,13 +114,91 @@ func TestRegionalRegistrationEndpointsUseReportedMetadata(t *testing.T) {
 func TestRegionalPoolsIgnoreConfiguredProxyList(t *testing.T) {
 	t.Setenv("XRAY_PROXY_NODES", "fixed.entry.example")
 	router, _, token := newAuthenticatedSyncHarness(t, WithAgentStatusReader(stubAgentStatusReader{}))
-	for _, endpoint := range []string{"/api/agent-server/v1/nodes", "/api/agent-server/v1/regional-pools"} {
+	for _, endpoint := range []string{"/api/agent-server/v1/nodes", "/api/agent/nodes", "/api/agent-server/v1/regional-pools"} {
 		req := httptest.NewRequest(http.MethodGet, endpoint, nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		rr := httptest.NewRecorder()
 		router.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK || rr.Body.String() != "[]" {
 			t.Fatalf("%s: %d %s", endpoint, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestRegionalClosureReasonsAndMixedAvailability(t *testing.T) {
+	now := time.Now().UTC()
+	closed := false
+	healthy := agentserver.StatusSnapshot{Agent: agentserver.Identity{ID: "sg-1"}, UpdatedAt: now, Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Region: "sg", Pool: "sg-main", EntryPoint: "sg.entry.example", Running: true}}}
+	for _, reason := range []regionalClosureReason{regionalExplicitDisabled, regionalStale, regionalUnhealthy, regionalXrayNotRunning} {
+		t.Run(string(reason), func(t *testing.T) {
+			snapshot := healthy
+			switch reason {
+			case regionalExplicitDisabled:
+				snapshot.Report.Xray.OpenToUsers = &closed
+			case regionalStale:
+				snapshot.UpdatedAt = now.Add(-regionalHeartbeatTTL - time.Second)
+			case regionalUnhealthy:
+				snapshot.Report.Healthy = false
+			case regionalXrayNotRunning:
+				snapshot.Report.Xray.Running = false
+			}
+			pools := registeredRegionalPools(stubAgentStatusReader{statuses: []agentserver.StatusSnapshot{snapshot}}, now)
+			if len(pools) != 1 || pools[0].OpenToUsers || !reflect.DeepEqual(pools[0].ClosedReasons, []regionalClosureReason{reason}) {
+				t.Fatalf("closed pools=%#v", pools)
+			}
+			pools = registeredRegionalPools(stubAgentStatusReader{statuses: []agentserver.StatusSnapshot{snapshot, healthy}}, now)
+			if len(pools) != 1 || !pools[0].OpenToUsers || len(pools[0].ClosedReasons) != 0 || pools[0].PoolCount != 1 {
+				t.Fatalf("mixed availability=%#v", pools)
+			}
+		})
+	}
+	failed := healthy
+	failed.Report.Xray.OpenToUsers = &closed
+	failed.UpdatedAt = now.Add(time.Minute) // future snapshots also fail freshness
+	failed.Report.Healthy = false
+	failed.Report.Xray.Running = false
+	pools := registeredRegionalPools(stubAgentStatusReader{statuses: []agentserver.StatusSnapshot{failed}}, now)
+	want := []regionalClosureReason{regionalExplicitDisabled, regionalStale, regionalUnhealthy, regionalXrayNotRunning}
+	if !reflect.DeepEqual(pools[0].ClosedReasons, want) {
+		t.Fatalf("reasons=%v", pools[0].ClosedReasons)
+	}
+}
+
+func TestRegionalPoolsKeepClosedMetadataAdminOnly(t *testing.T) {
+	now := time.Now().UTC()
+	st := store.NewMemoryStore()
+	for _, role := range []string{store.RoleUser, store.RoleAdmin} {
+		user := &store.User{Name: role, Email: role + "@example.test", Role: role, Level: store.LevelUser, Active: true}
+		if err := st.CreateUser(context.Background(), user); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateSession(context.Background(), role+"-token", user.ID, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader := stubAgentStatusReader{statuses: []agentserver.StatusSnapshot{
+		{Agent: agentserver.Identity{ID: "jp-1"}, UpdatedAt: now, Report: agentproto.StatusReport{Healthy: true, Xray: agentproto.XrayStatus{Region: "jp", EntryPoint: "jp.entry.example", Running: true}}},
+		{Agent: agentserver.Identity{ID: "sg-1"}, UpdatedAt: now, Report: agentproto.StatusReport{Healthy: false, Xray: agentproto.XrayStatus{Region: "sg", EntryPoint: "sg.entry.example", Running: true}}},
+	}}
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithAgentStatusReader(reader))
+	for _, role := range []string{store.RoleUser, store.RoleAdmin} {
+		req := httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/regional-pools", nil)
+		req.Header.Set("Authorization", "Bearer "+role+"-token")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		var pools []regionalPool
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", role, rr.Code, rr.Body.String())
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &pools); err != nil {
+			t.Fatal(err)
+		}
+		if role == store.RoleUser && (len(pools) != 1 || pools[0].Code != "jp") {
+			t.Fatalf("ordinary user saw closed pool: %#v", pools)
+		}
+		if role == store.RoleAdmin && (len(pools) != 2 || pools[1].ClosedReasons[0] != regionalUnhealthy) {
+			t.Fatalf("admin diagnostics: %#v", pools)
 		}
 	}
 }
