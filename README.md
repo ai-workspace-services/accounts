@@ -171,14 +171,14 @@ CI 中的四项 PostgreSQL 验证均在 GitHub Actions 的临时 PostgreSQL 17
 | `Full Business Transfer` | 在临时数据库中验证完整业务数据迁移、字段可见性、批处理、回滚和旧数据兼容性。 |
 | `Account Lifecycle Migration` | 在临时 PostgreSQL 中验证账户生命周期迁移、财务账本迁移、重复执行幂等性和兼容性。 |
 
-流水线结构保持 8 个 Job 不变：
+流水线结构收敛为 3 个 Job 定义：
 
 ```text
-四项临时 PostgreSQL 验证
+pre_check 矩阵：Prep + 四项临时 PostgreSQL 验证
         ↓
 Build 矩阵：生成带完整 SHA 的 Accounts 镜像归档
         ↓
-发布镜像矩阵：GitHub Container Registry / GCP Artifact Registry
+发布矩阵：GitHub Container Registry / GCP Artifact Registry / Release Manifest
 ```
 
 CI 通过只表示数据库初始化、运行时角色控制、业务数据迁移和历史数据兼容性

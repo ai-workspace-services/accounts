@@ -64,9 +64,23 @@ defaults:
     shell: bash
 
 jobs:
-  native_schema_initialization:
-    name: Native Schema Initialization (PostgreSQL 17)
+  pre_check:
+    name: Pre-check - ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: prep
+            name: Prep
+          - check: native_schema_initialization
+            name: Native Schema Initialization (PostgreSQL 17)
+          - check: managed_database_runtime
+            name: Managed Database Runtime (PostgreSQL 17)
+          - check: full_business_transfer
+            name: Full Business Transfer (PostgreSQL 17)
+          - check: account_lifecycle_migration
+            name: Account Lifecycle Migration (PostgreSQL 17)
     services:
       postgres:
         image: postgres:17
@@ -79,168 +93,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    steps:
-      - name: Check Out Repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ inputs.source_ref || github.ref }}
-      - name: Set Up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version-file: go.mod
-      - name: Prepare isolated account fixture
-        env:
-          PGPASSWORD: postgres
-        run: |
-          sudo apt-get update && sudo apt-get install -y postgresql-client
-          createdb --host localhost --port 5432 --username postgres account
-      - name: Qualify compiled schema and native initialization guards
-        env:
-          MIGRATECTL_NATIVE_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
-        run: go test -v ./sql ./cmd/migratectl ./internal/migrate
-
-
-  managed_database_runtime:
-    name: Managed Database Runtime (PostgreSQL 17)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Check Out Repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ inputs.source_ref || github.ref }}
-      - name: Set Up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
-        with:
-          go-version-file: go.mod
-      - name: Prepare isolated native account fixture
-        env:
-          PGPASSWORD: postgres
-        run: |
-          sudo apt-get update && sudo apt-get install -y postgresql-client
-          createdb --host localhost --port 5432 --username postgres account
-      - name: Qualify managed startup, readonly facts and standby isolation
-        env:
-          ACCOUNTS_MANAGED_RUNTIME_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
-        run: go test -v ./config ./internal/dbruntime ./cmd/accountsvc -run 'TestManaged|TestDatabaseRole'
-      - name: Compile the same complete server package as the prebuilt image
-        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/accounts-runtime-fixture" ./cmd/accountsvc
-
-  full_business_transfer:
-    name: Full Business Transfer (PostgreSQL 17)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Check Out Repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ inputs.source_ref || github.ref }}
-      - name: Set Up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version-file: go.mod
-      - name: Prepare isolated full-business fixtures
-        env:
-          PGPASSWORD: postgres
-        run: |
-          sudo apt-get update && sudo apt-get install -y postgresql-client
-          createdb --host localhost --port 5432 --username postgres account
-          createdb --host localhost --port 5432 --username postgres full_business_source
-          createdb --host localhost --port 5432 --username postgres full_business_native_source
-      - name: Qualify readonly visibility, full fields, batching and rollback
-        env:
-          MIGRATECTL_FULL_BUSINESS_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
-        run: go test -v ./internal/migrate -run '^TestFullBusiness'
-
-  account_lifecycle_migration:
-    name: Account Lifecycle Migration (PostgreSQL 17)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - name: Check Out Repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ inputs.source_ref || github.ref }}
-      - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Install PostgreSQL client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - name: Run controlled migration PostgreSQL integration test (required)
-        env:
-          PGPASSWORD: postgres
-          CONTROLLED_TEST_DB: controlled_migration_test_${{ github.run_id }}_${{ github.run_attempt }}
-          ACCOUNTS_TEST_POSTGRES_DSN_REQUIRED: "1"
-        run: |
-          set -euo pipefail
-          createdb --host localhost --port 5432 --username postgres "$CONTROLLED_TEST_DB"
-          export ACCOUNTS_TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/${CONTROLLED_TEST_DB}?sslmode=disable"
-          go test -count=1 -v ./internal/migrate -run '^TestControlledMigratePostgresIntegration$'
-      - name: Apply lifecycle migration fixture twice and verify guards
-        env:
-          PGPASSWORD: postgres
-        run: >-
-          psql "postgres://postgres@localhost:5432/postgres?sslmode=disable"
-          --set ON_ERROR_STOP=1
-          --file sql/migrations/tests/account_lifecycle_upgrade_test.sql
-      - name: Apply finance migration fixture twice in a fresh database
-        env:
-          PGPASSWORD: postgres
-        run: |
-          set -euo pipefail
-          createdb --host localhost --port 5432 --username postgres finance_ledger_upgrade_test
-          psql "postgres://postgres@localhost:5432/finance_ledger_upgrade_test?sslmode=disable" \
-            --set ON_ERROR_STOP=1 \
-            --file sql/migrations/tests/local_finance_ledger_upgrade_test.sql
-
-      - name: Preserve full-business legacy compatibility across repeated upgrades
-        env:
-          PGPASSWORD: postgres
-        run: |
-          set -euo pipefail
-          createdb --host localhost --port 5432 --username postgres full_business_compat_test
-          psql "postgres://postgres@localhost:5432/full_business_compat_test?sslmode=disable" \
-            --set ON_ERROR_STOP=1 \
-            --file sql/migrations/tests/full_business_legacy_compat_upgrade_test.sql
-
-  prep:
-    name: Prep
-    runs-on: ubuntu-latest
     outputs:
       deploy_env: ${{ steps.flags.outputs.deploy_env }}
       push_image: ${{ steps.flags.outputs.push_image }}
@@ -250,6 +102,14 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          ref: ${{ inputs.source_ref || github.ref }}
+
+      - name: Set Up Go
+        if: matrix.check != 'prep'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: Resolve Pipeline Flags
         id: flags
@@ -264,9 +124,93 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
         run: bash ./scripts/github-actions/resolve-pipeline-flags.sh >> "$GITHUB_OUTPUT"
 
+      - name: Install PostgreSQL client
+        if: matrix.check != 'prep'
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Prepare native account fixture
+        if: matrix.check == 'native_schema_initialization' || matrix.check == 'managed_database_runtime'
+        env:
+          PGPASSWORD: postgres
+        run: createdb --host localhost --port 5432 --username postgres account
+
+      - name: Prepare full-business fixtures
+        if: matrix.check == 'full_business_transfer'
+        env:
+          PGPASSWORD: postgres
+        run: |
+          createdb --host localhost --port 5432 --username postgres account
+          createdb --host localhost --port 5432 --username postgres full_business_source
+          createdb --host localhost --port 5432 --username postgres full_business_native_source
+
+      - name: Qualify compiled schema and native initialization guards
+        if: matrix.check == 'native_schema_initialization'
+        env:
+          MIGRATECTL_NATIVE_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
+        run: go test -v ./sql ./cmd/migratectl ./internal/migrate
+
+      - name: Qualify managed startup, readonly facts and standby isolation
+        if: matrix.check == 'managed_database_runtime'
+        env:
+          ACCOUNTS_MANAGED_RUNTIME_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
+        run: go test -v ./config ./internal/dbruntime ./cmd/accountsvc -run 'TestManaged|TestDatabaseRole'
+
+      - name: Compile the same complete server package as the prebuilt image
+        if: matrix.check == 'managed_database_runtime'
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/accounts-runtime-fixture" ./cmd/accountsvc
+
+      - name: Qualify readonly visibility, full fields, batching and rollback
+        if: matrix.check == 'full_business_transfer'
+        env:
+          MIGRATECTL_FULL_BUSINESS_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
+        run: go test -v ./internal/migrate -run '^TestFullBusiness'
+
+      - name: Run controlled migration PostgreSQL integration test (required)
+        if: matrix.check == 'account_lifecycle_migration'
+        env:
+          PGPASSWORD: postgres
+          CONTROLLED_TEST_DB: controlled_migration_test_${{ github.run_id }}_${{ github.run_attempt }}
+          ACCOUNTS_TEST_POSTGRES_DSN_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          createdb --host localhost --port 5432 --username postgres "$CONTROLLED_TEST_DB"
+          export ACCOUNTS_TEST_POSTGRES_DSN="postgres://postgres:postgres@localhost:5432/${CONTROLLED_TEST_DB}?sslmode=disable"
+          go test -count=1 -v ./internal/migrate -run '^TestControlledMigratePostgresIntegration$'
+
+      - name: Apply lifecycle migration fixture twice and verify guards
+        if: matrix.check == 'account_lifecycle_migration'
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql "postgres://postgres@localhost:5432/postgres?sslmode=disable"
+          --set ON_ERROR_STOP=1
+          --file sql/migrations/tests/account_lifecycle_upgrade_test.sql
+
+      - name: Apply finance migration fixture twice in a fresh database
+        if: matrix.check == 'account_lifecycle_migration'
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          createdb --host localhost --port 5432 --username postgres finance_ledger_upgrade_test
+          psql "postgres://postgres@localhost:5432/finance_ledger_upgrade_test?sslmode=disable" \
+            --set ON_ERROR_STOP=1 \
+            --file sql/migrations/tests/local_finance_ledger_upgrade_test.sql
+
+      - name: Preserve full-business legacy compatibility across repeated upgrades
+        if: matrix.check == 'account_lifecycle_migration'
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          createdb --host localhost --port 5432 --username postgres full_business_compat_test
+          psql "postgres://postgres@localhost:5432/full_business_compat_test?sslmode=disable" \
+            --set ON_ERROR_STOP=1 \
+            --file sql/migrations/tests/full_business_legacy_compat_upgrade_test.sql
+
   build:
     name: Build Accounts image (${{ matrix.platform }})
-    needs: [prep, native_schema_initialization, account_lifecycle_migration, full_business_transfer, managed_database_runtime]
+    needs: pre_check
     strategy:
       fail-fast: false
       matrix:
@@ -317,7 +261,7 @@ jobs:
             type=ref,event=tag
             type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/') || github.ref_type == 'tag' }}
             type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/release/') }}
-            type=raw,value=latest,enable=${{ needs.prep.outputs.push_latest == 'true' || github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ needs.pre_check.outputs.push_latest == 'true' || github.ref == 'refs/heads/main' }}
             type=raw,value=sha-${{ steps.source.outputs.commit }}
 
       - name: Resolve Service Image Ref
@@ -352,13 +296,14 @@ jobs:
           retention-days: 1
 
   publish_artifact_registry:
-    name: Publish ${{ matrix.target_name }} image
-    needs: [prep, build]
+    name: Publish ${{ matrix.target_name }}
+    needs: [pre_check, build]
     if: >-
       ${{ needs.build.result == 'success' &&
-          (needs.prep.outputs.push_image == 'true' ||
+          (needs.pre_check.outputs.push_image == 'true' ||
            (github.event_name == 'push' && github.ref_type == 'tag') ||
-           (github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'prod' && inputs.source_ref != '' && inputs.image_tag != '')) }}
+           (github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'prod' && inputs.source_ref != '' && inputs.image_tag != '') ||
+           (github.event_name == 'push' && github.ref_type == 'tag' && contains(github.ref_name, 'daily-build-'))) }}
     strategy:
       fail-fast: false
       matrix:
@@ -371,9 +316,11 @@ jobs:
             target_name: Google Artifact Registry
             artifact_name: accounts-image-linux-amd64
             archive_name: accounts-linux-amd64.tar
+          - target: release
+            target_name: Release Manifest and Assets
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write
     steps:
@@ -381,9 +328,10 @@ jobs:
         id: target
         env:
           PUBLISH_TARGET: ${{ matrix.target }}
-          PUSH_IMAGE: ${{ needs.prep.outputs.push_image }}
+          PUSH_IMAGE: ${{ needs.pre_check.outputs.push_image }}
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
           DEPLOY_ENV: ${{ inputs.deploy_env }}
           SOURCE_REF: ${{ inputs.source_ref }}
           IMAGE_TAG: ${{ inputs.image_tag }}
@@ -402,6 +350,9 @@ jobs:
                   "$EVENT_NAME" == push && "$REF_TYPE" == tag ]] || \
                [[ "$PUBLISH_TARGET" == artifact_registry && "$promotion" == true ]]; then
             enabled=true
+          elif [[ "$PUBLISH_TARGET" == release && "$EVENT_NAME" == push && \
+                  "$REF_TYPE" == tag && "$REF_NAME" == *daily-build-* ]]; then
+            enabled=true
           fi
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
 
@@ -412,7 +363,7 @@ jobs:
           ref: ${{ inputs.source_ref || github.ref }}
 
       - name: Download Accounts image archive
-        if: steps.target.outputs.enabled == 'true'
+        if: steps.target.outputs.enabled == 'true' && (matrix.target == 'github' || matrix.target == 'artifact_registry')
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ matrix.artifact_name }}
@@ -420,7 +371,7 @@ jobs:
 
       - name: Resolve checked out source commit
         id: source
-        if: steps.target.outputs.enabled == 'true'
+        if: steps.target.outputs.enabled == 'true' && (matrix.target == 'github' || matrix.target == 'artifact_registry')
         run: |
           set -euo pipefail
           commit="$(git rev-parse HEAD)"
@@ -428,13 +379,13 @@ jobs:
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Load Accounts image archive
-        if: steps.target.outputs.enabled == 'true'
+        if: steps.target.outputs.enabled == 'true' && (matrix.target == 'github' || matrix.target == 'artifact_registry')
         env:
           IMAGE_ARCHIVE: ${{ runner.temp }}/accounts-image/${{ matrix.archive_name }}
         run: docker load --input "$IMAGE_ARCHIVE"
 
       - name: Verify built Accounts image
-        if: steps.target.outputs.enabled == 'true'
+        if: steps.target.outputs.enabled == 'true' && (matrix.target == 'github' || matrix.target == 'artifact_registry')
         env:
           SOURCE_IMAGE_REF: ${{ needs.build.outputs.service_image_ref }}
         run: docker image inspect "$SOURCE_IMAGE_REF" >/dev/null
@@ -446,7 +397,7 @@ jobs:
         with:
           url: https://vault.svc.plus
           method: jwt
-          role: github-actions-accounts-${{ needs.prep.outputs.deploy_env }}
+          role: github-actions-accounts-${{ needs.pre_check.outputs.deploy_env }}
           jwtGithubAudience: vault
           exportEnv: false
           # GHCR 推送凭据在 kv/data/CICD(第 ① 层公共服务 secret, 三个环境
@@ -473,7 +424,7 @@ jobs:
             type=ref,event=tag
             type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/') || github.ref_type == 'tag' }}
             type=ref,event=branch,enable=${{ startsWith(github.ref, 'refs/heads/release/') }}
-            type=raw,value=latest,enable=${{ needs.prep.outputs.push_latest == 'true' || github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ needs.pre_check.outputs.push_latest == 'true' || github.ref == 'refs/heads/main' }}
             type=raw,value=sha-${{ steps.source.outputs.commit }}
 
       - name: Push Accounts image to GHCR
@@ -516,17 +467,9 @@ jobs:
           docker tag "$SOURCE_IMAGE_REF" "$DESTINATION_IMAGE"
           docker push "$DESTINATION_IMAGE"
 
-  release:
-    name: Publish release manifest and assets
-    needs: build
-    if: ${{ contains(github.ref, '/tags/') && contains(github.ref, 'daily-build-') && needs.build.result == 'success' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Prepare release assets
+      - name: Publish release manifest and assets
         id: assets
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'release'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           IMAGE_REFS: ${{ needs.build.outputs.service_image_ref }}
