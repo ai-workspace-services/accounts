@@ -82,6 +82,7 @@ type FullBusinessReceipt struct {
 	SequencePolicy          string                      `json:"sequence_policy"`
 	DatabaseCutoverApproved bool                        `json:"database_cutover_approved"`
 	CoreUsers               CoreUsersEvidence           `json:"core_users"`
+	CoreUsersDiff           *CoreUsersDiff              `json:"core_users_diff,omitempty"`
 }
 
 // CoreUsersEquality is the deliberately small identity contract consumed by
@@ -98,6 +99,17 @@ type CoreUsersEquality struct {
 type CoreUsersEvidence struct {
 	Source CoreUsersEquality `json:"source"`
 	Target CoreUsersEquality `json:"target"`
+}
+
+// CoreUsersDiff contains aggregate mismatch counts only. It never includes an
+// email, user UUID, Proxy UUID, password hash, or per-user identifier.
+type CoreUsersDiff struct {
+	SourceOnlyUsers        int  `json:"source_only_users" yaml:"source_only_users"`
+	TargetOnlyUsers        int  `json:"target_only_users" yaml:"target_only_users"`
+	EmailMismatches        int  `json:"email_mismatches" yaml:"email_mismatches"`
+	ProxyUUIDMismatches    int  `json:"proxy_uuid_mismatches" yaml:"proxy_uuid_mismatches"`
+	PasswordHashMismatches int  `json:"password_hash_mismatches" yaml:"password_hash_mismatches"`
+	Equal                  bool `json:"equal" yaml:"equal"`
 }
 
 func fullBusinessContract() (map[string]businessTable, []string, error) {

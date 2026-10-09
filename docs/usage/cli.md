@@ -44,7 +44,18 @@ migratectl verify --dsn "$DB_URL" --schema sql/schema.sql
 # 导出/导入
 migratectl export --dsn "$DB_URL" --output account-export.yaml
 migratectl import --dsn "$DB_URL" --file account-export.yaml
+
+# 根模式比较核心账号字段；-D/-C 分别是 --diff/--dry-run 的简写
+migratectl -D -C \
+  --source-dsn-env MIGRATECTL_SOURCE_DSN \
+  --target-dsn-env MIGRATECTL_TARGET_DSN \
+  --environment prod --writers-paused \
+  --schema-sha256 "$ACCOUNTS_SCHEMA_SHA256" \
+  --billing-schema-sha256 "$BILLING_SCHEMA_SHA256" \
+  -o markdown
 ```
+
+根模式 `--diff/-D` 与 `--dry-run/-C` 都是只读核心账号比较入口。`compare-core-users -o raw` 保留现有 JSON receipt（默认）；`-o yaml` 输出同一 receipt 的 YAML；`-o markdown` 输出不含用户标识及摘要值的聚合差异表。比较发现差异时仍返回非零退出码，并先写出所选格式的安全 diff。差异只按数量报告：email、Proxy UUID、密码哈希分别统计不一致数及 source-only / target-only 用户数。
 
 For one explicitly reviewed database upgrade, use `controlled-migrate`. It
 reads only the checked-in embedded `sql/migrations/*.up.sql` files, selects one
