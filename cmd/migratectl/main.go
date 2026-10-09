@@ -36,13 +36,37 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	var migrationDir string
+	var (
+		diffMode     bool
+		dryRun       bool
+		sourceEnv    string
+		targetEnv    string
+		outputFormat string
+		coreUserOpts = migrate.CoreUsersOptions{CompareOnly: true}
+	)
 	cmd := &cobra.Command{
 		Use:   "migratectl",
 		Short: "XWorkmate account database migration orchestrator",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !diffMode && !dryRun {
+				return cmd.Help()
+			}
+			return runCoreUsersCompare(cmd, sourceEnv, targetEnv, coreUserOpts, true, outputFormat)
+		},
 	}
 
 	migrationDir = defaultMigrationDir
 	cmd.PersistentFlags().StringVar(&migrationDir, "dir", migrationDir, "directory containing migration files")
+	cmd.Flags().BoolVarP(&diffMode, "diff", "D", false, "Compare core account fields without exposing user values")
+	cmd.Flags().BoolVarP(&dryRun, "dry-run", "C", false, "Run the core account comparison read-only; do not write to either database")
+	cmd.Flags().StringVar(&sourceEnv, "source-dsn-env", "", "Environment variable containing the readonly source PostgreSQL DSN")
+	cmd.Flags().StringVar(&targetEnv, "target-dsn-env", "", "Environment variable containing the target PostgreSQL DSN")
+	cmd.Flags().StringVar(&coreUserOpts.Environment, "environment", "", "Explicit uat or prod target")
+	cmd.Flags().StringVar(&coreUserOpts.SchemaSHA256, "schema-sha256", "", "Exact compiled Accounts native schema SHA-256")
+	cmd.Flags().StringVar(&coreUserOpts.BillingSHA256, "billing-schema-sha256", "", "Exact reviewed additive Billing schema SHA-256")
+	cmd.Flags().BoolVar(&coreUserOpts.WritersPaused, "writers-paused", false, "Execution owner verified paused target writers")
+	cmd.Flags().StringVarP(&outputFormat, "output", "o", "raw", "safe diff output: raw (legacy JSON), yaml, or markdown")
 
 	cmd.AddCommand(newMigrateCmd(&migrationDir))
 	cmd.AddCommand(newControlledMigrateCmd())

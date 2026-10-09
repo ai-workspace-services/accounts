@@ -120,15 +120,15 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if err != nil {
 		return receipt, err
 	}
-	missing, err := coreUserMissing(sourceUsers, targetUsers)
-	if err != nil {
-		return receipt, err
-	}
+	var missing []string
 	if options.CompareOnly {
-		if !equalCoreUsers(sourceUsers, targetUsers) {
-			return receipt, errors.New("core user email, password hash or Proxy UUID differs")
-		}
+		diff := diffCoreUsers(sourceUsers, targetUsers)
+		receipt.CoreUsersDiff = &diff
 	} else {
+		missing, err = coreUserMissing(sourceUsers, targetUsers)
+		if err != nil {
+			return receipt, err
+		}
 		if _, err = dst.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1::bigint)`, migrationAdvisoryLockKey); err != nil {
 			return receipt, errors.New("cannot lock core-user transfer")
 		}
@@ -189,10 +189,14 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if err != nil {
 		return receipt, err
 	}
-	receipt.FullBusinessEqual = true
+	receipt.FullBusinessEqual = !options.CompareOnly || receipt.CoreUsersDiff.Equal
 	receipt.TargetWrites = !options.CompareOnly
 	if options.CompareOnly {
-		receipt.Result = "equal"
+		if receipt.CoreUsersDiff.Equal {
+			receipt.Result = "equal"
+		} else {
+			receipt.Result = "different"
+		}
 	} else {
 		receipt.Result = "copied"
 	}
@@ -203,5 +207,36 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 		return receipt, errors.New("target core-user transaction did not commit")
 	}
 	receipt.CompletedAt = time.Now().UTC()
+	if options.CompareOnly && !receipt.CoreUsersDiff.Equal {
+		return receipt, errors.New("core user email, password hash or Proxy UUID differs")
+	}
 	return receipt, nil
+}
+
+func diffCoreUsers(source, target map[string]businessUser) CoreUsersDiff {
+	diff := CoreUsersDiff{}
+	for key, sourceUser := range source {
+		targetUser, ok := target[key]
+		if !ok {
+			diff.SourceOnlyUsers++
+			continue
+		}
+		if sourceUser.Email != targetUser.Email {
+			diff.EmailMismatches++
+		}
+		if sourceUser.Proxy != targetUser.Proxy {
+			diff.ProxyUUIDMismatches++
+		}
+		if sourceUser.PasswordHash != targetUser.PasswordHash {
+			diff.PasswordHashMismatches++
+		}
+	}
+	for key := range target {
+		if _, ok := source[key]; !ok {
+			diff.TargetOnlyUsers++
+		}
+	}
+	diff.Equal = diff.SourceOnlyUsers == 0 && diff.TargetOnlyUsers == 0 && diff.EmailMismatches == 0 &&
+		diff.ProxyUUIDMismatches == 0 && diff.PasswordHashMismatches == 0
+	return diff
 }
