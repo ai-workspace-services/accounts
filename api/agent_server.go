@@ -40,21 +40,12 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		return
 	}
 
-	agentID := strings.TrimSpace(c.GetHeader(agentIDHeader))
-	if agentID == "" {
-		agentID = strings.TrimSpace(c.Query("agentId"))
-	}
-	if agentID == "" {
-		agentID = credIdentity.ID
+	identity, ok := h.resolveScopedAgent(c, *credIdentity, "")
+	if !ok {
+		return
 	}
 
-	identity := *credIdentity
-	if agentID != "" && agentID != identity.ID {
-		// Shared token scenario: register a concrete agent id so sandbox bindings can target it.
-		identity = h.agentRegistry.RegisterAgent(agentID, identity.Groups)
-	}
-
-	clients, revision, err := h.authorizedAgentClients(c.Request.Context())
+	clients, revision, err := h.authorizedAgentClients(c.Request.Context(), identity.Groups)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list_users_failed"})
 		return
@@ -68,7 +59,7 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 	})
 }
 
-func (h *handler) authorizedAgentClients(ctx context.Context) ([]xrayconfig.Client, string, error) {
+func (h *handler) authorizedAgentClients(ctx context.Context, scopes ...[]string) ([]xrayconfig.Client, string, error) {
 	clients := make([]xrayconfig.Client, 0, 16)
 	users, err := h.store.ListUsers(ctx)
 	if err != nil {
@@ -91,7 +82,29 @@ func (h *handler) authorizedAgentClients(ctx context.Context) ([]xrayconfig.Clie
 		return nil, "", err
 	}
 
+	teamStore := h.store.(store.NetworkTeamStore)
+	teams, err := teamStore.ListNetworkTeams(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	members, err := teamStore.ListNetworkMemberships(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	memberByUser := make(map[string]store.NetworkMembership, len(members))
+	for _, member := range members {
+		memberByUser[member.UserID] = member
+	}
+	now := time.Now().UTC()
+	groups := []string(nil)
+	if len(scopes) > 0 {
+		groups = scopes[0]
+	}
 	for _, u := range users {
+		access := accessFromNetworkMembership(memberByUser[u.ID], teams, now)
+		if !networkScopeAllows(access, groups) {
+			continue
+		}
 		if !u.Active {
 			continue
 		}
@@ -163,8 +176,14 @@ func (h *handler) watchAgentUsers(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing_token"})
 		return
 	}
-	if identity, ok := h.agentRegistry.Authenticate(token); !ok || identity == nil {
+	credIdentity, ok := h.agentRegistry.Authenticate(token)
+	if !ok || credIdentity == nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_token"})
+		return
+	}
+
+	identity, ok := h.resolveScopedAgent(c, *credIdentity, "")
+	if !ok {
 		return
 	}
 
@@ -187,7 +206,7 @@ func (h *handler) watchAgentUsers(c *gin.Context) {
 	heartbeats := 0
 
 	for {
-		_, revision, err := h.authorizedAgentClients(c.Request.Context())
+		_, revision, err := h.authorizedAgentClients(c.Request.Context(), identity.Groups)
 		if err != nil {
 			return
 		}
@@ -242,17 +261,9 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 		return
 	}
 
-	agentID := strings.TrimSpace(report.AgentID)
-	if agentID == "" {
-		agentID = strings.TrimSpace(c.GetHeader(agentIDHeader))
-	}
-	if agentID == "" {
-		agentID = credIdentity.ID
-	}
-
-	identity := *credIdentity
-	if agentID != "" && agentID != identity.ID {
-		identity = h.agentRegistry.RegisterAgent(agentID, identity.Groups)
+	identity, ok := h.resolveScopedAgent(c, *credIdentity, report.AgentID)
+	if !ok {
+		return
 	}
 
 	if report.Overlay != nil && (len(report.Overlay.Paths) > 256 || len(report.Overlay.Capabilities) > 8 || len(report.Overlay.DeviceID) > 128 || len(report.Overlay.NetworkID) > 128) {

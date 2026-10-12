@@ -43,7 +43,12 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	pools := registeredRegionalPools(h.agentStatusReader, time.Now().UTC())
+	access, err := h.networkAccessFor(c.Request.Context(), user.ID)
+	if err != nil {
+		respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+		return
+	}
+	pools := registeredRegionalPools(h.networkStatusReader(access), time.Now().UTC())
 	if !store.IsAdminRole(user.Role) && user.Level != store.LevelAdmin {
 		visible := make([]regionalPool, 0, len(pools))
 		for _, pool := range pools {

@@ -101,7 +101,16 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		}
 	}()
 
-	pools := registeredRegionalPools(h.agentStatusReader, time.Now().UTC())
+	access, err := h.networkAccessForUser(c.Request.Context(), user)
+	if err != nil {
+		respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+		return
+	}
+	if !access.Allowed {
+		respondError(c, 403, "team_access_inactive", "team access is inactive")
+		return
+	}
+	pools := registeredRegionalPools(h.networkStatusReader(access), time.Now().UTC())
 	xhttpPath := envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath)
 	xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
 	xhttpPort := envIntOrDefault("XRAY_XHTTP_PORT", defaultXHTTPPort)
@@ -156,6 +165,10 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		})
 	}
 
+	if access.Mode == "dedicated" && len(nodes) == 0 {
+		respondError(c, 503, "team_nodes_unavailable", "dedicated team nodes are unavailable")
+		return
+	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, nodes)
 }
