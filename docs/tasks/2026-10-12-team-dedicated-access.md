@@ -46,3 +46,20 @@
 `go test ./api ./internal/store ./internal/agentserver`；并发成员上限、跨团队/公共拒绝、到期、节点故障、共享凭据别名、事务审计回滚均有测试。实际 PostgreSQL 并发测试只在明确指定的新建一次性数据库执行 `NETWORK_TEAM_TEST_DSN=... go test ./internal/store -run NetworkTeamPostgresConcurrent`，默认跳过。
 
 代码和自测通过不代表 UAT 验收。Project 卡保持开放，完成节点真实撤销、App 真机和 UAT 增量迁移验证后再更新验收状态。
+
+## 2026-10-12 本机 SIT 记录
+
+候选 PR：Accounts #211、XConnect App #106、Portal #414、Knowledge #146；均未合并，未发布标签或部署生产。
+
+本机 Accounts 绑定 `127.0.0.1:18081`，Portal 绑定 `127.0.0.1:13000`。数据库使用本机 OrbStack 的独立 `codex-team-sit-20261012` PostgreSQL 17 容器，端口只绑定 `127.0.0.1:55439`，业务数据库 `sit_accounts` 只含测试数据。启动进程使用清理后的环境变量，未继承共享数据库、SMTP、OAuth 或 Agent 同步配置；Portal 选择全部指向 loopback 的 dev runtime 配置。运行凭据、PID 和日志仅保存在本机权限 0700 的 `/tmp/codex-team-sit`，凭据不纳入仓库和 Project。
+
+已通过：
+
+- Accounts API/store/agentserver、SQL/native/full-business、配置和运行角色相关单测。
+- PostgreSQL 17 原生空库初始化、前向升级、旧版本全业务复制和精度/审计数据一致性测试。
+- 团队增量迁移重复执行、RLS 检查、旧用户哨兵保留、真实并发成员上限及审计回滚。
+- 18 项 localhost HTTP 联调（11 项管理流程 + 7 项成员授权）：匿名管理拒绝、团队创建、Portal 授权转发、成员创建、成员上限、团队启用、移除保留受限、活跃团队迁入撤销门槛、显式恢复个人；新个人账号兼容、成员专属策略、空专属节点及完整配置 503、成员撤销后节点及配置 403。
+
+原生快照及全业务契约同步新增两表：原生业务表 54 张、含 Billing 的全业务表 55 张，当前迁移版本 `2026101201`。旧源库可以缺失团队两表，目标保持空表，已有用户继续个人模式。
+
+仍未完成：GitHub 托管 managed-runtime PostgreSQL 专项检查、App macOS 签名/真实隧道、专属 Edge 实例存量连接撤销、UAT 增量迁移。本机 managed-runtime 专项 fixture 受已有 GitHub-hosted/5432 防误用门槛限制，不冒充 CI 条件；由 PR CI 验证。App GitHub macOS 打包另遇现有浮动 `connectivity_plus` 与 runner Xcode SDK 不兼容，Flutter 团队逻辑验证已通过，打包错误不能当成业务测试通过。

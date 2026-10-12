@@ -60,8 +60,8 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=2026100701`)
-	// Qualify the old 44-table source -> latest 53-table target explicitly. New
+	exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=`+strconv.FormatUint(uint64(FullBusinessVersion), 10))
+	// Qualify the old 44-table source -> latest 55-table target explicitly. New
 	// tables may be absent in source; they must remain empty in the target.
 	tables, _, e := fullBusinessContract()
 	if e != nil {
@@ -152,7 +152,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	}
 	exec(target, `ALTER TABLE public.billing_ledger DROP CONSTRAINT fixture_reject`)
 	receipt, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
-	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 53 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
+	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 55 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
 		t.Fatalf("full copy: %#v %v", receipt, e)
 	}
 	var after string
@@ -258,14 +258,14 @@ func TestFullBusinessPostgres17(t *testing.T) {
 			t.Fatal("core-user receipt contains private user fields")
 		}
 	})
-	t.Run("native53_finance_and_late_trigger", func(t *testing.T) {
+	t.Run("native55_finance_and_late_trigger", func(t *testing.T) {
 		// Explicit synthetic fixture reset, behind the loopback-only test DSN.
 		// No runtime migration function contains DROP or disables a constraint.
 		exec(target, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`)
 		if _, e = InitializeNative(context.Background(), targetDSN, NativeInitOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, LockTimeout: time.Second, StatementTimeout: time.Minute}); e != nil {
 			t.Fatal(e)
 		}
-		exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=2026100701`)
+		exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=`+strconv.FormatUint(uint64(FullBusinessVersion), 10))
 		nativeDSN := "postgres://" + cfg.User + ":" + cfg.Password + "@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/full_business_native_source?sslmode=disable"
 		native, e := sql.Open("pgx", nativeDSN)
 		if e != nil {
@@ -303,7 +303,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `DROP TRIGGER fixture_late_mutation ON public.users; DROP FUNCTION public.fixture_late_mutation()`)
 		copied, e := CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions)
-		if e != nil || copied.SourceTables != 53 || len(copied.Tables) != 53 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
+		if e != nil || copied.SourceTables != 55 || len(copied.Tables) != 55 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
 			t.Fatalf("native finance copy failed: %v", e)
 		}
 		if e = target.QueryRow(`SELECT amount_minor FROM public.finance_payments`).Scan(&minimum); e != nil || minimum != 9007199254740993 {
@@ -314,7 +314,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		copyOptions.CompareOnly = true
 		if _, e = CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions); e != nil {
-			t.Fatalf("native53 compare failed: %v", e)
+			t.Fatalf("native55 compare failed: %v", e)
 		}
 	})
 

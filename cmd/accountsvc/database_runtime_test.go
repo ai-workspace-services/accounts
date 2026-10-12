@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/jackc/pgx/v5/pgconn"
 	"io"
 	"log/slog"
@@ -179,7 +180,7 @@ func TestManagedNativeStartupPreservesAllBusinessFacts(t *testing.T) {
 	if _, err = db.ExecContext(ctx, string(billing)); err != nil {
 		t.Fatal("fixture Billing schema failed")
 	}
-	if _, err = db.ExecContext(ctx, "UPDATE public.schema_migrations SET version=2026100701"); err != nil {
+	if _, err = db.ExecContext(ctx, fmt.Sprintf("UPDATE public.schema_migrations SET version=%d", migrate.FullBusinessVersion)); err != nil {
 		t.Fatal("fixture version failed")
 	}
 	if _, err = db.ExecContext(ctx, `INSERT INTO public.users(uuid,username,password,email,proxy_uuid,active,role,groups,proxy_uuid_expires_at)

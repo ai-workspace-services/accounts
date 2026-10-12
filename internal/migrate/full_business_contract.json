@@ -852,5 +852,94 @@
     ],
     "primary_key": ["id"],
     "foreign_keys": []
+  },
+  "network_teams": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "name",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "member_limit",
+        "type": "integer",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "valid_from",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "valid_until",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "active",
+        "type": "boolean",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": []
+  },
+  "network_team_members": {
+    "columns": [
+      {
+        "name": "user_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "team_id",
+        "type": "text",
+        "nullable": true,
+        "generated": false
+      },
+      {
+        "name": "dedicated_only",
+        "type": "boolean",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "user_uuid"
+    ],
+    "foreign_keys": [
+      {
+        "columns": [
+          "user_uuid"
+        ],
+        "parent": "users",
+        "parent_columns": [
+          "uuid"
+        ]
+      },
+      {
+        "columns": [
+          "team_id"
+        ],
+        "parent": "network_teams",
+        "parent_columns": [
+          "id"
+        ]
+      }
+    ]
   }
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,7 +80,7 @@ func TestNativeInitPostgres17(t *testing.T) {
 	}
 	options.DryRun = false
 	receipt, err = InitializeNative(ctx, dsn, options)
-	if err != nil || receipt.Result != "initialized" || len(receipt.BusinessTables) != 52 || receipt.BusinessRows != 0 || receipt.DatabaseCutoverApproved {
+	if err != nil || receipt.Result != "initialized" || len(receipt.BusinessTables) != 54 || receipt.BusinessRows != 0 || receipt.DatabaseCutoverApproved {
 		t.Fatalf("native init: %#v %v", receipt, err)
 	}
 	var migrationVersion uint
@@ -91,11 +92,11 @@ func TestNativeInitPostgres17(t *testing.T) {
 	// version has no historical up/down files. Qualification must not replay it.
 	dir := t.TempDir()
 	body := []byte("CREATE TABLE public.native_upgrade_fixture(id integer PRIMARY KEY);\n")
-	if err = os.WriteFile(filepath.Join(dir, "2026100701_fixture.up.sql"), body, 0o600); err != nil {
+	if err = os.WriteFile(filepath.Join(dir, fmt.Sprintf("%d_fixture.up.sql", manifest.MigrationVersion+1)), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(body)
-	upgrade := UpgradeOptions{ExpectedVersion: manifest.MigrationVersion, TargetVersion: 2026100701,
+	upgrade := UpgradeOptions{ExpectedVersion: manifest.MigrationVersion, TargetVersion: manifest.MigrationVersion + 1,
 		MigrationSHA256: hex.EncodeToString(digest[:]), LockTimeout: time.Second, StatementTimeout: 30 * time.Second}
 	runner := NewRunner(dir)
 	if err = runner.Upgrade(ctx, dsn, upgrade); err != nil {

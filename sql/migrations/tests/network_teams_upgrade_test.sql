@@ -15,6 +15,9 @@ DO $$ BEGIN
      UNION ALL (SELECT * FROM users_before EXCEPT SELECT * FROM public.users)) THEN
     RAISE EXCEPTION 'migration modified existing user rows';
   END IF;
+  IF EXISTS(SELECT 1 FROM pg_class WHERE relname IN ('network_teams','network_team_members') AND NOT relrowsecurity) THEN
+    RAISE EXCEPTION 'network team metadata must deny unprivileged direct SQL reads';
+  END IF;
   IF EXISTS(SELECT 1 FROM public.network_team_members) THEN
     RAISE EXCEPTION 'migration assigned existing personal users';
   END IF;

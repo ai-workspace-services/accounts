@@ -16,4 +16,6 @@ CREATE TABLE IF NOT EXISTS public.network_team_members (
   CHECK (team_id IS NULL OR dedicated_only)
 );
 CREATE INDEX IF NOT EXISTS network_team_members_team_idx ON public.network_team_members(team_id);
+ALTER TABLE public.network_teams ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.network_team_members ENABLE ROW LEVEL SECURITY;
 COMMIT;
