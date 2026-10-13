@@ -21,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const FullBusinessVersion = 2026101201
+const FullBusinessVersion = 2026101301
 const FullBusinessBillingSHA256 = "a7133f3ef2ea9013a055cfd1442a7488d2b837f289e0f5d9b61624d4fde9bc53"
 const fullBusinessBatch = 1000
 
@@ -114,7 +114,7 @@ type CoreUsersDiff struct {
 
 func fullBusinessContract() (map[string]businessTable, []string, error) {
 	var tables map[string]businessTable
-	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 55 {
+	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 63 {
 		return nil, nil, errors.New("invalid compiled full-business catalog")
 	}
 	_, manifest, err := schema.NativeArtifact()
@@ -178,6 +178,8 @@ var optionalBusinessTables = map[string]bool{
 	"finance_invoices": true, "finance_payments": true, "finance_refunds": true, "finance_operations": true,
 	"finance_operation_events": true, "cloud_vendor_costs": true,
 	"network_teams": true, "network_team_members": true,
+	"referral_codes": true, "referrals": true, "referral_rewards": true, "referral_reward_events": true,
+	"referral_payment_risks": true, "referral_settlements": true, "referral_settlement_items": true, "subscription_extension_ledger": true,
 }
 
 // CopyFullBusiness streams one read-only source snapshot into one empty target
@@ -608,6 +610,13 @@ func absentNativeUserMetadata(c businessColumn) bool {
 	return false
 }
 
+// The verified invoice period was added by 2026101301. An older source
+// may omit the complete nullable pair, retaining the native NULL defaults.
+// A half-present pair or another omitted finance field still fails closed.
+func absentNativeInvoicePeriod(c businessColumn) bool {
+	return (c.Name == "service_period_start" || c.Name == "service_period_end") && c.Nullable && c.Type == "timestamp with time zone"
+}
+
 func legacyBlacklistSource(columns []ColumnDefinition) bool {
 	for _, c := range columns {
 		if c.Name == "uuid" {
@@ -635,6 +644,9 @@ func validateBusinessSourceColumns(name string, source []ColumnDefinition, targe
 	}
 	for key, column := range expected {
 		if absentBlacklistUUID(name, column) {
+			continue
+		}
+		if name == "finance_invoices" && absentNativeInvoicePeriod(column) && absentNativeInvoicePeriod(expected["service_period_start"]) && absentNativeInvoicePeriod(expected["service_period_end"]) {
 			continue
 		}
 		if name != "users" || (!strings.HasPrefix(key, "account_lifecycle_") && !absentNativeUserMetadata(column)) {
@@ -758,6 +770,13 @@ func projectBusinessRow(name string, row rawRow, source []ColumnDefinition, tabl
 	if len(row) != len(source) {
 		return fmt.Errorf("source public.%s row coverage differs", name)
 	}
+	if name == "finance_invoices" {
+		_, start := row["service_period_start"]
+		_, end := row["service_period_end"]
+		if start != end {
+			return errors.New("partial source invoice period requires explicit correction")
+		}
+	}
 	for _, c := range table.Columns {
 		if _, ok := row[c.Name]; !ok {
 			if absentBlacklistUUID(name, c) {
@@ -769,6 +788,10 @@ func projectBusinessRow(name string, row rawRow, source []ColumnDefinition, tabl
 				// original email bytes, preserving case and historical key identity.
 				row[c.Name], _ = json.Marshal(uuid.NewSHA1(uuid.NameSpaceOID,
 					[]byte("accounts:email_blacklist:"+email)).String())
+				continue
+			}
+			if name == "finance_invoices" && absentNativeInvoicePeriod(c) {
+				row[c.Name] = json.RawMessage("null")
 				continue
 			}
 			if name != "users" || (!strings.HasPrefix(c.Name, "account_lifecycle_") && !absentNativeUserMetadata(c)) {

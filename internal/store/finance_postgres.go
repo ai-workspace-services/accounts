@@ -12,17 +12,23 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const financeInvoiceColumns = `id::text, idempotency_key, account_uuid::text, COALESCE(subscription_uuid::text, ''), provider, COALESCE(provider_invoice_id, ''), amount_minor, currency, description, issued_at, due_at, created_at`
+const financeInvoiceColumns = `id::text, idempotency_key, account_uuid::text, COALESCE(subscription_uuid::text, ''), provider, COALESCE(provider_invoice_id, ''), amount_minor, currency, description, issued_at, due_at, created_at, service_period_start, service_period_end`
 
 func scanFinanceInvoice(scanner interface{ Scan(...any) error }) (*FinanceInvoice, error) {
 	var invoice FinanceInvoice
-	var dueAt sql.NullTime
-	err := scanner.Scan(&invoice.ID, &invoice.IdempotencyKey, &invoice.AccountUUID, &invoice.SubscriptionUUID, &invoice.Provider, &invoice.ProviderInvoiceID, &invoice.AmountMinor, &invoice.Currency, &invoice.Description, &invoice.IssuedAt, &dueAt, &invoice.CreatedAt)
+	var dueAt, periodStart, periodEnd sql.NullTime
+	err := scanner.Scan(&invoice.ID, &invoice.IdempotencyKey, &invoice.AccountUUID, &invoice.SubscriptionUUID, &invoice.Provider, &invoice.ProviderInvoiceID, &invoice.AmountMinor, &invoice.Currency, &invoice.Description, &invoice.IssuedAt, &dueAt, &invoice.CreatedAt, &periodStart, &periodEnd)
 	if err != nil {
 		return nil, err
 	}
 	if dueAt.Valid {
 		invoice.DueAt = &dueAt.Time
+	}
+	if periodStart.Valid {
+		invoice.ServicePeriodStart = &periodStart.Time
+	}
+	if periodEnd.Valid {
+		invoice.ServicePeriodEnd = &periodEnd.Time
 	}
 	return &invoice, nil
 }
@@ -42,15 +48,18 @@ func (s *postgresStore) CreateFinanceInvoice(ctx context.Context, invoice *Finan
 	if !validFinanceCurrency(copy.Currency) {
 		return false, ErrFinanceIdempotencyConflict
 	}
+	if (copy.ServicePeriodStart == nil) != (copy.ServicePeriodEnd == nil) || copy.ServicePeriodStart != nil && !copy.ServicePeriodStart.Before(*copy.ServicePeriodEnd) {
+		return false, ErrFinanceIdempotencyConflict
+	}
 	issuedAt := copy.IssuedAt
 	if issuedAt.IsZero() {
 		issuedAt = time.Now().UTC()
 	}
 	copy.IssuedAt = issuedAt.UTC()
-	const insert = `INSERT INTO public.finance_invoices (id, idempotency_key, account_uuid, subscription_uuid, provider, provider_invoice_id, amount_minor, currency, description, issued_at, due_at)
-VALUES ($1::uuid, $2, $3::uuid, NULLIF($4, '')::uuid, $5, NULLIF($6, ''), $7, $8, $9, $10, $11)
+	const insert = `INSERT INTO public.finance_invoices (id, idempotency_key, account_uuid, subscription_uuid, provider, provider_invoice_id, amount_minor, currency, description, issued_at, due_at, service_period_start, service_period_end)
+VALUES ($1::uuid, $2, $3::uuid, NULLIF($4, '')::uuid, $5, NULLIF($6, ''), $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (idempotency_key) DO NOTHING RETURNING id::text, created_at`
-	err := s.db.QueryRowContext(ctx, insert, copy.ID, copy.IdempotencyKey, copy.AccountUUID, strings.TrimSpace(copy.SubscriptionUUID), copy.Provider, copy.ProviderInvoiceID, copy.AmountMinor, copy.Currency, strings.TrimSpace(copy.Description), issuedAt.UTC(), copy.DueAt).Scan(&copy.ID, &copy.CreatedAt)
+	err := s.db.QueryRowContext(ctx, insert, copy.ID, copy.IdempotencyKey, copy.AccountUUID, strings.TrimSpace(copy.SubscriptionUUID), copy.Provider, copy.ProviderInvoiceID, copy.AmountMinor, copy.Currency, strings.TrimSpace(copy.Description), issuedAt.UTC(), copy.DueAt, copy.ServicePeriodStart, copy.ServicePeriodEnd).Scan(&copy.ID, &copy.CreatedAt)
 	if err == nil {
 		*invoice = copy
 		return true, nil
@@ -64,6 +73,26 @@ ON CONFLICT (idempotency_key) DO NOTHING RETURNING id::text, created_at`
 	}
 	if existing.AccountUUID != copy.AccountUUID || existing.SubscriptionUUID != copy.SubscriptionUUID || existing.Provider != copy.Provider || existing.ProviderInvoiceID != copy.ProviderInvoiceID || existing.AmountMinor != copy.AmountMinor || existing.Currency != copy.Currency || existing.Description != strings.TrimSpace(copy.Description) || !sameOptionalTime(copy.DueAt, existing.DueAt) || !copy.IssuedAt.IsZero() && !copy.IssuedAt.Equal(existing.IssuedAt) {
 		return false, ErrFinanceIdempotencyConflict
+	}
+	if copy.ServicePeriodStart != nil {
+		if existing.ServicePeriodStart != nil || existing.ServicePeriodEnd != nil {
+			if !sameOptionalTime(copy.ServicePeriodStart, existing.ServicePeriodStart) || !sameOptionalTime(copy.ServicePeriodEnd, existing.ServicePeriodEnd) {
+				return false, ErrFinanceIdempotencyConflict
+			}
+		} else {
+			result, updateErr := s.db.ExecContext(ctx, `UPDATE public.finance_invoices SET service_period_start=$2, service_period_end=$3 WHERE id=$1::uuid AND service_period_start IS NULL AND service_period_end IS NULL`, existing.ID, copy.ServicePeriodStart, copy.ServicePeriodEnd)
+			if updateErr != nil {
+				return false, updateErr
+			}
+			n, rowsErr := result.RowsAffected()
+			if rowsErr != nil {
+				return false, rowsErr
+			}
+			if n != 1 {
+				return false, ErrFinanceIdempotencyConflict
+			}
+			existing.ServicePeriodStart, existing.ServicePeriodEnd = copy.ServicePeriodStart, copy.ServicePeriodEnd
+		}
 	}
 	*invoice = *existing
 	return false, nil

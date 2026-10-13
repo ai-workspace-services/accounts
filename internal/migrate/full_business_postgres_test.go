@@ -61,7 +61,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		t.Fatal(e)
 	}
 	exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=`+strconv.FormatUint(uint64(FullBusinessVersion), 10))
-	// Qualify the old 44-table source -> latest 55-table target explicitly. New
+	// Qualify the old 44-table source -> latest 63-table target explicitly. New
 	// tables may be absent in source; they must remain empty in the target.
 	tables, _, e := fullBusinessContract()
 	if e != nil {
@@ -152,7 +152,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	}
 	exec(target, `ALTER TABLE public.billing_ledger DROP CONSTRAINT fixture_reject`)
 	receipt, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
-	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 55 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
+	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 63 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
 		t.Fatalf("full copy: %#v %v", receipt, e)
 	}
 	var after string
@@ -258,7 +258,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 			t.Fatal("core-user receipt contains private user fields")
 		}
 	})
-	t.Run("native55_finance_and_late_trigger", func(t *testing.T) {
+	t.Run("native63_finance_and_late_trigger", func(t *testing.T) {
 		// Explicit synthetic fixture reset, behind the loopback-only test DSN.
 		// No runtime migration function contains DROP or disables a constraint.
 		exec(target, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`)
@@ -279,7 +279,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 			exec(native, "ALTER TABLE public."+quoteBusiness(name)+" ENABLE ROW LEVEL SECURITY; CREATE POLICY release_initialization_readonly ON public."+quoteBusiness(name)+" FOR SELECT TO readonly_release USING(true)")
 		}
 		exec(native, `INSERT INTO public.users(uuid,username,password,email,proxy_uuid,email_verified_at) VALUES('`+sourceID+`','native-full-business','isolated-password','Native@example.invalid','`+proxyID+`','2026-10-01T00:00:00Z')`)
-		exec(native, `INSERT INTO public.finance_invoices(id,idempotency_key,account_uuid,amount_minor,currency) VALUES('00000000-0000-0000-0000-000000000501','invoice','`+sourceID+`',9007199254740993,'USD');
+		exec(native, `INSERT INTO public.finance_invoices(id,idempotency_key,account_uuid,amount_minor,currency,service_period_start,service_period_end) VALUES('00000000-0000-0000-0000-000000000501','invoice','`+sourceID+`',9007199254740993,'USD','2026-10-01T00:00:00Z','2026-11-01T00:00:00Z');
         INSERT INTO public.finance_payments(id,idempotency_key,invoice_id,account_uuid,amount_minor,currency) VALUES('00000000-0000-0000-0000-000000000502','payment','00000000-0000-0000-0000-000000000501','`+sourceID+`',9007199254740993,'USD');
         INSERT INTO public.finance_refunds(id,idempotency_key,payment_id,amount_minor,currency) VALUES('00000000-0000-0000-0000-000000000503','refund','00000000-0000-0000-0000-000000000502',123,'USD');
         INSERT INTO public.finance_operations(id,idempotency_key,operation_type,status) VALUES('00000000-0000-0000-0000-000000000504','operation','payment','succeeded');
@@ -287,6 +287,28 @@ func TestFullBusinessPostgres17(t *testing.T) {
         INSERT INTO public.account_lifecycle_events(transition_id,user_uuid,from_state,to_state,actor_type,actor_ref) VALUES('00000000-0000-0000-0000-000000000505','`+sourceID+`','active','archived','user','`+sourceID+`');
         INSERT INTO public.password_recovery_challenges(id,user_uuid,email_snapshot,challenge_kind,secret_hash,expires_at) VALUES('00000000-0000-0000-0000-000000000506','`+sourceID+`','Native@example.invalid','token','isolated-hash','2026-11-01T00:00:00Z');
         INSERT INTO public.cloud_vendor_costs(id,provider,account_id,service_name,usage_start_time,usage_end_time,cost_amount) VALUES('00000000-0000-0000-0000-000000000507','gcp','fixture','compute','2026-10-01T00:00:00Z','2026-10-02T00:00:00Z',12.75)`)
+
+		// Preserve the eight referral tables as real business facts, not just
+		// empty schema declarations. Values are fictional local fixture data.
+		exec(native, `INSERT INTO public.users(uuid,username,password,email,proxy_uuid,email_verified_at)
+ VALUES('00000000-0000-0000-0000-000000000801','referral-invitee','isolated-password','invitee@example.invalid','00000000-0000-0000-0000-000000000802','2026-10-13T00:00:00Z');
+ INSERT INTO public.subscriptions(uuid,user_uuid,provider,payment_method,kind,plan_id,external_id,status,meta)
+ VALUES('00000000-0000-0000-0000-000000000803','`+sourceID+`','stripe','stripe','subscription','PRO-YEARLY','native-referral-sub','active','{"product_slug":"xconnect","startsAt":"2026-10-01T00:00:00Z","expiresAt":"2026-11-01T00:00:00Z"}');
+ INSERT INTO public.referral_codes(user_uuid,code) VALUES('`+sourceID+`','NATIVE123');
+ INSERT INTO public.referrals(id,referrer_uuid,invitee_uuid,referral_code)
+ VALUES('00000000-0000-0000-0000-000000000804','`+sourceID+`','00000000-0000-0000-0000-000000000801','NATIVE123');
+ INSERT INTO public.referral_rewards(id,referral_id,provider_invoice_id,referrer_uuid,invitee_uuid,plan_id,product_slug,paid_minor,reward_minor,currency,paid_at,eligible_at,annual_days,status)
+ VALUES('00000000-0000-0000-0000-000000000805','00000000-0000-0000-0000-000000000804','native-referral-invoice','`+sourceID+`','00000000-0000-0000-0000-000000000801','PRO-YEARLY','xconnect',10000,1000,'USD','2026-10-13T00:00:00Z','2026-10-20T00:00:00Z',30,'settled');
+ INSERT INTO public.referral_reward_events(reward_id,source_key,event_type,amount_delta_minor,reason)
+ VALUES('00000000-0000-0000-0000-000000000805','award:native-referral-invoice','award',1000,'qualification fixture');
+ INSERT INTO public.referral_payment_risks(source_key,provider_invoice_id,risk_type,reason)
+ VALUES('native-referral-pre-invoice-risk','native-unrewarded-invoice','refund','qualification tombstone');
+ INSERT INTO public.referral_settlements(id,referrer_uuid,currency,amount_minor,status,payout_reference,completed_at,completed_by)
+ VALUES('00000000-0000-0000-0000-000000000806','`+sourceID+`','USD',1000,'paid','native-fixture-offline-transfer','2026-10-20T00:00:00Z','`+sourceID+`');
+ INSERT INTO public.referral_settlement_items(settlement_id,reward_id,amount_minor)
+ VALUES('00000000-0000-0000-0000-000000000806','00000000-0000-0000-0000-000000000805',1000);
+ INSERT INTO public.subscription_extension_ledger(reward_id,user_uuid,subscription_uuid,days,effective_from,effective_until)
+ VALUES('00000000-0000-0000-0000-000000000805','`+sourceID+`','00000000-0000-0000-0000-000000000803',30,'2026-11-01T00:00:00Z','2026-12-01T00:00:00Z')`)
 		readonlyNative := "postgres://readonly_release:isolated-readonly-fixture@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/full_business_native_source?sslmode=disable"
 		copyOptions := options
 		copyOptions.CompareOnly = false
@@ -303,19 +325,58 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `DROP TRIGGER fixture_late_mutation ON public.users; DROP FUNCTION public.fixture_late_mutation()`)
 		copied, e := CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions)
-		if e != nil || copied.SourceTables != 55 || len(copied.Tables) != 55 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
+		if e != nil || copied.SourceTables != 63 || len(copied.Tables) != 63 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
 			t.Fatalf("native finance copy failed: %v", e)
+		}
+
+		for _, table := range []string{"referral_codes", "referrals", "referral_rewards", "referral_reward_events", "referral_payment_risks", "referral_settlements", "referral_settlement_items", "subscription_extension_ledger"} {
+			if copied.Tables[table].Rows != 1 {
+				t.Fatalf("referral business table was not copied exactly: %s", table)
+			}
+		}
+		if e = target.QueryRow(`SELECT reward_minor FROM public.referral_rewards WHERE provider_invoice_id='native-referral-invoice'`).Scan(&minimum); e != nil || minimum != 1000 {
+			t.Fatal("referral financial minor units changed")
+		}
+		var days int
+		if e = target.QueryRow(`SELECT days FROM public.subscription_extension_ledger`).Scan(&days); e != nil || days != 30 {
+			t.Fatal("referral entitlement days changed")
 		}
 		if e = target.QueryRow(`SELECT amount_minor FROM public.finance_payments`).Scan(&minimum); e != nil || minimum != 9007199254740993 {
 			t.Fatal("finance minor integer precision lost")
+		}
+		var invoicePeriodOK bool
+		if e = target.QueryRow(`SELECT service_period_start='2026-10-01T00:00:00Z'::timestamptz AND service_period_end='2026-11-01T00:00:00Z'::timestamptz FROM public.finance_invoices`).Scan(&invoicePeriodOK); e != nil || !invoicePeriodOK {
+			t.Fatal("verified immutable invoice service period changed")
 		}
 		if e = target.QueryRow(`SELECT nextval('public.finance_operation_events_id_seq')`).Scan(&minimum); e != nil || minimum != 45 {
 			t.Fatal("finance identity sequence not advanced")
 		}
 		copyOptions.CompareOnly = true
 		if _, e = CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions); e != nil {
-			t.Fatalf("native55 compare failed: %v", e)
+			t.Fatalf("native63 compare failed: %v", e)
 		}
+
+		t.Run("older_finance_source_retains_null_period", func(t *testing.T) {
+			// Synthetic older-source shape: these columns did not exist in
+			// the prior release. Native target defaults remain unknown (NULL).
+			exec(native, `ALTER TABLE public.finance_invoices DROP COLUMN service_period_start, DROP COLUMN service_period_end`)
+			exec(target, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`)
+			if _, e = InitializeNative(context.Background(), targetDSN, NativeInitOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, LockTimeout: time.Second, StatementTimeout: time.Minute}); e != nil {
+				t.Fatal(e)
+			}
+			exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=`+strconv.FormatUint(uint64(FullBusinessVersion), 10))
+			copyOptions.CompareOnly = false
+			if _, e = CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions); e != nil {
+				t.Fatal(e)
+			}
+			if e = target.QueryRow(`SELECT service_period_start IS NULL AND service_period_end IS NULL AND amount_minor=9007199254740993 FROM public.finance_invoices`).Scan(&invoicePeriodOK); e != nil || !invoicePeriodOK {
+				t.Fatal("older invoice facts or NULL period defaults changed")
+			}
+			copyOptions.CompareOnly = true
+			if _, e = CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions); e != nil {
+				t.Fatal(e)
+			}
+		})
 	})
 
 }

@@ -8,12 +8,18 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 --
 
 
--- Dumped from database version 17.11
--- Dumped by pg_dump version 17.11
+-- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
+-- Dumped by pg_dump version 17.11 (Debian 17.11-1.pgdg13+2)
 
 
 --
 -- Name: public; Type: SCHEMA; Schema: -; Owner: -
+--
+
+
+
+--
+-- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
 --
 
 
@@ -56,6 +62,15 @@ CREATE FUNCTION public.reject_finance_fact_mutation() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
+  IF TG_TABLE_NAME = 'finance_invoices'
+     AND TG_OP = 'UPDATE'
+     AND OLD.service_period_start IS NULL
+     AND OLD.service_period_end IS NULL
+     AND NEW.service_period_start IS NOT NULL
+     AND NEW.service_period_end IS NOT NULL
+     AND (to_jsonb(NEW) - 'service_period_start' - 'service_period_end') = (to_jsonb(OLD) - 'service_period_start' - 'service_period_end') THEN
+    RETURN NEW;
+  END IF;
   RAISE EXCEPTION '% is append-only; % is not permitted', TG_TABLE_NAME, TG_OP;
   RETURN OLD;
 END;
@@ -151,6 +166,13 @@ CREATE TABLE public.account_lifecycle_events (
     CONSTRAINT account_lifecycle_events_state_change_ck CHECK (((from_state IS NULL) OR (from_state <> to_state))),
     CONSTRAINT account_lifecycle_events_to_state_ck CHECK ((to_state = ANY (ARRAY['active'::text, 'archived'::text, 'self_cancelled'::text, 'reactivation_pending'::text])))
 );
+
+
+--
+-- Name: TABLE account_lifecycle_events; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.account_lifecycle_events IS 'Immutable lifecycle transition audit records. Keep events when an account is archived; user deletion is restricted.';
 
 
 --
@@ -341,8 +363,11 @@ CREATE TABLE public.finance_invoices (
     issued_at timestamp with time zone DEFAULT now() NOT NULL,
     due_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    service_period_start timestamp with time zone,
+    service_period_end timestamp with time zone,
     CONSTRAINT finance_invoices_amount_minor_check CHECK ((amount_minor >= 0)),
-    CONSTRAINT finance_invoices_currency_check CHECK ((currency ~ '^[A-Z]{3}$'::text))
+    CONSTRAINT finance_invoices_currency_check CHECK ((currency ~ '^[A-Z]{3}$'::text)),
+    CONSTRAINT finance_invoices_service_period_ck CHECK ((((service_period_start IS NULL) = (service_period_end IS NULL)) AND ((service_period_start IS NULL) OR (service_period_start < service_period_end))))
 );
 
 
@@ -492,6 +517,41 @@ CREATE TABLE public.mfa_recovery_codes (
     CONSTRAINT mfa_recovery_codes_attempts_ck CHECK ((failed_attempts >= 0)),
     CONSTRAINT mfa_recovery_codes_hash_ck CHECK ((length(code_hash) > 0)),
     CONSTRAINT mfa_recovery_codes_terminal_state_ck CHECK (((consumed_at IS NULL) OR (revoked_at IS NULL)))
+);
+
+
+--
+-- Name: TABLE mfa_recovery_codes; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.mfa_recovery_codes IS 'One-time MFA recovery code hashes; plaintext values are returned only on issuance.';
+
+
+--
+-- Name: network_team_members; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.network_team_members (
+    user_uuid uuid NOT NULL,
+    team_id text,
+    dedicated_only boolean DEFAULT true NOT NULL,
+    CONSTRAINT network_team_members_check CHECK (((team_id IS NULL) OR dedicated_only))
+);
+
+
+--
+-- Name: network_teams; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.network_teams (
+    id text NOT NULL,
+    name text NOT NULL,
+    member_limit integer NOT NULL,
+    valid_from timestamp with time zone NOT NULL,
+    valid_until timestamp with time zone NOT NULL,
+    active boolean DEFAULT false NOT NULL,
+    CONSTRAINT network_teams_check CHECK ((valid_until > valid_from)),
+    CONSTRAINT network_teams_member_limit_check CHECK ((member_limit > 0))
 );
 
 
@@ -756,6 +816,13 @@ CREATE TABLE public.password_recovery_challenges (
 
 
 --
+-- Name: TABLE password_recovery_challenges; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.password_recovery_challenges IS 'Durable, expiring, one-time password recovery challenges; secrets are stored only as hashes.';
+
+
+--
 -- Name: rbac_permissions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -790,6 +857,127 @@ CREATE TABLE public.rbac_roles (
     priority integer DEFAULT 100 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: referral_codes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_codes (
+    user_uuid uuid NOT NULL,
+    code text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT referral_codes_code_check CHECK ((code ~ '^[A-Z0-9]{8,16}$'::text))
+);
+
+
+--
+-- Name: referral_payment_risks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_payment_risks (
+    source_key text NOT NULL,
+    provider_invoice_id text NOT NULL,
+    risk_type text NOT NULL,
+    reason text DEFAULT ''::text NOT NULL,
+    occurred_at timestamp with time zone DEFAULT now() NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT referral_payment_risks_risk_type_check CHECK ((risk_type = ANY (ARRAY['refund'::text, 'dispute'::text])))
+);
+
+
+--
+-- Name: referral_reward_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_reward_events (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    reward_id uuid NOT NULL,
+    source_key text NOT NULL,
+    event_type text NOT NULL,
+    amount_delta_minor bigint NOT NULL,
+    reason text DEFAULT ''::text NOT NULL,
+    actor_uuid uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT referral_reward_events_amount_delta_minor_check CHECK ((amount_delta_minor <> 0)),
+    CONSTRAINT referral_reward_events_event_type_check CHECK ((event_type = ANY (ARRAY['award'::text, 'reversal'::text])))
+);
+
+
+--
+-- Name: referral_rewards; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_rewards (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    referral_id uuid NOT NULL,
+    provider_invoice_id text NOT NULL,
+    referrer_uuid uuid NOT NULL,
+    invitee_uuid uuid NOT NULL,
+    plan_id text NOT NULL,
+    product_slug text NOT NULL,
+    paid_minor bigint NOT NULL,
+    reward_minor bigint NOT NULL,
+    currency character(3) NOT NULL,
+    paid_at timestamp with time zone NOT NULL,
+    eligible_at timestamp with time zone NOT NULL,
+    annual_days integer DEFAULT 0 NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT referral_rewards_annual_days_check CHECK ((annual_days = ANY (ARRAY[0, 30]))),
+    CONSTRAINT referral_rewards_currency_check CHECK ((currency ~ '^[A-Z]{3}$'::text)),
+    CONSTRAINT referral_rewards_paid_minor_check CHECK ((paid_minor > 0)),
+    CONSTRAINT referral_rewards_product_slug_check CHECK ((product_slug = 'xconnect'::text)),
+    CONSTRAINT referral_rewards_reward_minor_check CHECK ((reward_minor >= 0)),
+    CONSTRAINT referral_rewards_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'eligible'::text, 'settled'::text, 'reversed'::text])))
+);
+
+
+--
+-- Name: referral_settlement_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_settlement_items (
+    settlement_id uuid NOT NULL,
+    reward_id uuid NOT NULL,
+    amount_minor bigint NOT NULL,
+    CONSTRAINT referral_settlement_items_amount_minor_check CHECK ((amount_minor <> 0))
+);
+
+
+--
+-- Name: referral_settlements; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_settlements (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    referrer_uuid uuid NOT NULL,
+    currency character(3) NOT NULL,
+    amount_minor bigint NOT NULL,
+    status text DEFAULT 'pending_review'::text NOT NULL,
+    payout_reference text DEFAULT ''::text NOT NULL,
+    requested_at timestamp with time zone DEFAULT now() NOT NULL,
+    completed_at timestamp with time zone,
+    completed_by uuid,
+    reason text DEFAULT ''::text NOT NULL,
+    CONSTRAINT referral_settlements_amount_minor_check CHECK ((amount_minor > 0)),
+    CONSTRAINT referral_settlements_currency_check CHECK ((currency ~ '^[A-Z]{3}$'::text)),
+    CONSTRAINT referral_settlements_status_check CHECK ((status = ANY (ARRAY['pending_review'::text, 'paid'::text, 'rejected'::text])))
+);
+
+
+--
+-- Name: referrals; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referrals (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    referrer_uuid uuid NOT NULL,
+    invitee_uuid uuid NOT NULL,
+    referral_code text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT referrals_no_self_ck CHECK ((referrer_uuid <> invitee_uuid))
 );
 
 
@@ -867,6 +1055,27 @@ CREATE TABLE public.stripe_webhook_events (
     last_error text DEFAULT ''::text NOT NULL,
     received_at timestamp with time zone DEFAULT now() NOT NULL,
     processed_at timestamp with time zone
+);
+
+
+--
+-- Name: subscription_extension_ledger; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.subscription_extension_ledger (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    reward_id uuid NOT NULL,
+    user_uuid uuid NOT NULL,
+    subscription_uuid uuid NOT NULL,
+    days integer NOT NULL,
+    effective_from timestamp with time zone NOT NULL,
+    effective_until timestamp with time zone NOT NULL,
+    status text DEFAULT 'applied'::text NOT NULL,
+    reversal_source_key text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT subscription_extension_ledger_check CHECK ((effective_until > effective_from)),
+    CONSTRAINT subscription_extension_ledger_days_check CHECK ((days = 30)),
+    CONSTRAINT subscription_extension_ledger_status_check CHECK ((status = ANY (ARRAY['applied'::text, 'reversed'::text])))
 );
 
 
@@ -1090,6 +1299,20 @@ CREATE TABLE public.users (
     CONSTRAINT users_account_lifecycle_state_ck CHECK ((account_lifecycle_state = ANY (ARRAY['active'::text, 'archived'::text, 'self_cancelled'::text, 'reactivation_pending'::text]))),
     CONSTRAINT users_subscription_validity_order_ck CHECK (((subscription_valid_from IS NULL) OR (subscription_valid_until IS NULL) OR (subscription_valid_until >= subscription_valid_from)))
 );
+
+
+--
+-- Name: COLUMN users.account_lifecycle_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.users.account_lifecycle_state IS 'Account lifecycle state; does not replace users.active or subscription/plan state.';
+
+
+--
+-- Name: COLUMN users.account_lifecycle_changed_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.users.account_lifecycle_changed_at IS 'Time of the latest explicit lifecycle transition; NULL for users without a recorded transition.';
 
 
 --
@@ -1402,6 +1625,22 @@ ALTER TABLE ONLY public.mfa_recovery_codes
 
 
 --
+-- Name: network_team_members network_team_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_team_members
+    ADD CONSTRAINT network_team_members_pkey PRIMARY KEY (user_uuid);
+
+
+--
+-- Name: network_teams network_teams_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_teams
+    ADD CONSTRAINT network_teams_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: node_health_snapshots node_health_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1530,6 +1769,110 @@ ALTER TABLE ONLY public.rbac_roles
 
 
 --
+-- Name: referral_codes referral_codes_code_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_codes
+    ADD CONSTRAINT referral_codes_code_key UNIQUE (code);
+
+
+--
+-- Name: referral_codes referral_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_codes
+    ADD CONSTRAINT referral_codes_pkey PRIMARY KEY (user_uuid);
+
+
+--
+-- Name: referral_payment_risks referral_payment_risks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_payment_risks
+    ADD CONSTRAINT referral_payment_risks_pkey PRIMARY KEY (source_key);
+
+
+--
+-- Name: referral_reward_events referral_reward_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_reward_events
+    ADD CONSTRAINT referral_reward_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: referral_reward_events referral_reward_events_reward_type_uk; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_reward_events
+    ADD CONSTRAINT referral_reward_events_reward_type_uk UNIQUE (reward_id, event_type);
+
+
+--
+-- Name: referral_reward_events referral_reward_events_source_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_reward_events
+    ADD CONSTRAINT referral_reward_events_source_key_key UNIQUE (source_key);
+
+
+--
+-- Name: referral_rewards referral_rewards_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_rewards
+    ADD CONSTRAINT referral_rewards_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: referral_rewards referral_rewards_provider_invoice_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_rewards
+    ADD CONSTRAINT referral_rewards_provider_invoice_id_key UNIQUE (provider_invoice_id);
+
+
+--
+-- Name: referral_rewards referral_rewards_referral_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_rewards
+    ADD CONSTRAINT referral_rewards_referral_id_key UNIQUE (referral_id);
+
+
+--
+-- Name: referral_settlement_items referral_settlement_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_settlement_items
+    ADD CONSTRAINT referral_settlement_items_pkey PRIMARY KEY (settlement_id, reward_id);
+
+
+--
+-- Name: referral_settlements referral_settlements_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_settlements
+    ADD CONSTRAINT referral_settlements_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: referrals referrals_invitee_uuid_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referrals
+    ADD CONSTRAINT referrals_invitee_uuid_key UNIQUE (invitee_uuid);
+
+
+--
+-- Name: referrals referrals_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referrals
+    ADD CONSTRAINT referrals_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: sandbox_bindings sandbox_bindings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1559,6 +1902,30 @@ ALTER TABLE ONLY public.sessions
 
 ALTER TABLE ONLY public.stripe_webhook_events
     ADD CONSTRAINT stripe_webhook_events_pkey PRIMARY KEY (event_id);
+
+
+--
+-- Name: subscription_extension_ledger subscription_extension_ledger_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_extension_ledger
+    ADD CONSTRAINT subscription_extension_ledger_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: subscription_extension_ledger subscription_extension_ledger_reversal_source_key_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_extension_ledger
+    ADD CONSTRAINT subscription_extension_ledger_reversal_source_key_key UNIQUE (reversal_source_key);
+
+
+--
+-- Name: subscription_extension_ledger subscription_extension_ledger_reward_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_extension_ledger
+    ADD CONSTRAINT subscription_extension_ledger_reward_id_key UNIQUE (reward_id);
 
 
 --
@@ -2188,6 +2555,13 @@ CREATE INDEX mfa_recovery_codes_expiry_idx ON public.mfa_recovery_codes USING bt
 
 
 --
+-- Name: network_team_members_team_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX network_team_members_team_idx ON public.network_team_members USING btree (team_id);
+
+
+--
 -- Name: overlay_registrations_identity_pending_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2237,6 +2611,41 @@ CREATE INDEX password_recovery_expiry_idx ON public.password_recovery_challenges
 
 
 --
+-- Name: referral_payment_risks_invoice_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX referral_payment_risks_invoice_idx ON public.referral_payment_risks USING btree (provider_invoice_id, occurred_at DESC);
+
+
+--
+-- Name: referral_rewards_referrer_eligible_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX referral_rewards_referrer_eligible_idx ON public.referral_rewards USING btree (referrer_uuid, currency, eligible_at) WHERE (status = ANY (ARRAY['pending'::text, 'eligible'::text]));
+
+
+--
+-- Name: referral_settlements_owner_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX referral_settlements_owner_idx ON public.referral_settlements USING btree (referrer_uuid, requested_at DESC);
+
+
+--
+-- Name: referral_settlements_payout_ref_uk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX referral_settlements_payout_ref_uk ON public.referral_settlements USING btree (payout_reference) WHERE ((status = 'paid'::text) AND (payout_reference <> ''::text));
+
+
+--
+-- Name: referrals_referrer_created_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX referrals_referrer_created_idx ON public.referrals USING btree (referrer_uuid, created_at DESC);
+
+
+--
 -- Name: sessions_token_uk; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2248,6 +2657,13 @@ CREATE UNIQUE INDEX sessions_token_uk ON public.sessions USING btree (token);
 --
 
 CREATE INDEX stripe_webhook_events_received_at_idx ON public.stripe_webhook_events USING btree (received_at DESC);
+
+
+--
+-- Name: subscription_extension_owner_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX subscription_extension_owner_idx ON public.subscription_extension_ledger USING btree (user_uuid, created_at DESC);
 
 
 --
@@ -2602,6 +3018,22 @@ ALTER TABLE ONLY public.mfa_recovery_codes
 
 
 --
+-- Name: network_team_members network_team_members_team_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_team_members
+    ADD CONSTRAINT network_team_members_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.network_teams(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: network_team_members network_team_members_user_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.network_team_members
+    ADD CONSTRAINT network_team_members_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
 -- Name: overlay_config_acks overlay_config_acks_user_uuid_device_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2650,6 +3082,110 @@ ALTER TABLE ONLY public.rbac_role_permissions
 
 
 --
+-- Name: referral_codes referral_codes_user_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_codes
+    ADD CONSTRAINT referral_codes_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_reward_events referral_reward_events_actor_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_reward_events
+    ADD CONSTRAINT referral_reward_events_actor_uuid_fkey FOREIGN KEY (actor_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_reward_events referral_reward_events_reward_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_reward_events
+    ADD CONSTRAINT referral_reward_events_reward_id_fkey FOREIGN KEY (reward_id) REFERENCES public.referral_rewards(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_rewards referral_rewards_invitee_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_rewards
+    ADD CONSTRAINT referral_rewards_invitee_uuid_fkey FOREIGN KEY (invitee_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_rewards referral_rewards_referral_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_rewards
+    ADD CONSTRAINT referral_rewards_referral_id_fkey FOREIGN KEY (referral_id) REFERENCES public.referrals(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_rewards referral_rewards_referrer_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_rewards
+    ADD CONSTRAINT referral_rewards_referrer_uuid_fkey FOREIGN KEY (referrer_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_settlement_items referral_settlement_items_reward_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_settlement_items
+    ADD CONSTRAINT referral_settlement_items_reward_id_fkey FOREIGN KEY (reward_id) REFERENCES public.referral_rewards(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_settlement_items referral_settlement_items_settlement_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_settlement_items
+    ADD CONSTRAINT referral_settlement_items_settlement_id_fkey FOREIGN KEY (settlement_id) REFERENCES public.referral_settlements(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_settlements referral_settlements_completed_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_settlements
+    ADD CONSTRAINT referral_settlements_completed_by_fkey FOREIGN KEY (completed_by) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_settlements referral_settlements_referrer_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_settlements
+    ADD CONSTRAINT referral_settlements_referrer_uuid_fkey FOREIGN KEY (referrer_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referrals referrals_invitee_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referrals
+    ADD CONSTRAINT referrals_invitee_uuid_fkey FOREIGN KEY (invitee_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referrals referrals_referral_code_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referrals
+    ADD CONSTRAINT referrals_referral_code_fkey FOREIGN KEY (referral_code) REFERENCES public.referral_codes(code) ON DELETE RESTRICT;
+
+
+--
+-- Name: referrals referrals_referrer_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referrals
+    ADD CONSTRAINT referrals_referrer_uuid_fkey FOREIGN KEY (referrer_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
 -- Name: scheduler_decisions scheduler_decisions_account_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2663,6 +3199,30 @@ ALTER TABLE ONLY public.scheduler_decisions
 
 ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT sessions_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE CASCADE;
+
+
+--
+-- Name: subscription_extension_ledger subscription_extension_ledger_reward_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_extension_ledger
+    ADD CONSTRAINT subscription_extension_ledger_reward_id_fkey FOREIGN KEY (reward_id) REFERENCES public.referral_rewards(id) ON DELETE RESTRICT;
+
+
+--
+-- Name: subscription_extension_ledger subscription_extension_ledger_subscription_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_extension_ledger
+    ADD CONSTRAINT subscription_extension_ledger_subscription_uuid_fkey FOREIGN KEY (subscription_uuid) REFERENCES public.subscriptions(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: subscription_extension_ledger subscription_extension_ledger_user_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_extension_ledger
+    ADD CONSTRAINT subscription_extension_ledger_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
 
 
 --
@@ -2804,6 +3364,18 @@ ALTER TABLE public.finance_refunds ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.mfa_recovery_codes ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: network_team_members; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.network_team_members ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: network_teams; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.network_teams ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: overlay_config_acks; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -2824,30 +3396,3 @@ ALTER TABLE public.password_recovery_challenges ENABLE ROW LEVEL SECURITY;
 --
 -- PostgreSQL database dump complete
 --
-
-
-
--- Reviewed additive network-team schema, qualified against 2026101201.
-CREATE TABLE public.network_teams (
-    id text NOT NULL,
-    name text NOT NULL,
-    member_limit integer NOT NULL,
-    valid_from timestamp with time zone NOT NULL,
-    valid_until timestamp with time zone NOT NULL,
-    active boolean DEFAULT false NOT NULL,
-    CONSTRAINT network_teams_member_limit_check CHECK ((member_limit > 0)),
-    CONSTRAINT network_teams_check CHECK ((valid_until > valid_from))
-);
-CREATE TABLE public.network_team_members (
-    user_uuid uuid NOT NULL,
-    team_id text,
-    dedicated_only boolean DEFAULT true NOT NULL,
-    CONSTRAINT network_team_members_check CHECK (((team_id IS NULL) OR dedicated_only))
-);
-ALTER TABLE ONLY public.network_teams ADD CONSTRAINT network_teams_pkey PRIMARY KEY (id);
-ALTER TABLE ONLY public.network_team_members ADD CONSTRAINT network_team_members_pkey PRIMARY KEY (user_uuid);
-ALTER TABLE ONLY public.network_team_members ADD CONSTRAINT network_team_members_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
-ALTER TABLE ONLY public.network_team_members ADD CONSTRAINT network_team_members_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.network_teams(id) ON DELETE RESTRICT;
-CREATE INDEX network_team_members_team_idx ON public.network_team_members USING btree (team_id);
-ALTER TABLE public.network_teams ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.network_team_members ENABLE ROW LEVEL SECURITY;

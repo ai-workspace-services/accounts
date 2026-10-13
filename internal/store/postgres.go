@@ -119,7 +119,30 @@ func (s *postgresStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
+type userInsertExecutor interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
+	return s.createUser(ctx, user, s.db)
+}
+
+func (s *postgresStore) CreateUserWithReferral(ctx context.Context, user *User, referralCode string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = s.createUser(ctx, user, tx); err != nil {
+		return err
+	}
+	if err = createReferralAttribution(ctx, tx, referralCode, user.ID, user.CreatedAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *postgresStore) createUser(ctx context.Context, user *User, executor userInsertExecutor) error {
 	normalizedEmail := strings.ToLower(strings.TrimSpace(user.Email))
 	normalizedName := strings.TrimSpace(user.Name)
 	if normalizedName == "" {
@@ -262,7 +285,7 @@ func (s *postgresStore) CreateUser(ctx context.Context, user *User) error {
 	var createdAt time.Time
 	var updatedAt time.Time
 	var emailVerified sql.NullBool
-	err = s.db.QueryRowContext(ctx, query, args...).Scan(&idValue, &createdAt, &updatedAt, &emailVerified)
+	err = executor.QueryRowContext(ctx, query, args...).Scan(&idValue, &createdAt, &updatedAt, &emailVerified)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUserNotFound

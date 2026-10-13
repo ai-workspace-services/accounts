@@ -94,6 +94,9 @@ func (s *memoryStore) CreateFinanceInvoice(ctx context.Context, invoice *Finance
 	if !validFinanceCurrency(copy.Currency) {
 		return false, ErrFinanceIdempotencyConflict
 	}
+	if (copy.ServicePeriodStart == nil) != (copy.ServicePeriodEnd == nil) || copy.ServicePeriodStart != nil && !copy.ServicePeriodStart.Before(*copy.ServicePeriodEnd) {
+		return false, ErrFinanceIdempotencyConflict
+	}
 	if copy.IssuedAt.IsZero() {
 		copy.IssuedAt = time.Now().UTC()
 	}
@@ -119,7 +122,17 @@ func (s *memoryStore) CreateFinanceInvoice(ctx context.Context, invoice *Finance
 		if old.AccountUUID != copy.AccountUUID || old.SubscriptionUUID != copy.SubscriptionUUID || old.Provider != copy.Provider || old.ProviderInvoiceID != copy.ProviderInvoiceID || old.AmountMinor != copy.AmountMinor || old.Currency != copy.Currency || old.Description != copy.Description || !sameOptionalTime(copy.DueAt, old.DueAt) || issuedAtProvided && !copy.IssuedAt.Equal(old.IssuedAt) {
 			return false, ErrFinanceIdempotencyConflict
 		}
+		if copy.ServicePeriodStart != nil {
+			if old.ServicePeriodStart != nil || old.ServicePeriodEnd != nil {
+				if !sameOptionalTime(copy.ServicePeriodStart, old.ServicePeriodStart) || !sameOptionalTime(copy.ServicePeriodEnd, old.ServicePeriodEnd) {
+					return false, ErrFinanceIdempotencyConflict
+				}
+			} else {
+				old.ServicePeriodStart, old.ServicePeriodEnd = copy.ServicePeriodStart, copy.ServicePeriodEnd
+			}
+		}
 		invoice.ID, invoice.CreatedAt = old.ID, old.CreatedAt
+		invoice.ServicePeriodStart, invoice.ServicePeriodEnd = old.ServicePeriodStart, old.ServicePeriodEnd
 		return false, nil
 	}
 	if _, exists := s.financeInvoices[copy.ID]; exists {

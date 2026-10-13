@@ -214,7 +214,9 @@
       {"generated": false,"name": "description","nullable": false,"type": "text"},
       {"generated": false,"name": "issued_at","nullable": false,"type": "timestamp with time zone"},
       {"generated": false,"name": "due_at","nullable": true,"type": "timestamp with time zone"},
-      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
+      {"name": "service_period_start","type": "timestamp with time zone","nullable": true,"generated": false},
+      {"name": "service_period_end","type": "timestamp with time zone","nullable": true,"generated": false}
     ],
     "primary_key": ["id"],
     "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]},{"columns": ["subscription_uuid"],"parent": "subscriptions","parent_columns": ["uuid"]}]
@@ -938,6 +940,582 @@
         "parent": "network_teams",
         "parent_columns": [
           "id"
+        ]
+      }
+    ]
+  },
+  "referral_codes": {
+    "columns": [
+      {
+        "name": "user_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "code",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "user_uuid"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "users",
+        "columns": [
+          "user_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      }
+    ]
+  },
+  "referral_payment_risks": {
+    "columns": [
+      {
+        "name": "source_key",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "provider_invoice_id",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "risk_type",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "reason",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "occurred_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "source_key"
+    ],
+    "foreign_keys": []
+  },
+  "referral_reward_events": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "reward_id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "source_key",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "event_type",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "amount_delta_minor",
+        "type": "bigint",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "reason",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "actor_uuid",
+        "type": "uuid",
+        "nullable": true,
+        "generated": false
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "referral_rewards",
+        "columns": [
+          "reward_id"
+        ],
+        "parent_columns": [
+          "id"
+        ]
+      },
+      {
+        "parent": "users",
+        "columns": [
+          "actor_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      }
+    ]
+  },
+  "referral_rewards": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "referral_id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "provider_invoice_id",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "referrer_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "invitee_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "plan_id",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "product_slug",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "paid_minor",
+        "type": "bigint",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "reward_minor",
+        "type": "bigint",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "currency",
+        "type": "character(3)",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "paid_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "eligible_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "annual_days",
+        "type": "integer",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "status",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "referrals",
+        "columns": [
+          "referral_id"
+        ],
+        "parent_columns": [
+          "id"
+        ]
+      },
+      {
+        "parent": "users",
+        "columns": [
+          "invitee_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      },
+      {
+        "parent": "users",
+        "columns": [
+          "referrer_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      }
+    ]
+  },
+  "referral_settlement_items": {
+    "columns": [
+      {
+        "name": "settlement_id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "reward_id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "amount_minor",
+        "type": "bigint",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "settlement_id",
+      "reward_id"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "referral_rewards",
+        "columns": [
+          "reward_id"
+        ],
+        "parent_columns": [
+          "id"
+        ]
+      },
+      {
+        "parent": "referral_settlements",
+        "columns": [
+          "settlement_id"
+        ],
+        "parent_columns": [
+          "id"
+        ]
+      }
+    ]
+  },
+  "referral_settlements": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "referrer_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "currency",
+        "type": "character(3)",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "amount_minor",
+        "type": "bigint",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "status",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "payout_reference",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "requested_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "completed_at",
+        "type": "timestamp with time zone",
+        "nullable": true,
+        "generated": false
+      },
+      {
+        "name": "completed_by",
+        "type": "uuid",
+        "nullable": true,
+        "generated": false
+      },
+      {
+        "name": "reason",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "users",
+        "columns": [
+          "completed_by"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      },
+      {
+        "parent": "users",
+        "columns": [
+          "referrer_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      }
+    ]
+  },
+  "referrals": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "referrer_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "invitee_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "referral_code",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "referral_codes",
+        "columns": [
+          "referral_code"
+        ],
+        "parent_columns": [
+          "code"
+        ]
+      },
+      {
+        "parent": "users",
+        "columns": [
+          "invitee_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      },
+      {
+        "parent": "users",
+        "columns": [
+          "referrer_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      }
+    ]
+  },
+  "subscription_extension_ledger": {
+    "columns": [
+      {
+        "name": "id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "reward_id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "user_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "subscription_uuid",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "days",
+        "type": "integer",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "effective_from",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "effective_until",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "status",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "reversal_source_key",
+        "type": "text",
+        "nullable": true,
+        "generated": false
+      },
+      {
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "referral_rewards",
+        "columns": [
+          "reward_id"
+        ],
+        "parent_columns": [
+          "id"
+        ]
+      },
+      {
+        "parent": "subscriptions",
+        "columns": [
+          "subscription_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      },
+      {
+        "parent": "users",
+        "columns": [
+          "user_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
         ]
       }
     ]
