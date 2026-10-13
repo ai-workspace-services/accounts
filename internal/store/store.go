@@ -97,6 +97,69 @@ type Subscription struct {
 	CancelledAt   *time.Time
 }
 
+type ReferralCode struct {
+	UserUUID  string
+	Code      string
+	CreatedAt time.Time
+}
+
+type ReferralAttribution struct {
+	ID           string
+	ReferrerUUID string
+	InviteeUUID  string
+	Code         string
+	CreatedAt    time.Time
+}
+
+type ReferralReward struct {
+	ID, ReferralID, ProviderInvoiceID string
+	ReferrerUUID, InviteeUUID         string
+	PlanID, ProductSlug               string
+	PaidMinor, RewardMinor            int64
+	Currency                          string
+	PaidAt, EligibleAt                time.Time
+	AnnualDays                        int
+	Status                            string
+	CreatedAt                         time.Time
+	ReferralCreatedAt                 time.Time
+	InviteeEmail                      string
+}
+
+type ReferralPaymentRisk struct {
+	SourceKey, ProviderInvoiceID, Type, Reason string
+	OccurredAt                                 time.Time
+}
+
+type ReferralSettlement struct {
+	ID, ReferrerUUID, Currency, Status string
+	AmountMinor                        int64
+	PayoutReference, Reason            string
+	RequestedAt                        time.Time
+	CompletedAt                        *time.Time
+}
+
+type SubscriptionExtension struct {
+	ID, RewardID, ReferralID, UserUUID, SubscriptionUUID string
+	Days                                                 int
+	EffectiveFrom, EffectiveUntil                        time.Time
+	Status                                               string
+	CreatedAt                                            time.Time
+}
+
+type ReferralCurrencySummary struct {
+	Currency      string `json:"currency"`
+	EarnedMinor   int64  `json:"earnedMinor"`
+	PendingMinor  int64  `json:"pendingMinor"`
+	EligibleMinor int64  `json:"eligibleMinor"`
+	SettledMinor  int64  `json:"settledMinor"`
+	ReversedMinor int64  `json:"reversedMinor"`
+}
+type ReferralSummary struct {
+	SuccessfulInvites int                       `json:"successfulInvites"`
+	AwardedDays       int                       `json:"awardedDays"`
+	CashByCurrency    []ReferralCurrencySummary `json:"cashByCurrency"`
+}
+
 // Identity represents a mapping between a user and a third-party authentication provider.
 type Identity struct {
 	ID         string
@@ -225,18 +288,20 @@ type BillingLedgerEntry struct {
 // FinanceInvoice, FinancePayment, and FinanceRefund are immutable local
 // financial facts. Amounts use the currency's minor unit (for example cents).
 type FinanceInvoice struct {
-	ID                string
-	IdempotencyKey    string
-	AccountUUID       string
-	SubscriptionUUID  string
-	Provider          string
-	ProviderInvoiceID string
-	AmountMinor       int64
-	Currency          string
-	Description       string
-	IssuedAt          time.Time
-	DueAt             *time.Time
-	CreatedAt         time.Time
+	ID                 string
+	IdempotencyKey     string
+	AccountUUID        string
+	SubscriptionUUID   string
+	Provider           string
+	ProviderInvoiceID  string
+	AmountMinor        int64
+	Currency           string
+	Description        string
+	IssuedAt           time.Time
+	DueAt              *time.Time
+	ServicePeriodStart *time.Time
+	ServicePeriodEnd   *time.Time
+	CreatedAt          time.Time
 }
 
 type FinancePayment struct {
@@ -496,6 +561,7 @@ type SchedulerDecision struct {
 // Store provides persistence operations for users.
 type Store interface {
 	CreateUser(ctx context.Context, user *User) error
+	CreateUserWithReferral(ctx context.Context, user *User, referralCode string) error
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	GetUserByName(ctx context.Context, name string) (*User, error)
@@ -506,6 +572,22 @@ type Store interface {
 	UpsertSubscription(ctx context.Context, subscription *Subscription) error
 	ListSubscriptionsByUser(ctx context.Context, userID string) ([]Subscription, error)
 	CancelSubscription(ctx context.Context, userID, externalID string, cancelledAt time.Time) (*Subscription, error)
+	EnsureReferralCode(ctx context.Context, userUUID, candidate string) (*ReferralCode, error)
+	GetReferralCode(ctx context.Context, code string) (*ReferralCode, error)
+	CreateReferralAttribution(ctx context.Context, code, inviteeUUID string, createdAt time.Time) error
+	GetReferralReferrer(ctx context.Context, inviteeUUID string) (string, error)
+	CreateReferralReward(ctx context.Context, reward *ReferralReward) (inserted bool, err error)
+	RecordReferralRisk(ctx context.Context, risk ReferralPaymentRisk) error
+	ListReferralRewards(ctx context.Context, referrerUUID string, limit int) ([]ReferralReward, error)
+	GetReferralSummary(ctx context.Context, referrerUUID string, now time.Time) (*ReferralSummary, error)
+	ListReferralSettlements(ctx context.Context, referrerUUID string, limit int) ([]ReferralSettlement, error)
+	RequestReferralSettlement(ctx context.Context, referrerUUID, currency string, now time.Time) (*ReferralSettlement, error)
+	CompleteReferralSettlement(ctx context.Context, settlementID, actorUUID, payoutReference string, now time.Time) (*ReferralSettlement, error)
+	ReconcileReferralSettlement(ctx context.Context, settlementID, actorUUID, payoutReference, reason string, now time.Time) (*ReferralSettlement, error)
+	RejectReferralSettlement(ctx context.Context, settlementID, actorUUID, reason string, now time.Time) (*ReferralSettlement, error)
+	ReverseReferralReward(ctx context.Context, rewardID, actorUUID, sourceKey, reason string, now time.Time) error
+	ListSubscriptionExtensions(ctx context.Context, userUUID string, limit int) ([]SubscriptionExtension, error)
+	ReferralExtensionEnd(ctx context.Context, subscriptionUUID string) (time.Time, error)
 	CreateIdentity(ctx context.Context, identity *Identity) error
 	ListUsers(ctx context.Context) ([]User, error)
 	ListUsersPage(ctx context.Context, afterID string, limit int) ([]User, error)
@@ -642,18 +724,23 @@ var (
 	ErrUserNotFound = errors.New("user not found")
 	// ErrUserArchiveUnsupported is returned when the backing schema cannot
 	// atomically persist lifecycle state and its audit events.
-	ErrUserArchiveUnsupported     = errors.New("atomic user archive is not supported by the current schema")
-	ErrUserProtected              = errors.New("user is protected from archive")
-	ErrUserAlreadyArchived        = errors.New("user is already archived")
-	ErrUserArchiveReplayConflict  = errors.New("user archive request key was reused with different input")
-	ErrAdminPlanGroupStale        = errors.New("admin plan group preview is stale")
-	ErrAdminPlanGroupReplay       = errors.New("admin plan group request key was reused with different input")
-	ErrAdminPlanGroupPreview      = errors.New("admin plan group preview is missing, expired, or already used")
-	ErrMFANotSupported            = errors.New("mfa is not supported by the current store schema")
-	ErrSuperAdminCountingDisabled = errors.New("super administrator counting is disabled")
-	ErrSubscriptionNotFound       = errors.New("subscription not found")
-	ErrPasswordRecoveryInvalid    = errors.New("password recovery challenge is invalid, expired, or consumed")
-	ErrPasswordRecoveryCooldown   = errors.New("password recovery code cooldown is active")
+	ErrUserArchiveUnsupported        = errors.New("atomic user archive is not supported by the current schema")
+	ErrUserProtected                 = errors.New("user is protected from archive")
+	ErrUserAlreadyArchived           = errors.New("user is already archived")
+	ErrUserArchiveReplayConflict     = errors.New("user archive request key was reused with different input")
+	ErrAdminPlanGroupStale           = errors.New("admin plan group preview is stale")
+	ErrAdminPlanGroupReplay          = errors.New("admin plan group request key was reused with different input")
+	ErrAdminPlanGroupPreview         = errors.New("admin plan group preview is missing, expired, or already used")
+	ErrMFANotSupported               = errors.New("mfa is not supported by the current store schema")
+	ErrSuperAdminCountingDisabled    = errors.New("super administrator counting is disabled")
+	ErrSubscriptionNotFound          = errors.New("subscription not found")
+	ErrReferralNotFound              = errors.New("referral record not found")
+	ErrReferralSelf                  = errors.New("self referral is not allowed")
+	ErrReferralAlreadyAttributed     = errors.New("account already has a referral attribution")
+	ErrReferralSettlementUnavailable = errors.New("no eligible referral balance is available for settlement")
+	ErrReferralSettlementRisk        = errors.New("settlement contains a refunded or disputed payment")
+	ErrPasswordRecoveryInvalid       = errors.New("password recovery challenge is invalid, expired, or consumed")
+	ErrPasswordRecoveryCooldown      = errors.New("password recovery code cooldown is active")
 )
 
 // memoryStore provides an in-memory implementation of Store. It is suitable for
@@ -699,6 +786,14 @@ type memoryStore struct {
 	financeInvoices         map[string]*FinanceInvoice
 	financeInvoiceKeys      map[string]string
 	financePayments         map[string]*FinancePayment
+	referralCodes           map[string]*ReferralCode
+	referralCodesByValue    map[string]string
+	referralsByInvitee      map[string]*ReferralAttribution
+	referralRewards         map[string]*ReferralReward
+	referralRewardByInvoice map[string]string
+	referralRisks           map[string]ReferralPaymentRisk
+	referralSettlements     map[string]*ReferralSettlement
+	referralExtensions      map[string]*SubscriptionExtension
 	financePaymentKeys      map[string]string
 	financeRefunds          map[string]*FinanceRefund
 	financeRefundKeys       map[string]string
@@ -806,6 +901,14 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		financeInvoices:         make(map[string]*FinanceInvoice),
 		financeInvoiceKeys:      make(map[string]string),
 		financePayments:         make(map[string]*FinancePayment),
+		referralCodes:           make(map[string]*ReferralCode),
+		referralCodesByValue:    make(map[string]string),
+		referralsByInvitee:      make(map[string]*ReferralAttribution),
+		referralRewards:         make(map[string]*ReferralReward),
+		referralRewardByInvoice: make(map[string]string),
+		referralRisks:           make(map[string]ReferralPaymentRisk),
+		referralSettlements:     make(map[string]*ReferralSettlement),
+		referralExtensions:      make(map[string]*SubscriptionExtension),
 		financePaymentKeys:      make(map[string]string),
 		financeRefunds:          make(map[string]*FinanceRefund),
 		financeRefundKeys:       make(map[string]string),
@@ -873,6 +976,23 @@ func (s *memoryStore) CreateUser(ctx context.Context, user *User) error {
 	}
 	s.byName[strings.ToLower(normalizedName)] = &stored
 	assignUser(user, &stored)
+	return nil
+}
+
+func (s *memoryStore) CreateUserWithReferral(ctx context.Context, user *User, referralCode string) error {
+	if err := s.CreateUser(ctx, user); err != nil {
+		return err
+	}
+	if err := s.CreateReferralAttribution(ctx, referralCode, user.ID, user.CreatedAt); err != nil {
+		s.mu.Lock()
+		if stored := s.byID[user.ID]; stored != nil {
+			delete(s.byEmail, strings.ToLower(stored.Email))
+			delete(s.byName, strings.ToLower(stored.Name))
+			delete(s.byID, user.ID)
+		}
+		s.mu.Unlock()
+		return err
+	}
 	return nil
 }
 

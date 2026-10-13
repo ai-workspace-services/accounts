@@ -80,7 +80,7 @@ func TestNativeInitPostgres17(t *testing.T) {
 	}
 	options.DryRun = false
 	receipt, err = InitializeNative(ctx, dsn, options)
-	if err != nil || receipt.Result != "initialized" || len(receipt.BusinessTables) != 54 || receipt.BusinessRows != 0 || receipt.DatabaseCutoverApproved {
+	if err != nil || receipt.Result != "initialized" || len(receipt.BusinessTables) != 62 || receipt.BusinessRows != 0 || receipt.DatabaseCutoverApproved {
 		t.Fatalf("native init: %#v %v", receipt, err)
 	}
 	var migrationVersion uint

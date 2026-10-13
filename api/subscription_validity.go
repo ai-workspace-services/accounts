@@ -171,8 +171,11 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 			continue
 		}
 		status := strings.ToLower(strings.TrimSpace(sub.Status))
+		periodEnd, endErr := h.subscriptionEffectivePeriodEnd(ctx, sub)
+		if endErr != nil {
+			return endErr
+		}
 		if status == "active" || status == "trialing" {
-			periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
 			if periodEnd.IsZero() {
 				if !missingStripePeriodRetryExpired(sub, now) {
 					return nil
@@ -189,7 +192,6 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 			shouldDowngrade = true
 		}
 		if status == "past_due" {
-			periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
 			if !periodEnd.IsZero() && now.Before(periodEnd) {
 				return nil
 			}
@@ -199,7 +201,6 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 			shouldDowngrade = true
 		}
 		if status == "canceling" || status == "cancelled" || status == "canceled" {
-			periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
 			if periodEnd.IsZero() && sub.CancelledAt != nil {
 				periodEnd = sub.CancelledAt.UTC()
 			}
@@ -214,6 +215,7 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 				if now.Before(periodEnd) {
 					return nil
 				}
+
 				shouldDowngrade = true
 			}
 		}
@@ -340,4 +342,22 @@ func (h *handler) updateSubscriptionValidity(c *gin.Context) {
 
 func (h *handler) ensureExpiredSubscriptionDowngradeWithContext(c *gin.Context, user *store.User) error {
 	return h.ensureExpiredSubscriptionDowngrade(c.Request.Context(), user)
+}
+
+func (h *handler) subscriptionEffectivePeriodEnd(ctx context.Context, sub *store.Subscription) (time.Time, error) {
+	if sub == nil {
+		return time.Time{}, nil
+	}
+	base := subscriptionMetaTime(sub.Meta, "expiresAt")
+	extended, err := h.store.ReferralExtensionEnd(ctx, sub.ID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !extended.IsZero() {
+		// For XConnect subscriptions the verified paid invoice periods, plus
+		// applied extension ledger, are authoritative. Stripe's current
+		// subscription snapshot can include a renewal that later failed payment.
+		return extended.UTC(), nil
+	}
+	return base, nil
 }

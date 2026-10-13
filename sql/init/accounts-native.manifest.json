@@ -1,8 +1,8 @@
 {
   "format": 1,
-  "migration_version": 2026101201,
-  "schema_sha256": "b812ee8fd697fdf380e63a4ec492937821a925191dec8f5604b598633bca7272",
-  "business_table_count": 54,
+  "migration_version": 2026101301,
+  "schema_sha256": "0262d018e20daf65652876bdcdb92792046539c9e3c469a8acc1dc2c8bab42a7",
+  "business_table_count": 62,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
@@ -18,7 +18,7 @@
     },
     {
       "path": "sql/schema.sql",
-      "sha256": "6b23017e3e4c76f35867e666dbeeca2c867828dc306fee5be0cc7dfec372fbb0"
+      "sha256": "92d8bc54432e28cebbc71f185a3adab748cc4b81361b917655a366fe8c662525"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -87,6 +87,10 @@
     {
       "path": "sql/migrations/2026101201_network_teams.up.sql",
       "sha256": "1027d98036b9227f9d2bb694f6803a689bacd062555eff0eb99fe894a4aec27f"
+    },
+    {
+      "path": "sql/migrations/2026101301_referral_program.up.sql",
+      "sha256": "975cca23182f7b6f60f5573b665d74f603e9820a56e96a2886a5a6dd1beac695"
     }
   ],
   "business_tables": [
@@ -128,10 +132,18 @@
     "rbac_permissions",
     "rbac_role_permissions",
     "rbac_roles",
+    "referral_codes",
+    "referral_payment_risks",
+    "referral_reward_events",
+    "referral_rewards",
+    "referral_settlement_items",
+    "referral_settlements",
+    "referrals",
     "sandbox_bindings",
     "scheduler_decisions",
     "sessions",
     "stripe_webhook_events",
+    "subscription_extension_ledger",
     "subscriptions",
     "task_namespaces",
     "task_runs",

@@ -47,6 +47,13 @@ func ReconcileAnnualPlanQuotas(ctx context.Context, st store.Store, now time.Tim
 			quota, err := st.GetAccountQuotaState(ctx, user.ID)
 			if status == "active" || status == "canceling" {
 				periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
+				extended, periodErr := st.ReferralExtensionEnd(ctx, sub.ID)
+				if periodErr != nil {
+					return reset, periodErr
+				}
+				if !extended.IsZero() {
+					periodEnd = extended
+				}
 				if periodEnd.IsZero() {
 					if missingStripePeriodRetryExpired(&sub, now) {
 						continue

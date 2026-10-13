@@ -19,7 +19,7 @@ func TestFullBusinessContractNativeCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(order) != 55 || len(optionalBusinessTables) != 11 {
+	if len(order) != 63 || len(optionalBusinessTables) != 19 {
 		t.Fatal("reviewed full scope differs")
 	}
 	body, manifest, err := schema.NativeArtifact()
@@ -48,7 +48,7 @@ func TestFullBusinessContractNativeCoverage(t *testing.T) {
 			}
 		}
 	}
-	if len(manifest.BusinessTables) != 54 {
+	if len(manifest.BusinessTables) != 62 {
 		t.Fatal("native scope drift")
 	}
 	positions := map[string]int{}
@@ -334,5 +334,32 @@ func TestFullBusinessFixtureBillingChecksum(t *testing.T) {
 	hash := hex.EncodeToString(sum[:])
 	if hash != FullBusinessBillingSHA256 {
 		t.Fatal("Billing qualification fixture differs from reviewed owner SQL")
+	}
+}
+
+func TestFullBusinessInvoiceServicePeriodProjection(t *testing.T) {
+	table := businessTable{Columns: []businessColumn{{Name: "id", Type: "uuid"}, {Name: "amount_minor", Type: "bigint"}, {Name: "service_period_start", Type: "timestamp with time zone", Nullable: true}, {Name: "service_period_end", Type: "timestamp with time zone", Nullable: true}}}
+	source := []ColumnDefinition{{Name: "id", Type: "uuid"}, {Name: "amount_minor", Type: "bigint"}}
+	if err := validateBusinessSourceColumns("finance_invoices", source, table); err != nil {
+		t.Fatal(err)
+	}
+	row := rawRow{"id": json.RawMessage(`"fixture"`), "amount_minor": json.RawMessage(`9007199254740993`)}
+	if err := projectBusinessRow("finance_invoices", row, source, table, nil); err != nil {
+		t.Fatal(err)
+	}
+	if string(row["service_period_start"]) != "null" || string(row["service_period_end"]) != "null" || string(row["amount_minor"]) != "9007199254740993" {
+		t.Fatal("period NULL defaults changed existing finance facts")
+	}
+	partial := append(append([]ColumnDefinition{}, source...), ColumnDefinition{Name: "service_period_start", Type: "timestamp with time zone"})
+	if err := validateBusinessSourceColumns("finance_invoices", partial, table); err == nil {
+		t.Fatal("half-present period source was accepted")
+	}
+	existing := append(partial, ColumnDefinition{Name: "service_period_end", Type: "timestamp with time zone"})
+	row = rawRow{"id": json.RawMessage(`"fixture"`), "amount_minor": json.RawMessage(`1000`), "service_period_start": json.RawMessage(`"2026-10-01T00:00:00Z"`), "service_period_end": json.RawMessage(`"2026-11-01T00:00:00Z"`)}
+	if err := projectBusinessRow("finance_invoices", row, existing, table, nil); err != nil || string(row["service_period_start"]) != `"2026-10-01T00:00:00Z"` || string(row["service_period_end"]) != `"2026-11-01T00:00:00Z"` {
+		t.Fatal("existing verified period was overwritten")
+	}
+	if err := validateBusinessSourceColumns("users", source, table); err == nil {
+		t.Fatal("invoice metadata allowance escaped its table")
 	}
 }

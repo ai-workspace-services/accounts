@@ -548,6 +548,12 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/subscriptions/refund", h.refundSubscription)
 	authProtected.POST("/stripe/checkout", h.stripeCheckout)
 	authProtected.POST("/stripe/portal", h.stripePortal)
+	authProtected.GET("/referrals", h.getReferralOverview)
+	authProtected.POST("/referrals/settlements", h.requestReferralSettlement)
+	authProtected.POST("/admin/referrals/settlements/:settlementId/complete", h.adminCompleteReferralSettlement)
+	authProtected.POST("/admin/referrals/settlements/:settlementId/reconcile-paid", h.adminReconcileReferralSettlement)
+	authProtected.POST("/admin/referrals/settlements/:settlementId/reject", h.adminRejectReferralSettlement)
+	authProtected.POST("/admin/referrals/rewards/:rewardId/reverse", h.adminReverseReferralReward)
 
 	authProtected.POST("/config/sync", h.syncConfig)
 
@@ -716,10 +722,11 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 }
 
 type registerRequest struct {
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Code     string `json:"code"`
+	Name         string `json:"name"`
+	Email        string `json:"email"`
+	Password     string `json:"password"`
+	Code         string `json:"code"`
+	ReferralCode string `json:"referralCode"`
 }
 
 type loginRequest struct {
@@ -816,7 +823,12 @@ func (h *handler) register(c *gin.Context) {
 	}
 
 	var req registerRequest
+	limitReferralRequestBody(c, 16*1024)
 	if err := c.ShouldBindJSON(&req); err != nil {
+		if referralBodyTooLarge(err) {
+			respondError(c, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 16 KiB")
+			return
+		}
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
 		return
 	}
@@ -878,6 +890,23 @@ func (h *handler) register(c *gin.Context) {
 		}
 	}
 
+	referralCode := strings.ToUpper(strings.TrimSpace(req.ReferralCode))
+	if referralCode != "" {
+		if !validReferralCodeFormat(referralCode) {
+			respondError(c, http.StatusBadRequest, "invalid_referral_code", "referral code is invalid")
+			return
+		}
+		if _, err := h.store.GetReferralCode(c.Request.Context(), referralCode); err != nil {
+			respondError(c, http.StatusBadRequest, "invalid_referral_code", "referral code is invalid")
+			return
+		}
+		if !referralCampaignActive(time.Now()) {
+			// Old share links can outlive the campaign. Keep ordinary signup
+			// available while ignoring attribution outside the reward window.
+			referralCode = ""
+		}
+	}
+
 	hashed, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "hash_failure", "failed to secure password")
@@ -902,7 +931,13 @@ func (h *handler) register(c *gin.Context) {
 		user.EmailVerified = true
 	}
 
-	if err := h.store.CreateUser(c.Request.Context(), user); err != nil {
+	var createErr error
+	if referralCode != "" {
+		createErr = h.store.CreateUserWithReferral(c.Request.Context(), user, referralCode)
+	} else {
+		createErr = h.store.CreateUser(c.Request.Context(), user)
+	}
+	if err := createErr; err != nil {
 		switch {
 		case errors.Is(err, store.ErrEmailExists):
 			respondError(c, http.StatusConflict, "email_already_exists", "user with this email already exists")

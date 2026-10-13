@@ -41,6 +41,7 @@ type stripeClient struct {
 	secretKey      string
 	webhookSecret  string
 	frontendURL    string
+	apiBaseURL     string
 	allowedPriceID map[string]struct{}
 	httpClient     *http.Client
 }
@@ -110,23 +111,66 @@ type stripeCheckoutSession struct {
 }
 
 type stripeInvoice struct {
-	ID            string `json:"id"`
-	Customer      any    `json:"customer"`
-	Subscription  any    `json:"subscription"`
-	Status        string `json:"status"`
-	PaymentIntent any    `json:"payment_intent"`
+	ID                string `json:"id"`
+	Customer          any    `json:"customer"`
+	Subscription      any    `json:"subscription"`
+	Status            string `json:"status"`
+	PaymentIntent     any    `json:"payment_intent"`
+	AmountPaid        int64  `json:"amount_paid"`
+	PaidOutOfBand     bool   `json:"paid_out_of_band"`
+	Currency          string `json:"currency"`
+	Created           int64  `json:"created"`
+	BillingReason     string `json:"billing_reason"`
+	StatusTransitions struct {
+		PaidAt int64 `json:"paid_at"`
+	} `json:"status_transitions"`
+	Lines struct {
+		Data []struct {
+			Price  any `json:"price"`
+			Period struct {
+				Start int64 `json:"start"`
+				End   int64 `json:"end"`
+			} `json:"period"`
+			Pricing struct {
+				PriceDetails struct {
+					Price any `json:"price"`
+				} `json:"price_details"`
+			} `json:"pricing"`
+		} `json:"data"`
+		HasMore bool `json:"has_more"`
+	} `json:"lines"`
+}
+
+type stripeInvoiceList struct {
+	Data    []stripeInvoice `json:"data"`
+	HasMore bool            `json:"has_more"`
 }
 
 type stripeCharge struct {
-	Invoice        any   `json:"invoice"`
-	Refunded       bool  `json:"refunded"`
-	Amount         int64 `json:"amount"`
-	AmountRefunded int64 `json:"amount_refunded"`
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	Invoice        any    `json:"invoice"`
+	Disputed       bool   `json:"disputed"`
+	Refunded       bool   `json:"refunded"`
+	Amount         int64  `json:"amount"`
+	AmountRefunded int64  `json:"amount_refunded"`
 	Refunds        struct {
 		Data []struct {
 			Status string `json:"status"`
 		} `json:"data"`
 	} `json:"refunds"`
+}
+
+type stripePaymentIntent struct {
+	ID           string `json:"id"`
+	LatestCharge any    `json:"latest_charge"`
+}
+
+type stripeDispute struct {
+	ID      string `json:"id"`
+	Charge  any    `json:"charge"`
+	Reason  string `json:"reason"`
+	Created int64  `json:"created"`
 }
 
 func newStripeClient(cfg StripeConfig) *stripeClient {
@@ -371,7 +415,11 @@ func (c *stripeClient) doForm(ctx context.Context, method, path string, form url
 }
 
 func (c *stripeClient) doJSON(ctx context.Context, method, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, stripeAPIBaseURL+path, nil)
+	baseURL := strings.TrimRight(strings.TrimSpace(c.apiBaseURL), "/")
+	if baseURL == "" {
+		baseURL = stripeAPIBaseURL
+	}
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, nil)
 	if err != nil {
 		return err
 	}
@@ -483,10 +531,72 @@ func (c *stripeClient) fetchSubscription(ctx context.Context, subscriptionID str
 
 func (c *stripeClient) fetchInvoice(ctx context.Context, invoiceID string) (*stripeInvoice, error) {
 	var invoice stripeInvoice
-	if err := c.doJSON(ctx, http.MethodGet, "/invoices/"+url.PathEscape(strings.TrimSpace(invoiceID)), &invoice); err != nil {
+	query := url.Values{}
+	query.Add("expand[]", "lines.data.price")
+	if err := c.doJSON(ctx, http.MethodGet, "/invoices/"+url.PathEscape(strings.TrimSpace(invoiceID))+"?"+query.Encode(), &invoice); err != nil {
 		return nil, err
 	}
 	return &invoice, nil
+}
+
+func (c *stripeClient) listPaidInvoices(ctx context.Context, customerID string) ([]stripeInvoice, error) {
+	var all []stripeInvoice
+	startingAfter := ""
+	for page := 0; page < 100; page++ {
+		query := url.Values{"customer": {strings.TrimSpace(customerID)}, "status": {"paid"}, "limit": {"100"}}
+		if startingAfter != "" {
+			query.Set("starting_after", startingAfter)
+		}
+		var result stripeInvoiceList
+		if err := c.doJSON(ctx, http.MethodGet, "/invoices?"+query.Encode(), &result); err != nil {
+			return nil, err
+		}
+		all = append(all, result.Data...)
+		if !result.HasMore {
+			return all, nil
+		}
+		if len(result.Data) == 0 {
+			return nil, errors.New("Stripe invoice history page is empty but has_more is true")
+		}
+		startingAfter = result.Data[len(result.Data)-1].ID
+	}
+	return nil, errors.New("Stripe paid invoice history exceeds the bounded referral verification limit")
+}
+
+func (c *stripeClient) fetchCharge(ctx context.Context, chargeID string) (*stripeCharge, error) {
+	var charge stripeCharge
+	if err := c.doJSON(ctx, http.MethodGet, "/charges/"+url.PathEscape(strings.TrimSpace(chargeID)), &charge); err != nil {
+		return nil, err
+	}
+	return &charge, nil
+}
+
+func (c *stripeClient) fetchPaymentIntentCharge(ctx context.Context, paymentIntentID string) (*stripeCharge, error) {
+	var intent stripePaymentIntent
+	query := url.Values{}
+	query.Add("expand[]", "latest_charge")
+	if err := c.doJSON(ctx, http.MethodGet, "/payment_intents/"+url.PathEscape(strings.TrimSpace(paymentIntentID))+"?"+query.Encode(), &intent); err != nil {
+		return nil, err
+	}
+	chargeID := customerIDFromAny(intent.LatestCharge)
+	if chargeID == "" {
+		return nil, errors.New("Stripe payment intent has no latest charge")
+	}
+	if expanded, ok := intent.LatestCharge.(map[string]any); ok {
+		body, err := json.Marshal(expanded)
+		if err != nil {
+			return nil, err
+		}
+		var charge stripeCharge
+		if err = json.Unmarshal(body, &charge); err != nil {
+			return nil, err
+		}
+		if charge.ID == "" {
+			charge.ID = chargeID
+		}
+		return &charge, nil
+	}
+	return c.fetchCharge(ctx, chargeID)
 }
 
 func (c *stripeClient) refundPaymentIntent(ctx context.Context, paymentIntentID, idempotencyKey string) error {
@@ -819,6 +929,12 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := json.Unmarshal(event.Data.Object, &charge); err != nil {
 			return err
 		}
+		invoiceID := customerIDFromAny(charge.Invoice)
+		if invoiceID != "" && charge.AmountRefunded > 0 {
+			if err := h.store.RecordReferralRisk(ctx, store.ReferralPaymentRisk{SourceKey: event.ID, ProviderInvoiceID: invoiceID, Type: "refund", Reason: "Stripe charge refund", OccurredAt: time.Now().UTC()}); err != nil {
+				return err
+			}
+		}
 		if !charge.Refunded || charge.Amount <= 0 || charge.AmountRefunded < charge.Amount {
 			return nil // Partial refunds do not revoke the subscription entitlement.
 		}
@@ -827,7 +943,6 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 				return nil // Pending or failed refund states never revoke access.
 			}
 		}
-		invoiceID := customerIDFromAny(charge.Invoice)
 		if invoiceID == "" || h.stripe == nil {
 			return nil
 		}
@@ -855,6 +970,28 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		}
 		h.publishBillingEvent(ctx, &store.BillingEvent{Type: "subscription_refunded", UserID: userID, PlanID: subscription.Metadata["plan_id"], PriceID: subscriptionPriceID(subscription), ExternalID: subscriptionID})
 		return nil
+	case "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed":
+		var dispute stripeDispute
+		if err := json.Unmarshal(event.Data.Object, &dispute); err != nil {
+			return err
+		}
+		chargeID := customerIDFromAny(dispute.Charge)
+		if chargeID == "" || h.stripe == nil {
+			return errors.New("Stripe dispute is missing its charge reference")
+		}
+		charge, err := h.stripe.fetchCharge(ctx, chargeID)
+		if err != nil {
+			return err
+		}
+		invoiceID := customerIDFromAny(charge.Invoice)
+		if invoiceID == "" {
+			return errors.New("Stripe dispute charge is missing its invoice reference")
+		}
+		occurred := time.Now().UTC()
+		if dispute.Created > 0 {
+			occurred = time.Unix(dispute.Created, 0).UTC()
+		}
+		return h.store.RecordReferralRisk(ctx, store.ReferralPaymentRisk{SourceKey: event.ID, ProviderInvoiceID: invoiceID, Type: "dispute", Reason: dispute.Reason, OccurredAt: occurred})
 	case "invoice.paid", "invoice.payment_failed":
 		var invoice stripeInvoice
 		if err := json.Unmarshal(event.Data.Object, &invoice); err != nil {
@@ -920,6 +1057,12 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := h.restoreQuotaGroupForPlan(ctx, userID, plan); err != nil {
 			return err
 		}
+		// The referral ledger performs extra Stripe history verification and can
+		// fail transiently. Restore the paid subscriber's core entitlements first;
+		// those operations are idempotent across webhook retries.
+		if err := h.recordReferralPaidInvoice(ctx, &invoice, sub, userID); err != nil {
+			return err
+		}
 		h.publishBillingEvent(ctx, &store.BillingEvent{
 			Type: "invoice_paid", UserID: userID,
 			PlanID: plan.PlanID, PriceID: subscriptionPriceID(sub), ExternalID: sub.ID,
@@ -928,6 +1071,339 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 	default:
 		return nil
 	}
+}
+
+// recordReferralPaidInvoice writes only signed Stripe facts for the explicitly
+// scoped XConnect subscription product. Catalog price fields are never used as
+// payment evidence or reward inputs.
+func (h *handler) recordReferralPaidInvoice(ctx context.Context, invoice *stripeInvoice, subscription *stripeSubscription, userID string) error {
+	if invoice == nil || subscription == nil || strings.TrimSpace(invoice.ID) == "" || invoice.AmountPaid <= 0 || !strings.EqualFold(strings.TrimSpace(invoice.Status), "paid") {
+		return nil
+	}
+	if invoice.PaidOutOfBand {
+		return nil
+	}
+	paymentID := customerIDFromAny(invoice.PaymentIntent)
+	if paymentID == "" {
+		return nil
+	}
+	// The current subscription metadata can change after this invoice was
+	// issued (for example, a delayed monthly invoice webhook after an upgrade).
+	// Resolve the plan from the immutable invoice line price snapshot instead.
+	if invoice.StatusTransitions.PaidAt <= 0 || len(invoice.Lines.Data) == 0 || invoice.Lines.HasMore {
+		verified, fetchErr := h.stripe.fetchInvoice(ctx, invoice.ID)
+		if fetchErr != nil {
+			return fetchErr
+		}
+		if !strings.EqualFold(verified.Status, "paid") || verified.PaidOutOfBand || verified.AmountPaid <= 0 || customerIDFromAny(verified.PaymentIntent) == "" || verified.StatusTransitions.PaidAt <= 0 {
+			return errors.New("Stripe invoice lacks verified paid_at, payment intent, or paid status")
+		}
+		invoice = verified
+		paymentID = customerIDFromAny(invoice.PaymentIntent)
+	}
+	planID, err := h.referralPlanFromInvoice(ctx, invoice)
+	if err != nil {
+		return err
+	}
+	if planID == "" {
+		return nil
+	}
+	periodStart, periodEnd, ok := referralInvoicePeriod(invoice)
+	if !ok {
+		return errors.New("Stripe XConnect invoice lacks a consistent subscription service period")
+	}
+	productSlug := "xconnect"
+	currency := strings.ToUpper(strings.TrimSpace(invoice.Currency))
+	if !validReferralCurrency(currency) {
+		return errors.New("Stripe invoice has invalid currency")
+	}
+	paidMinor, err := stripeAmountToCurrencyMinor(currency, invoice.AmountPaid)
+	if err != nil {
+		return err
+	}
+	paidAt := time.Unix(invoice.StatusTransitions.PaidAt, 0).UTC()
+	subscriptions, err := h.store.ListSubscriptionsByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	var subscriptionUUID string
+	for _, local := range subscriptions {
+		if local.Provider == "stripe" && local.ExternalID == subscription.ID {
+			subscriptionUUID = local.ID
+			break
+		}
+	}
+	if subscriptionUUID == "" {
+		return errors.New("local Stripe subscription is unavailable for verified invoice")
+	}
+	financeInvoice := &store.FinanceInvoice{IdempotencyKey: "stripe-invoice:" + invoice.ID, AccountUUID: userID, SubscriptionUUID: subscriptionUUID, Provider: "stripe", ProviderInvoiceID: invoice.ID, AmountMinor: paidMinor, Currency: currency, Description: "Verified XConnect subscription invoice", IssuedAt: paidAt, ServicePeriodStart: &periodStart, ServicePeriodEnd: &periodEnd}
+	if _, err := h.store.CreateFinanceInvoice(ctx, financeInvoice); err != nil {
+		return err
+	}
+	financePayment := &store.FinancePayment{IdempotencyKey: "stripe-payment:" + invoice.ID, InvoiceID: financeInvoice.ID, AccountUUID: userID, Provider: "stripe", ProviderPaymentID: paymentID, AmountMinor: paidMinor, Currency: currency, PaidAt: paidAt}
+	if _, err := h.store.RecordFinancePayment(ctx, financePayment); err != nil && !errors.Is(err, store.ErrFinanceInvoiceAlreadyPaid) {
+		return err
+	}
+	if !referralCampaignActive(paidAt) {
+		return nil
+	}
+	if planID == "PRO-YEARLY" {
+		if err := h.ensureReferrerPaidPeriod(ctx, userID, paidAt); err != nil {
+			return err
+		}
+	}
+	firstInvoice, err := h.stripe.isFirstPaidXConnectInvoice(ctx, h.store, customerIDFromAny(invoice.Customer), invoice.ID, paidAt)
+	if err != nil {
+		return err
+	}
+	if !firstInvoice {
+		return nil
+	}
+	rewardAmount := paidMinor / 10 // Integer floor in ISO currency minor units.
+	reward := &store.ReferralReward{ProviderInvoiceID: invoice.ID, InviteeUUID: userID, PlanID: planID, ProductSlug: productSlug, PaidMinor: paidMinor, RewardMinor: rewardAmount, Currency: currency, PaidAt: paidAt, EligibleAt: paidAt.Add(7 * 24 * time.Hour)}
+	_, err = h.store.CreateReferralReward(ctx, reward)
+	if errors.Is(err, store.ErrReferralNotFound) {
+		return nil
+	}
+	return err
+}
+
+// ensureReferrerPaidPeriod imports signed provider invoice/payment facts for
+// legacy XConnect subscriptions that predate the local finance ledger. This
+// keeps annual eligibility from silently excluding existing paid subscribers.
+// It only imports invoices whose immutable price line proves the active period
+// at the friend's payment time; current subscription metadata is not used as
+// historical payment evidence.
+func (h *handler) ensureReferrerPaidPeriod(ctx context.Context, inviteeUUID string, paidAt time.Time) error {
+	referrerUUID, err := h.store.GetReferralReferrer(ctx, inviteeUUID)
+	if errors.Is(err, store.ErrReferralNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	subscriptions, err := h.store.ListSubscriptionsByUser(ctx, referrerUUID)
+	if err != nil {
+		return err
+	}
+	for _, local := range subscriptions {
+		if local.Provider != "stripe" || local.Kind != "subscription" {
+			continue
+		}
+		customerID := strings.TrimSpace(subscriptionMetaString(local.Meta, "customer_id"))
+		if customerID == "" {
+			continue
+		}
+		invoices, listErr := h.stripe.listPaidInvoices(ctx, customerID)
+		if listErr != nil {
+			return listErr
+		}
+		for _, listed := range invoices {
+			if customerIDFromAny(listed.Subscription) != local.ExternalID || listed.AmountPaid <= 0 || !strings.EqualFold(listed.Status, "paid") {
+				continue
+			}
+			verified, fetchErr := h.stripe.fetchInvoice(ctx, listed.ID)
+			if fetchErr != nil {
+				return fetchErr
+			}
+			if verified.PaidOutOfBand || customerIDFromAny(verified.PaymentIntent) == "" || verified.StatusTransitions.PaidAt <= 0 || verified.AmountPaid <= 0 || !strings.EqualFold(verified.Status, "paid") {
+				continue
+			}
+			invoicePaidAt := time.Unix(verified.StatusTransitions.PaidAt, 0).UTC()
+			if invoicePaidAt.After(paidAt) {
+				continue
+			}
+			planID, planErr := h.referralPlanFromInvoice(ctx, verified)
+			if planErr != nil {
+				return planErr
+			}
+			if planID == "" {
+				continue
+			}
+			periodStart, periodEnd, periodOK := referralInvoicePeriod(verified)
+			if !periodOK || paidAt.Before(periodStart) || !paidAt.Before(periodEnd) {
+				continue
+			}
+			paymentIntentID := customerIDFromAny(verified.PaymentIntent)
+			charge, chargeErr := h.stripe.fetchPaymentIntentCharge(ctx, paymentIntentID)
+			if chargeErr != nil {
+				return chargeErr
+			}
+			if !strings.EqualFold(charge.Status, "succeeded") {
+				continue
+			}
+			if charge.Disputed {
+				if err = h.store.RecordReferralRisk(ctx, store.ReferralPaymentRisk{SourceKey: "provider-history:dispute:" + charge.ID, ProviderInvoiceID: verified.ID, Type: "dispute", Reason: "Provider history shows disputed inviter payment", OccurredAt: paidAt}); err != nil {
+					return err
+				}
+				continue
+			}
+			if charge.Refunded || charge.Amount > 0 && charge.AmountRefunded >= charge.Amount {
+				if err = h.store.RecordReferralRisk(ctx, store.ReferralPaymentRisk{SourceKey: "provider-history:refund:" + charge.ID, ProviderInvoiceID: verified.ID, Type: "refund", Reason: "Provider history shows fully refunded inviter payment", OccurredAt: paidAt}); err != nil {
+					return err
+				}
+				continue
+			}
+			currency := strings.ToUpper(strings.TrimSpace(verified.Currency))
+			if !validReferralCurrency(currency) {
+				return errors.New("Stripe inviter invoice has invalid currency")
+			}
+			amount, amountErr := stripeAmountToCurrencyMinor(currency, verified.AmountPaid)
+			if amountErr != nil {
+				return amountErr
+			}
+			invoice := &store.FinanceInvoice{IdempotencyKey: "stripe-invoice:" + verified.ID, AccountUUID: referrerUUID, SubscriptionUUID: local.ID, Provider: "stripe", ProviderInvoiceID: verified.ID, AmountMinor: amount, Currency: currency, Description: "Verified XConnect inviter subscription invoice", IssuedAt: invoicePaidAt, ServicePeriodStart: &periodStart, ServicePeriodEnd: &periodEnd}
+			if _, err = h.store.CreateFinanceInvoice(ctx, invoice); err != nil {
+				return err
+			}
+			payment := &store.FinancePayment{IdempotencyKey: "stripe-payment:" + verified.ID, InvoiceID: invoice.ID, AccountUUID: referrerUUID, Provider: "stripe", ProviderPaymentID: paymentIntentID, AmountMinor: amount, Currency: currency, PaidAt: invoicePaidAt}
+			if _, err = h.store.RecordFinancePayment(ctx, payment); err != nil && !errors.Is(err, store.ErrFinanceInvoiceAlreadyPaid) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func subscriptionMetaString(meta map[string]any, key string) string {
+	value, _ := meta[key].(string)
+	return value
+}
+
+func referralInvoicePeriod(invoice *stripeInvoice) (time.Time, time.Time, bool) {
+	if invoice == nil {
+		return time.Time{}, time.Time{}, false
+	}
+	var start, end time.Time
+	for _, line := range invoice.Lines.Data {
+		if line.Period.Start <= 0 || line.Period.End <= line.Period.Start {
+			return time.Time{}, time.Time{}, false
+		}
+		lineStart, lineEnd := time.Unix(line.Period.Start, 0).UTC(), time.Unix(line.Period.End, 0).UTC()
+		if start.IsZero() {
+			start, end = lineStart, lineEnd
+		} else if !start.Equal(lineStart) || !end.Equal(lineEnd) {
+			return time.Time{}, time.Time{}, false
+		}
+	}
+	return start, end, !start.IsZero() && start.Before(end)
+}
+
+func (h *handler) referralPlanFromInvoice(ctx context.Context, invoice *stripeInvoice) (string, error) {
+	if invoice == nil || len(invoice.Lines.Data) == 0 {
+		return "", errors.New("Stripe invoice lacks immutable subscription price lines")
+	}
+	planID := ""
+	for _, line := range invoice.Lines.Data {
+		priceID := customerIDFromAny(line.Price)
+		if priceID == "" {
+			priceID = customerIDFromAny(line.Pricing.PriceDetails.Price)
+		}
+		if priceID == "" {
+			return "", errors.New("Stripe invoice line lacks a verifiable price")
+		}
+		plan, err := h.store.GetBillingPlanByPriceID(ctx, priceID)
+		if errors.Is(err, store.ErrBillingPlanNotFound) {
+			// An unrecognized historical price cannot prove whether this was an
+			// XConnect invoice, so leave the event retryable for manual catalog repair.
+			return "", errors.New("Stripe invoice price is absent from the billing catalog")
+		}
+		if err != nil {
+			return "", err
+		}
+		if plan.Kind != "subscription" || (plan.PlanID != "PRO-MONTHLY" && plan.PlanID != "PRO-YEARLY") {
+			return "", nil
+		}
+		wantUnit := "month"
+		if plan.PlanID == "PRO-YEARLY" {
+			wantUnit = "year"
+		}
+		if !strings.EqualFold(strings.TrimSpace(plan.PriceUnit), wantUnit) {
+			return "", errors.New("billing catalog plan interval conflicts with referral plan")
+		}
+		if planID != "" && planID != plan.PlanID {
+			return "", errors.New("Stripe invoice contains conflicting XConnect plan lines")
+		}
+		planID = plan.PlanID
+	}
+	if invoice.Lines.HasMore {
+		return "", errors.New("Stripe invoice has more price lines than the referral verifier can inspect")
+	}
+	return planID, nil
+}
+
+func (c *stripeClient) isFirstPaidXConnectInvoice(ctx context.Context, st store.Store, customerID, currentInvoiceID string, currentPaidAt time.Time) (bool, error) {
+	if strings.TrimSpace(customerID) == "" {
+		return false, errors.New("Stripe customer is missing for referral invoice history verification")
+	}
+	invoices, err := c.listPaidInvoices(ctx, customerID)
+	if err != nil {
+		return false, err
+	}
+	currentFound := false
+	for _, candidate := range invoices {
+		if candidate.ID == currentInvoiceID {
+			currentFound = true
+		}
+		if candidate.AmountPaid <= 0 || !strings.EqualFold(candidate.Status, "paid") || customerIDFromAny(candidate.Subscription) == "" {
+			continue
+		}
+		verified, err := c.fetchInvoice(ctx, candidate.ID)
+		if err != nil {
+			return false, err
+		}
+		if verified.AmountPaid <= 0 || !strings.EqualFold(verified.Status, "paid") || verified.PaidOutOfBand || customerIDFromAny(verified.PaymentIntent) == "" || verified.StatusTransitions.PaidAt <= 0 {
+			// Out-of-band invoices and historical rows without a verified provider
+			// collection fact do not count as the customer's first paid invoice.
+			continue
+		}
+		paidAt := time.Unix(verified.StatusTransitions.PaidAt, 0).UTC()
+		if candidate.ID == currentInvoiceID {
+			paidAt = currentPaidAt
+		}
+		planID, err := (&handler{store: st}).referralPlanFromInvoice(ctx, verified)
+		if err != nil {
+			return false, err
+		}
+		if planID != "" && (paidAt.Before(currentPaidAt) || (paidAt.Equal(currentPaidAt) && candidate.ID < currentInvoiceID)) {
+			return false, nil
+		}
+	}
+	if !currentFound {
+		return false, errors.New("verified paid invoice is not yet visible in Stripe customer invoice history")
+	}
+	return true, nil
+}
+
+func validReferralCurrency(currency string) bool {
+	if len(currency) != 3 {
+		return false
+	}
+	for _, r := range currency {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// Stripe retains a two-decimal API representation for ISK and UGX, while
+// their ISO currency units have no fractional minor units. Normalize those
+// invoice amounts to ISO minor units before calculating or exposing rewards.
+func stripeAmountToCurrencyMinor(currency string, amount int64) (int64, error) {
+	if currency == "ISK" || currency == "UGX" {
+		if amount%100 != 0 {
+			return 0, errors.New("Stripe invoice amount is not representable in ISO minor units")
+		}
+		return amount / 100, nil
+	}
+	if currency == "MGA" {
+		if amount > int64(^uint64(0)>>1)/100 || amount < 0 {
+			return 0, errors.New("Stripe MGA invoice amount overflows ISO minor units")
+		}
+		return amount * 100, nil
+	}
+	return amount, nil
 }
 
 // subscriptionPriceID extracts the first line-item price id.
