@@ -53,7 +53,10 @@ func TestReferralLedgerPostgresIntegration(t *testing.T) {
 			t.Fatal("cannot seed referral attribution")
 		}
 	}
-	now := time.Now().UTC()
+	// PostgreSQL TIMESTAMPTZ stores microsecond precision. Keep the fixture's
+	// source timestamps at that precision so replay comparisons are stable on
+	// hosts whose system clock reports nanoseconds.
+	now := time.Now().UTC().Truncate(time.Microsecond)
 	baseEnd := now.Add(390 * 24 * time.Hour)
 	ownerSub := "00000000-0000-4000-8000-000000000011"
 	if _, err = db.ExecContext(ctx, `INSERT INTO public.subscriptions(uuid,user_uuid,provider,kind,status,plan_id,meta) VALUES($1,$2,'stripe','subscription','canceled','PRO-YEARLY',jsonb_build_object('product_slug','xconnect','plan_id','PRO-YEARLY','startsAt',$3::text,'expiresAt',$4::text))`, ownerSub, ids["owner"], now.Add(-100*24*time.Hour).Format(time.RFC3339), baseEnd.Format(time.RFC3339)); err != nil {
