@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-// VerifyNativeRuntime checks the same compiled 53-table contract used by the
+// VerifyNativeRuntime checks the same compiled 55-table contract used by the
 // transfer tool, with catalog reads only. Application startup never repairs or
 // upgrades the schema and never scans the copied business rows here.
 func VerifyNativeRuntime(ctx context.Context, db *sql.DB) error {

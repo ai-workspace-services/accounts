@@ -41,6 +41,14 @@ func (h *handler) archiveInactiveFreeUser(ctx context.Context, user *store.User)
 		return nil
 	}
 
+	access, err := h.networkAccessFor(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	if access.Mode == "dedicated" && access.Allowed {
+		return nil
+	}
+
 	now := time.Now().UTC()
 	user.Active = false
 	user.ArchivedAt = &now

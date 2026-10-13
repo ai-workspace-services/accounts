@@ -660,6 +660,8 @@ var (
 // unit tests and local development where a persistent database is not yet
 // configured.
 type memoryStore struct {
+	networkTeams            map[string]NetworkTeam
+	networkMembers          map[string]NetworkMembership
 	mu                      sync.RWMutex
 	allowSuperAdminCounting bool
 	byID                    map[string]*User

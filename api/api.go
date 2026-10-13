@@ -515,6 +515,11 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		authProtected.Use(auth.RequireActiveUser(h.store))
 	}
 
+	authProtected.GET("/network-access", h.getNetworkAccess)
+	authProtected.GET("/admin/network-teams", h.adminListNetworkTeams)
+	authProtected.PUT("/admin/network-teams/:teamId", h.adminPutNetworkTeam)
+	authProtected.GET("/admin/users/:userId/network-access", h.adminGetNetworkMembership)
+	authProtected.PUT("/admin/users/:userId/network-access", h.adminPutNetworkMembership)
 	authProtected.GET("/session", h.session)
 	authProtected.DELETE("/session", h.deleteSession)
 	authProtected.GET("/xworkmate/profile", h.getXWorkmateProfile)

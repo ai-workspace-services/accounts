@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -47,6 +48,29 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		return
 	}
 
+	access, err := h.networkAccessForUser(c.Request.Context(), user)
+	if err != nil {
+		respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+		return
+	}
+	if !access.Allowed {
+		respondError(c, 403, "team_access_inactive", "team access is inactive")
+		return
+	}
+	scopedReader := h.networkStatusReader(access)
+	teamHosts := []string{}
+	if access.Mode == "dedicated" {
+		for _, pool := range registeredRegionalPools(scopedReader, time.Now().UTC()) {
+			if pool.OpenToUsers {
+				teamHosts = append(teamHosts, pool.Entry)
+			}
+		}
+		if len(teamHosts) == 0 {
+			respondError(c, 503, "team_nodes_unavailable", "dedicated team nodes are unavailable")
+			return
+		}
+	}
+
 	sinceVersion := int64(0)
 	if raw := strings.TrimSpace(c.Query("since_version")); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 64)
@@ -63,13 +87,22 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		updatedAt = user.UpdatedAt.UTC()
 	}
 
-	changed := sinceVersion < version
+	// Team authorization and node health are independent of user.UpdatedAt.
+	changed := sinceVersion < version || access.Configured || access.Mode == "dedicated"
 	renderedJSON := ""
 	digest := ""
 	warnings := []string{}
 	if changed {
 		var err error
-		renderedJSON, digest, warnings, err = h.renderUserXrayConfig(user)
+		if access.Mode == "dedicated" {
+			renderedJSON, digest, warnings, err = renderDedicatedClientConfig(user, teamHosts[0])
+		} else {
+			renderedJSON, digest, warnings, err = h.renderUserXrayConfig(user)
+		}
+		if err != nil && access.Mode == "dedicated" {
+			respondError(c, 503, "team_config_unavailable", "team configuration is unavailable")
+			return
+		}
 		if err != nil {
 			slog.Warn(
 				"desktop sync config render failed; continuing with node metadata only",
@@ -89,8 +122,20 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		proxyUUID := strings.TrimSpace(user.ProxyUUID)
 
 		// Collect only explicitly configured and registered proxy node hosts.
-		registeredHosts, registeredNames := registeredNodeMetadata(h.agentStatusReader)
+		registeredHosts, registeredNames := registeredNodeMetadata(scopedReader)
 		hosts := parseProxyNodeHosts(registeredHosts)
+		if access.Mode == "personal" {
+			visible := make([]string, 0, len(hosts))
+			for _, host := range hosts {
+				if !h.reservedDedicatedHost(host) {
+					visible = append(visible, host)
+				}
+			}
+			hosts = visible
+		}
+		if access.Mode == "dedicated" {
+			hosts = teamHosts
+		}
 
 		xhttpPath := envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath)
 		xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
@@ -150,6 +195,7 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
+		"network_access": access,
 		"schema_version": 1,
 		"changed":        changed,
 		"version":        version,
@@ -224,10 +270,17 @@ func (h *handler) renderUserXrayConfig(user *store.User) (string, string, []stri
 	}
 
 	domain := extractHostFromPublicURL(h.publicURL)
+	if h.reservedDedicatedHost(domain) {
+		return "", "", nil, errors.New("configured domain is reserved for a dedicated team")
+	}
 	if domain == "" {
 		return "", "", nil, errors.New("xray domain is not configured")
 	}
 
+	return renderNetworkXrayConfig(user, domain)
+}
+
+func renderNetworkXrayConfig(user *store.User, domain string) (string, string, []string, error) {
 	clientID := strings.TrimSpace(user.ProxyUUID)
 	if clientID == "" {
 		return "", "", nil, fmt.Errorf("proxy UUID is not provisioned for account %q", strings.TrimSpace(user.ID))
@@ -248,6 +301,26 @@ func (h *handler) renderUserXrayConfig(user *store.User) (string, string, []stri
 	}
 	sum := sha256.Sum256(buf)
 	return string(buf), hex.EncodeToString(sum[:]), []string{}, nil
+}
+
+// A team snapshot is a client configuration, with the sole proxy outbound
+// targeting an authorized team entry. It must never render the server template.
+func renderDedicatedClientConfig(user *store.User, host string) (string, string, []string, error) {
+	config := map[string]any{
+		"log":      map[string]any{"loglevel": "warning"},
+		"inbounds": []any{map[string]any{"listen": "127.0.0.1", "port": 1080, "protocol": "socks", "settings": map[string]any{"udp": true}}},
+		"outbounds": []any{map[string]any{
+			"tag": "proxy", "protocol": "vless",
+			"settings":       map[string]any{"vnext": []any{map[string]any{"address": host, "port": envIntOrDefault("XRAY_XHTTP_PORT", defaultXHTTPPort), "users": []any{map[string]any{"id": user.ProxyUUID, "encryption": "none"}}}}},
+			"streamSettings": map[string]any{"network": "xhttp", "security": "tls", "tlsSettings": map[string]any{"serverName": host, "fingerprint": defaultTLSFP}, "xhttpSettings": map[string]any{"path": envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), "mode": envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)}},
+		}},
+	}
+	buf, err := json.Marshal(config)
+	if err != nil {
+		return "", "", nil, err
+	}
+	digest := sha256.Sum256(buf)
+	return string(buf), hex.EncodeToString(digest[:]), []string{}, nil
 }
 
 func extractHostFromPublicURL(raw string) string {

@@ -2826,3 +2826,28 @@ ALTER TABLE public.password_recovery_challenges ENABLE ROW LEVEL SECURITY;
 --
 
 
+
+-- Reviewed additive network-team schema, qualified against 2026101201.
+CREATE TABLE public.network_teams (
+    id text NOT NULL,
+    name text NOT NULL,
+    member_limit integer NOT NULL,
+    valid_from timestamp with time zone NOT NULL,
+    valid_until timestamp with time zone NOT NULL,
+    active boolean DEFAULT false NOT NULL,
+    CONSTRAINT network_teams_member_limit_check CHECK ((member_limit > 0)),
+    CONSTRAINT network_teams_check CHECK ((valid_until > valid_from))
+);
+CREATE TABLE public.network_team_members (
+    user_uuid uuid NOT NULL,
+    team_id text,
+    dedicated_only boolean DEFAULT true NOT NULL,
+    CONSTRAINT network_team_members_check CHECK (((team_id IS NULL) OR dedicated_only))
+);
+ALTER TABLE ONLY public.network_teams ADD CONSTRAINT network_teams_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.network_team_members ADD CONSTRAINT network_team_members_pkey PRIMARY KEY (user_uuid);
+ALTER TABLE ONLY public.network_team_members ADD CONSTRAINT network_team_members_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+ALTER TABLE ONLY public.network_team_members ADD CONSTRAINT network_team_members_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.network_teams(id) ON DELETE RESTRICT;
+CREATE INDEX network_team_members_team_idx ON public.network_team_members USING btree (team_id);
+ALTER TABLE public.network_teams ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.network_team_members ENABLE ROW LEVEL SECURITY;
