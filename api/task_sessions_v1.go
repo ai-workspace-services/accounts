@@ -59,8 +59,9 @@ type createTaskSessionV1Request struct {
 }
 
 type appendTaskMessageV1Request struct {
-	ClientRequestID string `json:"clientRequestId"`
-	Text            string `json:"text"`
+	ClientRequestID string         `json:"clientRequestId"`
+	Text            string         `json:"text"`
+	Routing         map[string]any `json:"routing,omitempty"`
 	Run             *struct {
 		Priority  int        `json:"priority"`
 		NotBefore *time.Time `json:"notBefore"`
@@ -244,7 +245,7 @@ func (h *handler) appendTaskSessionMessageV1(c *gin.Context) {
 	}
 	result, err := h.taskSessions.AppendMessage(c.Request.Context(), tasksession.AppendMessageInput{
 		AccountID: accountID, SessionID: c.Param("sessionID"), ActorID: accountID,
-		ClientRequestID: request.ClientRequestID, Text: request.Text,
+		ClientRequestID: request.ClientRequestID, Text: request.Text, Routing: request.Routing,
 		Priority: priority, NotBefore: notBefore, CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {

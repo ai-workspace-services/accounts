@@ -90,7 +90,7 @@ func TestPostgresStoreAppendMessageCommitsEventsAndRunAtomically(t *testing.T) {
 		WithArgs("session-1", int64(5), EventMessageCreated, sqlmock.AnyArg(), "11111111-1111-1111-1111-111111111111", "client-1", now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO public.task_runs`).
-		WithArgs("run-1", "11111111-1111-1111-1111-111111111111", "namespace-1", "session-1", "client-1", 3, now, now).
+		WithArgs("run-1", "11111111-1111-1111-1111-111111111111", "namespace-1", "session-1", "client-1", 3, now, []byte(`{"role":"engineer","workspace":"demo-repo"}`), now).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO public.task_session_events`).
 		WithArgs("session-1", int64(6), EventRunQueued, sqlmock.AnyArg(), "11111111-1111-1111-1111-111111111111", "", now).
@@ -111,6 +111,7 @@ func TestPostgresStoreAppendMessageCommitsEventsAndRunAtomically(t *testing.T) {
 		ClientRequestID: "client-1",
 		Text:            "continue on desktop",
 		TaskRunID:       "run-1",
+		Routing:         map[string]any{"role": "engineer", "workspace": "demo-repo", "roleMode": " "},
 		Priority:        3,
 		CreatedAt:       now,
 	})

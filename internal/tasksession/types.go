@@ -146,10 +146,13 @@ type AppendMessageInput struct {
 	ActorID         string
 	ClientRequestID string
 	Text            string
-	TaskRunID       string
-	Priority        int
-	NotBefore       time.Time
-	CreatedAt       time.Time
+	// Routing holds the validated routing hints (see NormalizeRouting) the
+	// scheduler hands to the worker that claims the run.
+	Routing   map[string]any
+	TaskRunID string
+	Priority  int
+	NotBefore time.Time
+	CreatedAt time.Time
 }
 
 // MessageCommandResult describes the two ordered events and the single task
