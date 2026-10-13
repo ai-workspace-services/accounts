@@ -260,6 +260,14 @@ func (s *PostgresStore) AppendMessage(ctx context.Context, input AppendMessageIn
 	if input.AccountID == "" || input.SessionID == "" || input.ClientRequestID == "" || input.Text == "" {
 		return MessageCommandResult{}, ErrInvalidInput
 	}
+	routing, err := NormalizeRouting(input.Routing)
+	if err != nil {
+		return MessageCommandResult{}, err
+	}
+	routingJSON, err := json.Marshal(routing)
+	if err != nil {
+		return MessageCommandResult{}, err
+	}
 	if input.ActorID == "" {
 		input.ActorID = input.AccountID
 	}
@@ -325,9 +333,9 @@ func (s *PostgresStore) AppendMessage(ctx context.Context, input AppendMessageIn
 		Priority: input.Priority, NotBefore: input.NotBefore, CreatedAt: input.CreatedAt, UpdatedAt: input.CreatedAt,
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO public.task_runs
-  (id, account_uuid, namespace_id, session_id, client_request_id, state, priority, not_before, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $8)`,
-		run.ID, run.AccountID, run.NamespaceID, run.SessionID, run.ClientRequestID, run.Priority, run.NotBefore, run.CreatedAt)
+  (id, account_uuid, namespace_id, session_id, client_request_id, state, priority, not_before, routing, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, $8, $9, $9)`,
+		run.ID, run.AccountID, run.NamespaceID, run.SessionID, run.ClientRequestID, run.Priority, run.NotBefore, routingJSON, run.CreatedAt)
 	if err != nil {
 		return MessageCommandResult{}, mapPostgresError(err)
 	}

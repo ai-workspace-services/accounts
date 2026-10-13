@@ -26,3 +26,31 @@ All public session reads and writes derive `accountId` from the authenticated
 principal. Namespace and session identifiers supplied by clients are selectors,
 not authority; resources owned by another account return the same `404`
 envelope as missing resources.
+
+## Amendment: task scheduler for the orchestrator worker (2026-10-13)
+
+AI Workspace v2.1 moves role selection and dispatch from Bridge into the DSH
+orchestrator (`aiw-orchestrator`). Accounts stays the only durable task state;
+the orchestrator keeps none.
+
+- A message may carry `routing` hints (`role`, `roleMode`, `roleModel`,
+  `productMode`, `specialty`, `dataClass`, `projectId`, `workspace`,
+  `attachments`, `followUp`, `previousTurnFailed`). They are validated, stored
+  on the existing `task_runs.routing` column and handed to the worker that
+  claims the run. Unknown keys and wrong types are rejected. `workspace` and
+  `projectId` are opaque keys, never paths: the worker host maps `workspace` to
+  a directory it has authorized, so this rule against working-directory paths
+  still holds.
+- The orchestrator uses `/api/internal/task-scheduler` (`claim`,
+  `runs/{id}/renew`, `runs/{id}/events`) with its own bearer credential
+  (`TASK_SCHEDULER_TOKEN`), accepted only for the accounts in
+  `TASK_SCHEDULER_ACCOUNT_IDS`. The general internal service token does not open
+  these routes. Every renew and event is checked against the run's fence, lease
+  holder and lease token hash; a fenced-out worker cannot write.
+- Workers append only `run.progressed`, `assistant.message.created`,
+  `run.completed`, `run.failed` and `run.cancelled`.
+- `POST /api/v1/sessions/{sessionId}/runs/{runId}/cancel` cancels a queued run
+  outright (`run.cancelled`) and records `run.cancel_requested` for a running
+  one; the lease holder sees it on its next renewal and settles the run.
+- No schema change: routing uses the existing column, and a cancel request is an
+  event in the ordered stream.

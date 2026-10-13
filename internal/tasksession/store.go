@@ -35,6 +35,7 @@ type Store interface {
 	EnqueueTaskRun(context.Context, EnqueueTaskRunInput) (TaskRun, error)
 	ClaimNext(context.Context, ClaimInput) (TaskRun, error)
 	RecordTaskRunEvent(context.Context, TaskRunEventInput) (TaskRunEventResult, error)
+	SchedulerStore
 }
 
 func (s *MemoryStore) ListNamespaces(_ context.Context, accountID string) ([]Namespace, error) {
@@ -126,6 +127,10 @@ func (s *MemoryStore) AppendMessage(_ context.Context, input AppendMessageInput)
 	if input.AccountID == "" || input.SessionID == "" || input.ClientRequestID == "" || input.Text == "" {
 		return MessageCommandResult{}, ErrInvalidInput
 	}
+	routing, err := NormalizeRouting(input.Routing)
+	if err != nil {
+		return MessageCommandResult{}, err
+	}
 	session, ok := s.sessions[input.SessionID]
 	if !ok {
 		return MessageCommandResult{}, ErrNotFound
@@ -196,6 +201,7 @@ func (s *MemoryStore) AppendMessage(_ context.Context, input AppendMessageInput)
 	s.events[input.SessionID] = append(s.events[input.SessionID], message, queued)
 	s.eventByRequest[requestKey] = message
 	s.taskRuns[run.ID] = run
+	s.runRouting[run.ID] = routing
 	session.LastEventSeq = queued.Seq
 	session.SnapshotVer += 2
 	session.Context = nextContext
@@ -338,6 +344,7 @@ type MemoryStore struct {
 	events             map[string][]Event
 	eventByRequest     map[string]Event
 	taskRuns           map[string]TaskRun
+	runRouting         map[string]map[string]any
 	lastClaimNamespace map[string]string
 }
 
@@ -349,6 +356,7 @@ func NewMemoryStore() *MemoryStore {
 		events:             make(map[string][]Event),
 		eventByRequest:     make(map[string]Event),
 		taskRuns:           make(map[string]TaskRun),
+		runRouting:         make(map[string]map[string]any),
 		lastClaimNamespace: make(map[string]string),
 	}
 }

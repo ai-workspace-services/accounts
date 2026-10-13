@@ -632,6 +632,19 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	taskV1.GET("/sessions/:sessionID", h.getTaskSessionV1)
 	taskV1.GET("/sessions/:sessionID/events", h.listTaskSessionEventsV1)
 	taskV1.POST("/sessions/:sessionID/messages", h.appendTaskSessionMessageV1)
+	taskV1.POST("/sessions/:sessionID/runs/:runID/cancel", h.cancelTaskRunV1)
+
+	// Task scheduler for the orchestrator worker: its own credential and
+	// account allowlist, separate from the general internal service token.
+	scheduler := r.Group("/api/internal/task-scheduler")
+	scheduler.Use(func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Next()
+	})
+	scheduler.Use(taskSchedulerAuth())
+	scheduler.POST("/claim", h.claimTaskRun)
+	scheduler.POST("/runs/:runID/renew", h.renewTaskRunLease)
+	scheduler.POST("/runs/:runID/events", h.appendTaskRunEvent)
 
 	// Internal routes for service-to-service reads.
 	internalGroup := r.Group("/api/internal")
