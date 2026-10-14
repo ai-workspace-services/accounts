@@ -85,4 +85,34 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 	if _, err = st.CreateAdminPlanGroupPreview(ctx, preview); err == nil {
 		t.Fatal("unsupported subscription date mutation accepted")
 	}
+	team := NetworkTeam{ID: "native-team", Name: "Custom Team", MemberLimit: 10, Active: true, ValidFrom: start, ValidUntil: end}
+	if err = st.PutNetworkTeam(ctx, team, &AuditLog{Action: "network.team.upsert", ActorUUID: id}); err != nil {
+		t.Fatal(err)
+	}
+	member := NetworkMembership{UserID: id, TeamID: team.ID, DedicatedOnly: true, Role: "admin"}
+	audit := &AuditLog{Action: "network.membership.set", ActorUUID: id, Details: map[string]any{"platform_root": true}}
+	if err = st.PutNetworkMembership(ctx, member, audit); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.GetUserByID(ctx, id)
+	if err != nil || len(stored.Groups) != 2 {
+		t.Fatalf("team role or quota lost: %+v %v", stored, err)
+	}
+	member.Role = "member"
+	if err = st.PutNetworkMembership(ctx, member, nil); err == nil {
+		t.Fatal("unaudited role mutation committed")
+	}
+	stored, err = st.GetUserByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := false
+	for _, g := range stored.Groups {
+		if g == "team-admin:"+team.ID {
+			admin = true
+		}
+	}
+	if !admin {
+		t.Fatal("failed audit did not roll back team administrator revocation")
+	}
 }
