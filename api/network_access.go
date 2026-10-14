@@ -303,15 +303,7 @@ func (h *handler) addNetworkTeamMember(c *gin.Context) {
 		return
 	}
 	teamStore := h.store.(store.NetworkTeamStore)
-	// A personal account has no dedicated scope yet. Establish the closed
-	// scope first, then bind it to this team; a failed second write leaves the
-	// account fail-closed instead of exposing public nodes.
-	if !current.Configured || !current.Allowed {
-		if err := teamStore.PutNetworkMembership(c.Request.Context(), store.NetworkMembership{UserID: member.ID, DedicatedOnly: true}, &store.AuditLog{Action: "network.team.member.scope", ActorUUID: actor.ID, Details: map[string]any{"team_id": access.TeamID, "member_id": member.ID}}); err != nil {
-			h.networkWriteError(c, err)
-			return
-		}
-	}
+	// The store validates capacity and changes the dedicated scope atomically.
 	if err := teamStore.PutNetworkMembership(c.Request.Context(), store.NetworkMembership{UserID: member.ID, TeamID: access.TeamID, DedicatedOnly: true}, &store.AuditLog{Action: "network.team.member.add", ActorUUID: actor.ID, Details: map[string]any{"team_id": access.TeamID, "member_id": member.ID}}); err != nil {
 		h.networkWriteError(c, err)
 		return
@@ -352,7 +344,32 @@ func (h *handler) updateNetworkTeamMember(c *gin.Context) {
 			respondError(c, http.StatusBadRequest, "invalid_quota_group", "unsupported quota group")
 			return
 		}
-		if err := h.store.UpdateUser(c.Request.Context(), target); err != nil {
+		planID := map[string]string{"5gb": store.BillingPlanFree, "20gb": store.BillingPlanPlus, "unlimited": store.BillingPlanUnlimitedBeta}[request.QuotaGroup]
+		plan, err := h.store.GetBillingPlan(c.Request.Context(), planID)
+		if err != nil || plan == nil || !plan.Active {
+			respondError(c, http.StatusBadRequest, "plan_unavailable", "selected quota plan is unavailable")
+			return
+		}
+		_, tokenHash, err := generateAdminPreviewToken()
+		if err != nil {
+			respondError(c, http.StatusInternalServerError, "member_update_failed", "failed to prepare quota update")
+			return
+		}
+		requestID := "team-quota:" + tokenHash
+		reason := "team administrator quota update: " + access.TeamID
+		change := store.AdminPlanGroupChange{UserID: target.ID, PlanID: plan.PlanID, SetEntitlement: true, Groups: target.Groups, ExpectedGroups: target.Groups, PackageName: plan.PackageName, IncludedQuotaBytes: plan.IncludedQuotaBytes, RegionMultiplier: plan.Multiplier("region"), LineMultiplier: plan.Multiplier("line"), PeakMultiplier: plan.Multiplier("peak"), OffPeakMultiplier: plan.Multiplier("offpeak"), PricingRuleVersion: "plan:" + plan.PlanID}
+		original, lookupErr := h.store.GetUserByID(c.Request.Context(), target.ID)
+		if lookupErr != nil {
+			respondError(c, 500, "member_update_failed", "failed to read member")
+			return
+		}
+		change.ExpectedGroups = original.Groups
+		change.ExpectedValidFrom, change.ExpectedValidUntil = original.SubscriptionValidFrom, original.SubscriptionValidUntil
+		_, err = h.store.CreateAdminPlanGroupPreview(c.Request.Context(), store.AdminPlanGroupPreview{TokenHash: tokenHash, ActorUUID: actor.ID, RequestID: requestID, Reason: reason, ExpiresAt: time.Now().Add(adminPlanPreviewTTL), Changes: []store.AdminPlanGroupChange{change}})
+		if err == nil {
+			_, _, err = h.store.ApplyAdminPlanGroupBatch(c.Request.Context(), store.AdminPlanGroupBatch{ActorUUID: actor.ID, RequestID: requestID, Reason: reason, PreviewTokenHash: tokenHash, ExpectedUserIDs: []string{target.ID}})
+		}
+		if err != nil {
 			respondError(c, http.StatusInternalServerError, "member_update_failed", "failed to update member quota")
 			return
 		}
