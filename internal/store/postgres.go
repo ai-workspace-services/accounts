@@ -677,7 +677,7 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 	if err != nil {
 		return nil, err
 	}
-	if !caps.hasGroups || !caps.hasSubscriptionValidFrom || !caps.hasSubscriptionValidUntil {
+	if !caps.hasGroups {
 		return nil, errors.New("admin plan group updates are not supported by the current user schema")
 	}
 	changes := cloneAdminPlanGroupChanges(preview.Changes)
@@ -690,6 +690,9 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 	seen := make(map[string]struct{}, len(changes))
 	for i := range changes {
 		change := &changes[i]
+		if (change.SetValidFrom && !caps.hasSubscriptionValidFrom) || (change.SetValidUntil && !caps.hasSubscriptionValidUntil) {
+			return nil, errors.New("subscription date updates are not supported by the current user schema")
+		}
 		if _, duplicate := seen[change.UserID]; duplicate {
 			return nil, errors.New("duplicate user in admin plan group preview")
 		}
@@ -705,7 +708,14 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 		if caps.hasLevel {
 			levelExpr = fmt.Sprintf("coalesce(level, %d)", LevelUser)
 		}
-		query := fmt.Sprintf("SELECT groups, subscription_valid_from, subscription_valid_until, %s, %s FROM public.users WHERE uuid = $1 FOR UPDATE", roleExpr, levelExpr)
+		fromExpr, untilExpr := "NULL::timestamptz", "NULL::timestamptz"
+		if caps.hasSubscriptionValidFrom {
+			fromExpr = "subscription_valid_from"
+		}
+		if caps.hasSubscriptionValidUntil {
+			untilExpr = "subscription_valid_until"
+		}
+		query := fmt.Sprintf("SELECT groups, %s, %s, %s, %s FROM public.users WHERE uuid = $1 FOR UPDATE", fromExpr, untilExpr, roleExpr, levelExpr)
 		err := tx.QueryRowContext(ctx, query, change.UserID).Scan(&groupsRaw, &validFrom, &validUntil, &role, &level)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrUserNotFound
@@ -808,7 +818,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 	if err != nil {
 		return nil, false, err
 	}
-	if !caps.hasGroups || !caps.hasSubscriptionValidFrom || !caps.hasSubscriptionValidUntil {
+	if !caps.hasGroups {
 		return nil, false, errors.New("admin plan group updates are not supported by the current user schema")
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
@@ -891,6 +901,9 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 	states := make([]currentState, 0, len(changes))
 	seen := make(map[string]struct{}, len(changes))
 	for _, change := range changes {
+		if (change.SetValidFrom && !caps.hasSubscriptionValidFrom) || (change.SetValidUntil && !caps.hasSubscriptionValidUntil) {
+			return nil, false, errors.New("subscription date updates are not supported by the current user schema")
+		}
 		if _, ok := seen[change.UserID]; ok {
 			return nil, false, errors.New("duplicate user in admin plan group preview")
 		}
@@ -906,7 +919,14 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 		if caps.hasLevel {
 			levelExpr = fmt.Sprintf("coalesce(level, %d)", LevelUser)
 		}
-		query := fmt.Sprintf("SELECT groups, subscription_valid_from, subscription_valid_until, %s, %s FROM public.users WHERE uuid = $1 FOR UPDATE", roleExpr, levelExpr)
+		fromExpr, untilExpr := "NULL::timestamptz", "NULL::timestamptz"
+		if caps.hasSubscriptionValidFrom {
+			fromExpr = "subscription_valid_from"
+		}
+		if caps.hasSubscriptionValidUntil {
+			untilExpr = "subscription_valid_until"
+		}
+		query := fmt.Sprintf("SELECT groups, %s, %s, %s, %s FROM public.users WHERE uuid = $1 FOR UPDATE", fromExpr, untilExpr, roleExpr, levelExpr)
 		err := tx.QueryRowContext(ctx, query, change.UserID).Scan(&groupsRaw, &validFrom, &validUntil, &role, &level)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, ErrUserNotFound
@@ -989,7 +1009,19 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 		if change.SetValidUntil {
 			validUntil = change.ValidUntil
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE public.users SET groups = $1, subscription_valid_from = $2, subscription_valid_until = $3, updated_at = $4 WHERE uuid = $5`, groups, validFrom, validUntil, now, change.UserID); err != nil {
+		update := "UPDATE public.users SET groups = $1, updated_at = $2"
+		args := []any{groups, now}
+		if caps.hasSubscriptionValidFrom {
+			args = append(args, validFrom)
+			update += fmt.Sprintf(", subscription_valid_from = $%d", len(args))
+		}
+		if caps.hasSubscriptionValidUntil {
+			args = append(args, validUntil)
+			update += fmt.Sprintf(", subscription_valid_until = $%d", len(args))
+		}
+		args = append(args, change.UserID)
+		update += fmt.Sprintf(" WHERE uuid = $%d", len(args))
+		if _, err := tx.ExecContext(ctx, update, args...); err != nil {
 			return nil, false, err
 		}
 		used := int64(0)
