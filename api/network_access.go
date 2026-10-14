@@ -481,6 +481,7 @@ func (h *handler) adminPutNetworkMembership(c *gin.Context) {
 	var req struct {
 		Mode   string `json:"mode"`
 		TeamID string `json:"teamId"`
+		Role   string `json:"role"`
 		Reason string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -493,6 +494,22 @@ func (h *handler) adminPutNetworkMembership(c *gin.Context) {
 	}
 	if (req.Mode != "personal" && req.Mode != "dedicated") || (req.Mode == "personal" && req.TeamID != "") || (req.TeamID != "" && !networkTeamIDPattern.MatchString(req.TeamID)) {
 		respondError(c, 400, "invalid_network_access", "mode must be personal or dedicated, with at most one team")
+		return
+	}
+	req.Role = strings.TrimSpace(strings.ToLower(req.Role))
+	if req.Role == "" {
+		req.Role = "member"
+	}
+	if req.Role != "member" && req.Role != "admin" {
+		respondError(c, 400, "invalid_network_role", "role must be member or admin")
+		return
+	}
+	if req.Role == "admin" && req.Mode != "dedicated" {
+		respondError(c, 400, "invalid_network_role", "team administrators must belong to a dedicated team")
+		return
+	}
+	if req.Role == "admin" && !store.IsRootRole(actor.Role) {
+		respondError(c, 403, "root_required", "only a root administrator can appoint team administrators")
 		return
 	}
 	user, err := h.store.GetUserByID(c.Request.Context(), c.Param("userId"))
@@ -508,6 +525,23 @@ func (h *handler) adminPutNetworkMembership(c *gin.Context) {
 	err = h.store.(store.NetworkTeamStore).PutNetworkMembership(c.Request.Context(), member, &store.AuditLog{Action: "network.membership.set", ActorUUID: actor.ID, Details: map[string]any{"target_uuid": user.ID, "reason": reason, "membership": member}})
 	if err != nil {
 		h.networkWriteError(c, err)
+		return
+	}
+	groups := make([]string, 0, len(user.Groups)+2)
+	adminGroup := teamAdminGroupPrefix + req.TeamID
+	legacyAdminGroup := "team:" + req.TeamID + teamAdminRoleSuffix
+	for _, group := range user.Groups {
+		if group == adminGroup || group == legacyAdminGroup {
+			continue
+		}
+		groups = append(groups, group)
+	}
+	if req.Mode == "dedicated" && req.Role == "admin" {
+		groups = append(groups, adminGroup)
+	}
+	user.Groups = groups
+	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
+		respondError(c, 500, "network_role_update_failed", "failed to update team administrator role")
 		return
 	}
 	c.JSON(200, member)
