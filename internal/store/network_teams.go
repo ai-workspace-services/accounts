@@ -92,7 +92,8 @@ func (s *memoryStore) PutNetworkMembership(ctx context.Context, member NetworkMe
 			return ErrNetworkTeamNotFound
 		}
 		current := s.networkMembers[member.UserID]
-		if team.Active && (!current.DedicatedOnly || (current.TeamID != "" && current.TeamID != member.TeamID)) {
+		joiningPersonal := current.TeamID == "" && audit != nil && audit.Action == "network.team.member.add"
+		if team.Active && ((!current.DedicatedOnly && !joiningPersonal) || (current.TeamID != "" && current.TeamID != member.TeamID)) {
 			return ErrNetworkWithdrawalRequired
 		}
 		count := 0

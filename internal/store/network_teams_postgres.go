@@ -89,7 +89,8 @@ func (s *postgresStore) PutNetworkMembership(ctx context.Context, member Network
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if active && (!oldDedicated || (oldTeam != "" && oldTeam != member.TeamID)) {
+		joiningPersonal := oldTeam == "" && audit != nil && audit.Action == "network.team.member.add"
+		if active && ((!oldDedicated && !joiningPersonal) || (oldTeam != "" && oldTeam != member.TeamID)) {
 			return ErrNetworkWithdrawalRequired
 		}
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM network_team_members WHERE team_id=$1 AND user_uuid<>$2`, member.TeamID, member.UserID).Scan(&count); err != nil {

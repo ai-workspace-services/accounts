@@ -35,6 +35,34 @@ func TestNetworkScopeMatrix(t *testing.T) {
 	}
 }
 
+func TestNetworkTeamAdminAndQuotaGroups(t *testing.T) {
+	admin := &store.User{Groups: []string{"team:acme", "team-admin:acme"}}
+	if !networkTeamAdmin(admin, "acme") {
+		t.Fatal("team-admin marker should grant team management")
+	}
+	if networkTeamAdmin(admin, "other") {
+		t.Fatal("team-admin marker must be scoped to its team")
+	}
+	legacy := &store.User{Groups: []string{"team:acme:admin"}}
+	if !networkTeamAdmin(legacy, "acme") {
+		t.Fatal("legacy team admin marker should remain compatible")
+	}
+
+	user := &store.User{Groups: []string{"segment:keep", store.MonthlyFreeQuotaLimitGroup, "team:acme"}}
+	if group, label := teamQuotaGroup(user); group != "5gb" || label != "5 GB" {
+		t.Fatalf("free quota mapping: %q %q", group, label)
+	}
+	if err := setTeamQuotaGroup(user, "20gb"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.MonthlyQuotaGroup(user); got != store.MonthlyPlusQuotaLimitGroup {
+		t.Fatalf("quota group not replaced: %q", got)
+	}
+	if err := setTeamQuotaGroup(user, "invalid"); err == nil {
+		t.Fatal("invalid quota group accepted")
+	}
+}
+
 func TestNetworkAgentsAndSnapshotsRemainIsolated(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := context.Background()
