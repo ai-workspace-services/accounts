@@ -45,6 +45,10 @@ func TestRootTeamHierarchy(t *testing.T) {
 		return rr
 	}
 	path := "/api/auth/admin/users/" + users[store.RoleUser].ID + "/network-access"
+	groupsPath := "/api/auth/admin/users/" + users[store.RoleUser].ID + "/groups"
+	if rr := call(store.RoleAdmin, "PUT", groupsPath, `{"groups":["team-admin:alpha"]}`); rr.Code != 403 {
+		t.Fatal("generic group editor bypassed root appointment")
+	}
 	assign := `{"mode":"dedicated","teamId":"alpha","role":"admin","reason":"root hierarchy test"}`
 	for _, role := range []string{store.RoleAdmin, store.RoleUser} {
 		if rr := call(role, "PUT", path, assign); rr.Code != 403 {

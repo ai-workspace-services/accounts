@@ -161,6 +161,29 @@ func networkTeamAdmin(user *store.User, teamID string) bool {
 	return false
 }
 
+func sameNetworkTeamRoles(before, after []string) bool {
+	roles := func(groups []string) map[string]bool {
+		result := map[string]bool{}
+		for _, g := range groups {
+			g = strings.TrimSpace(g)
+			if strings.HasPrefix(g, teamAdminGroupPrefix) || (strings.HasPrefix(g, "team:") && strings.HasSuffix(g, teamAdminRoleSuffix)) {
+				result[g] = true
+			}
+		}
+		return result
+	}
+	a, b := roles(before), roles(after)
+	if len(a) != len(b) {
+		return false
+	}
+	for g := range a {
+		if !b[g] {
+			return false
+		}
+	}
+	return true
+}
+
 func teamQuotaGroup(user *store.User) (string, string) {
 	group := store.MonthlyQuotaGroup(user)
 	switch group {

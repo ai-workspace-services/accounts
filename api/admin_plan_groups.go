@@ -138,6 +138,10 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			respondError(c, http.StatusForbidden, "root_protected", "root account plan cannot be modified")
 			return
 		}
+		if update.Groups != nil && !store.IsRootRole(actor.Role) && !sameNetworkTeamRoles(user.Groups, *update.Groups) {
+			respondError(c, 403, "root_required", "only root can change team administrator groups")
+			return
+		}
 
 		planID := strings.ToUpper(strings.TrimSpace(update.PlanID))
 		if planID == "" {
