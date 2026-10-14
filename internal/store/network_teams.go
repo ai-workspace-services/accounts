@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,27 @@ type NetworkMembership struct {
 	UserID        string `json:"userId"`
 	TeamID        string `json:"teamId"`
 	DedicatedOnly bool   `json:"dedicatedOnly"`
+	Role          string `json:"role,omitempty"`
+}
+
+// Team roles do not replace platform roles or personal subscription groups.
+func networkMembershipGroups(groups []string, member NetworkMembership) []string {
+	admin := member.Role == "admin"
+	result := make([]string, 0, len(groups)+1)
+	for _, group := range groups {
+		teamRole := strings.HasPrefix(group, "team-admin:") || (strings.HasPrefix(group, "team:") && strings.HasSuffix(group, ":admin"))
+		if teamRole {
+			if member.Role == "" && member.TeamID != "" && (group == "team-admin:"+member.TeamID || group == "team:"+member.TeamID+":admin") {
+				admin = true
+			}
+			continue
+		}
+		result = append(result, group)
+	}
+	if admin && member.TeamID != "" && member.DedicatedOnly {
+		result = append(result, "team-admin:"+member.TeamID)
+	}
+	return result
 }
 
 // NetworkTeamStore is additive: old accounts have no membership and remain personal.
@@ -93,7 +115,8 @@ func (s *memoryStore) PutNetworkMembership(ctx context.Context, member NetworkMe
 		}
 		current := s.networkMembers[member.UserID]
 		joiningPersonal := current.TeamID == "" && audit != nil && audit.Action == "network.team.member.add"
-		if team.Active && ((!current.DedicatedOnly && !joiningPersonal) || (current.TeamID != "" && current.TeamID != member.TeamID)) {
+		platformRoot := audit != nil && audit.Action == "network.membership.set" && audit.Details["platform_root"] == true
+		if !platformRoot && team.Active && ((!current.DedicatedOnly && !joiningPersonal) || (current.TeamID != "" && current.TeamID != member.TeamID)) {
 			return ErrNetworkWithdrawalRequired
 		}
 		count := 0
@@ -111,6 +134,7 @@ func (s *memoryStore) PutNetworkMembership(ctx context.Context, member NetworkMe
 		s.networkMembers = map[string]NetworkMembership{}
 	}
 	s.networkMembers[member.UserID] = member
+	s.byID[member.UserID].Groups = networkMembershipGroups(s.byID[member.UserID].Groups, member)
 	s.auditLogs = append(s.auditLogs, audit)
 	return nil
 }

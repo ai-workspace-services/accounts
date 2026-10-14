@@ -37,7 +37,11 @@ func TestAuditTeamChain(t *testing.T) {
 		if err := ts.PutNetworkMembership(ctx, store.NetworkMembership{UserID: users[name].ID, DedicatedOnly: true}, &store.AuditLog{}); err != nil {
 			t.Fatal(err)
 		}
-		if err := ts.PutNetworkMembership(ctx, store.NetworkMembership{UserID: users[name].ID, TeamID: id, DedicatedOnly: true}, &store.AuditLog{}); err != nil {
+		role := "member"
+		if name == "owner" {
+			role = "admin"
+		}
+		if err := ts.PutNetworkMembership(ctx, store.NetworkMembership{UserID: users[name].ID, TeamID: id, DedicatedOnly: true, Role: role}, &store.AuditLog{}); err != nil {
 			t.Fatal(err)
 		}
 	}

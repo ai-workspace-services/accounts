@@ -3536,7 +3536,8 @@ func (h *handler) updateUserRole(c *gin.Context) {
 // already exist — the management console could display groups per user but
 // had no way to change them after the fact.
 func (h *handler) updateUserGroups(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminUsersRoleWrite); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminUsersRoleWrite)
+	if !ok {
 		return
 	}
 
@@ -3568,6 +3569,10 @@ func (h *handler) updateUserGroups(c *gin.Context) {
 		return
 	}
 
+	if !store.IsRootRole(actor.Role) && !sameNetworkTeamRoles(user.Groups, req.Groups) {
+		respondError(c, 403, "root_required", "only root can change team administrator groups")
+		return
+	}
 	currentPlanGroup := store.MonthlyQuotaGroup(user)
 	for _, requested := range req.Groups {
 		if isMonthlyQuotaGroup(requested) && strings.TrimSpace(requested) != currentPlanGroup {

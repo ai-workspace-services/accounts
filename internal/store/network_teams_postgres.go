@@ -90,7 +90,8 @@ func (s *postgresStore) PutNetworkMembership(ctx context.Context, member Network
 			return err
 		}
 		joiningPersonal := oldTeam == "" && audit != nil && audit.Action == "network.team.member.add"
-		if active && ((!oldDedicated && !joiningPersonal) || (oldTeam != "" && oldTeam != member.TeamID)) {
+		platformRoot := audit != nil && audit.Action == "network.membership.set" && audit.Details["platform_root"] == true
+		if !platformRoot && active && ((!oldDedicated && !joiningPersonal) || (oldTeam != "" && oldTeam != member.TeamID)) {
 			return ErrNetworkWithdrawalRequired
 		}
 		if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM network_team_members WHERE team_id=$1 AND user_uuid<>$2`, member.TeamID, member.UserID).Scan(&count); err != nil {
@@ -104,6 +105,21 @@ func (s *postgresStore) PutNetworkMembership(ctx context.Context, member Network
 	_, err = tx.ExecContext(ctx, `INSERT INTO network_team_members(user_uuid,team_id,dedicated_only) VALUES($1,NULLIF($2,''),$3)
 	 ON CONFLICT(user_uuid) DO UPDATE SET team_id=EXCLUDED.team_id,dedicated_only=EXCLUDED.dedicated_only`, member.UserID, member.TeamID, member.DedicatedOnly)
 	if err != nil {
+		return err
+	}
+	var groupsRaw []byte
+	if err = tx.QueryRowContext(ctx, `SELECT groups FROM users WHERE uuid=$1 FOR UPDATE`, member.UserID).Scan(&groupsRaw); err != nil {
+		return err
+	}
+	var groups []string
+	if err = json.Unmarshal(groupsRaw, &groups); err != nil {
+		return err
+	}
+	groupsRaw, err = json.Marshal(networkMembershipGroups(groups, member))
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET groups=$2,updated_at=now() WHERE uuid=$1`, member.UserID, groupsRaw); err != nil {
 		return err
 	}
 	if err = insertNetworkAudit(ctx, tx, audit); err != nil {

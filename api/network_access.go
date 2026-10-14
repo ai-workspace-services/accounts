@@ -26,6 +26,7 @@ type networkAccess struct {
 	Mode       string             `json:"mode"`
 	TeamID     string             `json:"teamId,omitempty"`
 	Team       *store.NetworkTeam `json:"team,omitempty"`
+	Role       string             `json:"role,omitempty"`
 	Allowed    bool               `json:"allowed"`
 }
 
@@ -160,6 +161,29 @@ func networkTeamAdmin(user *store.User, teamID string) bool {
 	return false
 }
 
+func sameNetworkTeamRoles(before, after []string) bool {
+	roles := func(groups []string) map[string]bool {
+		result := map[string]bool{}
+		for _, g := range groups {
+			g = strings.TrimSpace(g)
+			if strings.HasPrefix(g, teamAdminGroupPrefix) || (strings.HasPrefix(g, "team:") && strings.HasSuffix(g, teamAdminRoleSuffix)) {
+				result[g] = true
+			}
+		}
+		return result
+	}
+	a, b := roles(before), roles(after)
+	if len(a) != len(b) {
+		return false
+	}
+	for g := range a {
+		if !b[g] {
+			return false
+		}
+	}
+	return true
+}
+
 func teamQuotaGroup(user *store.User) (string, string) {
 	group := store.MonthlyQuotaGroup(user)
 	switch group {
@@ -205,6 +229,20 @@ func setTeamQuotaGroup(user *store.User, quotaGroup string) error {
 func (h *handler) networkTeamForAdmin(c *gin.Context) (*store.User, networkAccess, bool) {
 	actor, ok := h.requireAuthenticatedUser(c)
 	if !ok {
+		return nil, networkAccess{}, false
+	}
+	if store.IsRootRole(actor.Role) && c.Query("teamId") != "" {
+		teams, err := h.store.(store.NetworkTeamStore).ListNetworkTeams(c.Request.Context())
+		if err != nil {
+			respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+			return nil, networkAccess{}, false
+		}
+		for _, team := range teams {
+			if team.ID == c.Query("teamId") {
+				return actor, networkAccess{Mode: "dedicated", TeamID: team.ID, Team: &team, Allowed: team.Active}, true
+			}
+		}
+		respondError(c, 404, "network_target_not_found", "team not found")
 		return nil, networkAccess{}, false
 	}
 	access, err := h.networkAccessForUser(c.Request.Context(), actor)
@@ -257,7 +295,11 @@ func (h *handler) getNetworkTeam(c *gin.Context) {
 		if quota, quotaErr := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); quotaErr == nil && quota != nil && quota.ProxyAccessState == "paused" {
 			state = "paused"
 		}
-		members = append(members, networkTeamMemberPayload{ID: user.ID, Name: user.Name, Email: user.Email, Role: "member", QuotaGroup: quotaGroup, QuotaLabel: quotaLabel, AccessState: state, Active: user.Active})
+		role := "member"
+		if networkTeamAdmin(&user, access.TeamID) {
+			role = "admin"
+		}
+		members = append(members, networkTeamMemberPayload{ID: user.ID, Name: user.Name, Email: user.Email, Role: role, QuotaGroup: quotaGroup, QuotaLabel: quotaLabel, AccessState: state, Active: user.Active})
 	}
 	team := access.Team
 	if team == nil {
@@ -329,6 +371,10 @@ func (h *handler) updateNetworkTeamMember(c *gin.Context) {
 	member, err := h.store.(store.NetworkTeamStore).GetNetworkMembership(c.Request.Context(), userID)
 	if err != nil || member.TeamID != access.TeamID {
 		respondError(c, http.StatusNotFound, "member_not_found", "member is not in this team")
+		return
+	}
+	if networkTeamAdmin(target, access.TeamID) && !store.IsRootRole(actor.Role) {
+		respondError(c, 403, "root_required", "only root can modify team administrators")
 		return
 	}
 	var request struct {
@@ -407,6 +453,15 @@ func (h *handler) removeNetworkTeamMember(c *gin.Context) {
 		respondError(c, http.StatusNotFound, "member_not_found", "member is not in this team")
 		return
 	}
+	target, err := h.store.GetUserByID(c.Request.Context(), userID)
+	if err != nil {
+		respondError(c, 404, "member_not_found", "member not found")
+		return
+	}
+	if networkTeamAdmin(target, access.TeamID) && !store.IsRootRole(actor.Role) {
+		respondError(c, 403, "root_required", "only root can remove team administrators")
+		return
+	}
 	if err := h.store.(store.NetworkTeamStore).PutNetworkMembership(c.Request.Context(), store.NetworkMembership{UserID: userID, DedicatedOnly: true}, &store.AuditLog{Action: "network.team.member.remove", ActorUUID: actor.ID, Details: map[string]any{"team_id": access.TeamID, "member_id": userID}}); err != nil {
 		h.networkWriteError(c, err)
 		return
@@ -418,7 +473,8 @@ func (h *handler) adminGetNetworkMembership(c *gin.Context) {
 	if _, ok := h.requireAdminPermission(c, permissionAdminUsersRoleWrite); !ok {
 		return
 	}
-	if _, err := h.store.GetUserByID(c.Request.Context(), c.Param("userId")); err != nil {
+	user, err := h.store.GetUserByID(c.Request.Context(), c.Param("userId"))
+	if err != nil {
 		h.networkWriteError(c, err)
 		return
 	}
@@ -426,6 +482,10 @@ func (h *handler) adminGetNetworkMembership(c *gin.Context) {
 	if err != nil {
 		h.networkWriteError(c, err)
 		return
+	}
+	access.Role = "member"
+	if networkTeamAdmin(user, access.TeamID) {
+		access.Role = "admin"
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(200, access)
@@ -446,6 +506,10 @@ func (h *handler) adminListNetworkTeams(c *gin.Context) {
 func (h *handler) adminPutNetworkTeam(c *gin.Context) {
 	actor, ok := h.requireAdminPermission(c, permissionAdminSettingsWrite)
 	if !ok {
+		return
+	}
+	if !store.IsRootRole(actor.Role) {
+		respondError(c, 403, "root_required", "only root can configure teams")
 		return
 	}
 	var req struct {
@@ -478,9 +542,14 @@ func (h *handler) adminPutNetworkMembership(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !store.IsRootRole(actor.Role) {
+		respondError(c, 403, "root_required", "only root can set team membership and administrator roles")
+		return
+	}
 	var req struct {
 		Mode   string `json:"mode"`
 		TeamID string `json:"teamId"`
+		Role   string `json:"role"`
 		Reason string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -495,6 +564,19 @@ func (h *handler) adminPutNetworkMembership(c *gin.Context) {
 		respondError(c, 400, "invalid_network_access", "mode must be personal or dedicated, with at most one team")
 		return
 	}
+	req.Role = strings.TrimSpace(strings.ToLower(req.Role))
+	if req.Role != "" && req.Role != "member" && req.Role != "admin" {
+		respondError(c, 400, "invalid_network_role", "role must be member or admin")
+		return
+	}
+	if req.Role == "admin" && (req.Mode != "dedicated" || req.TeamID == "") {
+		respondError(c, 400, "invalid_network_role", "team administrators must belong to a dedicated team")
+		return
+	}
+	if req.Role == "admin" && !store.IsRootRole(actor.Role) {
+		respondError(c, 403, "root_required", "only a root administrator can appoint team administrators")
+		return
+	}
 	user, err := h.store.GetUserByID(c.Request.Context(), c.Param("userId"))
 	if err != nil {
 		h.networkWriteError(c, err)
@@ -504,8 +586,8 @@ func (h *handler) adminPutNetworkMembership(c *gin.Context) {
 		respondError(c, 403, "root_protected", "root network access cannot be modified")
 		return
 	}
-	member := store.NetworkMembership{UserID: user.ID, TeamID: req.TeamID, DedicatedOnly: req.Mode == "dedicated"}
-	err = h.store.(store.NetworkTeamStore).PutNetworkMembership(c.Request.Context(), member, &store.AuditLog{Action: "network.membership.set", ActorUUID: actor.ID, Details: map[string]any{"target_uuid": user.ID, "reason": reason, "membership": member}})
+	member := store.NetworkMembership{UserID: user.ID, TeamID: req.TeamID, DedicatedOnly: req.Mode == "dedicated", Role: req.Role}
+	err = h.store.(store.NetworkTeamStore).PutNetworkMembership(c.Request.Context(), member, &store.AuditLog{Action: "network.membership.set", ActorUUID: actor.ID, Details: map[string]any{"target_uuid": user.ID, "reason": reason, "membership": member, "platform_root": true}})
 	if err != nil {
 		h.networkWriteError(c, err)
 		return

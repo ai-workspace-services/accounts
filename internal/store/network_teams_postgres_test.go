@@ -39,6 +39,8 @@ func TestNetworkMembershipWriteRollsBackIfAuditFails(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO network_team_members`).WithArgs("member", "", true).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT groups FROM users`).WithArgs("member").WillReturnRows(sqlmock.NewRows([]string{"groups"}).AddRow(`[]`))
+	mock.ExpectExec(`UPDATE users SET groups`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO audit_logs`).WillReturnError(errors.New("audit unavailable"))
 	mock.ExpectRollback()
 	if err := st.PutNetworkMembership(context.Background(), NetworkMembership{UserID: "member", DedicatedOnly: true}, &AuditLog{Action: "network.membership.set"}); err == nil {
