@@ -158,6 +158,15 @@ jobs:
           MIGRATECTL_NATIVE_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
         run: go test -v ./sql ./cmd/migratectl ./internal/migrate
 
+      - name: Qualify team quota updates without legacy subscription columns
+        if: matrix.check == 'native_schema_initialization'
+        env:
+          PGPASSWORD: postgres
+          TEAM_QUOTA_NATIVE_TEST_DSN: postgres://postgres:postgres@localhost:5432/team_quota_native?sslmode=disable
+        run: |
+          createdb --host localhost --port 5432 --username postgres team_quota_native
+          go test -v ./internal/store -run '^TestAdminPlanGroupsNativeSchema$' -count=1
+
       - name: Qualify managed startup, readonly facts and standby isolation
         if: matrix.check == 'managed_database_runtime'
         env:
