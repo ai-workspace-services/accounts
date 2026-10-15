@@ -51,6 +51,7 @@ const (
 	MonthlyUnlimitedBetaQuotaGroup = "segment:quota:unlimited-beta"
 	// Independent, reversible operator override. Never replaces the paid plan.
 	SubscriptionUnlimitedOverrideGroup = "segment:subscription:unlimited"
+	SubscriptionListedGroup            = "segment:subscription:listed"
 )
 
 var monthlyQuotaGroups = [...]string{
@@ -98,16 +99,18 @@ func HasSubscriptionUnlimitedOverride(user *User, now time.Time) bool {
 			return false
 		}
 	}
-	var override, recurring bool
+	var override, recurring, listed bool
 	for _, group := range user.Groups {
 		switch group {
 		case SubscriptionUnlimitedOverrideGroup:
 			override = true
+		case SubscriptionListedGroup:
+			listed = true
 		case "segment:monthly", "segment:yearly", "segment:subscription:monthly", "segment:subscription:yearly":
 			recurring = true
 		}
 	}
-	return override && recurring && MonthlyQuotaGroup(user) == MonthlyPlusQuotaLimitGroup
+	return listed && override && recurring && MonthlyQuotaGroup(user) == MonthlyPlusQuotaLimitGroup
 }
 
 // Subscription represents a recurring or usage-based billing relationship.
@@ -700,6 +703,7 @@ type Store interface {
 	ListBillingLedgerByAccount(ctx context.Context, accountUUID string, limit int) ([]BillingLedgerEntry, error)
 	UpsertAccountQuotaState(ctx context.Context, state *AccountQuotaState) error
 	GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error)
+	ResetFreeQuotaPeriod(ctx context.Context, accountUUID string, start, end, now time.Time) error
 	// ListSuspendedAccountUUIDs returns the set of accounts currently
 	// suspend_state='suspended', so agent/xray sync endpoints can drop them
 	// in one batched lookup instead of a per-user quota-state query.

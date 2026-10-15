@@ -8,7 +8,7 @@ import (
 func TestSubscriptionUnlimitedOverrideLeavesQuotaTierAndValidityIntact(t *testing.T) {
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
-	user := &User{Active: true, Groups: []string{MonthlyPlusQuotaLimitGroup, "segment:yearly", SubscriptionUnlimitedOverrideGroup}, SubscriptionValidUntil: &until}
+	user := &User{Active: true, Groups: []string{MonthlyPlusQuotaLimitGroup, "segment:yearly", SubscriptionListedGroup, SubscriptionUnlimitedOverrideGroup}, SubscriptionValidUntil: &until}
 	if !HasSubscriptionUnlimitedOverride(user, now) || MonthlyQuotaGroup(user) != MonthlyPlusQuotaLimitGroup {
 		t.Fatal("override must retain plus quota tier")
 	}

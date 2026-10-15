@@ -151,6 +151,9 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 	if user == nil {
 		return nil
 	}
+	if err := h.ensureFreeQuotaPeriod(ctx, user, now); err != nil {
+		return err
+	}
 	now = now.UTC()
 	shouldDowngrade := subscriptionValidityExpired(user, now)
 	quota, quotaErr := h.store.GetAccountQuotaState(ctx, user.ID)

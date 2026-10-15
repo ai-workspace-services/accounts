@@ -37,6 +37,9 @@ func (h *handler) validateSubscriptionOverride(ctx context.Context, actor, user 
 	if !after {
 		return nil
 	}
+	if !slices.Contains(groups, store.SubscriptionListedGroup) {
+		return errors.New("temporary unlimited requires current CSV cohort membership")
+	}
 	record, err := h.store.GetSubscriptionRecord(ctx, user.ID)
 	if err != nil || record == nil {
 		return errors.New("a persisted monthly or annual subscription is required")

@@ -43,6 +43,11 @@ func TestTemporaryUnlimitedPreviewPreservesCommercialFactsAndCanRestore(t *testi
 	before, _ := st.GetSubscriptionRecord(ctx, target.ID)
 	profileBefore, _ := st.GetAccountBillingProfile(ctx, target.ID)
 	quotaBefore, _ := st.GetAccountQuotaState(ctx, target.ID)
+	quotaBefore.RemainingIncludedQuota = 0
+	if err := st.UpsertAccountQuotaState(ctx, quotaBefore); err != nil {
+		t.Fatal(err)
+	}
+	quotaBefore, _ = st.GetAccountQuotaState(ctx, target.ID)
 	if err := st.CreateSession(ctx, "override-target", target.ID, time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +58,7 @@ func TestTemporaryUnlimitedPreviewPreservesCommercialFactsAndCanRestore(t *testi
 		t.Fatal("override not effective")
 	}
 	usage := opsGet(t, router, "override-target", "/api/account/usage/summary")
-	if usage.Code != 200 || !strings.Contains(usage.Body.String(), `"temporaryUnlimited":true`) || !strings.Contains(usage.Body.String(), `"source":"temporary_subscription_override"`) {
+	if usage.Code != 200 || !strings.Contains(usage.Body.String(), `"temporaryUnlimited":true`) || !strings.Contains(usage.Body.String(), `"quotaExhausted":false`) || !strings.Contains(usage.Body.String(), `"source":"temporary_subscription_override"`) {
 		t.Fatalf("effective override missing from usage contract: %s", usage.Body.String())
 	}
 	after, _ := st.GetSubscriptionRecord(ctx, target.ID)

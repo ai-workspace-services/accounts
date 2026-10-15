@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -237,7 +238,9 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 			if seen[user.ID] || h.isRootAccount(&user) || isTeamSubscriptionUser(user.Groups) {
 				continue
 			}
-			updates = append(updates, adminPlanGroupUpdate{UserID: user.ID, PlanID: store.BillingPlanFree, ValidFrom: json.RawMessage("null"), ValidUntil: json.RawMessage("null"), SubscriptionRecord: &store.SubscriptionRecord{UserID: user.ID, PaymentStatus: "unpaid"}})
+			// Removing membership is reversible: retain historical commercial facts,
+			// validity and payment records. Only the effective plan/cohort changes.
+			updates = append(updates, adminPlanGroupUpdate{UserID: user.ID, PlanID: store.BillingPlanFree})
 		}
 	}
 	return updates, nil
@@ -324,6 +327,9 @@ func (h *handler) adminListSubscriptionRecords(c *gin.Context) {
 		}
 		record, exists := byID[user.ID]
 		if !exists {
+			continue
+		}
+		if !slices.Contains(user.Groups, store.SubscriptionListedGroup) && c.Query("includeHistory") != "true" {
 			continue
 		}
 		profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID)

@@ -47,6 +47,13 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		respondError(c, http.StatusServiceUnavailable, "proxy_uuid_unavailable", "proxy UUID is not provisioned for this account")
 		return
 	}
+	if exhausted, err := h.quotaExhaustedForUser(c.Request.Context(), user); err != nil {
+		respondError(c, 503, "quota_unavailable", "failed to evaluate quota")
+		return
+	} else if exhausted {
+		respondError(c, 403, "quota_exhausted", "natural-month quota exhausted; configuration sync resumes next month")
+		return
+	}
 
 	access, err := h.networkAccessForUser(c.Request.Context(), user)
 	if err != nil {

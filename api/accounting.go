@@ -45,6 +45,10 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if err := h.ensureFreeQuotaPeriod(c.Request.Context(), user, time.Now().UTC()); err != nil {
+		respondError(c, 503, "quota_unavailable", "failed to reconcile quota period")
+		return
+	}
 	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, time.Time{}, time.Time{})
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "usage_summary_unavailable", "failed to load usage summary")
