@@ -16,7 +16,7 @@ import (
 
 func TestResolveXConnectTelemetryIdentityByEmailOrProxyUUID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("XCONNECT_OBSERVABILITY_SEARCH_TOKEN", "test-observability-token")
+	t.Setenv("XCONNECT_OBSERVABILITY_SEARCH_TOKEN", "observability-test-token-32-bytes!!")
 	st := store.NewMemoryStore()
 	user := &store.User{
 		Name: "Diagnostics User", Email: "diagnostics@example.test", PasswordHash: "unused",
@@ -66,7 +66,7 @@ func TestResolveXConnectTelemetryIdentityByEmailOrProxyUUID(t *testing.T) {
 
 func TestResolveXConnectTelemetryIdentityRequiresExactlyOneIdentifier(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("XCONNECT_OBSERVABILITY_SEARCH_TOKEN", "test-observability-token")
+	t.Setenv("XCONNECT_OBSERVABILITY_SEARCH_TOKEN", "observability-test-token-32-bytes!!")
 	router := gin.New()
 	RegisterRoutes(router, WithStore(store.NewMemoryStore()), WithEmailVerification(false))
 	for _, body := range []string{`{}`, `{"email":"a@example.test","proxyUuid":"credential"}`} {
@@ -84,7 +84,7 @@ func TestResolveXConnectTelemetryIdentityRequiresExactlyOneIdentifier(t *testing
 func TestResolveXConnectTelemetryIdentityUsesDedicatedToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("INTERNAL_SERVICE_TOKEN", "general-internal-token")
-	t.Setenv("XCONNECT_OBSERVABILITY_SEARCH_TOKEN", "observability-only-token")
+	t.Setenv("XCONNECT_OBSERVABILITY_SEARCH_TOKEN", "observability-test-token-32-bytes!!")
 	router := gin.New()
 	RegisterRoutes(router, WithStore(store.NewMemoryStore()), WithEmailVerification(false))
 
@@ -96,7 +96,7 @@ func TestResolveXConnectTelemetryIdentityUsesDedicatedToken(t *testing.T) {
 	}{
 		{name: "missing", want: http.StatusUnauthorized},
 		{name: "general internal token is not accepted", header: "X-Service-Token", value: "general-internal-token", want: http.StatusUnauthorized},
-		{name: "dedicated token", header: "X-XConnect-Observability-Token", value: "observability-only-token", want: http.StatusOK},
+		{name: "dedicated token", header: "X-XConnect-Observability-Token", value: "observability-test-token-32-bytes!!", want: http.StatusOK},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/observability/internal/xconnect/identity", bytes.NewBufferString(`{"email":"nobody@example.test"}`))

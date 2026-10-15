@@ -9,6 +9,7 @@ service_compose_registry_username: CHANGE_ME
 service_compose_registry_password: CHANGE_ME
 service_compose_env_common:
   INTERNAL_SERVICE_TOKEN: CHANGE_ME
+  XCONNECT_OBSERVABILITY_SEARCH_TOKEN: CHANGE_ME
   POSTGRES_PASSWORD: CHANGE_ME
   DB_PASSWORD: CHANGE_ME
   SMTP_PASSWORD: CHANGE_ME

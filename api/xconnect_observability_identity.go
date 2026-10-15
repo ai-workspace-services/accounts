@@ -19,7 +19,7 @@ func xconnectObservabilitySearchAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		provided := strings.TrimSpace(c.GetHeader("X-XConnect-Observability-Token"))
 		expected := strings.TrimSpace(os.Getenv("XCONNECT_OBSERVABILITY_SEARCH_TOKEN"))
-		if expected == "" {
+		if len(expected) < 32 {
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "identity resolver unavailable"})
 			return
 		}

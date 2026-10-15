@@ -58,6 +58,7 @@ Cloudflare Workers 仅由
 | Vault key (`kv/data/accounts.svc.plus`) | 用途 | 映射到的部署变量 |
 |---|---|---|
 | `INTERNAL_SERVICE_TOKEN` | accounts → xworkmate-bridge 的服务间鉴权 | `BRIDGE_AUTH_TOKEN` |
+| `XCONNECT_OBSERVABILITY_SEARCH_TOKEN` | Grafana diagnostics → Accounts 的 email/Proxy UUID 匿名引用解析；仅授权身份解析路由 | `xconnect-observability-search-token`（Cloud Run Secret Manager）或 Ansible Vault 变量 |
 | `BRIDGE_REVIEW_AUTH_TOKEN` | Apple 审核只读账号 `review@svc.plus` 专用 bridge token | `BRIDGE_REVIEW_AUTH_TOKEN` |
 
 在 Vault 中必须预先配置好对应的 JWT role，否则 pipeline 会自动退回到
