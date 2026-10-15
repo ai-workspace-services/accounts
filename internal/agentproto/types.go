@@ -9,10 +9,18 @@ import (
 // ClientListResponse represents the payload returned by the controller when an
 // agent requests the latest set of Xray clients.
 type ClientListResponse struct {
+	Scope       *UserScope          `json:"scope,omitempty"`
 	Clients     []xrayconfig.Client `json:"clients"`
 	Total       int                 `json:"total"`
 	GeneratedAt time.Time           `json:"generatedAt"`
 	Revision    string              `json:"revision,omitempty"`
+}
+
+// UserScope is derived from the authenticated agent credential. Request
+// headers are only expectations and never grant access to another scope.
+type UserScope struct {
+	ResourceClass string `json:"resourceClass"`
+	TeamID        string `json:"teamId,omitempty"`
 }
 
 // StatusReport captures the runtime state of an agent and the managed Xray
