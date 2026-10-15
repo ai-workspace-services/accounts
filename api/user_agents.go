@@ -39,6 +39,7 @@ type VlessNode struct {
 	Mode           string   `json:"mode,omitempty"`
 	Security       string   `json:"security,omitempty"`
 	Flow           string   `json:"flow,omitempty"`
+	ResourceClass  string   `json:"resource_class,omitempty"`
 	ServerName     string   `json:"server_name,omitempty"`
 	XHTTPPort      int      `json:"xhttp_port,omitempty"`
 	TCPPort        int      `json:"tcp_port,omitempty"`
@@ -121,8 +122,9 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		respondError(c, 403, "team_access_inactive", "team access is inactive")
 		return
 	}
-	pools := registeredRegionalPools(h.networkStatusReader(access), time.Now().UTC())
-	xhttpPath := envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath)
+	resourceClass := effectiveAgentResourceClass(access, user)
+	pools := regionalPoolsForUser(h.networkStatusReader(access), access, user, time.Now().UTC())
+	xhttpPath := poolXHTTPPath(envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), resourceClass)
 	xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
 	xhttpPort := envIntOrDefault("XRAY_XHTTP_PORT", defaultXHTTPPort)
 	tcpPort := envIntOrDefault("XRAY_TCP_PORT", defaultTCPPort)
@@ -137,23 +139,27 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 			continue
 		}
 		host := pool.Entry
-		nodeName := pool.Code
+		nodeName := pool.DisplayName
+		if strings.TrimSpace(nodeName) == "" {
+			nodeName = pool.Code
+		}
 		nodes = append(nodes, VlessNode{
-			Name:        nodeName,
-			Region:      pool.Code,
-			PoolCount:   pool.PoolCount,
-			OpenToUsers: true,
-			Address:     host,
-			Port:        xhttpPort,
-			Users:       users,
-			Transport:   "xhttp",
-			Path:        xhttpPath,
-			Mode:        xhttpMode,
-			Security:    "tls",
-			Flow:        defaultTCPFlow,
-			ServerName:  host,
-			XHTTPPort:   xhttpPort,
-			TCPPort:     tcpPort,
+			Name:          nodeName,
+			Region:        pool.Code,
+			PoolCount:     pool.PoolCount,
+			OpenToUsers:   true,
+			Address:       host,
+			Port:          xhttpPort,
+			Users:         users,
+			Transport:     "xhttp",
+			Path:          xhttpPath,
+			Mode:          xhttpMode,
+			Security:      "tls",
+			Flow:          defaultTCPFlow,
+			ResourceClass: resourceClass,
+			ServerName:    host,
+			XHTTPPort:     xhttpPort,
+			TCPPort:       tcpPort,
 			URISchemeXHTTP: renderVLESSURIScheme(xhttpScheme, map[string]string{
 				"UUID":   proxyUUID,
 				"DOMAIN": host,

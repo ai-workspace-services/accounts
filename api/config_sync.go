@@ -65,9 +65,11 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		return
 	}
 	scopedReader := h.networkStatusReader(access)
+	resourceClass := effectiveAgentResourceClass(access, user)
+	selectedPools := regionalPoolsForUser(scopedReader, access, user, time.Now().UTC())
 	teamHosts := []string{}
 	if access.Mode == "dedicated" {
-		for _, pool := range registeredRegionalPools(scopedReader, time.Now().UTC()) {
+		for _, pool := range selectedPools {
 			if pool.OpenToUsers {
 				teamHosts = append(teamHosts, pool.Entry)
 			}
@@ -102,7 +104,7 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	if changed {
 		var err error
 		if access.Mode == "dedicated" {
-			renderedJSON, digest, warnings, err = renderDedicatedClientConfig(user, teamHosts[0])
+			renderedJSON, digest, warnings, err = renderDedicatedClientConfig(user, teamHosts[0], poolXHTTPPath(envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), resourceClass))
 		} else {
 			renderedJSON, digest, warnings, err = h.renderUserXrayConfig(user)
 		}
@@ -128,29 +130,23 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	if changed {
 		proxyUUID := strings.TrimSpace(user.ProxyUUID)
 
-		// Collect only explicitly configured and registered proxy node hosts.
-		registeredHosts, registeredNames := registeredNodeMetadata(scopedReader)
-		hosts := parseProxyNodeHosts(registeredHosts)
-		if access.Mode == "personal" {
-			visible := make([]string, 0, len(hosts))
-			for _, host := range hosts {
-				if !h.reservedDedicatedHost(host) {
-					visible = append(visible, host)
-				}
-			}
-			hosts = visible
-		}
-		if access.Mode == "dedicated" {
-			hosts = teamHosts
-		}
-
-		xhttpPath := envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath)
+		// The entrypoint is sourced from the authenticated agent status report.
+		// Do not synthesize a static domain list: the same entrypoint can route
+		// free/plus/team traffic by the entitlement path.
+		xhttpPath := poolXHTTPPath(envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), resourceClass)
 		xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
 		xhttpScheme := xrayconfig.VLESSXHTTPScheme()
 
-		for _, host := range hosts {
-			nodeName := resolveNodeName(host, registeredNames)
-			countryCode := countryCodeForHost(host)
+		for _, pool := range selectedPools {
+			if !pool.OpenToUsers {
+				continue
+			}
+			host := pool.Entry
+			nodeName := pool.DisplayName
+			if strings.TrimSpace(nodeName) == "" {
+				nodeName = resolveNodeName(host, map[string]string{})
+			}
+			countryCode := pool.Code
 			nodeID := host
 			vlessURI := renderVLESSURIScheme(xhttpScheme, map[string]string{
 				"UUID":   proxyUUID,
@@ -164,19 +160,20 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 			})
 
 			profiles = append(profiles, gin.H{
-				"id":           nodeID,
-				"remark":       nodeName,
-				"display_name": nodeName,
-				"host":         host,
-				"address":      host,
-				"port":         443,
-				"uuid":         proxyUUID,
-				"flow":         "",
-				"transport":    "xhttp",
-				"security":     "tls",
-				"source":       "server",
-				"country_code": countryCode,
-				"vless_uri":    vlessURI,
+				"id":             nodeID,
+				"remark":         nodeName,
+				"display_name":   nodeName,
+				"host":           host,
+				"address":        host,
+				"port":           443,
+				"uuid":           proxyUUID,
+				"flow":           "",
+				"transport":      "xhttp",
+				"security":       "tls",
+				"source":         "server",
+				"country_code":   countryCode,
+				"resource_class": resourceClass,
+				"vless_uri":      vlessURI,
 			})
 			nodes = append(nodes, gin.H{
 				"id":               nodeID,
@@ -194,6 +191,7 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 				"flow":             "",
 				"source":           "server",
 				"country_code":     countryCode,
+				"resource_class":   resourceClass,
 				"updated_at":       updatedAt,
 				"vless_uri":        vlessURI,
 				"uri_scheme_xhttp": vlessURI,
@@ -312,14 +310,14 @@ func renderNetworkXrayConfig(user *store.User, domain string) (string, string, [
 
 // A team snapshot is a client configuration, with the sole proxy outbound
 // targeting an authorized team entry. It must never render the server template.
-func renderDedicatedClientConfig(user *store.User, host string) (string, string, []string, error) {
+func renderDedicatedClientConfig(user *store.User, host, path string) (string, string, []string, error) {
 	config := map[string]any{
 		"log":      map[string]any{"loglevel": "warning"},
 		"inbounds": []any{map[string]any{"listen": "127.0.0.1", "port": 1080, "protocol": "socks", "settings": map[string]any{"udp": true}}},
 		"outbounds": []any{map[string]any{
 			"tag": "proxy", "protocol": "vless",
 			"settings":       map[string]any{"vnext": []any{map[string]any{"address": host, "port": envIntOrDefault("XRAY_XHTTP_PORT", defaultXHTTPPort), "users": []any{map[string]any{"id": user.ProxyUUID, "encryption": "none"}}}}},
-			"streamSettings": map[string]any{"network": "xhttp", "security": "tls", "tlsSettings": map[string]any{"serverName": host, "fingerprint": defaultTLSFP}, "xhttpSettings": map[string]any{"path": envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), "mode": envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)}},
+			"streamSettings": map[string]any{"network": "xhttp", "security": "tls", "tlsSettings": map[string]any{"serverName": host, "fingerprint": defaultTLSFP}, "xhttpSettings": map[string]any{"path": path, "mode": envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)}},
 		}},
 	}
 	buf, err := json.Marshal(config)
