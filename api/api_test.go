@@ -823,7 +823,7 @@ func TestSyncConfigSnapshotReturnsRenderedJSON(t *testing.T) {
 	}
 }
 
-func TestSyncConfigSnapshotAllowsSelectedFreeUserAtQuotaLimit(t *testing.T) {
+func TestSyncConfigSnapshotPausesSelectedFreeUserAtQuotaLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	ctx := context.Background()
@@ -870,12 +870,8 @@ func TestSyncConfigSnapshotAllowsSelectedFreeUserAtQuotaLimit(t *testing.T) {
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected exhausted selected free user to sync, got %d: %s", rr.Code, rr.Body.String())
-	}
-	resp := decodeSyncConfigResponse(t, rr)
-	if !resp.Changed || resp.RenderedJSON == "" || resp.Digest != "quota-sync-digest" {
-		t.Fatalf("expected usable config at zero quota, got %#v", resp)
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "quota_exhausted") {
+		t.Fatalf("expected exhausted selected free user to pause sync, got %d: %s", rr.Code, rr.Body.String())
 	}
 	if _, err := st.GetUserByID(ctx, user.ID); err != nil {
 		t.Fatalf("expected selected free user to remain stored: %v", err)

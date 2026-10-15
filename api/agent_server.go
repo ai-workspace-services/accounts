@@ -127,6 +127,11 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		}
 		email := strings.ToLower(strings.TrimSpace(u.Email))
 
+		if exhausted, err := h.quotaExhaustedForUser(ctx, &u); err != nil {
+			return nil, "", err
+		} else if exhausted {
+			continue
+		}
 		// Sandbox is a special demo identity with expiring access metadata.
 		// Its client ID remains the canonical account UUID across every node.
 		// It is exempt from the arrears suspension filter below for the same

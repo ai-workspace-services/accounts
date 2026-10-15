@@ -121,7 +121,7 @@ func TestAgentUsersExcludeOperatorPausedVLESSAccess(t *testing.T) {
 	}
 }
 
-func TestAgentUsersIncludeExhaustedMonthlyQuota(t *testing.T) {
+func TestAgentUsersWithholdExhaustedQuotaWithoutDeletingAccounts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	st := store.NewMemoryStore()
 	ctx := context.Background()
@@ -226,11 +226,11 @@ func TestAgentUsersIncludeExhaustedMonthlyQuota(t *testing.T) {
 	if strings.Contains(body, unverified.ProxyUUID) || strings.Contains(body, inactive.ProxyUUID) {
 		t.Fatalf("unverified or inactive client leaked into agent config: %s", body)
 	}
-	if !strings.Contains(body, exhausted.ProxyUUID) {
-		t.Fatalf("quota-exhausted free client was removed from agent config: %s", body)
+	if strings.Contains(body, exhausted.ProxyUUID) {
+		t.Fatalf("quota-exhausted free client leaked into agent config: %s", body)
 	}
-	if !strings.Contains(body, plusExhausted.ProxyUUID) {
-		t.Fatalf("quota-exhausted plus client was removed from agent config: %s", body)
+	if strings.Contains(body, plusExhausted.ProxyUUID) {
+		t.Fatalf("quota-exhausted plus client without override leaked into agent config: %s", body)
 	}
 	if !strings.Contains(body, internalBeta.ProxyUUID) {
 		t.Fatalf("unlimited internal beta client was removed: %s", body)

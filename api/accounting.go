@@ -45,6 +45,10 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if err := h.ensureFreeQuotaPeriod(c.Request.Context(), user, time.Now().UTC()); err != nil {
+		respondError(c, 503, "quota_unavailable", "failed to reconcile quota period")
+		return
+	}
 	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, time.Time{}, time.Time{})
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "usage_summary_unavailable", "failed to load usage summary")
@@ -105,6 +109,10 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 
 	quotaExhausted := billingProfile != nil &&
 		store.IsMonthlyQuotaLimitMember(user) && remainingQuota <= 0
+	if store.HasSubscriptionUnlimitedOverride(user, time.Now()) && planContract.CurrentPlan != nil {
+		planContract.CurrentPlan.Unlimited = true
+		planContract.CurrentPlan.Source = "temporary_subscription_override"
+	}
 	networkAccessState := "active"
 	networkAccessReason := ""
 	switch {
@@ -145,6 +153,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		"suspendState":         suspendState,
 		"throttleState":        throttleState,
 		"quotaExhausted":       quotaExhausted,
+		"temporaryUnlimited":   store.HasSubscriptionUnlimitedOverride(user, time.Now()),
 		"networkAccessState":   networkAccessState,
 		"networkAccessReason":  networkAccessReason,
 		"arrears":              arrears,

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,47 @@ import (
 // Commercial subscription facts are stored in PostgreSQL; the browser only
 // submits CSV and displays the preview. Entitlements and records commit together.
 func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, reconcile bool) ([]adminPlanGroupUpdate, error) {
+	updates, err := h.subscriptionCSVUpdatesValidated(ctx, source, reconcile)
+	if err == nil || len(source) > 2*1024*1024 {
+		return updates, err
+	}
+	reader := csv.NewReader(strings.NewReader(strings.TrimPrefix(source, "\uFEFF")))
+	reader.TrimLeadingSpace = true
+	rows, parseErr := reader.ReadAll()
+	if parseErr != nil || len(rows) < 2 || len(rows) > maxAdminPlanGroupBatch+1 {
+		return nil, err
+	}
+	issues := []string{}
+	seen := map[string]bool{}
+	emailColumn := -1
+	for i, header := range rows[0] {
+		if strings.EqualFold(strings.TrimSpace(header), "email") || strings.TrimSpace(header) == "邮箱" {
+			emailColumn = i
+		}
+	}
+	for i, row := range rows[1:] {
+		var body bytes.Buffer
+		writer := csv.NewWriter(&body)
+		_ = writer.WriteAll([][]string{rows[0], row})
+		if emailColumn >= 0 && emailColumn < len(row) {
+			email := strings.ToLower(strings.TrimSpace(row[emailColumn]))
+			if seen[email] {
+				issues = append(issues, fmt.Sprintf("row %d: duplicate email %s", i+2, email))
+				continue
+			}
+			seen[email] = true
+		}
+		if _, rowErr := h.subscriptionCSVUpdatesValidated(ctx, body.String(), false); rowErr != nil {
+			issues = append(issues, fmt.Sprintf("row %d: %s", i+2, strings.TrimPrefix(rowErr.Error(), "row 2: ")))
+		}
+	}
+	if len(issues) > 0 {
+		return nil, errors.New(strings.Join(issues, "\n"))
+	}
+	return nil, err
+}
+
+func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source string, reconcile bool) ([]adminPlanGroupUpdate, error) {
 	if len(source) > 2*1024*1024 {
 		return nil, errors.New("CSV exceeds 2 MiB")
 	}
@@ -31,12 +73,21 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 	}
 	headers := map[string]int{}
 	for i, header := range rows[0] {
-		headers[strings.ToLower(strings.TrimSpace(header))] = i
+		key := strings.ToLower(strings.TrimSpace(header))
+		if _, exists := headers[key]; exists {
+			return nil, fmt.Errorf("duplicate CSV column: %s", key)
+		}
+		headers[key] = i
 	}
 	cell := func(row []string, names ...string) string {
 		for _, name := range names {
 			if index, ok := headers[name]; ok && index < len(row) {
-				return strings.TrimSpace(row[index])
+				value := strings.TrimSpace(row[index])
+				// Reverse only our formula-escape prefix, never arbitrary apostrophes.
+				if escaped := strings.TrimLeft(strings.TrimPrefix(value, "'"), " \t\r\n"); strings.HasPrefix(value, "'") && len(escaped) > 0 && strings.ContainsRune("=+-@", rune(escaped[0])) {
+					value = value[1:]
+				}
+				return value
 			}
 		}
 		return ""
@@ -77,7 +128,7 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 			return nil, fmt.Errorf("row %d: existing user was not found", line+2)
 		}
 		if h.isRootAccount(&user) {
-			continue
+			return nil, fmt.Errorf("row %d: root account cannot be imported", line+2)
 		}
 		if seen[user.ID] {
 			return nil, fmt.Errorf("row %d: duplicate user", line+2)
@@ -93,6 +144,25 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 		until, err := subscriptionImportDate(cell(row, "订阅结束", "subscription end", "valid_until"))
 		if err != nil || from != nil && until != nil && until.Before(*from) {
 			return nil, fmt.Errorf("row %d: invalid end date", line+2)
+		}
+		existing, recordErr := h.store.GetSubscriptionRecord(ctx, user.ID)
+		if recordErr != nil && !errors.Is(recordErr, store.ErrUserNotFound) {
+			return nil, recordErr
+		}
+		if from == nil {
+			from = user.SubscriptionValidFrom
+			if existing != nil && existing.ValidFrom != nil {
+				from = existing.ValidFrom
+			}
+		}
+		if until == nil {
+			until = user.SubscriptionValidUntil
+			if existing != nil && existing.ValidUntil != nil {
+				until = existing.ValidUntil
+			}
+		}
+		if from != nil && until != nil && until.Before(*from) {
+			return nil, fmt.Errorf("row %d: invalid merged validity", line+2)
 		}
 		monthly, err := subscriptionImportBytes(cell(row, "月配额", "monthly quota", "monthly_quota_bytes"))
 		if err != nil {
@@ -112,6 +182,31 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 			return nil, fmt.Errorf("row %d: invalid fee", line+2)
 		}
 		payment := strings.ToLower(cell(row, "付费状态", "paid status", "payment_status"))
+		kind := strings.ToLower(cell(row, "订阅类型", "subscription type", "subscription_type"))
+		note := cell(row, "备注", "note")
+		if existing != nil {
+			if kind == "" {
+				kind = existing.SubscriptionType
+			}
+			if payment == "" {
+				payment = existing.PaymentStatus
+			}
+			if note == "" {
+				note = existing.Note
+			}
+			if cell(row, "月配额", "monthly quota", "monthly_quota_bytes") == "" {
+				monthly = existing.MonthlyQuotaBytes
+			}
+			if cell(row, "年配额", "annual quota", "annual_quota_bytes") == "" {
+				annual = existing.AnnualQuotaBytes
+			}
+			if feeText == "" {
+				fee = existing.FeeMinor
+			}
+		}
+		if kind != "" && kind != "month" && kind != "year" && kind != "payg" {
+			return nil, fmt.Errorf("row %d: invalid subscription type", line+2)
+		}
 		plan := strings.ToUpper(cell(row, "plan", "套餐"))
 		paid := payment == "已付费" || payment == "paid" || payment == "已支付"
 		if plan == "" {
@@ -128,7 +223,7 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 		if until != nil && until.Before(now.Truncate(24*time.Hour)) || from != nil && from.After(now) {
 			plan = store.BillingPlanFree
 		}
-		record := &store.SubscriptionRecord{UserID: user.ID, SubscriptionType: cell(row, "订阅类型", "subscription type", "subscription_type"), MonthlyQuotaBytes: monthly, AnnualQuotaBytes: annual, FeeMinor: fee, PaymentStatus: payment, Note: cell(row, "备注", "note"), ValidFrom: from, ValidUntil: until}
+		record := &store.SubscriptionRecord{UserID: user.ID, SubscriptionType: kind, MonthlyQuotaBytes: monthly, AnnualQuotaBytes: annual, FeeMinor: fee, PaymentStatus: payment, Note: note, ValidFrom: from, ValidUntil: until}
 		start, _ := json.Marshal(adminPlanDateString(from))
 		end, _ := json.Marshal(adminPlanDateString(until))
 		if from == nil {
@@ -147,7 +242,9 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 			if seen[user.ID] || h.isRootAccount(&user) || isTeamSubscriptionUser(user.Groups) {
 				continue
 			}
-			updates = append(updates, adminPlanGroupUpdate{UserID: user.ID, PlanID: store.BillingPlanFree, ValidFrom: json.RawMessage("null"), ValidUntil: json.RawMessage("null"), SubscriptionRecord: &store.SubscriptionRecord{UserID: user.ID, PaymentStatus: "unpaid"}})
+			// Removing membership is reversible: retain historical commercial facts,
+			// validity and payment records. Only the effective plan/cohort changes.
+			updates = append(updates, adminPlanGroupUpdate{UserID: user.ID, PlanID: store.BillingPlanFree})
 		}
 	}
 	return updates, nil
@@ -227,12 +324,18 @@ func (h *handler) adminListSubscriptionRecords(c *gin.Context) {
 	var body bytes.Buffer
 	body.WriteString("\uFEFF")
 	writer := csv.NewWriter(&body)
-	_ = writer.Write([]string{"email", "username", "plan", "subscription_type", "monthly_quota_bytes", "annual_quota_bytes", "fee_minor", "payment_status", "valid_from", "valid_until", "note"})
+	_ = writer.Write([]string{"email", "username", "plan", "subscription_type", "monthly_quota_bytes", "annual_quota_bytes", "fee_minor", "payment_status", "valid_from", "valid_until", "note", "temporary_unlimited"})
 	for _, user := range users {
 		if h.isRootAccount(&user) || isTeamSubscriptionUser(user.Groups) {
 			continue
 		}
-		record := byID[user.ID]
+		record, exists := byID[user.ID]
+		if !exists {
+			continue
+		}
+		if !slices.Contains(user.Groups, store.SubscriptionListedGroup) && c.Query("includeHistory") != "true" {
+			continue
+		}
 		profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID)
 		if err != nil && !errors.Is(err, store.ErrUserNotFound) {
 			respondError(c, 500, "billing_profile_unavailable", "failed to load account plan")
@@ -242,7 +345,7 @@ func (h *handler) adminListSubscriptionRecords(c *gin.Context) {
 		if plan == "" {
 			plan = store.BillingPlanFree
 		}
-		_ = writer.Write([]string{exportCSVCell(user.Email), exportCSVCell(user.Name), plan, exportCSVCell(record.SubscriptionType), strconv.FormatInt(record.MonthlyQuotaBytes, 10), strconv.FormatInt(record.AnnualQuotaBytes, 10), strconv.FormatInt(record.FeeMinor, 10), exportCSVCell(record.PaymentStatus), subscriptionCSVDate(record.ValidFrom), subscriptionCSVDate(record.ValidUntil), exportCSVCell(record.Note)})
+		_ = writer.Write([]string{exportCSVCell(user.Email), exportCSVCell(user.Name), plan, exportCSVCell(record.SubscriptionType), strconv.FormatInt(record.MonthlyQuotaBytes, 10), strconv.FormatInt(record.AnnualQuotaBytes, 10), strconv.FormatInt(record.FeeMinor, 10), exportCSVCell(record.PaymentStatus), subscriptionCSVDate(record.ValidFrom), subscriptionCSVDate(record.ValidUntil), exportCSVCell(record.Note), strconv.FormatBool(store.HasSubscriptionUnlimitedOverride(&user, time.Now()))})
 	}
 	writer.Flush()
 	if writer.Error() != nil {

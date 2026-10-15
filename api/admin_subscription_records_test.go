@@ -57,7 +57,7 @@ func TestSubscriptionCSVEmailUpsertPreviewReplayAndExport(t *testing.T) {
 	apply(source, "first")
 	apply(source, "second-upload")
 	records, err := st.ListSubscriptionRecords(ctx)
-	if err != nil || len(records) != 2 {
+	if err != nil || len(records) != 1 {
 		t.Fatalf("one row per non-root personal account: %d %v", len(records), err)
 	}
 	record, err := st.GetSubscriptionRecord(ctx, target.ID)

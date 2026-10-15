@@ -3454,7 +3454,8 @@ func (h *handler) oauthCallback(c *gin.Context) {
 }
 
 func (h *handler) listUsers(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminUsersListRead); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminUsersListRead)
+	if !ok {
 		return
 	}
 
@@ -3465,6 +3466,17 @@ func (h *handler) listUsers(c *gin.Context) {
 	}
 
 	sanitized := make([]gin.H, 0, len(users))
+	recordsByID := map[string]store.SubscriptionRecord{}
+	if store.IsRootRole(actor.Role) {
+		records, err := h.store.ListSubscriptionRecords(c.Request.Context())
+		if err != nil {
+			respondError(c, 503, "subscription_records_unavailable", "failed to load subscription records")
+			return
+		}
+		for _, record := range records {
+			recordsByID[record.UserID] = record
+		}
+	}
 	for _, u := range users {
 		if err := h.archiveInactiveFreeUser(c.Request.Context(), &u); err != nil {
 			respondError(c, http.StatusInternalServerError, "user_archive_failed", "failed to archive inactive user")
@@ -3474,7 +3486,12 @@ func (h *handler) listUsers(c *gin.Context) {
 			respondError(c, http.StatusInternalServerError, "user_downgrade_failed", "failed to apply expired subscription downgrade")
 			return
 		}
-		sanitized = append(sanitized, sanitizeUser(&u, nil))
+		payload := sanitizeUser(&u, nil)
+		payload["temporaryUnlimited"] = store.HasSubscriptionUnlimitedOverride(&u, time.Now())
+		if record, exists := recordsByID[u.ID]; exists {
+			payload["subscriptionRecord"] = record
+		}
+		sanitized = append(sanitized, payload)
 	}
 
 	c.JSON(http.StatusOK, sanitized)
@@ -3575,6 +3592,10 @@ func (h *handler) updateUserGroups(c *gin.Context) {
 		return
 	}
 	currentPlanGroup := store.MonthlyQuotaGroup(user)
+	if err := h.validateSubscriptionOverride(c.Request.Context(), actor, user, req.Groups); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_subscription_override", err.Error())
+		return
+	}
 	for _, requested := range req.Groups {
 		if isMonthlyQuotaGroup(requested) && strings.TrimSpace(requested) != currentPlanGroup {
 			respondError(c, http.StatusBadRequest, "plan_group_requires_plan_id", "managed quota groups must be changed through plan-group operations")

@@ -379,7 +379,7 @@ func TestMissingStripePeriodGetsOnlyBoundedRetryWindow(t *testing.T) {
 	}
 }
 
-func TestAgentClientListPreservesAccessAfterOverQuotaDowngrade(t *testing.T) {
+func TestAgentClientListPausesAccessAfterOverQuotaDowngrade(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemoryStore()
 	user := seedActiveUser(t, st, "Immediate Cutoff", "immediate-cutoff@example.com", "proxy-immediate-cutoff")
@@ -412,8 +412,8 @@ func TestAgentClientListPreservesAccessAfterOverQuotaDowngrade(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatal("newly downgraded over-quota user must remain authorized")
+	if found {
+		t.Fatal("newly downgraded over-quota user must pause configuration delivery")
 	}
 	quota, _ := st.GetAccountQuotaState(ctx, user.ID)
 	if quota.RemainingIncludedQuota != -16*(1<<30) {

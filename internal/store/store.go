@@ -49,6 +49,9 @@ const (
 	MonthlyFreeQuotaLimitGroup     = "segment:quota:free-3gb"
 	MonthlyPlusQuotaLimitGroup     = "segment:quota:plus-20gb"
 	MonthlyUnlimitedBetaQuotaGroup = "segment:quota:unlimited-beta"
+	// Independent, reversible operator override. Never replaces the paid plan.
+	SubscriptionUnlimitedOverrideGroup = "segment:subscription:unlimited"
+	SubscriptionListedGroup            = "segment:subscription:listed"
 )
 
 var monthlyQuotaGroups = [...]string{
@@ -76,8 +79,38 @@ func IsMonthlyFreeQuotaLimitMember(user *User) bool {
 }
 
 func IsMonthlyQuotaLimitMember(user *User) bool {
+	if HasSubscriptionUnlimitedOverride(user, time.Now()) {
+		return false
+	}
 	group := MonthlyQuotaGroup(user)
 	return group == MonthlyFreeQuotaLimitGroup || group == MonthlyPlusQuotaLimitGroup
+}
+
+func HasSubscriptionUnlimitedOverride(user *User, now time.Time) bool {
+	if user == nil || !user.Active || user.ArchivedAt != nil {
+		return false
+	}
+	if user.SubscriptionValidFrom != nil && now.Before(*user.SubscriptionValidFrom) {
+		return false
+	}
+	if user.SubscriptionValidUntil != nil {
+		end := user.SubscriptionValidUntil.UTC()
+		if !now.UTC().Before(time.Date(end.Year(), end.Month(), end.Day()+1, 0, 0, 0, 0, time.UTC)) {
+			return false
+		}
+	}
+	var override, recurring, listed bool
+	for _, group := range user.Groups {
+		switch group {
+		case SubscriptionUnlimitedOverrideGroup:
+			override = true
+		case SubscriptionListedGroup:
+			listed = true
+		case "segment:monthly", "segment:yearly", "segment:subscription:monthly", "segment:subscription:yearly":
+			recurring = true
+		}
+	}
+	return listed && override && recurring && MonthlyQuotaGroup(user) == MonthlyPlusQuotaLimitGroup
 }
 
 // Subscription represents a recurring or usage-based billing relationship.
@@ -670,6 +703,7 @@ type Store interface {
 	ListBillingLedgerByAccount(ctx context.Context, accountUUID string, limit int) ([]BillingLedgerEntry, error)
 	UpsertAccountQuotaState(ctx context.Context, state *AccountQuotaState) error
 	GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error)
+	ResetFreeQuotaPeriod(ctx context.Context, accountUUID string, start, end, now time.Time) error
 	// ListSuspendedAccountUUIDs returns the set of accounts currently
 	// suspend_state='suspended', so agent/xray sync endpoints can drop them
 	// in one batched lookup instead of a per-user quota-state query.

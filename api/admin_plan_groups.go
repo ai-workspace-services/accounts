@@ -174,6 +174,10 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 				}
 			}
 			groups := normalizeGroups(*update.Groups)
+			if err := h.validateSubscriptionOverride(ctx, actor, user, groups); err != nil {
+				respondError(c, http.StatusBadRequest, "invalid_subscription_override", err.Error())
+				return
+			}
 			if currentPlanGroup != "" {
 				groups = replaceMonthlyQuotaGroup(groups, currentPlanGroup)
 			}
@@ -235,6 +239,17 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			PricingRuleVersion: fmt.Sprintf("plan:%s", plan.PlanID),
 		}
 		change.SubscriptionRecord = update.SubscriptionRecord
+		if planID == store.BillingPlanFree {
+			labels := make([]string, 0, len(change.Groups)+1)
+			for _, label := range change.Groups {
+				switch label {
+				case store.SubscriptionListedGroup, store.SubscriptionUnlimitedOverrideGroup, "segment:subscribed", "segment:monthly", "segment:yearly", "segment:subscription:monthly", "segment:subscription:yearly":
+					continue
+				}
+				labels = append(labels, label)
+			}
+			change.Groups = normalizeGroups(append(labels, "segment:free"))
+		}
 		if record := change.SubscriptionRecord; record != nil {
 			labels := make([]string, 0, len(change.Groups)+2)
 			for _, label := range change.Groups {
@@ -247,12 +262,15 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			if planID == store.BillingPlanFree {
 				labels = append(labels, "segment:free")
 			} else {
-				labels = append(labels, "segment:subscribed")
+				labels = append(labels, "segment:subscribed", store.SubscriptionListedGroup)
 				switch record.SubscriptionType {
 				case "year":
 					labels = append(labels, "segment:yearly")
 				case "month":
 					labels = append(labels, "segment:monthly")
+				}
+				if enabled, _ := plan.Features["temporary_subscription_unlimited"].(bool); enabled && (record.SubscriptionType == "month" || record.SubscriptionType == "year") {
+					labels = append(labels, store.SubscriptionUnlimitedOverrideGroup)
 				}
 			}
 			change.Groups = labels
@@ -298,7 +316,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			After: gin.H{"groups": change.Groups, "validFrom": adminPlanDateString(desiredFrom), "validUntil": adminPlanDateString(desiredUntil),
 				"includedQuotaBytes": change.IncludedQuotaBytes, "subscriptionRecord": change.SubscriptionRecord},
 			UsedBytesPreserved: change.UsedBytesPreserved, RemainingIncludedQuota: change.RemainingAfter,
-			ConfigurationSyncWillPause: change.IncludedQuotaBytes > 0 && change.RemainingAfter == 0,
+			ConfigurationSyncWillPause: planChangeQuotaPaused(change),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"mode": "preview", "requestId": requestID, "previewToken": previewToken,
@@ -318,7 +336,7 @@ func (h *handler) applyAdminPlanGroupPreview(c *gin.Context, actorID, reason, re
 	for _, change := range changes {
 		rows = append(rows, adminPlanGroupPreviewRow{UserID: change.UserID, PlanID: change.PlanID, Groups: change.Groups,
 			UsedBytesPreserved: change.UsedBytesPreserved, RemainingIncludedQuota: change.RemainingAfter,
-			ConfigurationSyncWillPause: change.IncludedQuotaBytes > 0 && change.RemainingAfter == 0})
+			ConfigurationSyncWillPause: planChangeQuotaPaused(change)})
 	}
 	c.JSON(http.StatusOK, gin.H{"mode": "applied", "requestId": requestID, "replayed": replayed, "changes": rows})
 }
