@@ -151,7 +151,7 @@ func TestAgentUsersIncludeExhaustedMonthlyQuota(t *testing.T) {
 		t.Fatalf("set exhausted quota: %v", err)
 	}
 	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
-		AccountUUID: exhausted.ID, PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024,
+		AccountUUID: exhausted.ID, PackageName: "free", IncludedQuotaBytes: 3 * 1024 * 1024 * 1024,
 	}); err != nil {
 		t.Fatalf("set exhausted billing profile: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestAgentUsersIncludeExhaustedMonthlyQuota(t *testing.T) {
 		t.Fatalf("set internal beta quota: %v", err)
 	}
 	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
-		AccountUUID: internalBeta.ID, PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024,
+		AccountUUID: internalBeta.ID, PackageName: "free", IncludedQuotaBytes: 3 * 1024 * 1024 * 1024,
 	}); err != nil {
 		t.Fatalf("set internal beta billing profile: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestAgentUsersIncludeExhaustedMonthlyQuota(t *testing.T) {
 		t.Fatalf("set unselected quota: %v", err)
 	}
 	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
-		AccountUUID: unselected.ID, PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024,
+		AccountUUID: unselected.ID, PackageName: "free", IncludedQuotaBytes: 3 * 1024 * 1024 * 1024,
 	}); err != nil {
 		t.Fatalf("set unselected billing profile: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestAgentUsersIncludeExhaustedMonthlyQuota(t *testing.T) {
 	if !access.QuotaExhausted || access.NetworkAccessState != "active" || access.NetworkAccessReason != "" {
 		t.Fatalf("unexpected exhausted access state: %+v", access)
 	}
-	if access.IncludedQuotaBytes != 5<<30 || access.RemainingQuota != 0 || access.UsedBytes != 5<<30 {
+	if access.IncludedQuotaBytes != 3<<30 || access.RemainingQuota != 0 || access.UsedBytes != 3<<30 {
 		t.Fatalf("quota statistics must remain intact: %+v", access)
 	}
 	if persisted, err := st.GetUserByID(ctx, exhausted.ID); err != nil || persisted.Email != exhausted.Email {
@@ -589,7 +589,7 @@ func TestAccountUsageSummaryKeepsLegacyAccountUnassigned(t *testing.T) {
 	}
 	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{
 		PlanID: store.BillingPlanFree, DisplayName: "Free", Kind: "subscription",
-		PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, Active: true,
+		PackageName: "free", IncludedQuotaBytes: 3 * 1024 * 1024 * 1024, Active: true,
 	}); err != nil {
 		t.Fatalf("seed free plan: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestAccountUsageSummaryKeepsLegacyAccountUnassigned(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode usage summary: %v", err)
 	}
-	const freeQuota = int64(5 * 1024 * 1024 * 1024)
+	const freeQuota = int64(3 * 1024 * 1024 * 1024)
 	if payload.IncludedQuotaBytes != 0 || payload.RemainingIncludedQuota != 0 {
 		t.Fatalf("legacy account must remain unassigned, got included=%d remaining=%d", payload.IncludedQuotaBytes, payload.RemainingIncludedQuota)
 	}
@@ -637,7 +637,7 @@ func TestAccountUsageSummaryKeepsLegacyAccountUnassigned(t *testing.T) {
 		t.Fatalf("expected an unassigned legacy account, status=%q current=%+v", payload.PlanAssignmentStatus, payload.CurrentPlan)
 	}
 	if payload.DefaultPlan == nil || payload.DefaultPlan.PlanID != store.BillingPlanFree || payload.DefaultPlan.MaxTrafficBytes != freeQuota || payload.DefaultPlan.Assigned {
-		t.Fatalf("expected Free 5GiB to be reference-only default plan, got %+v", payload.DefaultPlan)
+		t.Fatalf("expected Free 3GiB to be reference-only default plan, got %+v", payload.DefaultPlan)
 	}
 	if _, err := st.GetAccountBillingProfile(ctx, user.ID); err == nil {
 		t.Fatal("usage GET must not create a billing profile for a legacy account")

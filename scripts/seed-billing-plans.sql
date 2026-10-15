@@ -27,8 +27,8 @@ INSERT INTO billing_plans
    package_name, price_amount, price_currency, price_unit,
    price_multipliers, features, trial_days, active, sort_order)
 VALUES
-  -- free：每个自然月 5GB。新用户默认进入此档，存量用户不在种子中迁移。
-  ('FREE', NULL, 'Free', 'subscription', 5368709120,
+  -- free：每个自然月 3GB。新用户默认进入此档，存量用户不在种子中迁移。
+  ('FREE', NULL, 'Free', 'subscription', 3221225472,
    'free',
    0, '', '',
    '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,

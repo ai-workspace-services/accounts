@@ -3396,3 +3396,26 @@ ALTER TABLE public.password_recovery_challenges ENABLE ROW LEVEL SECURITY;
 --
 -- PostgreSQL database dump complete
 --
+
+CREATE TABLE public.subscription_records (
+    user_uuid uuid NOT NULL,
+    subscription_type text DEFAULT ''::text NOT NULL,
+    monthly_quota_bytes bigint DEFAULT 0 NOT NULL,
+    annual_quota_bytes bigint DEFAULT 0 NOT NULL,
+    fee_minor bigint DEFAULT 0 NOT NULL,
+    payment_status text DEFAULT ''::text NOT NULL,
+    note text DEFAULT ''::text NOT NULL,
+    valid_from timestamp with time zone,
+    valid_until timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT subscription_records_monthly_quota_bytes_check CHECK ((monthly_quota_bytes >= 0)),
+    CONSTRAINT subscription_records_annual_quota_bytes_check CHECK ((annual_quota_bytes >= 0)),
+    CONSTRAINT subscription_records_fee_minor_check CHECK ((fee_minor >= 0)),
+    CONSTRAINT subscription_records_validity_ck CHECK (((valid_until IS NULL) OR (valid_from IS NULL) OR (valid_until >= valid_from)))
+);
+
+ALTER TABLE ONLY public.subscription_records
+    ADD CONSTRAINT subscription_records_pkey PRIMARY KEY (user_uuid);
+ALTER TABLE ONLY public.subscription_records
+    ADD CONSTRAINT subscription_records_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE CASCADE;
+CREATE INDEX subscription_records_validity_idx ON public.subscription_records USING btree (valid_until);

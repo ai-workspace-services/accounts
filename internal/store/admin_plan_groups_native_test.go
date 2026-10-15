@@ -60,6 +60,7 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	change := AdminPlanGroupChange{UserID: id, PlanID: BillingPlanPlus, SetEntitlement: true, ExpectedGroups: user.Groups, Groups: []string{MonthlyPlusQuotaLimitGroup}, PackageName: "plus", IncludedQuotaBytes: 20 * gib, RegionMultiplier: 1, LineMultiplier: 1, PeakMultiplier: 1, OffPeakMultiplier: 1, PricingRuleVersion: "plan:PLUS"}
+	change.SubscriptionRecord = &SubscriptionRecord{UserID: id, SubscriptionType: "year", MonthlyQuotaBytes: 20 * gib, AnnualQuotaBytes: 240 * gib, FeeMinor: 20000, PaymentStatus: "paid", Note: "persisted import"}
 	preview := AdminPlanGroupPreview{ActorUUID: id, Reason: "native schema regression", RequestID: "native-quota", TokenHash: "native-token", ExpiresAt: time.Now().UTC().Add(time.Minute), Changes: []AdminPlanGroupChange{change}}
 	changes, err := st.CreateAdminPlanGroupPreview(ctx, preview)
 	if err != nil {
@@ -75,6 +76,38 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 	quota, err := st.GetAccountQuotaState(ctx, id)
 	if err != nil || quota.RemainingIncludedQuota != 16*gib {
 		t.Fatalf("quota=%+v err=%v", quota, err)
+	}
+	// The same request replays without creating another row or granting quota.
+	if _, replayed, err := st.ApplyAdminPlanGroupBatch(ctx, batch); err != nil || !replayed {
+		t.Fatalf("idempotent replay failed: %v %v", replayed, err)
+	}
+	reopened := &postgresStore{db: db}
+	record, err := reopened.GetSubscriptionRecord(ctx, id)
+	if err != nil || record.FeeMinor != 20000 || record.Note != "persisted import" {
+		t.Fatalf("record not durable: %+v %v", record, err)
+	}
+	rows, err := reopened.ListSubscriptionRecords(ctx)
+	if err != nil || len(rows) != 1 {
+		t.Fatal("replay duplicated subscription record")
+	}
+	rollback := change
+	rollback.ExpectedGroups = change.Groups
+	rollback.Groups = []string{MonthlyFreeQuotaLimitGroup}
+	rollback.PlanID = BillingPlanFree
+	rollback.IncludedQuotaBytes = 3 * gib
+	rollback.SubscriptionRecord = &SubscriptionRecord{UserID: id, FeeMinor: -1}
+	rollbackPreview := AdminPlanGroupPreview{ActorUUID: id, Reason: "atomic failure", RequestID: "atomic-failure", TokenHash: "atomic-failure", ExpiresAt: time.Now().Add(time.Minute), Changes: []AdminPlanGroupChange{rollback}}
+	if _, err := st.CreateAdminPlanGroupPreview(ctx, rollbackPreview); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := st.ApplyAdminPlanGroupBatch(ctx, AdminPlanGroupBatch{ActorUUID: id, Reason: "atomic failure", RequestID: "atomic-failure", PreviewTokenHash: "atomic-failure"}); err == nil {
+		t.Fatal("invalid record didn't rollback transaction")
+	}
+	current, _ := st.GetUserByID(ctx, id)
+	record, _ = st.GetSubscriptionRecord(ctx, id)
+	quota, _ = st.GetAccountQuotaState(ctx, id)
+	if MonthlyQuotaGroup(current) != MonthlyPlusQuotaLimitGroup || record.FeeMinor != 20000 || quota.RemainingIncludedQuota != 16*gib {
+		t.Fatal("record constraint failure partially updated account")
 	}
 	// Native users have no legacy subscription dates: reject unsupported mutation.
 	change.ExpectedGroups = change.Groups
@@ -115,4 +148,36 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 	if !admin {
 		t.Fatal("failed audit did not roll back team administrator revocation")
 	}
+	free := &User{Name: "free-migration", Email: "free-migration@example.invalid", Role: RoleUser, Groups: []string{"segment:quota:free-5gb"}, ProxyUUID: uuid.NewString(), Active: true}
+	if err := st.CreateUser(ctx, free); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &AccountBillingProfile{AccountUUID: free.ID, PackageName: "free", IncludedQuotaBytes: 5 * gib, PricingRuleVersion: "plan:FREE"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &AccountQuotaState{AccountUUID: free.ID, RemainingIncludedQuota: 2 * gib, PeriodStart: &start, PeriodEnd: &end, EffectiveAt: start}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		for _, name := range []string{"2026101501_free_quota_3gb.up.sql", "2026101502_subscription_records.up.sql"} {
+			body, err := os.ReadFile("../../sql/migrations/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(ctx, string(body)); err != nil {
+				t.Fatalf("migration %s: %v", name, err)
+			}
+		}
+	}
+	freeState, _ := st.GetAccountQuotaState(ctx, free.ID)
+	freeProfile, _ := st.GetAccountBillingProfile(ctx, free.ID)
+	freeStored, _ := st.GetUserByID(ctx, free.ID)
+	if freeState.RemainingIncludedQuota != 0 || freeProfile.IncludedQuotaBytes != 3*gib || MonthlyQuotaGroup(freeStored) != MonthlyFreeQuotaLimitGroup {
+		t.Fatal("free migration didn't preserve consumed quota or migrate the group")
+	}
+	rows, _ = st.ListSubscriptionRecords(ctx)
+	if len(rows) != 1 {
+		t.Fatal("reapplied migration lost subscription records")
+	}
+
 }

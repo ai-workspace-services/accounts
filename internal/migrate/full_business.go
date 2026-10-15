@@ -21,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const FullBusinessVersion = 2026101301
+const FullBusinessVersion = 2026101502
 const FullBusinessBillingSHA256 = "a7133f3ef2ea9013a055cfd1442a7488d2b837f289e0f5d9b61624d4fde9bc53"
 const fullBusinessBatch = 1000
 
@@ -114,7 +114,7 @@ type CoreUsersDiff struct {
 
 func fullBusinessContract() (map[string]businessTable, []string, error) {
 	var tables map[string]businessTable
-	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 63 {
+	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 64 {
 		return nil, nil, errors.New("invalid compiled full-business catalog")
 	}
 	_, manifest, err := schema.NativeArtifact()
@@ -177,7 +177,7 @@ var optionalBusinessTables = map[string]bool{
 	"account_lifecycle_events": true, "mfa_recovery_codes": true, "password_recovery_challenges": true,
 	"finance_invoices": true, "finance_payments": true, "finance_refunds": true, "finance_operations": true,
 	"finance_operation_events": true, "cloud_vendor_costs": true,
-	"network_teams": true, "network_team_members": true,
+	"network_teams": true, "network_team_members": true, "subscription_records": true,
 	"referral_codes": true, "referrals": true, "referral_rewards": true, "referral_reward_events": true,
 	"referral_payment_risks": true, "referral_settlements": true, "referral_settlement_items": true, "subscription_extension_ledger": true,
 }

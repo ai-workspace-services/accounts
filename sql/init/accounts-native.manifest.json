@@ -1,24 +1,40 @@
 {
   "format": 1,
-  "migration_version": 2026101301,
-  "schema_sha256": "0262d018e20daf65652876bdcdb92792046539c9e3c469a8acc1dc2c8bab42a7",
-  "business_table_count": 62,
+  "migration_version": 2026101502,
+  "schema_sha256": "264b6202ef7240c46c5e498295c9f27de13a1a73d8a56219d2209a8bccf2ac10",
+  "business_table_count": 63,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "ad2ffa6e4f63e846bb9f809fe235cc4fb0ef02fb76625f1322b64182db05d8e6"
+      "sha256": "73454f40265f1a1cf0a1520a42fd875d93fdedd1ea91cec828a6acc5c9a38a3f"
     },
     {
-      "path": "internal/tasksession/postgres_schema.go",
-      "sha256": "50e869c28d886533f5f2dfe157c75ae4b6011fedec5cd9ba076a0a3860170ae2"
+      "path": "internal/model/admin_setting.go",
+      "sha256": "03c367e2f17733d6a34a2f4e4f6a439e4de1ce639c4ca3814b68ff3050ae3aac"
+    },
+    {
+      "path": "internal/model/homepage_video_setting.go",
+      "sha256": "771e15d9a896a300126e2234fdebd8d549ca6b07cf93d2a69a17ec5baa124e03"
+    },
+    {
+      "path": "internal/model/sandbox_binding.go",
+      "sha256": "514ae4a0beac8b3beefa6b6e7b8b81d93da7fd5490cb44085ea243574e5a5e79"
+    },
+    {
+      "path": "internal/model/xworkmate_tenant.go",
+      "sha256": "a388e03fc427d705d582256c7ffc51eaf21e35e0c6dfd34614260a414be0bba1"
     },
     {
       "path": "internal/overlay/repository.go",
       "sha256": "7e256b6f33a4364302eefbca3ffb3636e4024fe55c14ebb031d9184cb645d60d"
     },
     {
-      "path": "sql/schema.sql",
-      "sha256": "92d8bc54432e28cebbc71f185a3adab748cc4b81361b917655a366fe8c662525"
+      "path": "internal/tasksession/postgres_schema.go",
+      "sha256": "50e869c28d886533f5f2dfe157c75ae4b6011fedec5cd9ba076a0a3860170ae2"
+    },
+    {
+      "path": "scripts/native-schema-render/main.go",
+      "sha256": "52af49d9c7b8e54943d56d797915a97bd5cb4542c1e2f2ba412c3e9dae74f012"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -65,32 +81,24 @@
       "sha256": "a4ce2510f34974800444558ce44cdd84c9ea180396d9aeb1317e253e25b1c9a9"
     },
     {
-      "path": "internal/model/admin_setting.go",
-      "sha256": "03c367e2f17733d6a34a2f4e4f6a439e4de1ce639c4ca3814b68ff3050ae3aac"
-    },
-    {
-      "path": "internal/model/homepage_video_setting.go",
-      "sha256": "771e15d9a896a300126e2234fdebd8d549ca6b07cf93d2a69a17ec5baa124e03"
-    },
-    {
-      "path": "internal/model/sandbox_binding.go",
-      "sha256": "514ae4a0beac8b3beefa6b6e7b8b81d93da7fd5490cb44085ea243574e5a5e79"
-    },
-    {
-      "path": "internal/model/xworkmate_tenant.go",
-      "sha256": "a388e03fc427d705d582256c7ffc51eaf21e35e0c6dfd34614260a414be0bba1"
-    },
-    {
-      "path": "scripts/native-schema-render/main.go",
-      "sha256": "52af49d9c7b8e54943d56d797915a97bd5cb4542c1e2f2ba412c3e9dae74f012"
-    },
-    {
       "path": "sql/migrations/2026101201_network_teams.up.sql",
       "sha256": "1027d98036b9227f9d2bb694f6803a689bacd062555eff0eb99fe894a4aec27f"
     },
     {
       "path": "sql/migrations/2026101301_referral_program.up.sql",
       "sha256": "975cca23182f7b6f60f5573b665d74f603e9820a56e96a2886a5a6dd1beac695"
+    },
+    {
+      "path": "sql/migrations/2026101501_free_quota_3gb.up.sql",
+      "sha256": "bddb0bfad302a164a2bcbd82a54d6dc65eb63a968b4089b73abb82b88123959d"
+    },
+    {
+      "path": "sql/migrations/2026101502_subscription_records.up.sql",
+      "sha256": "94d29b50208543517b5816bca9450d796fb9ff6458b57e37c7ec200f20c47e3a"
+    },
+    {
+      "path": "sql/schema.sql",
+      "sha256": "ca9b3d5dee8b34246edc1d8ed51779670063b6eb8c52e6459cc0cc41e2188b89"
     }
   ],
   "business_tables": [
@@ -144,6 +152,7 @@
     "sessions",
     "stripe_webhook_events",
     "subscription_extension_ledger",
+    "subscription_records",
     "subscriptions",
     "task_namespaces",
     "task_runs",

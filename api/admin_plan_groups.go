@@ -23,14 +23,17 @@ const (
 )
 
 type adminPlanGroupUpdate struct {
-	UserID     string          `json:"userId"`
-	PlanID     string          `json:"planId,omitempty"`
-	Groups     *[]string       `json:"groups,omitempty"`
-	ValidFrom  json.RawMessage `json:"validFrom,omitempty"`
-	ValidUntil json.RawMessage `json:"validUntil,omitempty"`
+	SubscriptionRecord *store.SubscriptionRecord `json:"subscriptionRecord,omitempty"`
+	UserID             string                    `json:"userId"`
+	PlanID             string                    `json:"planId,omitempty"`
+	Groups             *[]string                 `json:"groups,omitempty"`
+	ValidFrom          json.RawMessage           `json:"validFrom,omitempty"`
+	ValidUntil         json.RawMessage           `json:"validUntil,omitempty"`
 }
 
 type adminPlanGroupRequest struct {
+	CSV          *string                `json:"csv,omitempty"`
+	Reconcile    bool                   `json:"reconcile,omitempty"`
 	Mode         string                 `json:"mode"`
 	RequestID    string                 `json:"requestId"`
 	PreviewToken string                 `json:"previewToken"`
@@ -99,6 +102,18 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 		}
 		h.applyAdminPlanGroupPreview(c, actor.ID, reason, requestID, strings.TrimSpace(req.PreviewToken), expectedIDs)
 		return
+	}
+	if req.CSV != nil {
+		if !store.IsRootRole(actor.Role) || len(pathUserIDs) > 0 || len(req.Updates) > 0 {
+			respondError(c, 403, "root_required", "CSV reconciliation requires root and the batch endpoint")
+			return
+		}
+		updates, err := h.subscriptionCSVUpdates(c.Request.Context(), *req.CSV, req.Reconcile)
+		if err != nil {
+			respondError(c, 400, "invalid_csv", err.Error())
+			return
+		}
+		req.Updates = updates
 	}
 	if len(pathUserIDs) > 0 {
 		if len(req.Updates) != 1 {
@@ -182,6 +197,22 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			continue
 		}
 
+		if update.SubscriptionRecord != nil {
+			record := update.SubscriptionRecord
+			if !store.IsRootRole(actor.Role) {
+				respondError(c, 403, "root_required", "only root can import subscription records")
+				return
+			}
+			if record.MonthlyQuotaBytes < 0 || record.AnnualQuotaBytes < 0 || record.FeeMinor < 0 || len(record.Note) > 10000 || len(record.PaymentStatus) > 100 || len(record.SubscriptionType) > 100 {
+				respondError(c, 400, "invalid_subscription_record", "invalid quota, fee or subscription text")
+				return
+			}
+			if record.ValidFrom != nil && record.ValidUntil != nil && record.ValidUntil.Before(*record.ValidFrom) {
+				respondError(c, 400, "invalid_validity", "invalid subscription validity")
+				return
+			}
+			record.UserID = user.ID
+		}
 		group, err := planIDToQuotaGroup(planID)
 		if err != nil {
 			respondError(c, http.StatusBadRequest, "invalid_plan", err.Error())
@@ -202,6 +233,32 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			RegionMultiplier: plan.Multiplier("region"), LineMultiplier: plan.Multiplier("line"),
 			PeakMultiplier: plan.Multiplier("peak"), OffPeakMultiplier: plan.Multiplier("offpeak"),
 			PricingRuleVersion: fmt.Sprintf("plan:%s", plan.PlanID),
+		}
+		change.SubscriptionRecord = update.SubscriptionRecord
+		if record := change.SubscriptionRecord; record != nil {
+			labels := make([]string, 0, len(change.Groups)+2)
+			for _, label := range change.Groups {
+				switch label {
+				case "segment:free", "segment:registered", "segment:subscribed", "segment:monthly", "segment:yearly":
+					continue
+				}
+				labels = append(labels, label)
+			}
+			if planID == store.BillingPlanFree {
+				labels = append(labels, "segment:free")
+			} else {
+				labels = append(labels, "segment:subscribed")
+				switch record.SubscriptionType {
+				case "year":
+					labels = append(labels, "segment:yearly")
+				case "month":
+					labels = append(labels, "segment:monthly")
+				}
+			}
+			change.Groups = labels
+		}
+		if change.SubscriptionRecord != nil && planID != store.BillingPlanFree && change.SubscriptionRecord.MonthlyQuotaBytes > 0 {
+			change.IncludedQuotaBytes = change.SubscriptionRecord.MonthlyQuotaBytes
 		}
 		if err := setPlanValidity(&change, user, update); err != nil {
 			respondError(c, http.StatusBadRequest, "invalid_validity", err.Error())
@@ -239,7 +296,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			Before: gin.H{"groups": change.ExpectedGroups, "validFrom": adminPlanDateString(beforeFrom), "validUntil": adminPlanDateString(beforeUntil),
 				"includedQuotaBytes": change.ExpectedProfileIncludedQuota, "remainingIncludedQuota": change.ExpectedQuotaRemaining},
 			After: gin.H{"groups": change.Groups, "validFrom": adminPlanDateString(desiredFrom), "validUntil": adminPlanDateString(desiredUntil),
-				"includedQuotaBytes": change.IncludedQuotaBytes},
+				"includedQuotaBytes": change.IncludedQuotaBytes, "subscriptionRecord": change.SubscriptionRecord},
 			UsedBytesPreserved: change.UsedBytesPreserved, RemainingIncludedQuota: change.RemainingAfter,
 			ConfigurationSyncWillPause: change.IncludedQuotaBytes > 0 && change.RemainingAfter == 0,
 		})

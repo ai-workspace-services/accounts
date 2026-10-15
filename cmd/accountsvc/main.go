@@ -338,6 +338,29 @@ func (a *metricsAdapter) FetchSubscriptionStates(ctx context.Context, userIDs []
 				}
 			}
 		}
+		// Operator imports are persisted subscription facts too; they do not
+		// manufacture Stripe subscriptions just to make statistics visible.
+		if !active {
+			record, err := a.st.GetSubscriptionRecord(ctx, userID)
+			if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+				return nil, err
+			}
+			if record != nil {
+				status := strings.ToLower(strings.TrimSpace(record.PaymentStatus))
+				paid := status == "paid" || status == "已付费" || status == "已支付"
+				now := time.Now().UTC()
+				starts := record.ValidFrom == nil || !now.Before(*record.ValidFrom)
+				ends := record.ValidUntil == nil || now.Before(record.ValidUntil.UTC().Truncate(24*time.Hour).AddDate(0, 0, 1))
+				user, userErr := a.st.GetUserByID(ctx, userID)
+				if userErr != nil {
+					return nil, userErr
+				}
+				active = paid && starts && ends && store.MonthlyQuotaGroup(user) == store.MonthlyPlusQuotaLimitGroup
+				if active {
+					expiresAt = record.ValidUntil
+				}
+			}
+		}
 		states[userID] = service.SubscriptionState{
 			Active:    active,
 			ExpiresAt: expiresAt,
@@ -1021,7 +1044,7 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 			PlanID:             store.BillingPlanFree,
 			DisplayName:        "Free",
 			Kind:               "subscription",
-			IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, // 5 GiB per natural month, shared by all regions
+			IncludedQuotaBytes: 3 * 1024 * 1024 * 1024, // 3 GiB per natural month, shared by all regions
 			PackageName:        "free",
 			Features: map[string]any{
 				"quota_cycle": "natural_month",

@@ -241,10 +241,21 @@ func (h *handler) adminGetBillingAccount(c *gin.Context) {
 	var profile *store.AccountBillingProfile
 	if loaded, err := h.store.GetAccountBillingProfile(ctx, accountUUID); err == nil {
 		profile = loaded
+	} else if !errors.Is(err, store.ErrUserNotFound) {
+		respondError(c, 503, "billing_profile_unavailable", "failed to load billing profile")
+		return
 	}
 	var quota *store.AccountQuotaState
 	if loaded, err := h.store.GetAccountQuotaState(ctx, accountUUID); err == nil {
 		quota = loaded
+	} else if !errors.Is(err, store.ErrUserNotFound) {
+		respondError(c, 503, "quota_unavailable", "failed to load quota state")
+		return
+	}
+	record, recordErr := h.store.GetSubscriptionRecord(ctx, accountUUID)
+	if recordErr != nil && !errors.Is(recordErr, store.ErrUserNotFound) {
+		respondError(c, 503, "subscription_records_unavailable", "failed to load subscription record")
+		return
 	}
 	subscriptions, err := h.store.ListSubscriptionsByUser(ctx, accountUUID)
 	if err != nil {
@@ -261,12 +272,14 @@ func (h *handler) adminGetBillingAccount(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
-		"user":           sanitizeUser(user, nil),
-		"billingProfile": profile,
-		"quotaState":     quota,
-		"subscriptions":  sanitizedSubs,
-		"ledger":         ledger,
+		"user":               sanitizeUser(user, nil),
+		"billingProfile":     profile,
+		"quotaState":         quota,
+		"subscriptions":      sanitizedSubs,
+		"subscriptionRecord": record,
+		"ledger":             ledger,
 	})
 }
 

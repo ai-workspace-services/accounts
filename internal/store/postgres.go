@@ -739,6 +739,16 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 		if !equalStoreStrings(currentGroups, change.ExpectedGroups) || !equalStoreTimes(currentFrom, change.ExpectedValidFrom) || !equalStoreTimes(currentUntil, change.ExpectedValidUntil) {
 			return nil, ErrAdminPlanGroupStale
 		}
+		if change.SubscriptionRecord != nil {
+			var updatedAt sql.NullTime
+			err := tx.QueryRowContext(ctx, "SELECT updated_at FROM public.subscription_records WHERE user_uuid=$1 FOR UPDATE", change.UserID).Scan(&updatedAt)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, err
+			}
+			if updatedAt.Valid {
+				change.ExpectedRecordUpdatedAt = &updatedAt.Time
+			}
+		}
 		change.ExpectedGroups = currentGroups
 		change.ExpectedValidFrom, change.ExpectedValidUntil = currentFrom, currentUntil
 		var profileUpdated sql.NullTime
@@ -1024,6 +1034,25 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 		if _, err := tx.ExecContext(ctx, update, args...); err != nil {
 			return nil, false, err
 		}
+		if change.SubscriptionRecord != nil {
+			var updatedAt sql.NullTime
+			err := tx.QueryRowContext(ctx, "SELECT updated_at FROM public.subscription_records WHERE user_uuid=$1 FOR UPDATE", change.UserID).Scan(&updatedAt)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, false, err
+			}
+			var current *time.Time
+			if updatedAt.Valid {
+				current = &updatedAt.Time
+			}
+			if !equalStoreTimes(current, change.ExpectedRecordUpdatedAt) {
+				return nil, false, ErrAdminPlanGroupStale
+			}
+			record := *change.SubscriptionRecord
+			record.UserID = change.UserID
+			if err := upsertSubscriptionRecordTx(ctx, tx, record); err != nil {
+				return nil, false, err
+			}
+		}
 		used := int64(0)
 		remaining := int64(0)
 		if change.SetEntitlement {
@@ -1046,7 +1075,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			}
 		}
 		before, _ := json.Marshal(map[string]any{"groups": state.groups, "valid_from": state.validFrom, "valid_until": state.validUntil, "included_quota_bytes": state.profile.IncludedQuotaBytes, "remaining_included_quota": state.quota.RemainingIncludedQuota})
-		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "used_bytes_preserved": used, "remaining_included_quota": remaining, "configuration_sync_paused": change.IncludedQuotaBytes > 0 && remaining == 0})
+		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "subscription_record": change.SubscriptionRecord, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "used_bytes_preserved": used, "remaining_included_quota": remaining, "configuration_sync_paused": change.IncludedQuotaBytes > 0 && remaining == 0})
 		details, _ := json.Marshal(map[string]any{"target_uuid": change.UserID, "reason": batch.Reason, "request_id": batch.RequestID, "preview_token_hash": batch.PreviewTokenHash, "before": json.RawMessage(before), "after": json.RawMessage(after)})
 		if _, err := tx.ExecContext(ctx, `INSERT INTO public.audit_logs (uuid, action, actor_uuid, details, created_at) VALUES ($1,$2,$3,$4,$5)`, uuid.NewString(), AuditActionPlanGroupUpdate, batch.ActorUUID, details, now); err != nil {
 			return nil, false, err
@@ -1203,6 +1232,65 @@ RETURNING uuid, created_at, updated_at, cancelled_at`
 	}
 
 	return nil
+}
+
+func upsertSubscriptionRecordTx(ctx context.Context, tx *sql.Tx, record SubscriptionRecord) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO public.subscription_records
+ (user_uuid, subscription_type, monthly_quota_bytes, annual_quota_bytes, fee_minor, payment_status, note, valid_from, valid_until, updated_at)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+ ON CONFLICT (user_uuid) DO UPDATE SET subscription_type=EXCLUDED.subscription_type,
+ monthly_quota_bytes=EXCLUDED.monthly_quota_bytes, annual_quota_bytes=EXCLUDED.annual_quota_bytes,
+ fee_minor=EXCLUDED.fee_minor, payment_status=EXCLUDED.payment_status, note=EXCLUDED.note,
+ valid_from=EXCLUDED.valid_from, valid_until=EXCLUDED.valid_until, updated_at=now()`,
+		record.UserID, record.SubscriptionType, record.MonthlyQuotaBytes, record.AnnualQuotaBytes,
+		record.FeeMinor, record.PaymentStatus, record.Note, record.ValidFrom, record.ValidUntil)
+	return err
+}
+
+func (s *postgresStore) GetSubscriptionRecord(ctx context.Context, userID string) (*SubscriptionRecord, error) {
+	var record SubscriptionRecord
+	var from, until sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT user_uuid::text, subscription_type, monthly_quota_bytes, annual_quota_bytes, fee_minor, payment_status, note, valid_from, valid_until, updated_at FROM public.subscription_records WHERE user_uuid=$1`, userID).Scan(&record.UserID, &record.SubscriptionType, &record.MonthlyQuotaBytes, &record.AnnualQuotaBytes, &record.FeeMinor, &record.PaymentStatus, &record.Note, &from, &until, &record.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if from.Valid {
+		record.ValidFrom = &from.Time
+	}
+	if until.Valid {
+		record.ValidUntil = &until.Time
+	}
+	return &record, nil
+}
+
+func (s *postgresStore) ListSubscriptionRecords(ctx context.Context) ([]SubscriptionRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT user_uuid::text, subscription_type, monthly_quota_bytes, annual_quota_bytes,
+ fee_minor, payment_status, note, valid_from, valid_until, updated_at
+ FROM public.subscription_records ORDER BY user_uuid::text`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []SubscriptionRecord
+	for rows.Next() {
+		var record SubscriptionRecord
+		var from, until sql.NullTime
+		if err := rows.Scan(&record.UserID, &record.SubscriptionType, &record.MonthlyQuotaBytes, &record.AnnualQuotaBytes,
+			&record.FeeMinor, &record.PaymentStatus, &record.Note, &from, &until, &record.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if from.Valid {
+			record.ValidFrom = &from.Time
+		}
+		if until.Valid {
+			record.ValidUntil = &until.Time
+		}
+		result = append(result, record)
+	}
+	return result, rows.Err()
 }
 
 // ListSubscriptionsByUser returns all subscriptions for a user ordered by recency.
