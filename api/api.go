@@ -664,6 +664,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	// Internal routes for service-to-service reads.
 	internalGroup := r.Group("/api/internal")
+	// The observability identity resolver has a dedicated narrowly scoped
+	// credential so Grafana never receives the general internal service token.
+	r.POST("/api/observability/internal/xconnect/identity", xconnectObservabilitySearchAuth(), h.resolveXConnectTelemetryIdentity)
 
 	r.POST("/api/billing/stripe/webhook", h.stripeWebhook)
 	// Public plan catalog for the pricing page (billing P1).
