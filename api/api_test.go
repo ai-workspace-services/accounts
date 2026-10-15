@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 
+	"account/internal/agentproto"
 	"account/internal/agentserver"
 	"account/internal/auth"
 	"account/internal/service"
@@ -787,7 +788,6 @@ func TestOAuthCallbackRejectsBlacklistedEmail(t *testing.T) {
 
 func TestSyncConfigSnapshotReturnsRenderedJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("XRAY_PROXY_NODES", "agent-proxy.test.invalid")
 
 	router, user, token := newAuthenticatedSyncHarness(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/sync/config?since_version=0", nil)
@@ -809,8 +809,8 @@ func TestSyncConfigSnapshotReturnsRenderedJSON(t *testing.T) {
 	if strings.TrimSpace(resp.RenderedJSON) == "" {
 		t.Fatalf("expected rendered_json to be returned")
 	}
-	if len(resp.Nodes) == 0 {
-		t.Fatalf("expected sync response to include nodes")
+	if len(resp.Nodes) != 0 {
+		t.Fatalf("expected no nodes until an agent reports EntryPoint, got %d", len(resp.Nodes))
 	}
 	if strings.TrimSpace(resp.Digest) == "" {
 		t.Fatalf("expected digest to be populated")
@@ -913,7 +913,6 @@ func TestSyncConfigSnapshotSkipsRenderingWhenVersionUnchanged(t *testing.T) {
 
 func TestSyncConfigSnapshotFallsBackWhenRenderFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("XRAY_PROXY_NODES", "agent-proxy.test.invalid")
 
 	router, _, token := newAuthenticatedSyncHarness(t, WithXrayConfigRenderer(func(*store.User) (string, string, []string, error) {
 		return "", "", nil, errors.New("boom")
@@ -935,8 +934,8 @@ func TestSyncConfigSnapshotFallsBackWhenRenderFails(t *testing.T) {
 	if strings.TrimSpace(resp.RenderedJSON) != "" {
 		t.Fatalf("expected rendered_json to be omitted on render failure, got %q", resp.RenderedJSON)
 	}
-	if len(resp.Nodes) == 0 {
-		t.Fatalf("expected fallback sync response to include nodes")
+	if len(resp.Nodes) != 0 {
+		t.Fatalf("expected sync response to omit nodes when no agent reports an EntryPoint, got %d", len(resp.Nodes))
 	}
 	if len(resp.Meta.Warnings) == 0 {
 		t.Fatalf("expected fallback warning, got none")
@@ -947,9 +946,6 @@ func TestSyncConfigSnapshotFallsBackWhenRenderFails(t *testing.T) {
 	if len(resp.Warnings) != len(resp.Meta.Warnings) || resp.Warnings[0] != resp.Meta.Warnings[0] {
 		t.Fatalf("expected top-level warnings to mirror meta warnings, got top=%v meta=%v", resp.Warnings, resp.Meta.Warnings)
 	}
-	if vlessURI, ok := resp.Nodes[0]["vless_uri"].(string); !ok || strings.TrimSpace(vlessURI) == "" {
-		t.Fatalf("expected fallback node payload to include vless_uri, got %v", resp.Nodes[0]["vless_uri"])
-	}
 }
 
 func TestSyncConfigSnapshotIncludesNodeDisplayMetadata(t *testing.T) {
@@ -957,8 +953,8 @@ func TestSyncConfigSnapshotIncludesNodeDisplayMetadata(t *testing.T) {
 
 	router, _, token := newAuthenticatedSyncHarness(t, WithAgentStatusReader(stubAgentStatusReader{
 		statuses: []agentserver.StatusSnapshot{
-			{Agent: agentserver.Identity{ID: "jp-xhttp.svc.plus", Name: "Japan Node"}},
-			{Agent: agentserver.Identity{ID: "us-xhttp.svc.plus", Name: "US Node"}},
+			{Agent: agentserver.Identity{ID: "jp-xhttp.svc.plus", Name: "Japan Node"}, UpdatedAt: time.Now().UTC(), Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Region: "jp", Pool: "jp-free", EntryPoint: "jp-xhttp.svc.plus", Running: true}}},
+			{Agent: agentserver.Identity{ID: "us-xhttp.svc.plus", Name: "US Node"}, UpdatedAt: time.Now().UTC(), Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Region: "us", Pool: "us-free", EntryPoint: "us-xhttp.svc.plus", Running: true}}},
 		},
 	}))
 

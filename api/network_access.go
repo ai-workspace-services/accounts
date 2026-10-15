@@ -70,7 +70,8 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 	case agentResourceFree:
 		return store.MonthlyQuotaGroup(user) == store.MonthlyFreeQuotaLimitGroup
 	case agentResourcePlus:
-		return store.MonthlyQuotaGroup(user) == store.MonthlyPlusQuotaLimitGroup
+		group := store.MonthlyQuotaGroup(user)
+		return group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup
 	default:
 		return true
 	}

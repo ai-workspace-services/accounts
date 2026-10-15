@@ -51,12 +51,12 @@ func TestRegionalEntryHostRejectsRuntimeIDsAndAddresses(t *testing.T) {
 }
 
 func TestRegionalRegistrationEndpointsUseReportedMetadata(t *testing.T) {
-	registry, err := agentserver.NewRegistry(agentserver.Config{Credentials: []agentserver.Credential{{ID: "shared", Token: "test-agent-token"}}})
+	registry, err := agentserver.NewRegistry(agentserver.Config{Credentials: []agentserver.Credential{{ID: "shared", Token: "test-agent-token", Groups: []string{"resource:free"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	router, _, token := newAuthenticatedSyncHarness(t, WithAgentRegistry(registry), WithAgentStatusReader(registry))
-	report := []byte(`{"agentId":"runtime-de-1","role":"agent-proxy","healthy":true,"xray":{"running":true,"region":"de-fra","pool":"pool-a","entryPoint":"de.entry.example","openToUsers":true}}`)
+	report := []byte(`{"agentId":"runtime-de-1","role":"agent-proxy","healthy":true,"xray":{"running":true,"region":"de-fra","pool":"pool-a-free","entryPoint":"de.entry.example","openToUsers":true}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/agent-server/v1/status", bytes.NewReader(report))
 	req.Header.Set("Authorization", "Bearer test-agent-token")
 	req.Header.Set("Content-Type", "application/json")

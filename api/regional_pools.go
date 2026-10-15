@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"account/internal/agentserver"
 	"account/internal/store"
 )
 
@@ -28,6 +29,9 @@ const (
 type regionalPool struct {
 	Code          string                  `json:"code"`
 	Entry         string                  `json:"entry"`
+	DisplayName   string                  `json:"displayName,omitempty"`
+	ResourceClass string                  `json:"resourceClass,omitempty"`
+	TeamID        string                  `json:"teamId,omitempty"`
 	PoolCount     int                     `json:"poolCount"`
 	OpenToUsers   bool                    `json:"openToUsers"`
 	ClosedReasons []regionalClosureReason `json:"closedReasons"`
@@ -94,15 +98,19 @@ func registeredRegionalPools(reader agentStatusReader, now time.Time) []regional
 		if region == "" || entry == "" {
 			continue
 		}
-		key := region + "\x00" + entry
+		resourceClass, teamID := reportedResourceClass(snapshot)
+		key := region + "\x00" + entry + "\x00" + resourceClass + "\x00" + teamID
 		group := groups[key]
 		if group == nil {
 			group = &aggregate{
-				pool:    regionalPool{Code: region, Entry: entry, ClosedReasons: make([]regionalClosureReason, 0)},
+				pool:    regionalPool{Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)},
 				ids:     make(map[string]bool),
 				reasons: make(map[regionalClosureReason]bool),
 			}
 			groups[key] = group
+		}
+		if group.pool.DisplayName == "" {
+			group.pool.DisplayName = strings.TrimSpace(snapshot.Agent.Name)
 		}
 		id := strings.TrimSpace(report.Xray.Pool)
 		if id == "" {
@@ -145,6 +153,27 @@ func registeredRegionalPools(reader agentStatusReader, now time.Time) []regional
 		return pools[i].Code < pools[j].Code
 	})
 	return pools
+}
+
+// reportedResourceClass prefers the credential scope (the authoritative
+// isolation boundary) and only falls back to the declared pool suffix for
+// legacy registrations that predate resource markers.
+func reportedResourceClass(snapshot agentserver.StatusSnapshot) (string, string) {
+	if scope, valid := agentResourceScope(snapshot.Agent.Groups); valid && scope.ResourceClass != agentResourceShared {
+		return scope.ResourceClass, strings.TrimSpace(scope.TeamID)
+	}
+	pool := strings.ToLower(strings.TrimSpace(snapshot.Report.Xray.Pool))
+	parts := strings.FieldsFunc(pool, func(r rune) bool { return r == '-' || r == '_' || r == '/' })
+	if len(parts) > 0 {
+		class := parts[len(parts)-1]
+		switch class {
+		case agentResourceFree, agentResourcePlus:
+			return class, ""
+		case agentResourceTeam:
+			return agentResourceTeam, ""
+		}
+	}
+	return agentResourceShared, ""
 }
 
 func regionalEntryHost(raw string) string {
