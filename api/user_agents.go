@@ -256,39 +256,6 @@ func (h *handler) resolveAgentNodeUser(c *gin.Context) (*store.User, bool) {
 	return user, true
 }
 
-func parseProxyNodeHosts(extraHosts []string) []string {
-	seen := make(map[string]struct{})
-	hosts := make([]string, 0)
-
-	appendHost := func(raw string) {
-		host := normalizeHost(raw)
-		if host == "" {
-			return
-		}
-		if _, ok := seen[host]; ok {
-			return
-		}
-		seen[host] = struct{}{}
-		hosts = append(hosts, host)
-	}
-
-	if raw := strings.TrimSpace(os.Getenv("XRAY_PROXY_NODES")); raw != "" {
-		fields := strings.FieldsFunc(raw, func(r rune) bool {
-			return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
-		})
-		for _, field := range fields {
-			appendHost(field)
-		}
-	}
-
-	for _, host := range extraHosts {
-		appendHost(host)
-	}
-
-	// No proxy nodes means an empty list; the account service is not a proxy.
-	return hosts
-}
-
 func normalizeHost(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" || value == "*" {
@@ -316,28 +283,6 @@ func normalizeHost(raw string) string {
 	}
 
 	return strings.TrimSpace(value)
-}
-
-func registeredNodeMetadata(reader agentStatusReader) ([]string, map[string]string) {
-	if reader == nil {
-		return nil, nil
-	}
-
-	snapshots := reader.Statuses()
-	hosts := make([]string, 0, len(snapshots))
-	names := make(map[string]string, len(snapshots))
-	for _, snapshot := range snapshots {
-		host := normalizeHost(snapshot.Agent.ID)
-		if host == "" {
-			continue
-		}
-		hosts = append(hosts, host)
-		if displayName := strings.TrimSpace(snapshot.Agent.Name); displayName != "" {
-			names[host] = displayName
-		}
-	}
-
-	return hosts, names
 }
 
 func resolveNodeName(host string, names map[string]string) string {
