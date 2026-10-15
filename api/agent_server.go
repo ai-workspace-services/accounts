@@ -59,7 +59,16 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 	})
 }
 
-func (h *handler) authorizedAgentClients(ctx context.Context, scopes ...[]string) ([]xrayconfig.Client, string, error) {
+// groups must come from the authenticated credential, never request metadata.
+// Requiring the argument prevents a caller from silently defaulting to public.
+func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) ([]xrayconfig.Client, string, error) {
+	if _, valid := agentNetworkScope(groups); !valid {
+		return nil, "", errors.New("invalid agent network scope")
+	}
+	teamStore, ok := h.store.(store.NetworkTeamStore)
+	if !ok {
+		return nil, "", errors.New("network team store unavailable")
+	}
 	clients := make([]xrayconfig.Client, 0, 16)
 	users, err := h.store.ListUsers(ctx)
 	if err != nil {
@@ -82,7 +91,6 @@ func (h *handler) authorizedAgentClients(ctx context.Context, scopes ...[]string
 		return nil, "", err
 	}
 
-	teamStore := h.store.(store.NetworkTeamStore)
 	teams, err := teamStore.ListNetworkTeams(ctx)
 	if err != nil {
 		return nil, "", err
@@ -96,10 +104,6 @@ func (h *handler) authorizedAgentClients(ctx context.Context, scopes ...[]string
 		memberByUser[member.UserID] = member
 	}
 	now := time.Now().UTC()
-	groups := []string(nil)
-	if len(scopes) > 0 {
-		groups = scopes[0]
-	}
 	for _, u := range users {
 		access := accessFromNetworkMembership(memberByUser[u.ID], teams, now)
 		if !networkScopeAllows(access, groups) {

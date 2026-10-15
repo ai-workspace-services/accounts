@@ -402,7 +402,7 @@ func TestAgentClientListPreservesAccessAfterOverQuotaDowngrade(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	clients, _, err := h.authorizedAgentClients(ctx)
+	clients, _, err := h.authorizedAgentClients(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
