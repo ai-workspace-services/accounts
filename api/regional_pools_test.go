@@ -111,8 +111,7 @@ func TestRegionalRegistrationEndpointsUseReportedMetadata(t *testing.T) {
 	}
 }
 
-func TestRegionalPoolsIgnoreConfiguredProxyList(t *testing.T) {
-	t.Setenv("XRAY_PROXY_NODES", "fixed.entry.example")
+func TestRegionalPoolsRequireAgentEntrypoint(t *testing.T) {
 	router, _, token := newAuthenticatedSyncHarness(t, WithAgentStatusReader(stubAgentStatusReader{}))
 	for _, endpoint := range []string{"/api/agent-server/v1/nodes", "/api/agent/nodes", "/api/agent-server/v1/regional-pools"} {
 		req := httptest.NewRequest(http.MethodGet, endpoint, nil)

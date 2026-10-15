@@ -4,30 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 )
-
-func TestParseProxyNodeHosts(t *testing.T) {
-	for _, tt := range []struct {
-		name       string
-		configured string
-		registered []string
-		want       []string
-	}{
-		{name: "no proxies", want: []string{}},
-		{name: "invalid entries", configured: "*", registered: []string{"", "*"}, want: []string{}},
-		{name: "registered proxy", registered: []string{"jp-proxy.svc.plus"}, want: []string{"jp-proxy.svc.plus"}},
-		{name: "configured and registered proxies", configured: "https://jp-proxy.svc.plus:443;us-proxy.svc.plus", registered: []string{"jp-proxy.svc.plus", "hk-proxy.svc.plus"}, want: []string{"jp-proxy.svc.plus", "us-proxy.svc.plus", "hk-proxy.svc.plus"}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("XRAY_PROXY_NODES", tt.configured)
-			if got := parseProxyNodeHosts(tt.registered); !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("nodes = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
 
 func TestResolveNodeNameUsesEntrypointWhenRegisteredRegionIsStale(t *testing.T) {
 	for _, tt := range []struct {
@@ -56,8 +34,7 @@ func TestResolveNodeNameKeepsMatchingRegisteredRegion(t *testing.T) {
 	}
 }
 
-func TestAgentEndpointsReturnEmptyWithoutProxyNodes(t *testing.T) {
-	t.Setenv("XRAY_PROXY_NODES", "")
+func TestAgentEndpointsReturnEmptyWithoutAgentEntrypoint(t *testing.T) {
 	router, _, token := newAuthenticatedSyncHarness(t, WithServerPublicURL("https://accounts.svc.plus"))
 	for _, endpoint := range []string{"/api/auth/sync/config?since_version=0", "/api/agent/nodes", "/api/agent-server/v1/nodes"} {
 		t.Run(endpoint, func(t *testing.T) {
