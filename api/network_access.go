@@ -75,6 +75,16 @@ func accessFromNetworkMembership(member store.NetworkMembership, teams []store.N
 func agentNetworkScope(groups []string) (string, bool) {
 	team, dedicated := "", false
 	for _, g := range groups {
+		g = strings.TrimSpace(g)
+		lower := strings.ToLower(g)
+		// User administration roles are not node scopes. Reject them, and
+		// misspelled reserved scope markers, rather than granting legacy public
+		// access when a dedicated credential is configured incorrectly.
+		if strings.HasPrefix(lower, "team-admin:") ||
+			(strings.HasPrefix(lower, "team:") && !strings.HasPrefix(g, "team:")) ||
+			(lower == "access:dedicated-only" && g != lower) {
+			return "", false
+		}
 		if g == "access:dedicated-only" {
 			dedicated = true
 		}
@@ -612,6 +622,11 @@ func (h *handler) networkWriteError(c *gin.Context, err error) {
 // Dedicated credentials cannot alias another ID. Legacy shared public
 // credentials may still register public aliases, but cannot overwrite a team ID.
 func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
+	team, valid := agentNetworkScope(credential.Groups)
+	if !valid {
+		respondError(c, http.StatusForbidden, "agent_scope_invalid", "agent credential has an invalid network scope")
+		return credential, false
+	}
 	if requested == "" {
 		requested = strings.TrimSpace(c.GetHeader(agentIDHeader))
 	}
@@ -621,8 +636,7 @@ func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Iden
 	if requested == "" || requested == credential.ID {
 		return credential, true
 	}
-	team, valid := agentNetworkScope(credential.Groups)
-	if !valid || team != "" {
+	if team != "" {
 		respondError(c, 403, "agent_scope_mismatch", "agent identity is bound to its credential")
 		return credential, false
 	}

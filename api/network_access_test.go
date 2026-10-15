@@ -28,6 +28,9 @@ func TestNetworkScopeMatrix(t *testing.T) {
 		{team, nil, false}, {team, []string{"team:acme"}, true}, {team, []string{"team:other"}, false},
 		{revoked, nil, false}, {revoked, []string{"team:acme"}, false},
 		{personal, []string{"access:dedicated-only"}, false}, {team, []string{"team:acme", "team:other"}, false},
+		{personal, []string{"team-admin:acme"}, false}, {personal, []string{"TEAM:acme"}, false},
+		{personal, []string{"Access:Dedicated-Only"}, false},
+		{team, []string{"team:acme", "team-admin:other"}, false},
 	} {
 		if got := networkScopeAllows(tc.access, tc.groups); got != tc.want {
 			t.Errorf("%+v %v got %v", tc.access, tc.groups, got)
