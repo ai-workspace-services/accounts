@@ -28,7 +28,7 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 	reader := csv.NewReader(strings.NewReader(strings.TrimPrefix(source, "\uFEFF")))
 	reader.TrimLeadingSpace = true
 	rows, parseErr := reader.ReadAll()
-	if parseErr != nil || len(rows) < 2 {
+	if parseErr != nil || len(rows) < 2 || len(rows) > maxAdminPlanGroupBatch+1 {
 		return nil, err
 	}
 	issues := []string{}
@@ -73,7 +73,11 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 	}
 	headers := map[string]int{}
 	for i, header := range rows[0] {
-		headers[strings.ToLower(strings.TrimSpace(header))] = i
+		key := strings.ToLower(strings.TrimSpace(header))
+		if _, exists := headers[key]; exists {
+			return nil, fmt.Errorf("duplicate CSV column: %s", key)
+		}
+		headers[key] = i
 	}
 	cell := func(row []string, names ...string) string {
 		for _, name := range names {
