@@ -107,7 +107,7 @@ func TestCanceledSubscriptionDowngradesAtPeriodEndAndIdempotently(t *testing.T) 
 	}
 	first, _ := st.GetAccountQuotaState(ctx, user.ID)
 	if first.RemainingIncludedQuota != defaultFreeQuotaBytes {
-		t.Fatalf("expected Free 5GiB after period end, got %+v", first)
+		t.Fatalf("expected Free 3GiB after period end, got %+v", first)
 	}
 	operatorGroupKept := false
 	for _, group := range user.Groups {
@@ -510,7 +510,7 @@ func TestRefundReconciliationRequiresExplicitCompletedFullRefund(t *testing.T) {
 	}
 	profile, _ = st.GetAccountBillingProfile(ctx, user.ID)
 	if profile.PricingRuleVersion != "plan:FREE" || profile.IncludedQuotaBytes != defaultFreeQuotaBytes {
-		t.Fatalf("completed full refund did not revoke paid entitlement to Free 5GiB: %+v", profile)
+		t.Fatalf("completed full refund did not revoke paid entitlement to Free 3GiB: %+v", profile)
 	}
 	subscriptions, _ := st.ListSubscriptionsByUser(ctx, user.ID)
 	if len(subscriptions) != 1 || subscriptions[0].Status != "refunded" {

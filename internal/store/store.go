@@ -46,7 +46,7 @@ type User struct {
 // Monthly quota groups are managed by the admin console. Membership changes
 // only affect proxy/config access; the user record is never removed.
 const (
-	MonthlyFreeQuotaLimitGroup     = "segment:quota:free-5gb"
+	MonthlyFreeQuotaLimitGroup     = "segment:quota:free-3gb"
 	MonthlyPlusQuotaLimitGroup     = "segment:quota:plus-20gb"
 	MonthlyUnlimitedBetaQuotaGroup = "segment:quota:unlimited-beta"
 )

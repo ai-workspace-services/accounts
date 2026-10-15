@@ -564,7 +564,7 @@ func TestRegisterEndpoint(t *testing.T) {
 		t.Fatalf("expected groups array in response")
 	}
 	if !containsString(groups, store.MonthlyFreeQuotaLimitGroup) {
-		t.Fatalf("expected new registration to receive Free 5GB group, got %#v", groups)
+		t.Fatalf("expected new registration to receive Free 3GB group, got %#v", groups)
 	}
 }
 
@@ -844,7 +844,7 @@ func TestSyncConfigSnapshotAllowsSelectedFreeUserAtQuotaLimit(t *testing.T) {
 	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
 		AccountUUID:        user.ID,
 		PackageName:        "free",
-		IncludedQuotaBytes: 5 * 1024 * 1024 * 1024,
+		IncludedQuotaBytes: 3 * 1024 * 1024 * 1024,
 	}); err != nil {
 		t.Fatalf("set free billing profile: %v", err)
 	}

@@ -167,18 +167,18 @@ func TestKindsAreAcceptedByTheUpsertEndpoint(t *testing.T) {
 }
 
 func TestFreeTierGrantsTheQuotaTheStorefrontPromises(t *testing.T) {
-	// The storefront sells Free as "5 GB of accelerated traffic per month".
+	// The storefront sells Free as "3 GB of accelerated traffic per month".
 	// That promise is kept by included_quota_bytes: with 0 the account is
 	// admitted, granted nothing, and throttled on its first request -- which
 	// looks like a broken product rather than a mis-seeded plan.
-	const fiveGiB = int64(5 * 1024 * 1024 * 1024)
+	const threeGiB = int64(3 * 1024 * 1024 * 1024)
 
 	for _, plan := range loadManifest(t) {
 		if plan.PlanID != "FREE" {
 			continue
 		}
-		if plan.IncludedQuotaBytes != fiveGiB {
-			t.Errorf("FREE grants %d bytes, storefront promises %d", plan.IncludedQuotaBytes, fiveGiB)
+		if plan.IncludedQuotaBytes != threeGiB {
+			t.Errorf("FREE grants %d bytes, storefront promises %d", plan.IncludedQuotaBytes, threeGiB)
 		}
 		fastLane, _ := plan.Features["fast_lane"].(map[string]any)
 		if mode, _ := fastLane["mode"].(string); mode != "quota" {
@@ -191,7 +191,7 @@ func TestFreeTierGrantsTheQuotaTheStorefrontPromises(t *testing.T) {
 
 func TestQuotaCatalogDefinesTheUATGroups(t *testing.T) {
 	const (
-		fiveGiB   = int64(5 * 1024 * 1024 * 1024)
+		threeGiB  = int64(3 * 1024 * 1024 * 1024)
 		twentyGiB = int64(20 * 1024 * 1024 * 1024)
 	)
 	plans := make(map[string]manifestPlan)
@@ -200,8 +200,8 @@ func TestQuotaCatalogDefinesTheUATGroups(t *testing.T) {
 	}
 
 	free := plans["FREE"]
-	if free.IncludedQuotaBytes != fiveGiB || free.PackageName != "free" {
-		t.Fatalf("FREE must expose 5GiB in the free package: %+v", free)
+	if free.IncludedQuotaBytes != threeGiB || free.PackageName != "free" {
+		t.Fatalf("FREE must expose 3GiB in the free package: %+v", free)
 	}
 	plus := plans["PLUS"]
 	if plus.IncludedQuotaBytes != twentyGiB || plus.PackageName != "plus" {

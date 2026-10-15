@@ -1021,7 +1021,7 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 			PlanID:             store.BillingPlanFree,
 			DisplayName:        "Free",
 			Kind:               "subscription",
-			IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, // 5 GiB per natural month, shared by all regions
+			IncludedQuotaBytes: 3 * 1024 * 1024 * 1024, // 3 GiB per natural month, shared by all regions
 			PackageName:        "free",
 			Features: map[string]any{
 				"quota_cycle": "natural_month",

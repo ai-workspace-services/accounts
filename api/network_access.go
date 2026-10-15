@@ -198,7 +198,7 @@ func teamQuotaGroup(user *store.User) (string, string) {
 	group := store.MonthlyQuotaGroup(user)
 	switch group {
 	case store.MonthlyFreeQuotaLimitGroup:
-		return "5gb", "5 GB"
+		return "3gb", "3 GB"
 	case store.MonthlyPlusQuotaLimitGroup:
 		return "20gb", "20 GB"
 	case store.MonthlyUnlimitedBetaQuotaGroup:
@@ -213,7 +213,7 @@ func setTeamQuotaGroup(user *store.User, quotaGroup string) error {
 	var selected string
 	switch quotaGroup {
 	case "", "none":
-	case "5gb":
+	case "3gb":
 		selected = store.MonthlyFreeQuotaLimitGroup
 	case "20gb":
 		selected = store.MonthlyPlusQuotaLimitGroup
@@ -317,7 +317,7 @@ func (h *handler) getNetworkTeam(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, networkTeamPayload{Team: team, Members: members, CanManage: true, QuotaGroups: []string{"5gb", "20gb", "unlimited"}})
+	c.JSON(http.StatusOK, networkTeamPayload{Team: team, Members: members, CanManage: true, QuotaGroups: []string{"3gb", "20gb", "unlimited"}})
 }
 
 func (h *handler) addNetworkTeamMember(c *gin.Context) {
@@ -400,7 +400,7 @@ func (h *handler) updateNetworkTeamMember(c *gin.Context) {
 			respondError(c, http.StatusBadRequest, "invalid_quota_group", "unsupported quota group")
 			return
 		}
-		planID := map[string]string{"5gb": store.BillingPlanFree, "20gb": store.BillingPlanPlus, "unlimited": store.BillingPlanUnlimitedBeta}[request.QuotaGroup]
+		planID := map[string]string{"3gb": store.BillingPlanFree, "20gb": store.BillingPlanPlus, "unlimited": store.BillingPlanUnlimitedBeta}[request.QuotaGroup]
 		plan, err := h.store.GetBillingPlan(c.Request.Context(), planID)
 		if err != nil || plan == nil || !plan.Active {
 			respondError(c, http.StatusBadRequest, "plan_unavailable", "selected quota plan is unavailable")

@@ -48,7 +48,7 @@ func TestRegisterCreatesActiveAccount(t *testing.T) {
 	spy := &createUserSpy{Store: store.NewMemoryStore()}
 	if err := spy.UpsertBillingPlan(context.Background(), &store.BillingPlan{
 		PlanID: store.BillingPlanFree, DisplayName: "Free", Kind: "subscription",
-		PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, Active: true,
+		PackageName: "free", IncludedQuotaBytes: 3 * 1024 * 1024 * 1024, Active: true,
 	}); err != nil {
 		t.Fatalf("seed Free plan: %v", err)
 	}
@@ -92,9 +92,9 @@ func TestRegisterCreatesActiveAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load new account billing profile: %v", err)
 	}
-	const freeQuota = int64(5 * 1024 * 1024 * 1024)
+	const freeQuota = int64(3 * 1024 * 1024 * 1024)
 	if profile.PackageName != "free" || profile.IncludedQuotaBytes != freeQuota || profile.PricingRuleVersion != "plan:FREE" {
-		t.Fatalf("new registration must receive catalog Free 5GiB: %+v", profile)
+		t.Fatalf("new registration must receive catalog Free 3GiB: %+v", profile)
 	}
 	quota, err := spy.GetAccountQuotaState(context.Background(), created.ID)
 	if err != nil || quota.RemainingIncludedQuota != freeQuota {

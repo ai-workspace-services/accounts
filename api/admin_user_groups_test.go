@@ -213,7 +213,7 @@ func TestUpdateUserGroups(t *testing.T) {
 			t.Fatalf("expected expired user to remain, got: %v", err)
 		}
 		if store.MonthlyQuotaGroup(stored) != store.MonthlyFreeQuotaLimitGroup {
-			t.Fatalf("expected expired user to downgrade to Free 5GB, got groups %v", stored.Groups)
+			t.Fatalf("expected expired user to downgrade to Free 3GB, got groups %v", stored.Groups)
 		}
 		if stored.SubscriptionValidUntil == nil || stored.SubscriptionValidUntil.Format("2006-01-02") != past {
 			t.Fatalf("expected validity to persist, got %#v", stored.SubscriptionValidUntil)
