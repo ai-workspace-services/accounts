@@ -235,19 +235,19 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 		for _, group := range user.Groups {
 			if group == store.MonthlyFreeQuotaLimitGroup ||
 				group == store.MonthlyPlusQuotaLimitGroup ||
-				group == store.MonthlyUnlimitedBetaQuotaGroup {
+				group == store.MonthlyUnlimitedBetaQuotaGroup || group == "segment:subscribed" || group == "segment:monthly" || group == "segment:yearly" {
 				continue
 			}
 			groups = append(groups, group)
 		}
-		groups = append(groups, store.MonthlyFreeQuotaLimitGroup)
+		groups = append(groups, store.MonthlyFreeQuotaLimitGroup, "segment:free")
 		user.Groups = normalizeGroups(groups)
 		if err := h.store.UpdateUser(ctx, user); err != nil {
 			return err
 		}
 	}
 	// The group controls config eligibility; the billing profile must also be
-	// reset so an expired paid account receives the actual Free 5GB allowance.
+	// reset so an expired paid account receives the actual Free catalog allowance.
 	return h.downgradeToFreePlan(ctx, user.ID)
 }
 

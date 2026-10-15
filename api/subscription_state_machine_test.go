@@ -416,7 +416,7 @@ func TestAgentClientListPreservesAccessAfterOverQuotaDowngrade(t *testing.T) {
 		t.Fatal("newly downgraded over-quota user must remain authorized")
 	}
 	quota, _ := st.GetAccountQuotaState(ctx, user.ID)
-	if quota.RemainingIncludedQuota != -14*(1<<30) {
+	if quota.RemainingIncludedQuota != -16*(1<<30) {
 		t.Fatalf("agent reconciliation did not preserve consumed quota: %+v", quota)
 	}
 }

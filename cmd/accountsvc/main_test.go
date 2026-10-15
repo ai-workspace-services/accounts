@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -266,5 +267,36 @@ func TestResolveAllowedOriginsHonoursWildcardFromEnvironment(t *testing.T) {
 	}
 	if origins != nil {
 		t.Fatalf("origins = %v, want nil when allowAll is set", origins)
+	}
+}
+
+func TestMetricsCountPersistedSubscriptionImports(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	now := time.Now().UTC()
+	past := now.AddDate(0, 0, -2)
+	future := now.AddDate(0, 0, 2)
+	for i, test := range []struct {
+		status      string
+		from, until *time.Time
+		active      bool
+	}{{"paid", &past, &future, true}, {"paid", nil, nil, true}, {"unpaid", &past, &future, false}, {"paid", &future, nil, false}, {"paid", nil, &past, false}} {
+		user := &store.User{Name: fmt.Sprint("import", i), Email: fmt.Sprintf("import%d@example.invalid", i), Role: store.RoleUser}
+		if err := st.CreateUser(ctx, user); err != nil {
+			t.Fatal(err)
+		}
+		key := fmt.Sprint(i)
+		record := &store.SubscriptionRecord{UserID: user.ID, PaymentStatus: test.status, ValidFrom: test.from, ValidUntil: test.until}
+		change := store.AdminPlanGroupChange{UserID: user.ID, PlanID: store.BillingPlanPlus, Groups: []string{store.MonthlyPlusQuotaLimitGroup}, SubscriptionRecord: record}
+		if _, err := st.CreateAdminPlanGroupPreview(ctx, store.AdminPlanGroupPreview{ActorUUID: "root", Reason: "metrics", RequestID: key, TokenHash: key, ExpiresAt: now.Add(time.Hour), Changes: []store.AdminPlanGroupChange{change}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := st.ApplyAdminPlanGroupBatch(ctx, store.AdminPlanGroupBatch{ActorUUID: "root", Reason: "metrics", RequestID: key, PreviewTokenHash: key}); err != nil {
+			t.Fatal(err)
+		}
+		states, err := (&metricsAdapter{st: st}).FetchSubscriptionStates(ctx, []string{user.ID})
+		if err != nil || states[user.ID].Active != test.active {
+			t.Fatalf("import subscription not counted correctly: %+v %v", states, err)
+		}
 	}
 }
