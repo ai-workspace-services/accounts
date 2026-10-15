@@ -10,7 +10,7 @@ import (
 // Calendar month uses UTC consistently with accounting period and CSV dates.
 // The store uses a conditional update, so replicas cannot grant twice.
 func (h *handler) ensureFreeQuotaPeriod(ctx context.Context, user *store.User, now time.Time) error {
-	if user == nil || !user.Active || !store.IsMonthlyFreeQuotaLimitMember(user) {
+	if user == nil || !store.IsMonthlyFreeQuotaLimitMember(user) {
 		return nil
 	}
 	start, end := naturalMonthPeriod(now)
