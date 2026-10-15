@@ -23,6 +23,10 @@ func TestSubscriptionCSVEmailUpsertPreviewReplayAndExport(t *testing.T) {
 	if err := st.CreateSession(ctx, "root-csv", root.ID, time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
+	teamUser := &store.User{Name: "team-csv", Email: "team-csv@example.invalid", Role: store.RoleUser, Groups: []string{"team:alpha", "team-admin:alpha", store.MonthlyPlusQuotaLimitGroup}}
+	if err := st.CreateUser(ctx, teamUser); err != nil {
+		t.Fatal(err)
+	}
 	seedAdminPlanGroupCatalog(t, st)
 	_ = st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: target.ID, PackageName: "plus", IncludedQuotaBytes: 20 * adminPlanTestGiB, PricingRuleVersion: "plan:PLUS"})
 	_ = st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: target.ID, RemainingIncludedQuota: 17 * adminPlanTestGiB, EffectiveAt: time.Now()})
@@ -59,6 +63,13 @@ func TestSubscriptionCSVEmailUpsertPreviewReplayAndExport(t *testing.T) {
 	record, err := st.GetSubscriptionRecord(ctx, target.ID)
 	if err != nil || record.FeeMinor != 20000 || record.AnnualQuotaBytes != 240*adminPlanTestGiB || record.ValidFrom.Format("2006-01-02") != "2026-08-01" || !strings.Contains(record.Note, "第二行") {
 		t.Fatalf("fields not persisted: %+v %v", record, err)
+	}
+	teamStored, _ := st.GetUserByID(ctx, teamUser.ID)
+	if store.MonthlyQuotaGroup(teamStored) != store.MonthlyPlusQuotaLimitGroup {
+		t.Fatal("personal import modified team user")
+	}
+	if _, err := st.GetSubscriptionRecord(ctx, teamUser.ID); err == nil {
+		t.Fatal("personal import wrote a team record")
 	}
 	quota, _ := st.GetAccountQuotaState(ctx, target.ID)
 	if quota.RemainingIncludedQuota != 17*adminPlanTestGiB {

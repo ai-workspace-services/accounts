@@ -155,7 +155,7 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 
 func isTeamSubscriptionUser(groups []string) bool {
 	for _, group := range groups {
-		if strings.HasPrefix(group, "team:") || group == "access:dedicated-only" {
+		if strings.HasPrefix(group, "team:") || strings.HasPrefix(group, "team-admin:") || group == "access:dedicated-only" {
 			return true
 		}
 	}
