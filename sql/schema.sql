@@ -641,3 +641,5 @@ CREATE TABLE IF NOT EXISTS public.subscription_records (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT subscription_records_validity_ck CHECK (valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from)
 );
+
+CREATE INDEX IF NOT EXISTS subscription_records_validity_idx ON public.subscription_records (valid_until);

@@ -141,6 +141,12 @@ func (h *handler) getNetworkAccess(c *gin.Context) {
 }
 
 type networkTeamMemberPayload struct {
+	BillingProfile         *store.AccountBillingProfile `json:"billingProfile"`
+	QuotaState             *store.AccountQuotaState     `json:"quotaState"`
+	SubscriptionValidFrom  *time.Time                   `json:"subscriptionValidFrom"`
+	SubscriptionValidUntil *time.Time                   `json:"subscriptionValidUntil"`
+	Groups                 []string                     `json:"groups"`
+
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Email       string `json:"email"`
@@ -151,7 +157,15 @@ type networkTeamMemberPayload struct {
 	Active      bool   `json:"active"`
 }
 
+type networkQuotaPlan struct {
+	Value              string `json:"value"`
+	PlanID             string `json:"planId"`
+	Name               string `json:"name"`
+	IncludedQuotaBytes int64  `json:"includedQuotaBytes"`
+}
 type networkTeamPayload struct {
+	QuotaPlans []networkQuotaPlan `json:"quotaPlans"`
+
 	Team        *store.NetworkTeam         `json:"team"`
 	Members     []networkTeamMemberPayload `json:"members"`
 	CanManage   bool                       `json:"canManage"`
@@ -302,14 +316,25 @@ func (h *handler) getNetworkTeam(c *gin.Context) {
 		}
 		quotaGroup, quotaLabel := teamQuotaGroup(&user)
 		state := "active"
-		if quota, quotaErr := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); quotaErr == nil && quota != nil && quota.ProxyAccessState == "paused" {
+		quota, quotaErr := h.store.GetAccountQuotaState(c.Request.Context(), user.ID)
+		if quotaErr != nil && !errors.Is(quotaErr, store.ErrUserNotFound) {
+			respondError(c, 503, "quota_unavailable", "failed to load team quota")
+			return
+		}
+		if quota != nil && quota.ProxyAccessState == "paused" {
 			state = "paused"
 		}
+		profile, profileErr := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID)
+		if profileErr != nil && !errors.Is(profileErr, store.ErrUserNotFound) {
+			respondError(c, 503, "billing_profile_unavailable", "failed to load team plan")
+			return
+		}
+
 		role := "member"
 		if networkTeamAdmin(&user, access.TeamID) {
 			role = "admin"
 		}
-		members = append(members, networkTeamMemberPayload{ID: user.ID, Name: user.Name, Email: user.Email, Role: role, QuotaGroup: quotaGroup, QuotaLabel: quotaLabel, AccessState: state, Active: user.Active})
+		members = append(members, networkTeamMemberPayload{BillingProfile: profile, QuotaState: quota, Groups: user.Groups, SubscriptionValidFrom: user.SubscriptionValidFrom, SubscriptionValidUntil: user.SubscriptionValidUntil, ID: user.ID, Name: user.Name, Email: user.Email, Role: role, QuotaGroup: quotaGroup, QuotaLabel: quotaLabel, AccessState: state, Active: user.Active})
 	}
 	team := access.Team
 	if team == nil {
@@ -317,7 +342,21 @@ func (h *handler) getNetworkTeam(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, networkTeamPayload{Team: team, Members: members, CanManage: true, QuotaGroups: []string{"3gb", "20gb", "unlimited"}})
+	quotaPlans := make([]networkQuotaPlan, 0, 3)
+	for _, entry := range []struct{ value, planID string }{{"3gb", store.BillingPlanFree}, {"20gb", store.BillingPlanPlus}, {"unlimited", store.BillingPlanUnlimitedBeta}} {
+		plan, err := h.store.GetBillingPlan(c.Request.Context(), entry.planID)
+		if errors.Is(err, store.ErrBillingPlanNotFound) {
+			continue
+		}
+		if err != nil {
+			respondError(c, 503, "plan_catalog_unavailable", "failed to read billing plans")
+			return
+		}
+		if plan != nil && plan.Active {
+			quotaPlans = append(quotaPlans, networkQuotaPlan{Value: entry.value, PlanID: plan.PlanID, Name: plan.DisplayName, IncludedQuotaBytes: plan.IncludedQuotaBytes})
+		}
+	}
+	c.JSON(http.StatusOK, networkTeamPayload{Team: team, Members: members, CanManage: true, QuotaPlans: quotaPlans, QuotaGroups: []string{"3gb", "20gb", "unlimited"}})
 }
 
 func (h *handler) addNetworkTeamMember(c *gin.Context) {

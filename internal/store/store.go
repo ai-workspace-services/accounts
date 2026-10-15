@@ -101,16 +101,16 @@ type Subscription struct {
 // It stores source-of-truth fields used by the admin console independently of
 // the computed quota entitlement groups.
 type SubscriptionRecord struct {
-	UserID            string
-	SubscriptionType  string
-	MonthlyQuotaBytes int64
-	AnnualQuotaBytes  int64
-	FeeMinor          int64
-	PaymentStatus     string
-	Note              string
-	ValidFrom         *time.Time
-	ValidUntil        *time.Time
-	UpdatedAt         time.Time
+	UserID            string     `json:"userId"`
+	SubscriptionType  string     `json:"subscriptionType"`
+	MonthlyQuotaBytes int64      `json:"monthlyQuotaBytes"`
+	AnnualQuotaBytes  int64      `json:"annualQuotaBytes"`
+	FeeMinor          int64      `json:"feeMinor"`
+	PaymentStatus     string     `json:"paymentStatus"`
+	Note              string     `json:"note"`
+	ValidFrom         *time.Time `json:"validFrom"`
+	ValidUntil        *time.Time `json:"validUntil"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
 }
 
 type ReferralCode struct {
@@ -422,6 +422,8 @@ type AuditLogFilter struct {
 // from the operator's preview and prevent stale previews from overwriting a
 // newer administrator change.
 type AdminPlanGroupChange struct {
+	SubscriptionRecord           *SubscriptionRecord
+	ExpectedRecordUpdatedAt      *time.Time
 	UserID                       string
 	PlanID                       string
 	SetEntitlement               bool
@@ -586,7 +588,7 @@ type Store interface {
 	ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminPlanGroupBatch) (changes []AdminPlanGroupChange, replayed bool, err error)
 
 	UpsertSubscription(ctx context.Context, subscription *Subscription) error
-	UpsertSubscriptionRecords(ctx context.Context, records []SubscriptionRecord) error
+	GetSubscriptionRecord(ctx context.Context, userID string) (*SubscriptionRecord, error)
 	ListSubscriptionRecords(ctx context.Context) ([]SubscriptionRecord, error)
 	ListSubscriptionsByUser(ctx context.Context, userID string) ([]Subscription, error)
 	CancelSubscription(ctx context.Context, userID, externalID string, cancelledAt time.Time) (*Subscription, error)
@@ -1180,6 +1182,11 @@ func (s *memoryStore) CreateAdminPlanGroupPreview(ctx context.Context, preview A
 		if !equalStoreStrings(user.Groups, change.ExpectedGroups) || !equalStoreTimes(user.SubscriptionValidFrom, change.ExpectedValidFrom) || !equalStoreTimes(user.SubscriptionValidUntil, change.ExpectedValidUntil) {
 			return nil, ErrAdminPlanGroupStale
 		}
+		if change.SubscriptionRecord != nil {
+			if record, ok := s.subscriptionRecords[user.ID]; ok {
+				change.ExpectedRecordUpdatedAt = cloneTimePointer(&record.UpdatedAt)
+			}
+		}
 		profile := s.accountBillingProfiles[user.ID]
 		quota := s.accountQuotaStates[user.ID]
 		change.ProfileExisted = profile != nil
@@ -1322,6 +1329,15 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 			}
 			quota.EffectiveAt = time.Now().UTC()
 		}
+		if change.SubscriptionRecord != nil {
+			var updatedAt *time.Time
+			if record, ok := s.subscriptionRecords[user.ID]; ok {
+				updatedAt = &record.UpdatedAt
+			}
+			if !equalStoreTimes(updatedAt, change.ExpectedRecordUpdatedAt) {
+				return nil, false, ErrAdminPlanGroupStale
+			}
+		}
 		prepared = append(prepared, preparedAdminPlanGroupChange{change: change, user: user, profile: profile, quota: quota, used: used})
 	}
 
@@ -1334,6 +1350,14 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 		if item.change.SetValidUntil {
 			item.user.SubscriptionValidUntil = cloneTimePointer(item.change.ValidUntil)
 		}
+		if item.change.SubscriptionRecord != nil {
+			record := *item.change.SubscriptionRecord
+			record.UserID = item.user.ID
+			record.UpdatedAt = now
+			record.ValidFrom = cloneTimePointer(record.ValidFrom)
+			record.ValidUntil = cloneTimePointer(record.ValidUntil)
+			s.subscriptionRecords[item.user.ID] = record
+		}
 		item.user.UpdatedAt = now
 		if item.change.SetEntitlement {
 			item.profile.UpdatedAt = now
@@ -1344,7 +1368,7 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 		before := map[string]any{"groups": item.change.ExpectedGroups, "valid_from": item.change.ExpectedValidFrom, "valid_until": item.change.ExpectedValidUntil,
 			"included_quota_bytes": item.change.ExpectedProfileIncludedQuota, "remaining_included_quota": item.change.ExpectedQuotaRemaining}
 		after := map[string]any{"groups": item.change.Groups, "valid_from": item.user.SubscriptionValidFrom, "valid_until": item.user.SubscriptionValidUntil,
-			"plan_id": item.change.PlanID, "included_quota_bytes": item.change.IncludedQuotaBytes, "remaining_included_quota": item.quota.RemainingIncludedQuota,
+			"subscription_record": item.change.SubscriptionRecord, "plan_id": item.change.PlanID, "included_quota_bytes": item.change.IncludedQuotaBytes, "remaining_included_quota": item.quota.RemainingIncludedQuota,
 			"used_bytes_preserved": item.used, "configuration_sync_paused": item.change.SetEntitlement && item.change.IncludedQuotaBytes > 0 && item.quota.RemainingIncludedQuota == 0}
 		s.auditLogs = append(s.auditLogs, &AuditLog{
 			UUID: uuid.NewString(), Action: AuditActionPlanGroupUpdate, ActorUUID: batch.ActorUUID,
@@ -1406,6 +1430,13 @@ func cloneAdminPlanGroupChanges(changes []AdminPlanGroupChange) []AdminPlanGroup
 	cloned := make([]AdminPlanGroupChange, len(changes))
 	for i, change := range changes {
 		cloned[i] = change
+		if change.SubscriptionRecord != nil {
+			record := *change.SubscriptionRecord
+			record.ValidFrom = cloneTimePointer(record.ValidFrom)
+			record.ValidUntil = cloneTimePointer(record.ValidUntil)
+			cloned[i].SubscriptionRecord = &record
+		}
+		cloned[i].ExpectedRecordUpdatedAt = cloneTimePointer(change.ExpectedRecordUpdatedAt)
 		cloned[i].ExpectedGroups = cloneStringSlice(change.ExpectedGroups)
 		cloned[i].Groups = cloneStringSlice(change.Groups)
 		cloned[i].ExpectedValidFrom = cloneTimePointer(change.ExpectedValidFrom)
@@ -1495,24 +1526,17 @@ func (s *memoryStore) UpsertSubscription(ctx context.Context, subscription *Subs
 	return nil
 }
 
-func (s *memoryStore) UpsertSubscriptionRecords(ctx context.Context, records []SubscriptionRecord) error {
+func (s *memoryStore) GetSubscriptionRecord(ctx context.Context, userID string) (*SubscriptionRecord, error) {
 	_ = ctx
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now().UTC()
-	for _, record := range records {
-		id := strings.TrimSpace(record.UserID)
-		if id == "" {
-			return ErrUserNotFound
-		}
-		if _, ok := s.byID[id]; !ok {
-			return ErrUserNotFound
-		}
-		record.UserID = id
-		record.UpdatedAt = now
-		s.subscriptionRecords[id] = record
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, ok := s.subscriptionRecords[userID]
+	if !ok {
+		return nil, ErrUserNotFound
 	}
-	return nil
+	record.ValidFrom = cloneTimePointer(record.ValidFrom)
+	record.ValidUntil = cloneTimePointer(record.ValidUntil)
+	return &record, nil
 }
 
 func (s *memoryStore) ListSubscriptionRecords(ctx context.Context) ([]SubscriptionRecord, error) {
@@ -1521,6 +1545,8 @@ func (s *memoryStore) ListSubscriptionRecords(ctx context.Context) ([]Subscripti
 	defer s.mu.RUnlock()
 	result := make([]SubscriptionRecord, 0, len(s.subscriptionRecords))
 	for _, record := range s.subscriptionRecords {
+		record.ValidFrom = cloneTimePointer(record.ValidFrom)
+		record.ValidUntil = cloneTimePointer(record.ValidUntil)
 		result = append(result, record)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].UserID < result[j].UserID })

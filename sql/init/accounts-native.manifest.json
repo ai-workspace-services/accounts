@@ -1,7 +1,7 @@
 {
   "format": 1,
   "migration_version": 2026101502,
-  "schema_sha256": "33dfbb024c082f6a497ac69adc0f906dae53a570c2255bb4cf8e9b1d09c9fd29",
+  "schema_sha256": "264b6202ef7240c46c5e498295c9f27de13a1a73d8a56219d2209a8bccf2ac10",
   "business_table_count": 63,
   "source_files": [
     {
@@ -90,15 +90,15 @@
     },
     {
       "path": "sql/migrations/2026101501_free_quota_3gb.up.sql",
-      "sha256": "d7ff804a7da604f98ac570ba42f89c84380d46c3a8e938a778deb60db18a12da"
+      "sha256": "bddb0bfad302a164a2bcbd82a54d6dc65eb63a968b4089b73abb82b88123959d"
     },
     {
       "path": "sql/migrations/2026101502_subscription_records.up.sql",
-      "sha256": "ddaba494f2d50d3f7604396250ba972cff37297c6f411dedd9296c0c21fe0cfa"
+      "sha256": "94d29b50208543517b5816bca9450d796fb9ff6458b57e37c7ec200f20c47e3a"
     },
     {
       "path": "sql/schema.sql",
-      "sha256": "aefb09205f948ee5a55af9b917a41003fe5e0103c394c13ad1de99db05ee744a"
+      "sha256": "ca9b3d5dee8b34246edc1d8ed51779670063b6eb8c52e6459cc0cc41e2188b89"
     }
   ],
   "business_tables": [

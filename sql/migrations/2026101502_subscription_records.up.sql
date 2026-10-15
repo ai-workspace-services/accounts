@@ -1,3 +1,6 @@
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS subscription_valid_from TIMESTAMPTZ;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS subscription_valid_until TIMESTAMPTZ;
+
 CREATE TABLE IF NOT EXISTS public.subscription_records (
   user_uuid UUID PRIMARY KEY REFERENCES public.users(uuid) ON DELETE CASCADE,
   subscription_type TEXT NOT NULL DEFAULT '',

@@ -3413,3 +3413,9 @@ CREATE TABLE public.subscription_records (
     CONSTRAINT subscription_records_fee_minor_check CHECK ((fee_minor >= 0)),
     CONSTRAINT subscription_records_validity_ck CHECK (((valid_until IS NULL) OR (valid_from IS NULL) OR (valid_until >= valid_from)))
 );
+
+ALTER TABLE ONLY public.subscription_records
+    ADD CONSTRAINT subscription_records_pkey PRIMARY KEY (user_uuid);
+ALTER TABLE ONLY public.subscription_records
+    ADD CONSTRAINT subscription_records_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE CASCADE;
+CREATE INDEX subscription_records_validity_idx ON public.subscription_records USING btree (valid_until);

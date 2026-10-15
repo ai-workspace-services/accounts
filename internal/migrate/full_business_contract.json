@@ -644,6 +644,84 @@
     "primary_key": ["event_id"],
     "foreign_keys": []
   },
+  "subscription_records": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "user_uuid",
+        "nullable": false,
+        "type": "uuid"
+      },
+      {
+        "generated": false,
+        "name": "subscription_type",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "monthly_quota_bytes",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "annual_quota_bytes",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "fee_minor",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "payment_status",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "note",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "valid_from",
+        "nullable": true,
+        "type": "timestamp with time zone"
+      },
+      {
+        "generated": false,
+        "name": "valid_until",
+        "nullable": true,
+        "type": "timestamp with time zone"
+      },
+      {
+        "generated": false,
+        "name": "updated_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "user_uuid"
+    ],
+    "foreign_keys": [
+      {
+        "columns": [
+          "user_uuid"
+        ],
+        "parent": "users",
+        "parent_columns": [
+          "uuid"
+        ]
+      }
+    ]
+  },
   "subscriptions": {
     "columns": [
       {"generated": false,"name": "uuid","nullable": false,"type": "uuid"},
