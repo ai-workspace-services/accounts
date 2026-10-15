@@ -38,6 +38,32 @@ func TestNetworkScopeMatrix(t *testing.T) {
 	}
 }
 
+func TestAgentResourceScopeFiltersPublicEntitlements(t *testing.T) {
+	free := &store.User{Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
+	plus := &store.User{Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
+	personal := networkAccess{Mode: "personal", Allowed: true}
+	for _, tc := range []struct {
+		name   string
+		groups []string
+		user   *store.User
+		want   bool
+	}{
+		{"free accepts free", []string{"resource:free"}, free, true},
+		{"free rejects plus", []string{"resource:free"}, plus, false},
+		{"plus accepts plus", []string{"resource:plus"}, plus, true},
+		{"plus rejects free", []string{"resource:plus"}, free, false},
+		{"shared accepts personal", []string{"resource:shared"}, plus, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scope, ok := agentResourceScope(tc.groups)
+			got := ok && agentResourceScopeAllowsUser(scope, personal, tc.user)
+			if got != tc.want {
+				t.Fatalf("scope=%+v valid=%v allowed=%v", scope, ok, got)
+			}
+		})
+	}
+}
+
 func TestNetworkTeamAdminAndQuotaGroups(t *testing.T) {
 	admin := &store.User{Groups: []string{"team:acme", "team-admin:acme"}}
 	if !networkTeamAdmin(admin, "acme") {

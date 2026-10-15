@@ -8,10 +8,73 @@ import (
 	"strings"
 	"time"
 
+	"account/internal/agentproto"
 	"account/internal/agentserver"
 	"account/internal/store"
 	"github.com/gin-gonic/gin"
 )
+
+const (
+	agentResourceGroupPrefix = "resource:"
+	agentResourceShared      = "shared"
+	agentResourceFree        = "free"
+	agentResourcePlus        = "plus"
+)
+
+// agentResourceScope resolves the pool entitlement from the enrolled
+// credential. A team marker remains the source of tenant isolation; a
+// resource marker selects a public pool. Conflicting markers fail closed.
+func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
+	scope := agentproto.UserScope{ResourceClass: agentResourceShared}
+	seen := ""
+	team, valid := agentNetworkScope(groups)
+	if !valid {
+		return agentproto.UserScope{}, false
+	}
+	if team != "" {
+		scope.ResourceClass, scope.TeamID = "team", team
+		seen = "team"
+	}
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if !strings.HasPrefix(group, agentResourceGroupPrefix) {
+			continue
+		}
+		class := strings.TrimPrefix(group, agentResourceGroupPrefix)
+		if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus {
+			return agentproto.UserScope{}, false
+		}
+		if seen != "" && seen != class {
+			return agentproto.UserScope{}, false
+		}
+		seen = class
+		scope.ResourceClass = class
+	}
+	if scope.ResourceClass == "team" && seen != "team" {
+		return agentproto.UserScope{}, false
+	}
+	if scope.ResourceClass != "team" && scope.TeamID != "" {
+		return agentproto.UserScope{}, false
+	}
+	return scope, true
+}
+
+func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAccess, user *store.User) bool {
+	if scope.ResourceClass == "team" {
+		return access.Mode == "dedicated" && access.TeamID == scope.TeamID
+	}
+	if access.Mode == "dedicated" {
+		return false
+	}
+	switch scope.ResourceClass {
+	case agentResourceFree:
+		return store.MonthlyQuotaGroup(user) == store.MonthlyFreeQuotaLimitGroup
+	case agentResourcePlus:
+		return store.MonthlyQuotaGroup(user) == store.MonthlyPlusQuotaLimitGroup
+	default:
+		return true
+	}
+}
 
 const (
 	teamAdminGroupPrefix = "team-admin:"

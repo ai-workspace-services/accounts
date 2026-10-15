@@ -44,6 +44,11 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 	if !ok {
 		return
 	}
+	scope, valid := agentResourceScope(identity.Groups)
+	if !valid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "agent_scope_invalid"})
+		return
+	}
 
 	clients, revision, err := h.authorizedAgentClients(c.Request.Context(), identity.Groups)
 	if err != nil {
@@ -52,6 +57,7 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 	}
 	c.Header("ETag", `"`+revision+`"`)
 	c.JSON(http.StatusOK, agentproto.ClientListResponse{
+		Scope:       &scope,
 		Clients:     clients,
 		Total:       len(clients),
 		Revision:    revision,
@@ -70,6 +76,10 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		return nil, "", errors.New("network team store unavailable")
 	}
 	clients := make([]xrayconfig.Client, 0, 16)
+	scope, valid := agentResourceScope(groups)
+	if !valid {
+		return nil, "", errors.New("invalid agent resource scope")
+	}
 	users, err := h.store.ListUsers(ctx)
 	if err != nil {
 		return nil, "", err
@@ -107,6 +117,9 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 	for _, u := range users {
 		access := accessFromNetworkMembership(memberByUser[u.ID], teams, now)
 		if !networkScopeAllows(access, groups) {
+			continue
+		}
+		if !agentResourceScopeAllowsUser(scope, access, &u) {
 			continue
 		}
 		if !u.Active {
