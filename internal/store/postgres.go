@@ -1205,6 +1205,65 @@ RETURNING uuid, created_at, updated_at, cancelled_at`
 	return nil
 }
 
+// UpsertSubscriptionRecords persists the operator-managed import fields in
+// the Accounts database. It is intentionally separate from quota groups:
+// groups are computed entitlements, while these rows are the source import.
+func (s *postgresStore) UpsertSubscriptionRecords(ctx context.Context, records []SubscriptionRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, record := range records {
+		if strings.TrimSpace(record.UserID) == "" {
+			return ErrUserNotFound
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO public.subscription_records
+ (user_uuid, subscription_type, monthly_quota_bytes, annual_quota_bytes, fee_minor, payment_status, note, valid_from, valid_until, updated_at)
+ VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+ ON CONFLICT (user_uuid) DO UPDATE SET subscription_type=EXCLUDED.subscription_type,
+ monthly_quota_bytes=EXCLUDED.monthly_quota_bytes, annual_quota_bytes=EXCLUDED.annual_quota_bytes,
+ fee_minor=EXCLUDED.fee_minor, payment_status=EXCLUDED.payment_status, note=EXCLUDED.note,
+ valid_from=EXCLUDED.valid_from, valid_until=EXCLUDED.valid_until, updated_at=now()`,
+			record.UserID, strings.TrimSpace(record.SubscriptionType), record.MonthlyQuotaBytes, record.AnnualQuotaBytes,
+			record.FeeMinor, strings.TrimSpace(record.PaymentStatus), strings.TrimSpace(record.Note), record.ValidFrom, record.ValidUntil)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *postgresStore) ListSubscriptionRecords(ctx context.Context) ([]SubscriptionRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT user_uuid::text, subscription_type, monthly_quota_bytes, annual_quota_bytes,
+ fee_minor, payment_status, note, valid_from, valid_until, updated_at
+ FROM public.subscription_records ORDER BY user_uuid::text`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []SubscriptionRecord
+	for rows.Next() {
+		var record SubscriptionRecord
+		var from, until sql.NullTime
+		if err := rows.Scan(&record.UserID, &record.SubscriptionType, &record.MonthlyQuotaBytes, &record.AnnualQuotaBytes,
+			&record.FeeMinor, &record.PaymentStatus, &record.Note, &from, &until, &record.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if from.Valid {
+			record.ValidFrom = &from.Time
+		}
+		if until.Valid {
+			record.ValidUntil = &until.Time
+		}
+		result = append(result, record)
+	}
+	return result, rows.Err()
+}
+
 // ListSubscriptionsByUser returns all subscriptions for a user ordered by recency.
 func (s *postgresStore) ListSubscriptionsByUser(ctx context.Context, userID string) ([]Subscription, error) {
 	normalizedUserID := strings.TrimSpace(userID)

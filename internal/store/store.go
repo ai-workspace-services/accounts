@@ -97,6 +97,22 @@ type Subscription struct {
 	CancelledAt   *time.Time
 }
 
+// SubscriptionRecord is the operator-managed subscription import record.
+// It stores source-of-truth fields used by the admin console independently of
+// the computed quota entitlement groups.
+type SubscriptionRecord struct {
+	UserID            string
+	SubscriptionType  string
+	MonthlyQuotaBytes int64
+	AnnualQuotaBytes  int64
+	FeeMinor          int64
+	PaymentStatus     string
+	Note              string
+	ValidFrom         *time.Time
+	ValidUntil        *time.Time
+	UpdatedAt         time.Time
+}
+
 type ReferralCode struct {
 	UserUUID  string
 	Code      string
@@ -570,6 +586,8 @@ type Store interface {
 	ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminPlanGroupBatch) (changes []AdminPlanGroupChange, replayed bool, err error)
 
 	UpsertSubscription(ctx context.Context, subscription *Subscription) error
+	UpsertSubscriptionRecords(ctx context.Context, records []SubscriptionRecord) error
+	ListSubscriptionRecords(ctx context.Context) ([]SubscriptionRecord, error)
 	ListSubscriptionsByUser(ctx context.Context, userID string) ([]Subscription, error)
 	CancelSubscription(ctx context.Context, userID, externalID string, cancelledAt time.Time) (*Subscription, error)
 	EnsureReferralCode(ctx context.Context, userUUID, candidate string) (*ReferralCode, error)
@@ -755,6 +773,7 @@ type memoryStore struct {
 	byEmail                 map[string]*User
 	byName                  map[string]*User
 	subscriptions           map[string]map[string]*Subscription
+	subscriptionRecords     map[string]SubscriptionRecord
 	identities              map[string]*Identity
 	agents                  map[string]*Agent
 	overlayDevices          map[string]*OverlayDevice
@@ -871,6 +890,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		byEmail:                 make(map[string]*User),
 		byName:                  make(map[string]*User),
 		subscriptions:           make(map[string]map[string]*Subscription),
+		subscriptionRecords:     make(map[string]SubscriptionRecord),
 		identities:              make(map[string]*Identity),
 		agents:                  make(map[string]*Agent),
 		overlayDevices:          make(map[string]*OverlayDevice),
@@ -1473,6 +1493,38 @@ func (s *memoryStore) UpsertSubscription(ctx context.Context, subscription *Subs
 
 	assignSubscription(subscription, stored)
 	return nil
+}
+
+func (s *memoryStore) UpsertSubscriptionRecords(ctx context.Context, records []SubscriptionRecord) error {
+	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	for _, record := range records {
+		id := strings.TrimSpace(record.UserID)
+		if id == "" {
+			return ErrUserNotFound
+		}
+		if _, ok := s.byID[id]; !ok {
+			return ErrUserNotFound
+		}
+		record.UserID = id
+		record.UpdatedAt = now
+		s.subscriptionRecords[id] = record
+	}
+	return nil
+}
+
+func (s *memoryStore) ListSubscriptionRecords(ctx context.Context) ([]SubscriptionRecord, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]SubscriptionRecord, 0, len(s.subscriptionRecords))
+	for _, record := range s.subscriptionRecords {
+		result = append(result, record)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].UserID < result[j].UserID })
+	return result, nil
 }
 
 // ListSubscriptionsByUser returns subscriptions associated with a user.
