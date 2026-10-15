@@ -105,6 +105,10 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 
 	quotaExhausted := billingProfile != nil &&
 		store.IsMonthlyQuotaLimitMember(user) && remainingQuota <= 0
+	if store.HasSubscriptionUnlimitedOverride(user, time.Now()) && planContract.CurrentPlan != nil {
+		planContract.CurrentPlan.Unlimited = true
+		planContract.CurrentPlan.Source = "temporary_subscription_override"
+	}
 	networkAccessState := "active"
 	networkAccessReason := ""
 	switch {
@@ -145,6 +149,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		"suspendState":         suspendState,
 		"throttleState":        throttleState,
 		"quotaExhausted":       quotaExhausted,
+		"temporaryUnlimited":   store.HasSubscriptionUnlimitedOverride(user, time.Now()),
 		"networkAccessState":   networkAccessState,
 		"networkAccessReason":  networkAccessReason,
 		"arrears":              arrears,
