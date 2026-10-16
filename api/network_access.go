@@ -68,7 +68,9 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 	}
 	switch scope.ResourceClass {
 	case agentResourceFree:
-		return store.MonthlyQuotaGroup(user) == store.MonthlyFreeQuotaLimitGroup
+		// Registered personal users without an explicit quota group are Free.
+		group := store.MonthlyQuotaGroup(user)
+		return group == "" || group == store.MonthlyFreeQuotaLimitGroup
 	case agentResourcePlus:
 		group := store.MonthlyQuotaGroup(user)
 		return group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup
@@ -724,7 +726,62 @@ func (h *handler) networkWriteError(c *gin.Context, err error) {
 
 // Dedicated credentials cannot alias another ID. Legacy shared public
 // credentials may still register public aliases, but cannot overwrite a team ID.
+// The node's declared class selects a public pool only when its authenticated
+// deployment credential can manage public pools. Team and restricted credentials
+// remain bound to their enrolled scope; pool names never authorize a scope.
 func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
+	identity, ok := h.resolveAgentIdentity(c, credential, requested)
+	if !ok {
+		return identity, false
+	}
+	class := strings.TrimSpace(c.GetHeader("X-Agent-Resource-Class"))
+	teamID := strings.TrimSpace(c.GetHeader("X-Agent-Team-ID"))
+	if class == "" && teamID == "" {
+		return identity, true
+	}
+	if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus && class != agentResourceTeam {
+		respondError(c, 400, "agent_scope_invalid", "resource class must be shared, free, plus or team")
+		return identity, false
+	}
+	if class != agentResourceTeam && teamID != "" || class == agentResourceTeam && teamID == "" {
+		respondError(c, 400, "agent_scope_invalid", "team ID is required only for team nodes")
+		return identity, false
+	}
+	scope, valid := agentResourceScope(identity.Groups)
+	if !valid {
+		respondError(c, 403, "agent_scope_invalid", "invalid registered agent scope")
+		return identity, false
+	}
+	credentialScope, valid := agentResourceScope(credential.Groups)
+	if !valid {
+		respondError(c, 403, "agent_scope_invalid", "invalid credential scope")
+		return identity, false
+	}
+	managePublic := false
+	for _, group := range credential.Groups {
+		if group == "agent:configure-public" || (group == "internal" && credential.ID == "*" && credentialScope.ResourceClass == agentResourceShared) {
+			managePublic = true
+		}
+	}
+	managePublic = managePublic && (credential.ID == "*" || credential.ID == identity.ID)
+	if managePublic && credentialScope.ResourceClass != agentResourceTeam && scope.ResourceClass != agentResourceTeam && class != agentResourceTeam {
+		groups := make([]string, 0, len(identity.Groups)+1)
+		for _, group := range identity.Groups {
+			if !strings.HasPrefix(strings.TrimSpace(group), agentResourceGroupPrefix) {
+				groups = append(groups, group)
+			}
+		}
+		identity.Groups = append(groups, agentResourceGroupPrefix+class)
+		return identity, true
+	}
+	if scope.ResourceClass != class || scope.TeamID != teamID || (!managePublic && scope != credentialScope) {
+		respondError(c, 403, "agent_scope_mismatch", "requested class requires matching enrolled scope or public pool management permission")
+		return identity, false
+	}
+	return identity, true
+}
+
+func (h *handler) resolveAgentIdentity(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
 	team, valid := agentNetworkScope(credential.Groups)
 	if !valid {
 		respondError(c, http.StatusForbidden, "agent_scope_invalid", "agent credential has an invalid network scope")

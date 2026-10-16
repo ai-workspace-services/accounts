@@ -125,6 +125,10 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		if !u.Active {
 			continue
 		}
+		// Every class, including demo accounts, honors the operator/billing blacklist.
+		if blocked[strings.TrimSpace(u.ID)] {
+			continue
+		}
 		email := strings.ToLower(strings.TrimSpace(u.Email))
 
 		if exhausted, err := h.quotaExhaustedForUser(ctx, &u); err != nil {
@@ -134,8 +138,6 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		}
 		// Sandbox is a special demo identity with expiring access metadata.
 		// Its client ID remains the canonical account UUID across every node.
-		// It is exempt from the arrears suspension filter below for the same
-		// reason: the Guest experience must not depend on billing state.
 		if email == sandboxUserEmail {
 			sandboxUser := u
 			_ = h.ensureSandboxProxyUUID(ctx, &sandboxUser)
@@ -159,15 +161,6 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 			continue
 		}
 
-		// Pause configuration synchronization for prolonged billing suspension
-		// or an operator pause. The account and its
-		// billing history remain intact; only the node-local Xray credential is
-		// withheld until the pause clears. Caddy cannot apply this policy because
-		// the VLESS account identity is visible only inside Xray.
-		if blocked[strings.TrimSpace(u.ID)] {
-			continue
-		}
-
 		id := strings.TrimSpace(u.ProxyUUID)
 		if id == "" {
 			continue
@@ -180,7 +173,10 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 	}
 
 	sort.Slice(clients, func(i, j int) bool { return clients[i].ID < clients[j].ID })
-	payload, err := json.Marshal(clients)
+	payload, err := json.Marshal(struct {
+		Scope   agentproto.UserScope `json:"scope"`
+		Clients []xrayconfig.Client  `json:"clients"`
+	}{Scope: scope, Clients: clients})
 	if err != nil {
 		return nil, "", err
 	}
