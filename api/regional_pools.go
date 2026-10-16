@@ -155,25 +155,13 @@ func registeredRegionalPools(reader agentStatusReader, now time.Time) []regional
 	return pools
 }
 
-// reportedResourceClass prefers the credential scope (the authoritative
-// isolation boundary) and only falls back to the declared pool suffix for
-// legacy registrations that predate resource markers.
+// Credential scope is authoritative, including explicit shared registrations.
+// Pool names are arbitrary labels and must never change node eligibility.
 func reportedResourceClass(snapshot agentserver.StatusSnapshot) (string, string) {
-	if scope, valid := agentResourceScope(snapshot.Agent.Groups); valid && scope.ResourceClass != agentResourceShared {
+	if scope, valid := agentResourceScope(snapshot.Agent.Groups); valid {
 		return scope.ResourceClass, strings.TrimSpace(scope.TeamID)
 	}
-	pool := strings.ToLower(strings.TrimSpace(snapshot.Report.Xray.Pool))
-	parts := strings.FieldsFunc(pool, func(r rune) bool { return r == '-' || r == '_' || r == '/' })
-	if len(parts) > 0 {
-		class := parts[len(parts)-1]
-		switch class {
-		case agentResourceFree, agentResourcePlus:
-			return class, ""
-		case agentResourceTeam:
-			return agentResourceTeam, ""
-		}
-	}
-	return agentResourceShared, ""
+	return "", ""
 }
 
 func regionalEntryHost(raw string) string {
