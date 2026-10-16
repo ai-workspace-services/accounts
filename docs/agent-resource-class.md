@@ -24,3 +24,12 @@
 ## 上线顺序
 
 先发布 Accounts，再更新 Agent。Agent 保持对控制面 scope 的严格验证，错误日志显示期望及返回类型。只更新 Agent 无法纠正旧服务端忽略显式类型的问题。修改本地节点类型后，需要持有符合上面规则的部署凭据；禁止通过省略 scope 或删除校验绕过团队隔离。
+# User-facing node discovery
+
+The authenticated node/subscription endpoints use the same resource-class
+boundary as agent UUID delivery. Free users see Free and Shared pools; Plus
+users see Plus and Shared pools. Dedicated team administrators and members
+see only their own team's pool. The existing account, blacklist, quota and
+team-validity checks still run before discovery. Pool names do not select
+resource class, including misleading names on explicit Shared registrations.
+

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -8,6 +9,49 @@ import (
 	"account/internal/agentserver"
 	"account/internal/store"
 )
+
+func TestUserNodeDiscoverySharedAndDedicatedMatrix(t *testing.T) {
+	now := time.Now().UTC()
+	reader := stubAgentStatusReader{}
+	for _, node := range []struct{ id, class, team, pool string }{
+		{"free", "free", "", "arbitrary"},
+		{"plus", "plus", "", "arbitrary"},
+		{"shared", "shared", "", "jp-plus"},
+		{"team-a", "team", "a", "jp-shared"},
+		{"team-b", "team", "b", "jp-shared"},
+	} {
+		groups := []string{"resource:" + node.class}
+		if node.team != "" {
+			groups = []string{"team:" + node.team}
+		}
+		reader.statuses = append(reader.statuses, agentserver.StatusSnapshot{
+			Agent: agentserver.Identity{ID: node.id, Groups: groups}, UpdatedAt: now,
+			Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "jp", Pool: node.pool, EntryPoint: node.id + ".example"}},
+		})
+	}
+	for _, tc := range []struct {
+		name, group string
+		access      networkAccess
+		want        []string
+	}{
+		{"registered free", "", networkAccess{Mode: "personal", Allowed: true}, []string{"free.example", "shared.example"}},
+		{"free", store.MonthlyFreeQuotaLimitGroup, networkAccess{Mode: "personal", Allowed: true}, []string{"free.example", "shared.example"}},
+		{"plus", store.MonthlyPlusQuotaLimitGroup, networkAccess{Mode: "personal", Allowed: true}, []string{"plus.example", "shared.example"}},
+		{"team a", "", networkAccess{Mode: "dedicated", TeamID: "a", Allowed: true}, []string{"team-a.example"}},
+		{"team b", "", networkAccess{Mode: "dedicated", TeamID: "b", Allowed: true}, []string{"team-b.example"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pools := regionalPoolsForUser(reader, tc.access, &store.User{Groups: []string{tc.group}}, now)
+			var got []string
+			for _, pool := range pools {
+				got = append(got, pool.Entry)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("nodes=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestPoolXHTTPPathUsesEntitlementRoute(t *testing.T) {
 	t.Setenv("XRAY_POOL_ROUTE_PREFIX", "/pool")
