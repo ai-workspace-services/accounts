@@ -134,6 +134,9 @@ func (r *Registry) ReportStatus(agent Identity, report agentproto.StatusReport) 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Public class reconciliation is authorized by the API before reporting.
+	// Keep inventory identity and live status in agreement after a class change.
+	r.byID[agent.ID] = agent
 	r.statuses[agent.ID] = StatusSnapshot{
 		Agent:     agent,
 		Report:    report,
