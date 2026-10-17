@@ -96,7 +96,7 @@ func ControlledMigrate(ctx context.Context, dsn string, files fs.FS, opts Contro
 	if _, err := fmt.Sscan(lockID, &lockIDInt64); err != nil {
 		return errors.New("unable to prepare migration lock")
 	}
-	if _, err := conn.Exec(ctx, "SELECT set_config('statement_timeout', $1, false)", opts.LockTimeout.String()); err != nil {
+	if _, err := conn.Exec(ctx, "SELECT set_config('statement_timeout', $1, false)", strconv.FormatInt(opts.LockTimeout.Milliseconds(), 10)); err != nil {
 		return errors.New("unable to configure migration lock timeout")
 	}
 	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", lockIDInt64); err != nil {
@@ -109,7 +109,7 @@ func ControlledMigrate(ctx context.Context, dsn string, files fs.FS, opts Contro
 		return errors.New("unable to start migration transaction")
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, "SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)", opts.StatementTimeout.String(), opts.LockTimeout.String()); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)", strconv.FormatInt(opts.StatementTimeout.Milliseconds(), 10), strconv.FormatInt(opts.LockTimeout.Milliseconds(), 10)); err != nil {
 		return errors.New("unable to configure migration timeouts")
 	}
 	quotedSchema := pgx.Identifier{schemaName}.Sanitize()
