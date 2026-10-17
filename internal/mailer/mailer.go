@@ -76,6 +76,7 @@ type Message struct {
 	PlainBody      string
 	HTMLBody       string
 	UnsubscribeURL string
+	MessageID      string
 }
 
 // Sender sends email messages over SMTP.
@@ -288,12 +289,31 @@ func (s *smtpSender) buildMessage(msg Message, headerTo []string) ([]byte, error
 	var builder strings.Builder
 	builder.Grow(512 + len(msg.PlainBody) + len(msg.HTMLBody))
 
+	messageID := msg.MessageID
+	if messageID == "" {
+		var err error
+		messageID, err = randomBoundary()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(messageID) > 100 || strings.IndexFunc(messageID, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
+	}) >= 0 {
+		return nil, errors.New("invalid message ID")
+	}
+	domain := "localhost"
+	if index := strings.LastIndex(s.from.Address, "@"); index >= 0 {
+		domain = s.from.Address[index+1:]
+	}
 	subject := encodeHeader(msg.Subject)
 	headers := []string{
 		fmt.Sprintf("From: %s", s.from.String()),
 		fmt.Sprintf("To: %s", strings.Join(headerTo, ", ")),
 		fmt.Sprintf("Subject: %s", subject),
 		"MIME-Version: 1.0",
+		"Date: " + time.Now().UTC().Format(time.RFC1123Z),
+		"Message-ID: <" + messageID + "@" + domain + ">",
 	}
 	if s.replyTo != nil {
 		headers = append(headers, fmt.Sprintf("Reply-To: %s", s.replyTo.String()))

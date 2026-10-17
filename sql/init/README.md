@@ -1,14 +1,14 @@
 # Latest native Accounts initialization
 
 `accounts-native.sql` is the final PostgreSQL schema for a new empty Accounts
-database: 67 business tables, current GORM columns, task-session control plane,
+database: 72 business tables, current GORM columns, task-session control plane,
 finance/lifecycle/MFA/recovery constraints, indexes, RLS and triggers. It contains
 no users, RBAC/catalog seeds, subscriptions, quota or ledger rows. Full PROD copy
 must supply the business data before a target writer is started.
 
 This is an Accounts artifact. Billing's additional `cloud_vendor_costs` schema
 belongs to the matching Billing release and must also be qualified by the
-execution owner; it is not silently considered part of these 67 tables.
+execution owner; it is not silently considered part of these 72 tables.
 
 ## Contract
 

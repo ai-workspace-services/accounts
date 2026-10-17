@@ -12,6 +12,8 @@ type EmailMessage struct {
 	PlainBody      string
 	HTMLBody       string
 	Marketing      *MarketingRecipient
+	ConsentVersion uint64
+	MessageID      string
 	UnsubscribeURL string
 }
 

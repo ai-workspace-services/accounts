@@ -21,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const FullBusinessVersion = 2026101702
+const FullBusinessVersion = 2026101703
 const FullBusinessBillingSHA256 = "a7133f3ef2ea9013a055cfd1442a7488d2b837f289e0f5d9b61624d4fde9bc53"
 const fullBusinessBatch = 1000
 
@@ -114,7 +114,7 @@ type CoreUsersDiff struct {
 
 func fullBusinessContract() (map[string]businessTable, []string, error) {
 	var tables map[string]businessTable
-	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 68 {
+	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 73 {
 		return nil, nil, errors.New("invalid compiled full-business catalog")
 	}
 	_, manifest, err := schema.NativeArtifact()
@@ -174,6 +174,12 @@ func businessColumnList(names []string) string {
 }
 
 var optionalBusinessTables = map[string]bool{
+	"email_campaigns":        true,
+	"email_onboarding_steps": true,
+	"email_deliveries":       true,
+	"email_recipient_leases": true,
+	"email_suppressions":     true,
+
 	"email_management_settings": true,
 	"email_preferences":         true,
 	"email_preference_tokens":   true,
@@ -767,6 +773,7 @@ var businessUserReferences = map[string][]string{
 	"users": {"uuid", "account_lifecycle_actor_ref"}, "audit_logs": {"actor_uuid"}, "finance_payments": {"account_uuid"}, "finance_operations": {"actor_ref"},
 	"finance_operation_events": {"actor_ref"}, "overlay_devices": {"user_id"}, "overlay_networks": {"owner_user_id"},
 	"overlay_registrations": {"owner_user_id"}, "tenant_memberships": {"user_id"}, "xworkmate_profiles": {"user_id"},
+	"email_campaigns": {"created_by"}, "email_onboarding_steps": {"updated_by"}, "email_deliveries": {"user_id"}, "email_recipient_leases": {"user_id"}, "email_suppressions": {"updated_by"},
 	"email_management_settings": {"updated_by"}, "email_preferences": {"user_id"},
 	"email_preference_tokens": {"user_id"}, "email_preference_events": {"user_id"},
 	"homepage_video_settings": {"updated_by"}, "account_lifecycle_events": {"actor_ref"}, "task_session_events": {"actor_id"},

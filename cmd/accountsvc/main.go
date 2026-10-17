@@ -295,6 +295,7 @@ func (m mailerAdapter) Send(ctx context.Context, msg api.EmailMessage) error {
 		Subject:        msg.Subject,
 		PlainBody:      msg.PlainBody,
 		UnsubscribeURL: msg.UnsubscribeURL,
+		MessageID:      msg.MessageID,
 		HTMLBody:       msg.HTMLBody,
 	}
 	return m.sender.Send(ctx, mail)
@@ -1662,6 +1663,9 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		}
 	}
 
+	if cfg.DatabaseRuntime.MayRunBackgroundWriters() {
+		options = append(options, api.WithEmailWorkerContext(ctx))
+	}
 	api.RegisterRoutes(r, options...)
 	if cfg.DatabaseRuntime.MayRunBackgroundWriters() {
 		api.StartAnnualQuotaReconciler(ctx, st, logger.With("component", "annual-quota"))
@@ -2076,7 +2080,7 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 			&model.EmailManagementSetting{},
 			&model.EmailPreference{},
 			&model.EmailPreferenceToken{},
-			&model.EmailPreferenceEvent{},
+			&model.EmailPreferenceEvent{}, &model.EmailCampaign{}, &model.EmailOnboardingStep{}, &model.EmailDelivery{}, &model.EmailRecipientLease{}, &model.EmailSuppression{},
 			&model.SandboxBinding{},
 			&model.Tenant{},
 			&model.TenantDomain{},

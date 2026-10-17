@@ -152,7 +152,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	}
 	exec(target, `ALTER TABLE public.billing_ledger DROP CONSTRAINT fixture_reject`)
 	receipt, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
-	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 68 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
+	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 73 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
 		t.Fatalf("full copy: %#v %v", receipt, e)
 	}
 	var after string
@@ -317,6 +317,16 @@ func TestFullBusinessPostgres17(t *testing.T) {
  VALUES('isolated-hashed-token-fixture','`+sourceID+`','native@example.invalid','unsubscribe','2027-01-01T00:00:00Z');
  INSERT INTO public.email_management_settings(id,version,company_name,postal_address,contact_email,console_url,updated_by,updated_at)
  VALUES('default',1,'Example LLC','Example Street','support@example.invalid','https://console.example','`+sourceID+`','2026-10-01T00:00:00Z')`)
+		exec(native, `INSERT INTO public.email_campaigns(id,version,kind,subject,body,action_label,action_url,audience,delivery_mode,status,created_by,created_at,updated_at)
+ VALUES('campaign-fixture',1,'feature','Feature fixture','Details','','','all','important','draft','`+sourceID+`','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+ INSERT INTO public.email_onboarding_steps(id,version,enabled,subject,body,action_label,action_url,delay_hours,activated_at,updated_by,updated_at)
+ VALUES('hello',1,false,'Hello','Account guide','','',0,'2026-10-01T00:00:00Z','`+sourceID+`','2026-10-01T00:00:00Z');
+ INSERT INTO public.email_deliveries(id,dedupe_key,campaign_id,step_id,user_id,email,subject,body,action_label,action_url,category,delivery_mode,audience,status,attempts,due_at,lease_token,last_error,created_at,updated_at)
+ VALUES('delivery-fixture','onboarding:hello:`+sourceID+`','','hello','`+sourceID+`','native@example.invalid','Hello','Account guide','','','','important','all','queued',0,'2026-10-01T00:00:00Z','','','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+ INSERT INTO public.email_recipient_leases(user_id,token,expires_at)
+ VALUES('`+sourceID+`','lease-fixture','2026-10-01T00:00:00Z');
+ INSERT INTO public.email_suppressions(email,reason,updated_by,created_at)
+ VALUES('bounce@example.invalid','bounce','`+sourceID+`','2026-10-01T00:00:00Z')`)
 		readonlyNative := "postgres://readonly_release:isolated-readonly-fixture@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/full_business_native_source?sslmode=disable"
 		copyOptions := options
 		copyOptions.CompareOnly = false
@@ -333,11 +343,11 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `DROP TRIGGER fixture_late_mutation ON public.users; DROP FUNCTION public.fixture_late_mutation()`)
 		copied, e := CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions)
-		if e != nil || copied.SourceTables != 68 || len(copied.Tables) != 68 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
+		if e != nil || copied.SourceTables != 73 || len(copied.Tables) != 73 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
 			t.Fatalf("native finance copy failed: %v", e)
 		}
 
-		for _, table := range []string{"email_preferences", "email_preference_tokens", "email_preference_events", "email_management_settings", "referral_codes", "referrals", "referral_rewards", "referral_reward_events", "referral_payment_risks", "referral_settlements", "referral_settlement_items", "subscription_extension_ledger"} {
+		for _, table := range []string{"email_campaigns", "email_onboarding_steps", "email_deliveries", "email_recipient_leases", "email_suppressions", "email_preferences", "email_preference_tokens", "email_preference_events", "email_management_settings", "referral_codes", "referrals", "referral_rewards", "referral_reward_events", "referral_payment_risks", "referral_settlements", "referral_settlement_items", "subscription_extension_ledger"} {
 			if copied.Tables[table].Rows != 1 {
 				t.Fatalf("referral business table was not copied exactly: %s", table)
 			}

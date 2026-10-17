@@ -25,7 +25,7 @@ func emailTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = d.AutoMigrate(&model.AdminSetting{}, &model.EmailManagementSetting{}, &model.EmailPreference{}, &model.EmailPreferenceToken{}, &model.EmailPreferenceEvent{}); err != nil {
+	if err = d.AutoMigrate(&model.AdminSetting{}, &model.EmailManagementSetting{}, &model.EmailPreference{}, &model.EmailPreferenceToken{}, &model.EmailPreferenceEvent{}, &model.EmailCampaign{}, &model.EmailOnboardingStep{}, &model.EmailDelivery{}, &model.EmailRecipientLease{}, &model.EmailSuppression{}); err != nil {
 		t.Fatal(err)
 	}
 	service.SetDB(d)

@@ -1785,5 +1785,363 @@
       "id"
     ],
     "foreign_keys": []
+  },
+  "email_campaigns": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "version",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "kind",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "subject",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "body",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "action_label",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "action_url",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "audience",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "delivery_mode",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "status",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "created_by",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      },
+      {
+        "generated": false,
+        "name": "updated_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": []
+  },
+  "email_onboarding_steps": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "version",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "enabled",
+        "nullable": false,
+        "type": "boolean"
+      },
+      {
+        "generated": false,
+        "name": "subject",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "body",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "action_label",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "action_url",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "delay_hours",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "activated_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      },
+      {
+        "generated": false,
+        "name": "updated_by",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "updated_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": []
+  },
+  "email_deliveries": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "dedupe_key",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "campaign_id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "step_id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "user_id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "email",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "subject",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "body",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "action_label",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "action_url",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "category",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "delivery_mode",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "audience",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "status",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "attempts",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "due_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      },
+      {
+        "generated": false,
+        "name": "lease_token",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "lease_until",
+        "nullable": true,
+        "type": "timestamp with time zone"
+      },
+      {
+        "generated": false,
+        "name": "sent_at",
+        "nullable": true,
+        "type": "timestamp with time zone"
+      },
+      {
+        "generated": false,
+        "name": "last_error",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      },
+      {
+        "generated": false,
+        "name": "updated_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": []
+  },
+  "email_recipient_leases": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "user_id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "token",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "expires_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "user_id"
+    ],
+    "foreign_keys": []
+  },
+  "email_suppressions": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "email",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "reason",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "updated_by",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "email"
+    ],
+    "foreign_keys": []
   }
 }

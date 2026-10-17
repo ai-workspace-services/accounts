@@ -101,3 +101,21 @@ func TestOneClickUnsubscribeHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestQueuedMessageIDAndDate(t *testing.T) {
+	sender, err := New(Config{Host: "smtp.example.com", From: "mail@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := sender.(*smtpSender)
+	raw, err := s.buildMessage(Message{MessageID: "delivery-123", PlainBody: "Hello"}, []string{"user@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "Message-ID: <delivery-123@example.com>\r\n") || !strings.Contains(string(raw), "Date: ") {
+		t.Fatal("missing stable message ID or Date")
+	}
+	if _, err = s.buildMessage(Message{MessageID: "bad\r\nX-Injected: yes"}, []string{"user@example.com"}); err == nil {
+		t.Fatal("unsafe message ID accepted")
+	}
+}
