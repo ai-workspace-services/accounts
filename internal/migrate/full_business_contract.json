@@ -1597,5 +1597,193 @@
         ]
       }
     ]
+  },
+  "email_management_settings": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "version",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "company_name",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "postal_address",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "contact_email",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "console_url",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "updated_by",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "updated_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": []
+  },
+  "email_preferences": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "user_id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "product_updates",
+        "nullable": false,
+        "type": "boolean"
+      },
+      {
+        "generated": false,
+        "name": "tutorials",
+        "nullable": false,
+        "type": "boolean"
+      },
+      {
+        "generated": false,
+        "name": "offers",
+        "nullable": false,
+        "type": "boolean"
+      },
+      {
+        "generated": false,
+        "name": "frequency",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "version",
+        "nullable": false,
+        "type": "bigint"
+      },
+      {
+        "generated": false,
+        "name": "updated_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "user_id"
+    ],
+    "foreign_keys": []
+  },
+  "email_preference_tokens": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "hash",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "user_id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "email",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "purpose",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "expires_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "hash"
+    ],
+    "foreign_keys": []
+  },
+  "email_preference_events": {
+    "columns": [
+      {
+        "generated": false,
+        "name": "id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "user_id",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "source",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "policy_version",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "preferences",
+        "nullable": false,
+        "type": "text"
+      },
+      {
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "type": "timestamp with time zone"
+      }
+    ],
+    "primary_key": [
+      "id"
+    ],
+    "foreign_keys": []
   }
 }

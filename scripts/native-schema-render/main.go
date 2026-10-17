@@ -89,7 +89,7 @@ func render(dsn string) error {
 	if err = tasksession.ApplyPostgresSchema(ctx, sqlDB); err != nil {
 		return fmt.Errorf("fixture task-session qualification failed")
 	}
-	if err = db.WithContext(ctx).AutoMigrate(&model.AdminSetting{}, &model.HomepageVideoSetting{}, &model.SandboxBinding{}, &model.Tenant{}, &model.TenantDomain{}, &model.TenantMembership{}, &model.XWorkmateProfile{}); err != nil {
+	if err = db.WithContext(ctx).AutoMigrate(&model.AdminSetting{}, &model.HomepageVideoSetting{}, &model.EmailManagementSetting{}, &model.EmailPreference{}, &model.EmailPreferenceToken{}, &model.EmailPreferenceEvent{}, &model.SandboxBinding{}, &model.Tenant{}, &model.TenantDomain{}, &model.TenantMembership{}, &model.XWorkmateProfile{}); err != nil {
 		return fmt.Errorf("fixture model qualification failed")
 	}
 	if err = overlay.AutoMigrate(db.WithContext(ctx)); err != nil {

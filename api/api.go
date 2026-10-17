@@ -502,6 +502,10 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authGroup.GET("/sync/config", h.syncConfigSnapshot)
 	authGroup.POST("/sync/ack", h.syncConfigAck)
 	authGroup.GET("/homepage-video", h.getHomepageVideoPublic)
+	// These endpoints accept a scoped opaque email capability; no login required.
+	authGroup.GET("/email-preferences", emailPreferencePrivacy, h.getEmailPreferences)
+	authGroup.PUT("/email-preferences", emailPreferencePrivacy, h.putEmailPreferences)
+	authGroup.POST("/email-unsubscribe", emailPreferencePrivacy, h.unsubscribeEmail)
 
 	// Sandbox binding read endpoint.
 	// Used by the Console Guest/Demo experience. Must be readable either via a
@@ -563,6 +567,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	authProtected.GET("/admin/settings", h.getAdminSettings)
 	authProtected.POST("/admin/settings", h.updateAdminSettings)
+	authProtected.GET("/admin/email-management", emailPreferencePrivacy, h.getEmailManagement)
+	authProtected.PUT("/admin/email-management", emailPreferencePrivacy, h.putEmailManagement)
+	authProtected.POST("/admin/email-management/preview", emailPreferencePrivacy, h.previewMarketingFooter)
 	authProtected.GET("/admin/homepage-video", h.getHomepageVideoSettings)
 	authProtected.PUT("/admin/homepage-video", h.updateHomepageVideoSettings)
 
@@ -2265,7 +2272,7 @@ func (h *handler) enqueueEmailVerification(ctx context.Context, locale mailLocal
 		HTMLBody:  htmlBody,
 	}
 
-	if err := h.emailSender.Send(ctx, msg); err != nil {
+	if err := h.deliverEmail(ctx, msg); err != nil {
 		// Log but don't delete immediately to allow retries with same code
 		slog.Error("failed to send verification email", "err", err, "email", email)
 		return err
@@ -2420,7 +2427,7 @@ func (h *handler) issueRegistrationVerification(ctx context.Context, locale mail
 		HTMLBody:  htmlBody,
 	}
 
-	if err := h.emailSender.Send(ctx, msg); err != nil {
+	if err := h.deliverEmail(ctx, msg); err != nil {
 		// Log but don't delete to allow reuse/resend attempts
 		slog.Error("failed to send registration verification email", "err", err, "email", email)
 		return registrationVerification{}, err
@@ -2531,7 +2538,7 @@ func (h *handler) enqueuePasswordReset(ctx context.Context, locale mailLocale, u
 		HTMLBody:  htmlBody,
 	}
 
-	if err := h.emailSender.Send(ctx, msg); err != nil {
+	if err := h.deliverEmail(ctx, msg); err != nil {
 		_ = h.store.InvalidatePasswordRecoveryChallenge(ctx, challenge.ID, time.Now().UTC())
 		return err
 	}

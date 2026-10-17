@@ -1,12 +1,12 @@
 {
   "format": 1,
-  "migration_version": 2026101701,
-  "schema_sha256": "264b6202ef7240c46c5e498295c9f27de13a1a73d8a56219d2209a8bccf2ac10",
-  "business_table_count": 63,
+  "migration_version": 2026101702,
+  "schema_sha256": "77e821595f290107b5cea331e3e1a7d6b15038cbcdc71a28d0e6cac84ade7d86",
+  "business_table_count": 67,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "73454f40265f1a1cf0a1520a42fd875d93fdedd1ea91cec828a6acc5c9a38a3f"
+      "sha256": "0f7710b67a05138c1b532e10f79b8186b34978b4bbeac7eaa1d2b604e7df309f"
     },
     {
       "path": "internal/model/admin_setting.go",
@@ -34,7 +34,7 @@
     },
     {
       "path": "scripts/native-schema-render/main.go",
-      "sha256": "52af49d9c7b8e54943d56d797915a97bd5cb4542c1e2f2ba412c3e9dae74f012"
+      "sha256": "9c35fe1a237e3db63ead36cfc3e962ad7b38d5e825db7b4f62484843cd5d7359"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -103,6 +103,14 @@
     {
       "path": "sql/migrations/2026101701_free_quota_5gb.up.sql",
       "sha256": "21da5da1f05a79707bac527147a07b58d84dcadeab96933935a03ca8f7e25a1b"
+    },
+    {
+      "path": "internal/model/email_preferences.go",
+      "sha256": "23fe94b8eb75d5cd61df54a3ca1a318b159522b9811bd4021fcb5c807793b734"
+    },
+    {
+      "path": "sql/migrations/2026101702_email_preferences.up.sql",
+      "sha256": "6453608516d620773565b343d2397a0d3dc2415332a86f989a8952bcb044c5eb"
     }
   ],
   "business_tables": [
@@ -118,6 +126,10 @@
     "billing_source_sync_state",
     "bridge_credentials",
     "email_blacklist",
+    "email_management_settings",
+    "email_preference_events",
+    "email_preference_tokens",
+    "email_preferences",
     "finance_invoices",
     "finance_operation_events",
     "finance_operations",

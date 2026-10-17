@@ -3419,3 +3419,60 @@ ALTER TABLE ONLY public.subscription_records
 ALTER TABLE ONLY public.subscription_records
     ADD CONSTRAINT subscription_records_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE CASCADE;
 CREATE INDEX subscription_records_validity_idx ON public.subscription_records USING btree (valid_until);
+
+-- Marketing sender identity and independent, explicit recipient preferences.
+CREATE TABLE public.email_management_settings (
+    id text NOT NULL,
+    version bigint NOT NULL,
+    company_name text NOT NULL,
+    postal_address text NOT NULL,
+    contact_email text NOT NULL,
+    console_url text NOT NULL,
+    updated_by text NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_management_settings
+    ADD CONSTRAINT email_management_settings_pkey PRIMARY KEY (id);
+
+CREATE TABLE public.email_preferences (
+    user_id text NOT NULL,
+    product_updates boolean NOT NULL,
+    tutorials boolean NOT NULL,
+    offers boolean NOT NULL,
+    frequency text NOT NULL,
+    version bigint NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_preferences
+    ADD CONSTRAINT email_preferences_pkey PRIMARY KEY (user_id);
+
+CREATE TABLE public.email_preference_tokens (
+    hash text NOT NULL,
+    user_id text NOT NULL,
+    email text NOT NULL,
+    purpose text NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_preference_tokens
+    ADD CONSTRAINT email_preference_tokens_pkey PRIMARY KEY (hash);
+
+CREATE INDEX idx_email_preference_tokens_expires_at ON public.email_preference_tokens USING btree (expires_at);
+
+CREATE INDEX idx_email_preference_tokens_user_id ON public.email_preference_tokens USING btree (user_id);
+
+CREATE TABLE public.email_preference_events (
+    id text NOT NULL,
+    user_id text NOT NULL,
+    source text NOT NULL,
+    policy_version text NOT NULL,
+    preferences text NOT NULL,
+    created_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_preference_events
+    ADD CONSTRAINT email_preference_events_pkey PRIMARY KEY (id);
+
+CREATE INDEX idx_email_preference_events_user_id ON public.email_preference_events USING btree (user_id);

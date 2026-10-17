@@ -81,3 +81,23 @@ func TestBuildMessageEncodesNonASCIIPlainPart(t *testing.T) {
 		t.Fatalf("a Chinese plain part was not quoted-printable:\n%s", body)
 	}
 }
+
+func TestOneClickUnsubscribeHeaders(t *testing.T) {
+	sender, err := New(Config{Host: "smtp.example.com", From: "mail@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	smtp := sender.(*smtpSender)
+	raw, err := smtp.buildMessage(Message{PlainBody: "Update", UnsubscribeURL: "https://console.example/api/auth/email-unsubscribe?key=opaque"}, []string{"user@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "List-Unsubscribe: <https://console.example/") || !strings.Contains(string(raw), "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n") {
+		t.Fatal("one-click unsubscribe headers missing")
+	}
+	for _, url := range []string{"javascript:alert(1)", "https://example.com/\r\nX-Injected: yes", "http://example.com/unsubscribe"} {
+		if _, err = smtp.buildMessage(Message{UnsubscribeURL: url}, []string{"user@example.com"}); err == nil {
+			t.Fatal("unsafe unsubscribe URL accepted")
+		}
+	}
+}

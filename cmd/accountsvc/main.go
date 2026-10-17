@@ -291,10 +291,11 @@ func (m mailerAdapter) Send(ctx context.Context, msg api.EmailMessage) error {
 		return nil
 	}
 	mail := mailer.Message{
-		To:        append([]string(nil), msg.To...),
-		Subject:   msg.Subject,
-		PlainBody: msg.PlainBody,
-		HTMLBody:  msg.HTMLBody,
+		To:             append([]string(nil), msg.To...),
+		Subject:        msg.Subject,
+		PlainBody:      msg.PlainBody,
+		UnsubscribeURL: msg.UnsubscribeURL,
+		HTMLBody:       msg.HTMLBody,
 	}
 	return m.sender.Send(ctx, mail)
 }
@@ -2072,6 +2073,10 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		if err := db.AutoMigrate(
 			&model.AdminSetting{},
 			&model.HomepageVideoSetting{},
+			&model.EmailManagementSetting{},
+			&model.EmailPreference{},
+			&model.EmailPreferenceToken{},
+			&model.EmailPreferenceEvent{},
 			&model.SandboxBinding{},
 			&model.Tenant{},
 			&model.TenantDomain{},

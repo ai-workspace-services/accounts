@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -70,10 +71,11 @@ type Config struct {
 
 // Message represents an outbound email.
 type Message struct {
-	To        []string
-	Subject   string
-	PlainBody string
-	HTMLBody  string
+	To             []string
+	Subject        string
+	PlainBody      string
+	HTMLBody       string
+	UnsubscribeURL string
 }
 
 // Sender sends email messages over SMTP.
@@ -297,6 +299,13 @@ func (s *smtpSender) buildMessage(msg Message, headerTo []string) ([]byte, error
 		headers = append(headers, fmt.Sprintf("Reply-To: %s", s.replyTo.String()))
 	}
 
+	if msg.UnsubscribeURL != "" {
+		u, err := url.Parse(msg.UnsubscribeURL)
+		if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || strings.ContainsAny(msg.UnsubscribeURL, "\r\n<>") {
+			return nil, errors.New("invalid unsubscribe URL")
+		}
+		headers = append(headers, "List-Unsubscribe: <"+msg.UnsubscribeURL+">", "List-Unsubscribe-Post: List-Unsubscribe=One-Click")
+	}
 	htmlBody := strings.TrimSpace(msg.HTMLBody)
 	plainBody := strings.TrimSpace(msg.PlainBody)
 
