@@ -48,8 +48,10 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	var pools []regionalPool
-	// Root observes the full inventory; other viewers see their effective scope.
-	if store.IsRootRole(user.Role) {
+	// Root-level administrators observe the full inventory, including closed
+	// and team-dedicated pools. Ordinary users remain constrained by their
+	// effective entitlement scope below.
+	if isRootUser(user) {
 		pools = registeredRegionalPools(h.agentStatusReader, time.Now().UTC())
 	} else {
 		if blocked, err := h.proxyAccountBlocked(c.Request.Context(), user); err != nil {
