@@ -184,6 +184,14 @@ func ListOnboardingSteps(ctx context.Context) ([]model.EmailOnboardingStep, erro
 	if d == nil {
 		return nil, ErrServiceDBNotInitialized
 	}
+	defaults := []model.EmailOnboardingStep{
+		{ID: "hello", Version: 1, Enabled: true, Subject: "Hello, welcome to XWorkmate", Body: "Your account is ready. Review account settings, security options and your current plan to get started.", DelayHours: 0, ActivatedAt: time.Now().UTC()},
+		{ID: "first_steps", Version: 1, Enabled: true, Subject: "Your first steps", Body: "Open the regional entry pool, choose an entry available to your account, and connect in the app.", DelayHours: 24, ActivatedAt: time.Now().UTC()},
+		{ID: "discover_more", Version: 1, Enabled: true, Subject: "Discover more", Body: "After basic setup, visit integrations to connect the services you use.", DelayHours: 72, ActivatedAt: time.Now().UTC()},
+	}
+	for i := range defaults {
+		d.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&defaults[i])
+	}
 	rows := []model.EmailOnboardingStep{}
 	err := d.WithContext(ctx).Order("delay_hours ASC, id ASC").Find(&rows).Error
 	return rows, err
