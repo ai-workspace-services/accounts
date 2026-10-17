@@ -61,6 +61,15 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		t.Fatal(e)
 	}
 	exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=`+strconv.FormatUint(uint64(FullBusinessVersion), 10))
+	// A controlled upgrade keeps checksum receipts outside the business scope.
+	// Runtime must accept that exact metadata table and still reject unknown
+	// relations below. No receipt is renamed, deleted, or copied from source.
+	exec(target, `CREATE TABLE public.accounts_controlled_migration_history
+ (from_version bigint NOT NULL, to_version bigint PRIMARY KEY,
+ sql_sha256 text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`)
+	if e = VerifyNativeRuntime(context.Background(), target); e != nil {
+		t.Fatalf("native runtime rejected controlled migration metadata: %v", e)
+	}
 	// Qualify the old 44-table source -> latest 63-table target explicitly. New
 	// tables may be absent in source; they must remain empty in the target.
 	tables, _, e := fullBusinessContract()

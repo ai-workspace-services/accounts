@@ -36,7 +36,9 @@ func controlledMigratePostgresIntegration(t *testing.T, dsn string) {
 		"0000000002_failure.up.sql":   {Data: []byte(secondSQL)},
 		"0000000003_next.up.sql":      {Data: []byte(thirdSQL)},
 	}
-	options := ControlledOptions{ExpectedVersion: 0, TargetVersion: 1, SHA256: checksum(firstSQL), LockTimeout: 3 * time.Second, StatementTimeout: 3 * time.Second}
+	// Go formats minutes as 5m0s, which PostgreSQL rejects. Exercise the real
+	// release timeout rather than only second-sized fixture values.
+	options := ControlledOptions{ExpectedVersion: 0, TargetVersion: 1, SHA256: checksum(firstSQL), LockTimeout: 3 * time.Second, StatementTimeout: 5 * time.Minute}
 	if err := ControlledMigrate(ctx, scopedDSN, files, options); err == nil {
 		t.Fatal("missing schema_migrations table was initialized implicitly")
 	}

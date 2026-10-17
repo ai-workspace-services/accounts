@@ -511,7 +511,7 @@ func businessScope(ctx context.Context, tx *sql.Tx, tables map[string]businessTa
 		if rows.Scan(&name, &kind) != nil {
 			return nil, errors.New("cannot decode business scope")
 		}
-		if name == "schema_migrations" || name == "system_release_checkpoints" {
+		if name == "schema_migrations" || name == "system_release_checkpoints" || name == controlledHistoryTable {
 			continue
 		}
 		if _, ok := tables[name]; !ok || kind != "r" {
