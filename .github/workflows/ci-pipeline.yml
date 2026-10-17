@@ -15,6 +15,11 @@ on:
     tags: ["v*", "*-rebuild-*", "*-release-*", "*daily-build-*"]
   workflow_dispatch:
     inputs:
+      publish_artifact_registry:
+        description: Explicitly publish the Cloud Run image to Google Artifact Registry
+        required: false
+        default: false
+        type: boolean
       deploy_env:
         description: Target environment (sit, uat or prod)
         required: false
@@ -136,6 +141,7 @@ jobs:
           test -s api/regional_pools.go
           go test -count=1 ./api -run 'TestAgentEventStream|TestRegional|TestPingEndpoint'
           python3 -m unittest discover -s scripts/tests -p validate_deploy_test.py
+          python3 scripts/tests/test_snapshot_publish.py -v
 
       - name: Prepare native account fixture
         if: matrix.check == 'native_schema_initialization' || matrix.check == 'managed_database_runtime'
@@ -363,7 +369,7 @@ jobs:
           (needs.pre_check.outputs.push_image == 'true' ||
            (github.event_name == 'push' && github.ref_type == 'tag') ||
            (github.event_name == 'workflow_dispatch' && inputs.deploy_env == 'prod' && inputs.source_ref != '' && inputs.image_tag != '') ||
-           (github.event_name == 'push' && github.ref_type == 'tag' && contains(github.ref_name, 'daily-build-'))) }}
+           (github.ref_type == 'tag' && contains(github.ref_name, 'daily-build-'))) }}
     strategy:
       fail-fast: false
       matrix:
@@ -395,6 +401,7 @@ jobs:
           DEPLOY_ENV: ${{ inputs.deploy_env }}
           SOURCE_REF: ${{ inputs.source_ref }}
           IMAGE_TAG: ${{ inputs.image_tag }}
+          PUBLISH_ARTIFACT_REGISTRY: ${{ inputs.publish_artifact_registry }}
         run: |
           set -euo pipefail
           enabled=false
@@ -407,10 +414,10 @@ jobs:
                 "$promotion" != true ]]; then
             enabled=true
           elif [[ "$PUBLISH_TARGET" == artifact_registry && \
-                  "$EVENT_NAME" == push && "$REF_TYPE" == tag ]] || \
-               [[ "$PUBLISH_TARGET" == artifact_registry && "$promotion" == true ]]; then
+                  "$PUBLISH_ARTIFACT_REGISTRY" == true && \
+                  ( "$REF_TYPE" == tag || "$promotion" == true ) ]]; then
             enabled=true
-          elif [[ "$PUBLISH_TARGET" == release && "$EVENT_NAME" == push && \
+          elif [[ "$PUBLISH_TARGET" == release && \
                   "$REF_TYPE" == tag && "$REF_NAME" == *daily-build-* ]]; then
             enabled=true
           fi
