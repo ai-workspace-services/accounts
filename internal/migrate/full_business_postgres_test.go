@@ -152,7 +152,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	}
 	exec(target, `ALTER TABLE public.billing_ledger DROP CONSTRAINT fixture_reject`)
 	receipt, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
-	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 64 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
+	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 68 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
 		t.Fatalf("full copy: %#v %v", receipt, e)
 	}
 	var after string
@@ -309,6 +309,14 @@ func TestFullBusinessPostgres17(t *testing.T) {
  VALUES('00000000-0000-0000-0000-000000000806','00000000-0000-0000-0000-000000000805',1000);
  INSERT INTO public.subscription_extension_ledger(reward_id,user_uuid,subscription_uuid,days,effective_from,effective_until)
  VALUES('00000000-0000-0000-0000-000000000805','`+sourceID+`','00000000-0000-0000-0000-000000000803',30,'2026-11-01T00:00:00Z','2026-12-01T00:00:00Z')`)
+		exec(native, `INSERT INTO public.email_preferences(user_id,product_updates,tutorials,offers,frequency,version,updated_at)
+ VALUES('`+sourceID+`',true,false,false,'monthly',7,'2026-10-01T00:00:00Z');
+ INSERT INTO public.email_preference_events(id,user_id,source,policy_version,preferences,created_at)
+ VALUES('consent-fixture','`+sourceID+`','account_settings','email-preferences-v1','{"productUpdates":true,"offers":false}','2026-10-01T00:00:00Z');
+ INSERT INTO public.email_preference_tokens(hash,user_id,email,purpose,expires_at)
+ VALUES('isolated-hashed-token-fixture','`+sourceID+`','native@example.invalid','unsubscribe','2027-01-01T00:00:00Z');
+ INSERT INTO public.email_management_settings(id,version,company_name,postal_address,contact_email,console_url,updated_by,updated_at)
+ VALUES('default',1,'Example LLC','Example Street','support@example.invalid','https://console.example','`+sourceID+`','2026-10-01T00:00:00Z')`)
 		readonlyNative := "postgres://readonly_release:isolated-readonly-fixture@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/full_business_native_source?sslmode=disable"
 		copyOptions := options
 		copyOptions.CompareOnly = false
@@ -325,11 +333,11 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `DROP TRIGGER fixture_late_mutation ON public.users; DROP FUNCTION public.fixture_late_mutation()`)
 		copied, e := CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions)
-		if e != nil || copied.SourceTables != 64 || len(copied.Tables) != 64 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
+		if e != nil || copied.SourceTables != 68 || len(copied.Tables) != 68 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
 			t.Fatalf("native finance copy failed: %v", e)
 		}
 
-		for _, table := range []string{"referral_codes", "referrals", "referral_rewards", "referral_reward_events", "referral_payment_risks", "referral_settlements", "referral_settlement_items", "subscription_extension_ledger"} {
+		for _, table := range []string{"email_preferences", "email_preference_tokens", "email_preference_events", "email_management_settings", "referral_codes", "referrals", "referral_rewards", "referral_reward_events", "referral_payment_risks", "referral_settlements", "referral_settlement_items", "subscription_extension_ledger"} {
 			if copied.Tables[table].Rows != 1 {
 				t.Fatalf("referral business table was not copied exactly: %s", table)
 			}
