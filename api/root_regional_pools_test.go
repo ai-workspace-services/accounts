@@ -26,7 +26,7 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 		}
 	}
 	users := map[string]*store.User{}
-	for _, name := range []string{"root", "admin", "free", "plus", "alpha", "beta", "removed"} {
+	for _, name := range []string{"root", "admin", "free", "plus", "alpha", "beta", "removed", "blocked"} {
 		role := store.RoleUser
 		if name == "root" {
 			role = store.RoleRoot
@@ -59,6 +59,9 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 			}
 		}
 	}
+	if err := st.AddToBlacklist(ctx, users["blocked"].Email); err != nil {
+		t.Fatal(err)
+	}
 	statuses := []agentserver.StatusSnapshot{}
 	for _, id := range []string{"public", "alpha", "beta", "closed"} {
 		groups := []string{"internal"}
@@ -67,9 +70,19 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 		}
 		statuses = append(statuses, agentserver.StatusSnapshot{Agent: agentserver.Identity{ID: id, Groups: groups}, UpdatedAt: now, Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: id != "closed", Xray: agentproto.XrayStatus{Region: "tw", EntryPoint: id + ".example.test", Pool: id, Running: true}}})
 	}
+	for _, class := range []string{"free", "plus"} {
+		statuses = append(statuses, agentserver.StatusSnapshot{Agent: agentserver.Identity{ID: class, Groups: []string{"resource:" + class}}, UpdatedAt: now, Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Region: "tw", EntryPoint: class + ".example.test", Running: true}}})
+	}
 	r := gin.New()
 	RegisterRoutes(r, WithStore(st), WithAgentStatusReader(stubAgentStatusReader{statuses: statuses}))
-	want := map[string][]string{"root": {"alpha.example.test", "beta.example.test", "closed.example.test", "public.example.test"}, "admin": {"closed.example.test", "public.example.test"}, "free": {"public.example.test"}, "plus": {"public.example.test"}, "alpha": {"alpha.example.test"}, "beta": {"beta.example.test"}, "removed": {}}
+	want := map[string][]string{
+		"root":  {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
+		"admin": {"closed.example.test", "free.example.test", "public.example.test"},
+		"free":  {"free.example.test", "public.example.test"},
+		"plus":  {"plus.example.test", "public.example.test"},
+		"alpha": {"alpha.example.test"}, "beta": {"beta.example.test"}, "removed": {}, "blocked": {},
+	}
+
 	for name, entries := range want {
 		req := httptest.NewRequest("GET", "/api/agent-server/v1/regional-pools", nil)
 		req.Header.Set("Authorization", "Bearer "+name)

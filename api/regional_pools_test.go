@@ -167,7 +167,7 @@ func TestRegionalPoolsKeepClosedMetadataAdminOnly(t *testing.T) {
 	now := time.Now().UTC()
 	st := store.NewMemoryStore()
 	for _, role := range []string{store.RoleUser, store.RoleAdmin} {
-		user := &store.User{Name: role, Email: role + "@example.test", Role: role, Level: store.LevelUser, Active: true}
+		user := &store.User{Name: role, Email: role + "@example.test", Role: role, Level: store.LevelUser, Active: true, EmailVerified: true}
 		if err := st.CreateUser(context.Background(), user); err != nil {
 			t.Fatal(err)
 		}
