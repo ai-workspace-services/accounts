@@ -17,6 +17,13 @@ import (
 const regionalHeartbeatTTL = 5 * time.Minute
 const regionalDiscoveryVersion = "availability-v1"
 
+func canViewRegionalPoolInventory(user *store.User) bool {
+	if user == nil {
+		return false
+	}
+	return isRootUser(user) || store.IsOperatorRole(user.Role) || user.Level == store.LevelOperator
+}
+
 type regionalClosureReason string
 
 const (
@@ -48,10 +55,10 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	var pools []regionalPool
-	// Root-level administrators observe the full inventory, including closed
-	// and team-dedicated pools. Ordinary users remain constrained by their
-	// effective entitlement scope below.
-	if isRootUser(user) {
+	// Administrators and operators can inspect the full inventory, including
+	// closed and team-dedicated pools. Ordinary users remain constrained by
+	// their effective entitlement scope below.
+	if canViewRegionalPoolInventory(user) {
 		pools = registeredRegionalPools(h.agentStatusReader, time.Now().UTC())
 	} else {
 		if blocked, err := h.proxyAccountBlocked(c.Request.Context(), user); err != nil {
@@ -76,7 +83,7 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 		}
 		pools = regionalPoolsForUser(h.networkStatusReader(access), access, user, time.Now().UTC())
 	}
-	if !store.IsAdminRole(user.Role) && user.Level != store.LevelAdmin {
+	if !canViewRegionalPoolInventory(user) {
 		visible := make([]regionalPool, 0, len(pools))
 		for _, pool := range pools {
 			if pool.OpenToUsers {
