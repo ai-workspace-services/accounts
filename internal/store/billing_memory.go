@@ -73,6 +73,39 @@ func (s *memoryStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan) 
 		stored.CreatedAt = now
 	}
 	s.billingPlans[stored.PlanID] = &stored
+	// Profiles assigned from the catalog follow its quota, while subscription
+	// records with individually agreed quotas remain authoritative.
+	if stored.Active {
+		for id, profile := range s.accountBillingProfiles {
+			if profile.PricingRuleVersion != "plan:"+stored.PlanID {
+				continue
+			}
+			if record := s.subscriptionRecords[id]; stored.PlanID != BillingPlanFree && (record.MonthlyQuotaBytes > 0 || record.AnnualQuotaBytes > 0) {
+				continue
+			}
+			quota := s.accountQuotaStates[id]
+			if quota == nil {
+				continue // Missing state must not turn into a fresh grant.
+			}
+			used := profile.IncludedQuotaBytes - quota.RemainingIncludedQuota
+			if bucketUsage := adminPlanGroupBucketUsage(s.trafficMinuteBuckets, id, quota); bucketUsage > used {
+				used = bucketUsage
+			}
+			if used < 0 {
+				used = 0
+			}
+			remaining := stored.IncludedQuotaBytes - used
+			if remaining < 0 {
+				remaining = 0
+			}
+			if profile.IncludedQuotaBytes != stored.IncludedQuotaBytes || quota.RemainingIncludedQuota != remaining {
+				profile.IncludedQuotaBytes = stored.IncludedQuotaBytes
+				profile.UpdatedAt = now
+				quota.RemainingIncludedQuota = remaining
+				quota.UpdatedAt = now
+			}
+		}
+	}
 	return nil
 }
 
