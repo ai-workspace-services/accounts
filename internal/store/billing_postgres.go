@@ -132,7 +132,12 @@ func (s *postgresStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan
 			updated_at = now()
 		RETURNING created_at, updated_at`
 
-	return s.db.QueryRowContext(
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := tx.QueryRowContext(
 		ctx,
 		query,
 		normalizePlanID(plan.PlanID),
@@ -149,7 +154,73 @@ func (s *postgresStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan
 		plan.TrialDays,
 		plan.Active,
 		plan.SortOrder,
-	).Scan(&plan.CreatedAt, &plan.UpdatedAt)
+	).Scan(&plan.CreatedAt, &plan.UpdatedAt); err != nil {
+		return err
+	}
+	if plan.Active {
+		if err := syncCatalogQuota(ctx, tx, plan); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Lock each existing entitlement pair before deriving usage. Both updates are
+// committed with the catalog, so readers cannot observe a partially saved plan.
+func syncCatalogQuota(ctx context.Context, tx *sql.Tx, plan *BillingPlan) error {
+	rows, err := tx.QueryContext(ctx, `SELECT p.account_uuid::text, p.included_quota_bytes,
+		q.remaining_included_quota, q.period_start, q.period_end
+		FROM account_billing_profiles p JOIN account_quota_states q USING (account_uuid)
+		WHERE p.pricing_rule_version = $1
+		AND ($2 = 'FREE' OR NOT EXISTS (SELECT 1 FROM subscription_records r
+		  WHERE r.user_uuid = p.account_uuid AND (r.monthly_quota_bytes > 0 OR r.annual_quota_bytes > 0)))
+		ORDER BY p.account_uuid FOR UPDATE OF p, q`, "plan:"+normalizePlanID(plan.PlanID), normalizePlanID(plan.PlanID))
+	if err != nil {
+		return err
+	}
+	type snapshot struct {
+		id                  string
+		included, remaining int64
+		start, end          sql.NullTime
+	}
+	var snapshots []snapshot
+	for rows.Next() {
+		var item snapshot
+		if err := rows.Scan(&item.id, &item.included, &item.remaining, &item.start, &item.end); err != nil {
+			rows.Close()
+			return err
+		}
+		snapshots = append(snapshots, item)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, item := range snapshots {
+		start := quotaPeriodStart(nil, time.Now().UTC())
+		if item.start.Valid {
+			start = item.start.Time
+		}
+		var usage int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(GREATEST(total_bytes,0)),0)
+			FROM traffic_minute_buckets WHERE account_uuid=$1 AND bucket_start >= $2
+			AND ($3::timestamptz IS NULL OR bucket_start < $3)`, item.id, start, item.end).Scan(&usage); err != nil {
+			return err
+		}
+		used := max(int64(0), item.included-item.remaining, usage)
+		remaining := max(int64(0), plan.IncludedQuotaBytes-used)
+		if item.included == plan.IncludedQuotaBytes && item.remaining == remaining {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE account_billing_profiles SET included_quota_bytes=$2, updated_at=now() WHERE account_uuid=$1`, item.id, plan.IncludedQuotaBytes); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE account_quota_states SET remaining_included_quota=$2, updated_at=now() WHERE account_uuid=$1`, item.id, remaining); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *postgresStore) DeleteBillingPlan(ctx context.Context, planID string) error {
