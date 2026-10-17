@@ -280,9 +280,9 @@ func teamQuotaGroup(user *store.User) (string, string) {
 	switch group {
 	case store.MonthlyFreeQuotaLimitGroup:
 		// Keep the legacy wire value compatible with existing clients.
-		return "3gb", "5 GB"
+		return "3gb", "Free"
 	case store.MonthlyPlusQuotaLimitGroup:
-		return "20gb", "20 GB"
+		return "20gb", "Plus"
 	case store.MonthlyUnlimitedBetaQuotaGroup:
 		return "unlimited", "无限"
 	default:
