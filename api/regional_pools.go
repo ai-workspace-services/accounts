@@ -47,18 +47,33 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	reader := h.agentStatusReader
-	// Root observes the platform inventory. Connection/export endpoints keep
-	// their account-scoped authorization and do not use this management view.
-	if !store.IsRootRole(user.Role) {
-		access, err := h.networkAccessFor(c.Request.Context(), user.ID)
+	var pools []regionalPool
+	// Root observes the full inventory; other viewers see their effective scope.
+	if store.IsRootRole(user.Role) {
+		pools = registeredRegionalPools(h.agentStatusReader, time.Now().UTC())
+	} else {
+		if blocked, err := h.proxyAccountBlocked(c.Request.Context(), user); err != nil {
+			respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+			return
+		} else if blocked || !user.Active {
+			c.JSON(http.StatusOK, []regionalPool{})
+			return
+		}
+		if err := h.ensureExpiredSubscriptionDowngrade(c.Request.Context(), user); err != nil {
+			respondError(c, 503, "quota_unavailable", "failed to reconcile quota")
+			return
+		}
+		access, err := h.networkAccessForUser(c.Request.Context(), user)
 		if err != nil {
 			respondError(c, 503, "network_access_unavailable", "network access is unavailable")
 			return
 		}
-		reader = h.networkStatusReader(access)
+		if !access.Allowed {
+			c.JSON(http.StatusOK, []regionalPool{})
+			return
+		}
+		pools = regionalPoolsForUser(h.networkStatusReader(access), access, user, time.Now().UTC())
 	}
-	pools := registeredRegionalPools(reader, time.Now().UTC())
 	if !store.IsAdminRole(user.Role) && user.Level != store.LevelAdmin {
 		visible := make([]regionalPool, 0, len(pools))
 		for _, pool := range pools {

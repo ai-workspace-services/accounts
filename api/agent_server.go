@@ -101,6 +101,15 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		return nil, "", err
 	}
 
+	emails, err := h.store.ListBlacklist(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	blockedEmails := make(map[string]bool, len(emails))
+	for _, email := range emails {
+		blockedEmails[strings.ToLower(strings.TrimSpace(email))] = true
+	}
+
 	teams, err := teamStore.ListNetworkTeams(ctx)
 	if err != nil {
 		return nil, "", err
@@ -126,7 +135,7 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 			continue
 		}
 		// Every class, including demo accounts, honors the operator/billing blacklist.
-		if blocked[strings.TrimSpace(u.ID)] {
+		if blocked[strings.TrimSpace(u.ID)] || blockedEmails[strings.ToLower(strings.TrimSpace(u.Email))] {
 			continue
 		}
 		email := strings.ToLower(strings.TrimSpace(u.Email))

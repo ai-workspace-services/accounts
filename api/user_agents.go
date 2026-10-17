@@ -52,6 +52,13 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if blocked, err := h.proxyAccountBlocked(c.Request.Context(), user); err != nil {
+		respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+		return
+	} else if blocked {
+		respondError(c, 403, "proxy_access_blocked", "proxy access is blocked")
+		return
+	}
 	if err := h.ensureExpiredSubscriptionDowngrade(c.Request.Context(), user); err != nil {
 		respondError(c, 503, "quota_unavailable", "failed to reconcile quota")
 		return

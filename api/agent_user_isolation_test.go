@@ -25,12 +25,24 @@ func TestAgentUserIsolationAcrossRoutes(t *testing.T) {
 	st := store.NewMemoryStore()
 	teamStore := st.(store.NetworkTeamStore)
 	userIDs := map[string]string{}
-	for _, name := range []string{"public", "alpha", "beta", "expired", "inactive", "removed"} {
+	for _, name := range []string{"public", "alpha", "beta", "expired", "inactive", "removed", "emailblocked", "proxyblocked"} {
 		user := &store.User{Name: name, Email: name + "@example.invalid", Role: store.RoleUser, Active: true, EmailVerified: true, ProxyUUID: "proxy-" + name}
 		if err := st.CreateUser(ctx, user); err != nil {
 			t.Fatal(err)
 		}
 		userIDs[name] = user.ID
+		if name == "emailblocked" {
+			if err := st.AddToBlacklist(ctx, user.Email); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if name == "proxyblocked" {
+			if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: user.ID, ProxyAccessState: "paused"}); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
 		if name == "public" {
 			continue
 		}
