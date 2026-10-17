@@ -49,7 +49,7 @@ func TestAgentBlacklistAcrossEveryResourceClass(t *testing.T) {
 		groups, want []string
 	}{
 		{"shared", []string{"resource:shared"}, []string{"free@example.test", "plus@example.test"}},
-		{"free", []string{"resource:free"}, []string{"free@example.test"}},
+		{"free", []string{"resource:free"}, []string{"free@example.test", "plus@example.test"}},
 		{"plus", []string{"resource:plus"}, []string{"plus@example.test"}},
 		{"team", []string{"team:a"}, []string{"admin@example.test", "member@example.test"}},
 	} {

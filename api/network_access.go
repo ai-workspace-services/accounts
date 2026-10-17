@@ -68,9 +68,10 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 	}
 	switch scope.ResourceClass {
 	case agentResourceFree:
-		// Registered personal users without an explicit quota group are Free.
+		// Free pools accept registered Free users and personal Plus users.
 		group := store.MonthlyQuotaGroup(user)
-		return group == "" || group == store.MonthlyFreeQuotaLimitGroup
+		return group == "" || group == store.MonthlyFreeQuotaLimitGroup ||
+			group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup
 	case agentResourcePlus:
 		group := store.MonthlyQuotaGroup(user)
 		return group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup

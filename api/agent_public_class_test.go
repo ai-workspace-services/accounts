@@ -105,7 +105,7 @@ func TestManagedAgentPublicClassReconcilesStaleRegistration(t *testing.T) {
 		names []string
 	}{
 		{"shared", []string{"free@example.invalid", "plus@example.invalid", "registered@example.invalid"}},
-		{"free", []string{"free@example.invalid", "registered@example.invalid"}},
+		{"free", []string{"free@example.invalid", "plus@example.invalid", "registered@example.invalid"}},
 		{"plus", []string{"plus@example.invalid"}},
 		{"shared", []string{"free@example.invalid", "plus@example.invalid", "registered@example.invalid"}},
 	} {

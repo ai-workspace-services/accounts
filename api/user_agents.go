@@ -131,7 +131,6 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 	}
 	resourceClass := effectiveAgentResourceClass(access, user)
 	pools := regionalPoolsForUser(h.networkStatusReader(access), access, user, time.Now().UTC())
-	xhttpPath := poolXHTTPPath(envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), resourceClass)
 	xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
 	xhttpPort := envIntOrDefault("XRAY_XHTTP_PORT", defaultXHTTPPort)
 	tcpPort := envIntOrDefault("XRAY_TCP_PORT", defaultTCPPort)
@@ -145,6 +144,11 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		if !pool.OpenToUsers {
 			continue
 		}
+		nodeClass := resourceClass
+		if pool.ResourceClass == agentResourceFree {
+			nodeClass = agentResourceFree
+		}
+		xhttpPath := poolXHTTPPath(envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), nodeClass)
 		host := pool.Entry
 		nodeName := pool.DisplayName
 		if strings.TrimSpace(nodeName) == "" {
@@ -163,7 +167,7 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 			Mode:          xhttpMode,
 			Security:      "tls",
 			Flow:          defaultTCPFlow,
-			ResourceClass: resourceClass,
+			ResourceClass: nodeClass,
 			ServerName:    host,
 			XHTTPPort:     xhttpPort,
 			TCPPort:       tcpPort,
