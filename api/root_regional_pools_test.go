@@ -26,13 +26,16 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 		}
 	}
 	users := map[string]*store.User{}
-	for _, name := range []string{"root", "admin", "free", "plus", "alpha", "beta", "removed", "blocked"} {
+	for _, name := range []string{"root", "admin", "operator", "free", "plus", "alpha", "beta", "removed", "blocked"} {
 		role := store.RoleUser
 		if name == "root" {
 			role = store.RoleRoot
 		}
 		if name == "admin" {
 			role = store.RoleAdmin
+		}
+		if name == "operator" {
+			role = store.RoleOperator
 		}
 		u := &store.User{Name: name, Email: name + "@example.test", Role: role, Active: true, EmailVerified: true}
 		if name == "plus" {
@@ -76,11 +79,12 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 	r := gin.New()
 	RegisterRoutes(r, WithStore(st), WithAgentStatusReader(stubAgentStatusReader{statuses: statuses}))
 	want := map[string][]string{
-		"root":  {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
-		"admin": {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
-		"free":  {"free.example.test", "public.example.test"},
-		"plus":  {"free.example.test", "plus.example.test", "public.example.test"},
-		"alpha": {"alpha.example.test"}, "beta": {"beta.example.test"}, "removed": {}, "blocked": {},
+		"root":     {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
+		"admin":    {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
+		"operator": {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
+		"free":     {"free.example.test", "public.example.test"},
+		"plus":     {"free.example.test", "plus.example.test", "public.example.test"},
+		"alpha":    {"alpha.example.test"}, "beta": {"beta.example.test"}, "removed": {}, "blocked": {},
 	}
 
 	for name, entries := range want {
