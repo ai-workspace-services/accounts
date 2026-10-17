@@ -291,10 +291,12 @@ func (m mailerAdapter) Send(ctx context.Context, msg api.EmailMessage) error {
 		return nil
 	}
 	mail := mailer.Message{
-		To:        append([]string(nil), msg.To...),
-		Subject:   msg.Subject,
-		PlainBody: msg.PlainBody,
-		HTMLBody:  msg.HTMLBody,
+		To:             append([]string(nil), msg.To...),
+		Subject:        msg.Subject,
+		PlainBody:      msg.PlainBody,
+		UnsubscribeURL: msg.UnsubscribeURL,
+		MessageID:      msg.MessageID,
+		HTMLBody:       msg.HTMLBody,
 	}
 	return m.sender.Send(ctx, mail)
 }
@@ -1661,6 +1663,9 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		}
 	}
 
+	if cfg.DatabaseRuntime.MayRunBackgroundWriters() {
+		options = append(options, api.WithEmailWorkerContext(ctx))
+	}
 	api.RegisterRoutes(r, options...)
 	if cfg.DatabaseRuntime.MayRunBackgroundWriters() {
 		api.StartAnnualQuotaReconciler(ctx, st, logger.With("component", "annual-quota"))
@@ -2072,6 +2077,10 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 		if err := db.AutoMigrate(
 			&model.AdminSetting{},
 			&model.HomepageVideoSetting{},
+			&model.EmailManagementSetting{},
+			&model.EmailPreference{},
+			&model.EmailPreferenceToken{},
+			&model.EmailPreferenceEvent{}, &model.EmailCampaign{}, &model.EmailOnboardingStep{}, &model.EmailDelivery{}, &model.EmailRecipientLease{}, &model.EmailSuppression{},
 			&model.SandboxBinding{},
 			&model.Tenant{},
 			&model.TenantDomain{},

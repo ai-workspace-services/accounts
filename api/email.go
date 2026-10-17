@@ -7,10 +7,14 @@ import (
 
 // EmailMessage represents the contents of an email notification.
 type EmailMessage struct {
-	To        []string
-	Subject   string
-	PlainBody string
-	HTMLBody  string
+	To             []string
+	Subject        string
+	PlainBody      string
+	HTMLBody       string
+	Marketing      *MarketingRecipient
+	ConsentVersion uint64
+	MessageID      string
+	UnsubscribeURL string
 }
 
 // EmailSender sends email notifications.

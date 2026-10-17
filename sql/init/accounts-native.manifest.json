@@ -1,12 +1,12 @@
 {
   "format": 1,
-  "migration_version": 2026101701,
-  "schema_sha256": "264b6202ef7240c46c5e498295c9f27de13a1a73d8a56219d2209a8bccf2ac10",
-  "business_table_count": 63,
+  "migration_version": 2026101703,
+  "schema_sha256": "dd56a4025442d84bbe03db7be0bd330c8e81d7e1694dafb7fbd895b22ef17527",
+  "business_table_count": 72,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "73454f40265f1a1cf0a1520a42fd875d93fdedd1ea91cec828a6acc5c9a38a3f"
+      "sha256": "58b6cb0d2a3100fc304f226e2b162abad65eeacfc68e1c81a953e20aa1936726"
     },
     {
       "path": "internal/model/admin_setting.go",
@@ -34,7 +34,7 @@
     },
     {
       "path": "scripts/native-schema-render/main.go",
-      "sha256": "52af49d9c7b8e54943d56d797915a97bd5cb4542c1e2f2ba412c3e9dae74f012"
+      "sha256": "27b6521cb3be05b117945a65a6007c34628fc6d8702319ffdb1fd6839a5725e1"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -103,6 +103,22 @@
     {
       "path": "sql/migrations/2026101701_free_quota_5gb.up.sql",
       "sha256": "21da5da1f05a79707bac527147a07b58d84dcadeab96933935a03ca8f7e25a1b"
+    },
+    {
+      "path": "internal/model/email_preferences.go",
+      "sha256": "23fe94b8eb75d5cd61df54a3ca1a318b159522b9811bd4021fcb5c807793b734"
+    },
+    {
+      "path": "sql/migrations/2026101702_email_preferences.up.sql",
+      "sha256": "6453608516d620773565b343d2397a0d3dc2415332a86f989a8952bcb044c5eb"
+    },
+    {
+      "path": "internal/model/email_campaigns.go",
+      "sha256": "e38f5da25c297ed28e4c3d739655c30aa9d62ac9ce328e0f5747a5fbfbe70dda"
+    },
+    {
+      "path": "sql/migrations/2026101703_email_campaigns.up.sql",
+      "sha256": "28ca2c8673875ba6e13ffa0b8bf11828a0f5c2975f6a305de4fdacae9f3ff77e"
     }
   ],
   "business_tables": [
@@ -118,6 +134,15 @@
     "billing_source_sync_state",
     "bridge_credentials",
     "email_blacklist",
+    "email_campaigns",
+    "email_deliveries",
+    "email_management_settings",
+    "email_onboarding_steps",
+    "email_preference_events",
+    "email_preference_tokens",
+    "email_preferences",
+    "email_recipient_leases",
+    "email_suppressions",
     "finance_invoices",
     "finance_operation_events",
     "finance_operations",

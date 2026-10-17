@@ -109,6 +109,8 @@ type handler struct {
 	mfaChallengeTTL           time.Duration
 	totpIssuer                string
 	emailSender               EmailSender
+	emailSenderConfigured     bool
+	emailWorkerContext        context.Context
 	emailVerificationEnabled  bool
 	verificationTTL           time.Duration
 	verifications             map[string]emailVerification
@@ -246,6 +248,7 @@ func WithEmailSender(sender EmailSender) Option {
 	return func(h *handler) {
 		if sender != nil {
 			h.emailSender = sender
+			h.emailSenderConfigured = true
 		}
 	}
 }
@@ -502,6 +505,10 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authGroup.GET("/sync/config", h.syncConfigSnapshot)
 	authGroup.POST("/sync/ack", h.syncConfigAck)
 	authGroup.GET("/homepage-video", h.getHomepageVideoPublic)
+	// These endpoints accept a scoped opaque email capability; no login required.
+	authGroup.GET("/email-preferences", emailPreferencePrivacy, h.getEmailPreferences)
+	authGroup.PUT("/email-preferences", emailPreferencePrivacy, h.putEmailPreferences)
+	authGroup.POST("/email-unsubscribe", emailPreferencePrivacy, h.unsubscribeEmail)
 
 	// Sandbox binding read endpoint.
 	// Used by the Console Guest/Demo experience. Must be readable either via a
@@ -563,6 +570,23 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	authProtected.GET("/admin/settings", h.getAdminSettings)
 	authProtected.POST("/admin/settings", h.updateAdminSettings)
+	authProtected.GET("/admin/email-campaigns", h.listEmailCampaigns)
+	authProtected.POST("/admin/email-campaigns", h.createEmailCampaign)
+	authProtected.PUT("/admin/email-campaigns/:campaignId", h.updateEmailCampaign)
+	authProtected.POST("/admin/email-campaigns/:campaignId/preview", h.previewEmailCampaign)
+	authProtected.POST("/admin/email-campaigns/:campaignId/launch", h.launchEmailCampaign)
+	authProtected.POST("/admin/email-campaigns/:campaignId/cancel", h.cancelEmailCampaign)
+	authProtected.GET("/admin/email-campaigns/:campaignId/deliveries", h.emailCampaignDeliveries)
+	authProtected.POST("/admin/email-deliveries/:deliveryId/retry", h.retryEmailDelivery)
+	authProtected.POST("/admin/email-deliveries/:deliveryId/confirm-accepted", h.confirmEmailAcceptance)
+	authProtected.POST("/admin/email-dispatch", h.dispatchEmails)
+	authProtected.GET("/admin/email-onboarding", h.getEmailOnboarding)
+	authProtected.PUT("/admin/email-onboarding/:stepId", h.putEmailOnboarding)
+	authProtected.GET("/admin/email-suppressions", h.manageEmailSuppressions)
+	authProtected.PUT("/admin/email-suppressions", h.manageEmailSuppressions)
+	authProtected.GET("/admin/email-management", emailPreferencePrivacy, h.getEmailManagement)
+	authProtected.PUT("/admin/email-management", emailPreferencePrivacy, h.putEmailManagement)
+	authProtected.POST("/admin/email-management/preview", emailPreferencePrivacy, h.previewMarketingFooter)
 	authProtected.GET("/admin/homepage-video", h.getHomepageVideoSettings)
 	authProtected.PUT("/admin/homepage-video", h.updateHomepageVideoSettings)
 
@@ -727,6 +751,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	h.registerOverlayV1Routes(r)
 	h.registerOverlayAdminRoutes(r)
+	h.startEmailWorker()
 }
 
 type registerRequest struct {
@@ -970,6 +995,9 @@ func (h *handler) register(c *gin.Context) {
 		h.removeRegistrationVerification(email)
 	}
 
+	if err := h.enrollEmailOnboarding(c.Request.Context(), user); err != nil {
+		slog.Error("welcome enrollment deferred to reconciler")
+	}
 	message := "registration successful"
 
 	response := gin.H{
@@ -2265,7 +2293,7 @@ func (h *handler) enqueueEmailVerification(ctx context.Context, locale mailLocal
 		HTMLBody:  htmlBody,
 	}
 
-	if err := h.emailSender.Send(ctx, msg); err != nil {
+	if err := h.deliverEmail(ctx, msg); err != nil {
 		// Log but don't delete immediately to allow retries with same code
 		slog.Error("failed to send verification email", "err", err, "email", email)
 		return err
@@ -2420,7 +2448,7 @@ func (h *handler) issueRegistrationVerification(ctx context.Context, locale mail
 		HTMLBody:  htmlBody,
 	}
 
-	if err := h.emailSender.Send(ctx, msg); err != nil {
+	if err := h.deliverEmail(ctx, msg); err != nil {
 		// Log but don't delete to allow reuse/resend attempts
 		slog.Error("failed to send registration verification email", "err", err, "email", email)
 		return registrationVerification{}, err
@@ -2531,7 +2559,7 @@ func (h *handler) enqueuePasswordReset(ctx context.Context, locale mailLocale, u
 		HTMLBody:  htmlBody,
 	}
 
-	if err := h.emailSender.Send(ctx, msg); err != nil {
+	if err := h.deliverEmail(ctx, msg); err != nil {
 		_ = h.store.InvalidatePasswordRecoveryChallenge(ctx, challenge.ID, time.Now().UTC())
 		return err
 	}
@@ -3397,6 +3425,9 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			slog.Error("failed to provision free entitlement for OAuth account", "err", err, "userID", user.ID)
 			respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "account was created but its default plan could not be initialized")
 			return
+		}
+		if err := h.enrollEmailOnboarding(ctx, user); err != nil {
+			slog.Error("OAuth welcome enrollment deferred to reconciler")
 		}
 	} else {
 		user = existingUser

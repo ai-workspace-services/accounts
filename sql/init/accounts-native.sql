@@ -3419,3 +3419,159 @@ ALTER TABLE ONLY public.subscription_records
 ALTER TABLE ONLY public.subscription_records
     ADD CONSTRAINT subscription_records_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE CASCADE;
 CREATE INDEX subscription_records_validity_idx ON public.subscription_records USING btree (valid_until);
+
+-- Marketing sender identity and independent, explicit recipient preferences.
+CREATE TABLE public.email_management_settings (
+    id text NOT NULL,
+    version bigint NOT NULL,
+    company_name text NOT NULL,
+    postal_address text NOT NULL,
+    contact_email text NOT NULL,
+    console_url text NOT NULL,
+    updated_by text NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_management_settings
+    ADD CONSTRAINT email_management_settings_pkey PRIMARY KEY (id);
+
+CREATE TABLE public.email_preferences (
+    user_id text NOT NULL,
+    product_updates boolean NOT NULL,
+    tutorials boolean NOT NULL,
+    offers boolean NOT NULL,
+    frequency text NOT NULL,
+    version bigint NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_preferences
+    ADD CONSTRAINT email_preferences_pkey PRIMARY KEY (user_id);
+
+CREATE TABLE public.email_preference_tokens (
+    hash text NOT NULL,
+    user_id text NOT NULL,
+    email text NOT NULL,
+    purpose text NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_preference_tokens
+    ADD CONSTRAINT email_preference_tokens_pkey PRIMARY KEY (hash);
+
+CREATE INDEX idx_email_preference_tokens_expires_at ON public.email_preference_tokens USING btree (expires_at);
+
+CREATE INDEX idx_email_preference_tokens_user_id ON public.email_preference_tokens USING btree (user_id);
+
+CREATE TABLE public.email_preference_events (
+    id text NOT NULL,
+    user_id text NOT NULL,
+    source text NOT NULL,
+    policy_version text NOT NULL,
+    preferences text NOT NULL,
+    created_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_preference_events
+    ADD CONSTRAINT email_preference_events_pkey PRIMARY KEY (id);
+
+CREATE INDEX idx_email_preference_events_user_id ON public.email_preference_events USING btree (user_id);
+
+-- Durable announcement delivery and opt-in welcome journey.
+CREATE TABLE public.email_campaigns (
+    id text NOT NULL,
+    version bigint NOT NULL,
+    kind text NOT NULL,
+    subject text NOT NULL,
+    body text NOT NULL,
+    action_label text NOT NULL,
+    action_url text NOT NULL,
+    audience text NOT NULL,
+    delivery_mode text NOT NULL,
+    status text NOT NULL,
+    created_by text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_campaigns
+    ADD CONSTRAINT email_campaigns_pkey PRIMARY KEY (id);
+
+CREATE INDEX idx_email_campaigns_status ON public.email_campaigns USING btree (status);
+
+CREATE TABLE public.email_onboarding_steps (
+    id text NOT NULL,
+    version bigint NOT NULL,
+    enabled boolean NOT NULL,
+    subject text NOT NULL,
+    body text NOT NULL,
+    action_label text NOT NULL,
+    action_url text NOT NULL,
+    delay_hours bigint NOT NULL,
+    activated_at timestamp with time zone NOT NULL,
+    updated_by text NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_onboarding_steps
+    ADD CONSTRAINT email_onboarding_steps_pkey PRIMARY KEY (id);
+
+CREATE TABLE public.email_deliveries (
+    id text NOT NULL,
+    dedupe_key text NOT NULL,
+    campaign_id text NOT NULL,
+    step_id text NOT NULL,
+    user_id text NOT NULL,
+    email text NOT NULL,
+    subject text NOT NULL,
+    body text NOT NULL,
+    action_label text NOT NULL,
+    action_url text NOT NULL,
+    category text NOT NULL,
+    delivery_mode text NOT NULL,
+    audience text NOT NULL,
+    status text NOT NULL,
+    attempts bigint NOT NULL,
+    due_at timestamp with time zone NOT NULL,
+    lease_token text NOT NULL,
+    lease_until timestamp with time zone,
+    sent_at timestamp with time zone,
+    last_error text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_deliveries
+    ADD CONSTRAINT email_deliveries_pkey PRIMARY KEY (id);
+
+CREATE INDEX idx_email_deliveries_campaign_id ON public.email_deliveries USING btree (campaign_id);
+
+CREATE UNIQUE INDEX idx_email_deliveries_dedupe_key ON public.email_deliveries USING btree (dedupe_key);
+
+CREATE INDEX idx_email_deliveries_due_at ON public.email_deliveries USING btree (due_at);
+
+CREATE INDEX idx_email_deliveries_sent_at ON public.email_deliveries USING btree (sent_at);
+
+CREATE INDEX idx_email_deliveries_status ON public.email_deliveries USING btree (status);
+
+CREATE INDEX idx_email_deliveries_user_id ON public.email_deliveries USING btree (user_id);
+
+CREATE TABLE public.email_recipient_leases (
+    user_id text NOT NULL,
+    token text NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_recipient_leases
+    ADD CONSTRAINT email_recipient_leases_pkey PRIMARY KEY (user_id);
+
+CREATE TABLE public.email_suppressions (
+    email text NOT NULL,
+    reason text NOT NULL,
+    updated_by text NOT NULL,
+    created_at timestamp with time zone NOT NULL
+);
+
+ALTER TABLE ONLY public.email_suppressions
+    ADD CONSTRAINT email_suppressions_pkey PRIMARY KEY (email);
+CREATE UNIQUE INDEX idx_email_delivery_identity ON public.email_deliveries USING btree (campaign_id, step_id, user_id);
