@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "migration_version": 2026101502,
+  "migration_version": 2026101701,
   "schema_sha256": "264b6202ef7240c46c5e498295c9f27de13a1a73d8a56219d2209a8bccf2ac10",
   "business_table_count": 63,
   "source_files": [
@@ -99,6 +99,10 @@
     {
       "path": "sql/schema.sql",
       "sha256": "ca9b3d5dee8b34246edc1d8ed51779670063b6eb8c52e6459cc0cc41e2188b89"
+    },
+    {
+      "path": "sql/migrations/2026101701_free_quota_5gb.up.sql",
+      "sha256": "21da5da1f05a79707bac527147a07b58d84dcadeab96933935a03ca8f7e25a1b"
     }
   ],
   "business_tables": [

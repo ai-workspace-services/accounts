@@ -11,7 +11,7 @@ import (
 	"account/internal/store"
 )
 
-const defaultFreeQuotaBytes int64 = 3 * 1024 * 1024 * 1024
+const defaultFreeQuotaBytes int64 = 5 * 1024 * 1024 * 1024
 
 // subscriptionGracePeriod is the explicit access grace for failed payments
 // before an account is moved to Free.

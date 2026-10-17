@@ -78,7 +78,7 @@ func TestNetworkTeamAdminAndQuotaGroups(t *testing.T) {
 	}
 
 	user := &store.User{Groups: []string{"segment:keep", store.MonthlyFreeQuotaLimitGroup, "team:acme"}}
-	if group, label := teamQuotaGroup(user); group != "3gb" || label != "3 GB" {
+	if group, label := teamQuotaGroup(user); group != "3gb" || label != "5 GB" {
 		t.Fatalf("free quota mapping: %q %q", group, label)
 	}
 	if err := setTeamQuotaGroup(user, "20gb"); err != nil {
