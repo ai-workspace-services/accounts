@@ -79,7 +79,7 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 		"root":  {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
 		"admin": {"closed.example.test", "free.example.test", "public.example.test"},
 		"free":  {"free.example.test", "public.example.test"},
-		"plus":  {"plus.example.test", "public.example.test"},
+		"plus":  {"free.example.test", "plus.example.test", "public.example.test"},
 		"alpha": {"alpha.example.test"}, "beta": {"beta.example.test"}, "removed": {}, "blocked": {},
 	}
 

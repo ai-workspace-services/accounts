@@ -74,7 +74,8 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		}
 		resourceClass, teamID := reportedResourceClass(snapshot)
 		publicShared := resourceClass == agentResourceShared && wantClass != agentResourceTeam
-		if (!publicShared && resourceClass != wantClass) || (resourceClass == agentResourceTeam && teamID != wantTeam) {
+		plusOnFree := resourceClass == agentResourceFree && wantClass == agentResourcePlus
+		if (!publicShared && !plusOnFree && resourceClass != wantClass) || (resourceClass == agentResourceTeam && teamID != wantTeam) {
 			continue
 		}
 		key := region + "\x00" + entry + "\x00" + resourceClass + "\x00" + teamID

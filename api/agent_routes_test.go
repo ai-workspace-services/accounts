@@ -1,6 +1,10 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"github.com/gin-gonic/gin"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -36,7 +40,7 @@ func TestUserNodeDiscoverySharedAndDedicatedMatrix(t *testing.T) {
 	}{
 		{"registered free", "", networkAccess{Mode: "personal", Allowed: true}, []string{"free.example", "shared.example"}},
 		{"free", store.MonthlyFreeQuotaLimitGroup, networkAccess{Mode: "personal", Allowed: true}, []string{"free.example", "shared.example"}},
-		{"plus", store.MonthlyPlusQuotaLimitGroup, networkAccess{Mode: "personal", Allowed: true}, []string{"plus.example", "shared.example"}},
+		{"plus", store.MonthlyPlusQuotaLimitGroup, networkAccess{Mode: "personal", Allowed: true}, []string{"free.example", "plus.example", "shared.example"}},
 		{"team a", "", networkAccess{Mode: "dedicated", TeamID: "a", Allowed: true}, []string{"team-a.example"}},
 		{"team b", "", networkAccess{Mode: "dedicated", TeamID: "b", Allowed: true}, []string{"team-b.example"}},
 	} {
@@ -94,7 +98,53 @@ func TestRegionalPoolsForUserSelectsReportedResourceClass(t *testing.T) {
 	if len(freePools) != 1 || freePools[0].ResourceClass != agentResourceFree || freePools[0].Entry != "jp-xconnect.onwalk.net" {
 		t.Fatalf("free pools = %#v", freePools)
 	}
-	if len(plusPools) != 1 || plusPools[0].ResourceClass != agentResourcePlus || plusPools[0].Entry != "jp-xconnect.onwalk.net" {
+	if len(plusPools) != 2 {
 		t.Fatalf("plus pools = %#v", plusPools)
+	}
+}
+
+func TestPlusNodesIncludeFreePoolWithFreeTransportRoute(t *testing.T) {
+	t.Setenv("XRAY_POOL_ROUTE_PREFIX", "/pool")
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	now := time.Now().UTC()
+	user := &store.User{Name: "plus", Email: "plus@example.test", Active: true, EmailVerified: true, ProxyUUID: "proxy-plus", Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSession(ctx, "plus-session", user.ID, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	reader := stubAgentStatusReader{}
+	for _, class := range []string{"free", "shared", "plus"} {
+		reader.statuses = append(reader.statuses, agentserver.StatusSnapshot{Agent: agentserver.Identity{ID: class, Groups: []string{"resource:" + class}}, UpdatedAt: now, Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "jp", EntryPoint: class + ".example"}}})
+	}
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithAgentStatusReader(reader))
+	req := httptest.NewRequest("GET", "/api/agent-server/v1/nodes", nil)
+	req.Header.Set("Authorization", "Bearer plus-session")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var nodes []VlessNode
+	if err := json.Unmarshal(rr.Body.Bytes(), &nodes); err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 3 {
+		t.Fatalf("nodes=%+v", nodes)
+	}
+	for _, node := range nodes {
+		want := "/pool/plus/split"
+		if node.Address == "free.example" {
+			want = "/pool/free/split"
+			if node.ResourceClass != "free" {
+				t.Fatalf("free route class=%s", node.ResourceClass)
+			}
+		}
+		if node.Path != want {
+			t.Fatalf("node=%s path=%s want=%s", node.Address, node.Path, want)
+		}
 	}
 }

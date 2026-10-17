@@ -17,7 +17,7 @@ func TestFreeNaturalMonthResetIsUTCAndDoesNotGrantTwice(t *testing.T) {
 	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 1, 0)
 	old := start.AddDate(0, -1, 0)
-	if err := s.UpsertAccountBillingProfile(ctx, &AccountBillingProfile{AccountUUID: u.ID, IncludedQuotaBytes: 3 << 30, PricingRuleVersion: "plan:FREE"}); err != nil {
+	if err := s.UpsertAccountBillingProfile(ctx, &AccountBillingProfile{AccountUUID: u.ID, IncludedQuotaBytes: 5 << 30, PricingRuleVersion: "plan:FREE"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpsertAccountQuotaState(ctx, &AccountQuotaState{AccountUUID: u.ID, RemainingIncludedQuota: 0, PeriodStart: &old, PeriodEnd: &start, ProxyAccessState: "paused", SuspendState: "active"}); err != nil {
@@ -38,7 +38,7 @@ func TestFreeNaturalMonthResetIsUTCAndDoesNotGrantTwice(t *testing.T) {
 	}
 	wg.Wait()
 	q, _ := s.GetAccountQuotaState(ctx, u.ID)
-	if q.RemainingIncludedQuota != 2<<30 || !q.PeriodStart.Equal(start) || !q.PeriodEnd.Equal(end) || q.ProxyAccessState != "paused" {
+	if q.RemainingIncludedQuota != 4<<30 || !q.PeriodStart.Equal(start) || !q.PeriodEnd.Equal(end) || q.ProxyAccessState != "paused" {
 		t.Fatalf("incorrect month rollover: %+v", q)
 	}
 	q.RemainingIncludedQuota = 1 << 30

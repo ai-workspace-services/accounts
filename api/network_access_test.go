@@ -49,7 +49,7 @@ func TestAgentResourceScopeFiltersPublicEntitlements(t *testing.T) {
 		want   bool
 	}{
 		{"free accepts free", []string{"resource:free"}, free, true},
-		{"free rejects plus", []string{"resource:free"}, plus, false},
+		{"free accepts plus", []string{"resource:free"}, plus, true},
 		{"plus accepts plus", []string{"resource:plus"}, plus, true},
 		{"plus rejects free", []string{"resource:plus"}, free, false},
 		{"shared accepts personal", []string{"resource:shared"}, plus, true},
@@ -78,7 +78,7 @@ func TestNetworkTeamAdminAndQuotaGroups(t *testing.T) {
 	}
 
 	user := &store.User{Groups: []string{"segment:keep", store.MonthlyFreeQuotaLimitGroup, "team:acme"}}
-	if group, label := teamQuotaGroup(user); group != "3gb" || label != "3 GB" {
+	if group, label := teamQuotaGroup(user); group != "3gb" || label != "Free" {
 		t.Fatalf("free quota mapping: %q %q", group, label)
 	}
 	if err := setTeamQuotaGroup(user, "20gb"); err != nil {

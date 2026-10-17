@@ -17,7 +17,7 @@
       "planId": "FREE",
       "displayName": "Free",
       "kind": "subscription",
-      "includedQuotaBytes": 3221225472,
+      "includedQuotaBytes": 5368709120,
       "packageName": "free",
       "priceAmount": 0,
       "priceCurrency": "",
