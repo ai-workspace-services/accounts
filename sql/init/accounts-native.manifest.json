@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "migration_version": 2026101703,
+  "migration_version": 2026101901,
   "schema_sha256": "dd56a4025442d84bbe03db7be0bd330c8e81d7e1694dafb7fbd895b22ef17527",
   "business_table_count": 72,
   "source_files": [
@@ -119,6 +119,10 @@
     {
       "path": "sql/migrations/2026101703_email_campaigns.up.sql",
       "sha256": "28ca2c8673875ba6e13ffa0b8bf11828a0f5c2975f6a305de4fdacae9f3ff77e"
+    },
+    {
+      "path": "sql/migrations/2026101901_v3_billing_catalog.up.sql",
+      "sha256": "b9fee298512e7d888fe619917c8238120f0e227f4ea348e59397d074c41f878d"
     }
   ],
   "business_tables": [

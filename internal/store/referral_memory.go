@@ -80,7 +80,7 @@ func (s *memoryStore) GetReferralReferrer(ctx context.Context, inviteeUUID strin
 
 func (s *memoryStore) CreateReferralReward(ctx context.Context, reward *ReferralReward) (bool, error) {
 	_ = ctx
-	if reward == nil || reward.ProviderInvoiceID == "" || reward.PaidMinor <= 0 || reward.RewardMinor != reward.PaidMinor/10 || reward.Currency == "" || reward.ProductSlug != "xconnect" || (reward.PlanID != "PRO-MONTHLY" && reward.PlanID != "PRO-YEARLY") {
+	if reward == nil || reward.ProviderInvoiceID == "" || reward.PaidMinor <= 0 || reward.RewardMinor != reward.PaidMinor/10 || reward.Currency == "" || reward.ProductSlug != "xconnect" || !isXConnectReferralPlan(reward.PlanID) {
 		return false, ErrReferralNotFound
 	}
 	s.mu.Lock()

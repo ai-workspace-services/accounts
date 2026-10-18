@@ -12,28 +12,34 @@
 products:
   - key: pro                        # 稳定标识，跨账号不变；用作 Stripe Product 的自定义 id
     name: "Pro"
-    description: "订阅套餐：月付 20GB / 年付每月 20GB，超出按量计费"
+    description: "订阅套餐：月付 50GB / 年付不限流量"
     prices:
-      - key: pro-monthly             # 稳定标识，写入 billing_plans.stripe_price_id 前的查找键(lookup_key)
-        plan_id: PRO-MONTHLY         # 对应 billing_plans.plan_id
-        unit_amount: 2000            # 最小货币单位(分)；¥20.00
+      - key: pro-monthly-v2
+        plan_id: PRO-MONTHLY-V2      # versioned ID preserves existing subscription rights
+        unit_amount: 5000            # 最小货币单位(分)；¥50.00
         currency: cny
         recurring_interval: month
-      - key: pro-yearly
-        plan_id: PRO-YEARLY
-        unit_amount: 20000           # ¥200.00
+      - key: pro-yearly-v2
+        plan_id: PRO-YEARLY-V2
+        unit_amount: 50000           # ¥500.00
         currency: cny
         recurring_interval: year
+
+  - key: plus
+    name: "Plus"
+    description: "Plus 订阅：每月 20GB"
+    prices:
+      - key: plus-monthly
+        plan_id: PLUS
+        unit_amount: 2000
+        currency: cny
+        recurring_interval: month
 
   - key: payg-topup                  # PAYG 预充值，一次性支付，非订阅
     name: "余额充值"
     description: "Pay-As-You-Go 预充值，按面额一次性支付，充值后计入账户余额"
     prices:
-      # 固定充值面额。Checkout 不接受自定义金额；CNY 和 USD 余额分开记账。
-      - key: payg-topup-10
-        plan_id: PAYG-TOPUP-10
-        unit_amount: 1000             # ¥10.00
-        currency: cny
+      # 固定快捷档位；自定义金额由 Accounts 服务端校验后以 Stripe price_data 创建。
       - key: payg-topup-50
         plan_id: PAYG-TOPUP-50
         unit_amount: 5000            # ¥50.00
@@ -42,21 +48,17 @@ products:
         plan_id: PAYG-TOPUP-100
         unit_amount: 10000           # ¥100.00
         currency: cny
-      - key: payg-topup-500
-        plan_id: PAYG-TOPUP-500
-        unit_amount: 50000           # ¥500.00
+      - key: payg-topup-200
+        plan_id: PAYG-TOPUP-200
+        unit_amount: 20000           # ¥200.00
         currency: cny
-      - key: payg-topup-usd-5
-        plan_id: PAYG-TOPUP-USD-5
-        unit_amount: 500              # $5.00
-        currency: usd
-      - key: payg-topup-usd-10
-        plan_id: PAYG-TOPUP-USD-10
-        unit_amount: 1000             # $10.00
-        currency: usd
       - key: payg-topup-usd-20
         plan_id: PAYG-TOPUP-USD-20
         unit_amount: 2000             # $20.00
+        currency: usd
+      - key: payg-topup-usd-50
+        plan_id: PAYG-TOPUP-USD-50
+        unit_amount: 5000             # $50.00
         currency: usd
       - key: payg-topup-usd-100
         plan_id: PAYG-TOPUP-USD-100

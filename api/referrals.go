@@ -67,7 +67,7 @@ func (h *handler) getReferralOverview(c *gin.Context) {
 		if status == "pending" && !reward.EligibleAt.After(now) {
 			status = "eligible"
 		}
-		referrals = append(referrals, gin.H{"id": reward.ReferralID, "rewardId": reward.ID, "createdAt": reward.ReferralCreatedAt, "paidAt": reward.PaidAt, "invitee": maskReferralEmail(reward.InviteeEmail), "planType": map[bool]string{true: "year", false: "month"}[reward.PlanID == "PRO-YEARLY"], "paidMinor": reward.PaidMinor, "currency": strings.TrimSpace(reward.Currency), "rewardMinor": reward.RewardMinor, "status": status, "eligibleAt": reward.EligibleAt})
+		referrals = append(referrals, gin.H{"id": reward.ReferralID, "rewardId": reward.ID, "createdAt": reward.ReferralCreatedAt, "paidAt": reward.PaidAt, "invitee": maskReferralEmail(reward.InviteeEmail), "planType": map[bool]string{true: "year", false: "month"}[isXConnectAnnualPlanID(reward.PlanID)], "paidMinor": reward.PaidMinor, "currency": strings.TrimSpace(reward.Currency), "rewardMinor": reward.RewardMinor, "status": status, "eligibleAt": reward.EligibleAt})
 	}
 	rows := summary.CashByCurrency
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Currency < rows[j].Currency })

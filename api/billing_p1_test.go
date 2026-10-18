@@ -443,6 +443,12 @@ func TestValidateCheckoutPlanBindsPriceAndModeToCatalog(t *testing.T) {
 		{"subscription cannot use payment mode", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_monthly", Mode: "payment"}, false},
 		{"plan price mismatch", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_payg", Mode: "subscription"}, false},
 		{"unknown plan rejected once catalog exists", stripeCheckoutRequest{PlanID: "unknown", StripePriceID: "price_legacy", Mode: "subscription"}, false},
+		{"custom CNY minimum", stripeCheckoutRequest{PlanID: customCNYTopUpPlanID, AmountMinor: 1000, Currency: "CNY", Mode: "payment"}, true},
+		{"custom CNY maximum", stripeCheckoutRequest{PlanID: customCNYTopUpPlanID, AmountMinor: 20000, Currency: "CNY", Mode: "payment"}, true},
+		{"custom CNY below minimum", stripeCheckoutRequest{PlanID: customCNYTopUpPlanID, AmountMinor: 999, Currency: "CNY", Mode: "payment"}, false},
+		{"custom USD minimum", stripeCheckoutRequest{PlanID: customUSDTopUpPlanID, AmountMinor: 500, Currency: "USD", Mode: "payment"}, true},
+		{"custom USD maximum", stripeCheckoutRequest{PlanID: customUSDTopUpPlanID, AmountMinor: 10000, Currency: "USD", Mode: "payment"}, true},
+		{"custom top-up cannot use fixed price", stripeCheckoutRequest{PlanID: customUSDTopUpPlanID, AmountMinor: 500, Currency: "USD", StripePriceID: "price_any", Mode: "payment"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -27,8 +27,8 @@ INSERT INTO billing_plans
    package_name, price_amount, price_currency, price_unit,
    price_multipliers, features, trial_days, active, sort_order)
 VALUES
-  -- free：每个自然月 3GB。新用户默认进入此档，存量用户不在种子中迁移。
-  ('FREE', NULL, 'Free', 'subscription', 3221225472,
+  -- free：每个自然月 5GiB。存量用户不在种子中迁移。
+  ('FREE', NULL, 'Free', 'subscription', 5368709120,
    'free',
    0, '', '',
    '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
@@ -43,10 +43,10 @@ VALUES
     }'::jsonb,
    0, true, 10),
 
-  -- Plus：每个自然月 20GB。Stripe 价格由支付目录单独回填。
+  -- Plus：每个自然月 20GB，¥20/月。
   ('PLUS', NULL, 'Plus', 'subscription', 21474836480,
    'plus',
-   0, '', '',
+   2000, 'CNY', 'month',
    '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
    '{
       "sla": "standard",
@@ -85,12 +85,12 @@ VALUES
     }'::jsonb,
    0, true, 20),
 
-  -- PAYG 固定充值面额。Stripe Price ID 由目录同步后回填。
+  -- PAYG 固定充值面额。其余金额由 Checkout 动态价格处理并由服务端限额。
   ('PAYG-TOPUP-10', NULL, '余额充值 ¥10', 'paygo_topup', 0,
    'payg', 1000, 'CNY', 'once',
    '{"fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0}'::jsonb,
    '{"topup_amount": 10, "wallet_currency": "CNY", "dunning": {"policy": "suspend_on_zero_balance", "grace_hours": 0}}'::jsonb,
-   0, true, 20),
+   0, false, 20),
 
   ('PAYG-TOPUP-50', NULL, '余额充值 ¥50', 'paygo_topup', 0,
    'payg',
@@ -106,24 +106,30 @@ VALUES
    '{"topup_amount": 100, "dunning": {"policy": "suspend_on_zero_balance", "grace_hours": 0}}'::jsonb,
    0, true, 22),
 
+  ('PAYG-TOPUP-200', NULL, '余额充值 ¥200', 'paygo_topup', 0,
+   'payg', 20000, 'CNY', 'once',
+   '{"fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"topup_amount": 200, "wallet_currency": "CNY", "dunning": {"policy": "suspend_on_zero_balance", "grace_hours": 0}}'::jsonb,
+   0, true, 23),
+
   ('PAYG-TOPUP-500', NULL, '余额充值 ¥500', 'paygo_topup', 0,
    'payg',
    50000, 'CNY', 'once',
    '{"fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0}'::jsonb,
    '{"topup_amount": 500, "dunning": {"policy": "suspend_on_zero_balance", "grace_hours": 0}}'::jsonb,
-   0, true, 23),
+   0, false, 23),
 
   ('PAYG-TOPUP-USD-5', NULL, 'Balance top-up $5', 'paygo_topup', 0,
    'payg', 500, 'USD', 'once',
    '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
    '{"topup_amount": 5, "wallet_currency": "USD"}'::jsonb,
-   0, true, 24),
+   0, false, 24),
 
   ('PAYG-TOPUP-USD-10', NULL, 'Balance top-up $10', 'paygo_topup', 0,
    'payg', 1000, 'USD', 'once',
    '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
    '{"topup_amount": 10, "wallet_currency": "USD"}'::jsonb,
-   0, true, 25),
+   0, false, 25),
 
   ('PAYG-TOPUP-USD-20', NULL, 'Balance top-up $20', 'paygo_topup', 0,
    'payg', 2000, 'USD', 'once',
@@ -131,14 +137,20 @@ VALUES
    '{"topup_amount": 20, "wallet_currency": "USD"}'::jsonb,
    0, true, 26),
 
+  ('PAYG-TOPUP-USD-50', NULL, 'Balance top-up $50', 'paygo_topup', 0,
+   'payg', 5000, 'USD', 'once',
+   '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"topup_amount": 50, "wallet_currency": "USD"}'::jsonb,
+   0, true, 27),
+
   ('PAYG-TOPUP-USD-100', NULL, 'Balance top-up $100', 'paygo_topup', 0,
    'payg', 10000, 'USD', 'once',
    '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
    '{"topup_amount": 100, "wallet_currency": "USD"}'::jsonb,
    0, true, 27),
 
-  -- Pro 月付：¥20/月，含 20GB 高速流量，超出 1 元/GB。
-  ('PRO-MONTHLY', NULL, 'Pro 月付', 'subscription', 21474836480,
+  -- 旧 Pro 价格保留原权益但停售；existing Stripe subscriptions keep their terms.
+  ('PRO-MONTHLY', NULL, 'Pro 月付（历史方案）', 'subscription', 21474836480,
    'pro',
    2000, 'CNY', 'month',
    '{"fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0}'::jsonb,
@@ -151,12 +163,9 @@ VALUES
       "dunning": {"policy": "grace_then_suspend", "grace_days": 14},
       "quota_cycle": "natural_month"
     }'::jsonb,
-   0, true, 30),
+   0, false, 30),
 
-  -- Pro 年付：¥200/年，配额仍按自然月发放 20GB（共 12 期，年累计 240GB）。
-  -- quota_cycle=natural_month 是关键：Stripe 年付订阅的 current_period 是一年，
-  -- 直接沿用会导致配额一年才重置一次。见 02 的"配额周期与 Stripe 周期解耦"。
-  ('PRO-YEARLY', NULL, 'Pro 年付', 'subscription', 21474836480,
+  ('PRO-YEARLY', NULL, 'Pro 年付（历史方案）', 'subscription', 21474836480,
    'pro',
    20000, 'CNY', 'year',
    '{"fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0}'::jsonb,
@@ -169,6 +178,21 @@ VALUES
       "dunning": {"policy": "grace_then_suspend", "grace_days": 14},
       "quota_cycle": "natural_month"
     }'::jsonb,
+   0, false, 40),
+
+  -- New Pro prices/rights use versioned IDs so active historical subscriptions are unchanged.
+  ('PRO-MONTHLY-V2', NULL, 'Pro 月付', 'subscription', 53687091200,
+   'pro',
+   5000, 'CNY', 'month',
+   '{"fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"sla":"standard","session_persistence":true,"resource_cards":{"create":true,"pricing":"list_price_plus_managed_fee","managed_fee_rate":0.20},"fast_lane":{"mode":"quota"},"overage":{"policy":"charge","cny_per_gb":1.0},"dunning":{"policy":"grace_then_suspend","grace_days":14},"quota_cycle":"natural_month"}'::jsonb,
+   0, true, 30),
+
+  ('PRO-YEARLY-V2', NULL, 'Pro 年付', 'subscription', 9223372036854775807,
+   'pro',
+   50000, 'CNY', 'year',
+   '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"sla":"standard","session_persistence":true,"resource_cards":{"create":true,"pricing":"list_price_plus_managed_fee","managed_fee_rate":0.20},"fast_lane":{"mode":"unlimited"},"overage":{"policy":"none"},"dunning":{"policy":"grace_then_suspend","grace_days":14},"quota_cycle":"none"}'::jsonb,
    0, true, 40),
 
   -- 存量用户迁移专用过渡档（07-existing-user-migration.md）。
