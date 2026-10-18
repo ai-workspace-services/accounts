@@ -1228,12 +1228,11 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			return errors.New("native runtime database unavailable")
 		}
 		verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err = migrate.VerifyNativeRuntime(verifyCtx, sqlDB)
+		runtimeConfig.SchemaVersion, err = migrate.VerifiedNativeRuntimeVersion(verifyCtx, sqlDB)
 		cancel()
 		if err != nil {
 			return err
 		}
-		runtimeConfig.SchemaVersion = migrate.FullBusinessVersion
 	}
 
 	service.SetDB(gormDB)
