@@ -30,7 +30,7 @@ func TestAccountingResponsesUseCamelCaseFieldNames(t *testing.T) {
 			value: BillingLedgerEntry{},
 			keys: []string{
 				"id", "accountUuid", "bucketStart", "bucketEnd", "entryType",
-				"ratedBytes", "amountDelta", "balanceAfter",
+				"ratedBytes", "amountDelta", "balanceAfter", "currency",
 				"pricingRuleVersion", "createdAt",
 			},
 		},

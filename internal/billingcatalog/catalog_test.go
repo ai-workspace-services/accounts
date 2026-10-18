@@ -106,7 +106,7 @@ func TestManifestQuotesWhatStripeCharges(t *testing.T) {
 				t.Errorf("plan %s: manifest quotes %d, Stripe charges %d",
 					plan.PlanID, plan.PriceAmount, price.UnitAmount)
 			}
-			if got, want := plan.PriceCurrency, "CNY"; got != want && price.Currency == "cny" {
+			if got, want := strings.ToUpper(plan.PriceCurrency), strings.ToUpper(price.Currency); got != want {
 				t.Errorf("plan %s: manifest currency %q, Stripe currency %q",
 					plan.PlanID, got, price.Currency)
 			}
@@ -125,7 +125,8 @@ func TestSellablePlansArePublishable(t *testing.T) {
 	// misses either renders as 即将上线 with no explanation.
 	sellable := []string{
 		"PRO-MONTHLY", "PRO-YEARLY",
-		"PAYG-TOPUP-50", "PAYG-TOPUP-100", "PAYG-TOPUP-500",
+		"PAYG-TOPUP-10", "PAYG-TOPUP-50", "PAYG-TOPUP-100", "PAYG-TOPUP-500",
+		"PAYG-TOPUP-USD-5", "PAYG-TOPUP-USD-10", "PAYG-TOPUP-USD-20", "PAYG-TOPUP-USD-100",
 	}
 
 	plans := make(map[string]manifestPlan)

@@ -83,6 +83,11 @@ func validatePublishedPrice(plan *store.BillingPlan) error {
 	}
 	plan.PriceCurrency = currency
 	plan.PriceUnit = unit
+	if strings.EqualFold(strings.TrimSpace(plan.Kind), "paygo_topup") {
+		if !isFixedPaygoTopUp(plan.PlanID, plan.PriceAmount, plan.PriceCurrency, plan.PriceUnit) {
+			return errors.New("pay-as-you-go top-ups must use an approved fixed denomination")
+		}
+	}
 	return nil
 }
 

@@ -242,6 +242,78 @@ func (s *memoryStore) InsertBillingLedgerEntry(ctx context.Context, entry *Billi
 	return nil
 }
 
+func (s *memoryStore) CreditTopUp(ctx context.Context, entry *BillingLedgerEntry) (bool, error) {
+	_ = ctx
+	if entry == nil || strings.TrimSpace(entry.ID) == "" || entry.AmountDelta <= 0 {
+		return false, errors.New("valid top-up ledger entry is required")
+	}
+	currency := strings.ToUpper(strings.TrimSpace(entry.Currency))
+	if currency != "CNY" && currency != "USD" {
+		return false, errors.New("unsupported wallet currency")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.billingLedgerEntries[entry.ID]; exists {
+		return true, nil
+	}
+	accountID := strings.TrimSpace(entry.AccountUUID)
+	state := cloneQuotaState(s.accountQuotaStates[accountID])
+	if state == nil {
+		state = &AccountQuotaState{AccountUUID: accountID}
+	}
+	if currency == "CNY" {
+		entry.BalanceAfter = state.CurrentBalance + entry.AmountDelta
+		state.CurrentBalance = entry.BalanceAfter
+		state.EffectiveAt = time.Now().UTC()
+		state.UpdatedAt = state.EffectiveAt
+		if state.CurrentBalance >= 0 {
+			state.Arrears = false
+			state.ArrearsSince = nil
+		}
+	} else {
+		for _, prior := range s.billingLedgerEntries {
+			if prior.AccountUUID == accountID && prior.EntryType == "wallet_usd" {
+				entry.BalanceAfter += prior.AmountDelta
+			}
+		}
+		entry.BalanceAfter += entry.AmountDelta
+	}
+	entry.Currency = currency
+	if currency == "USD" {
+		entry.EntryType = "wallet_usd"
+	} else {
+		entry.EntryType = "topup"
+	}
+	now := time.Now().UTC()
+	entry.CreatedAt = now
+	s.billingLedgerEntries[entry.ID] = cloneLedgerEntry(entry)
+	s.accountQuotaStates[accountID] = state
+	return false, nil
+}
+
+func (s *memoryStore) GetWalletBalance(ctx context.Context, accountUUID, currency string) (float64, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	switch strings.ToUpper(strings.TrimSpace(currency)) {
+	case "CNY":
+		if quota := s.accountQuotaStates[strings.TrimSpace(accountUUID)]; quota != nil {
+			return quota.CurrentBalance, nil
+		}
+		return 0, nil
+	case "USD":
+		var balance float64
+		for _, entry := range s.billingLedgerEntries {
+			if entry.AccountUUID == strings.TrimSpace(accountUUID) && entry.EntryType == "wallet_usd" {
+				balance += entry.AmountDelta
+			}
+		}
+		return balance, nil
+	default:
+		return 0, errors.New("unsupported wallet currency")
+	}
+}
+
 func (s *memoryStore) ListBillingLedgerByAccount(ctx context.Context, accountUUID string, limit int) ([]BillingLedgerEntry, error) {
 	_ = ctx
 	s.mu.RLock()
