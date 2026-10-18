@@ -51,13 +51,14 @@ func (subscription *stripeSubscription) UnmarshalJSON(data []byte) error {
 }
 
 type stripeRefund struct {
-	ID            string `json:"id"`
-	Status        string `json:"status"`
-	PaymentIntent any    `json:"payment_intent"`
-	Amount        int64  `json:"amount"`
-	Currency      string `json:"currency"`
-	Reason        string `json:"reason"`
-	Created       int64  `json:"created"`
+	ID            string            `json:"id"`
+	Status        string            `json:"status"`
+	PaymentIntent any               `json:"payment_intent"`
+	Amount        int64             `json:"amount"`
+	Currency      string            `json:"currency"`
+	Reason        string            `json:"reason"`
+	Created       int64             `json:"created"`
+	Metadata      map[string]string `json:"metadata"`
 }
 
 // Provider refund IDs, rather than event IDs, make different deliveries and
@@ -74,8 +75,41 @@ func (h *handler) recordStripeRefund(ctx context.Context, refund *stripeRefund) 
 	if err != nil {
 		return err
 	} // Retried when the payment webhook arrives later.
+	key := "stripe-refund:" + refund.ID
+	operationKey := refund.Metadata["finance_operation_key"]
+	if operationKey == "" {
+		// Metadata-less replays may use a reference already bound by a validated
+		// response. Never infer association from amount alone or ignore another
+		// pending intent's reservation.
+		invoice, err := h.store.GetFinanceInvoice(ctx, payment.InvoiceID)
+		if err != nil {
+			return err
+		}
+		if invoice.SubscriptionUUID != "" {
+			op, err := h.store.GetFinanceOperation(ctx, "subscription-refund:"+invoice.SubscriptionUUID)
+			if err != nil && !errors.Is(err, store.ErrFinanceRecordNotFound) {
+				return err
+			}
+			if err == nil && op.ProviderOperationID == refund.ID {
+				operationKey = op.IdempotencyKey
+				copy := *refund
+				copy.Metadata = map[string]string{"finance_operation_key": operationKey}
+				refund = &copy
+			}
+		}
+	}
+	if operationKey != "" {
+		op, err := h.store.GetFinanceOperation(ctx, operationKey)
+		if err != nil {
+			return err
+		}
+		if _, err := h.validateOperationRefund(ctx, op, refund); err != nil {
+			return err
+		}
+		key = operationKey
+	}
 	_, err = h.store.RecordFinanceRefund(ctx, &store.FinanceRefund{
-		IdempotencyKey: "stripe-refund:" + refund.ID,
+		IdempotencyKey: key,
 		PaymentID:      payment.ID, Provider: "stripe", ProviderRefundID: refund.ID,
 		AmountMinor: refund.Amount, Currency: refund.Currency, Reason: refund.Reason,
 		RefundedAt: time.Unix(refund.Created, 0).UTC(),
@@ -98,6 +132,11 @@ func (h *handler) recordStripeRefund(ctx context.Context, refund *stripeRefund) 
 		}); err != nil {
 			return err
 		}
+	}
+	// The self-service runner owns provider cancellation and local access work.
+	// A racing webhook may materialize the fact but cannot complete that intent.
+	if operationKey != "" {
+		return nil
 	}
 	// Modern Charge snapshots may omit the legacy invoice reference. Resolve
 	// full-refund access through our immutable payment -> invoice -> subscription

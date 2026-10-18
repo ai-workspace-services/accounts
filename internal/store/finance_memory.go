@@ -72,9 +72,16 @@ func financeOperationReservesRefund(operation *FinanceOperation) bool {
 	return operation.OperationType == "refund" && operation.TargetType == "payment" && (operation.Status == FinanceOperationPending || operation.Status == FinanceOperationInProgress || operation.Status == FinanceOperationSucceeded || operation.Status == FinanceOperationReconciliationRequired)
 }
 
+// Self-service provider calls have a 45s deadline and an independent 5s
+// finalization budget. A crashed attempt remains reserved, but may be reclaimed
+// after two minutes; the API only queries (never POSTs) on attempts after one.
+func financeRefundAttemptExpired(operation *FinanceOperation) bool {
+	return operation.Status == FinanceOperationInProgress && operation.OperationType == "refund" && strings.HasPrefix(operation.IdempotencyKey, "subscription-refund:") && time.Since(operation.UpdatedAt) > 2*time.Minute
+}
+
 func financeRefundMatchesOperation(operation *FinanceOperation, refund *FinanceRefund) bool {
 	amount, currency, err := financeRefundRequest(operation)
-	return err == nil && operation.Status == FinanceOperationSucceeded && operation.OperationType == "refund" && operation.TargetType == "payment" && operation.TargetID == refund.PaymentID && operation.Provider == refund.Provider && amount == refund.AmountMinor && currency == refund.Currency && (operation.ProviderOperationID == "" || operation.ProviderOperationID == refund.ProviderRefundID)
+	return err == nil && financeOperationReservesRefund(operation) && operation.TargetID == refund.PaymentID && operation.Provider == refund.Provider && amount == refund.AmountMinor && currency == refund.Currency && refund.ProviderRefundID != "" && (operation.ProviderOperationID == "" || operation.ProviderOperationID == refund.ProviderRefundID)
 }
 
 func (s *memoryStore) CreateFinanceInvoice(ctx context.Context, invoice *FinanceInvoice) (bool, error) {
@@ -296,6 +303,11 @@ func (s *memoryStore) RecordFinanceRefund(ctx context.Context, refund *FinanceRe
 		if !financeRefundMatchesOperation(s.financeOperations[operationID], &copy) {
 			return false, ErrFinanceIdempotencyConflict
 		}
+		for _, other := range s.financeOperations {
+			if other.ID != operationID && other.Provider == copy.Provider && other.OperationType == "refund" && other.ProviderOperationID == copy.ProviderRefundID {
+				return false, ErrFinanceIdempotencyConflict
+			}
+		}
 	}
 	payment, ok := s.financePayments[copy.PaymentID]
 	if !ok || payment.Currency != copy.Currency {
@@ -334,6 +346,13 @@ func (s *memoryStore) RecordFinanceRefund(ctx context.Context, refund *FinanceRe
 	copy.CreatedAt = time.Now().UTC()
 	s.financeRefunds[copy.ID] = &copy
 	s.financeRefundKeys[copy.IdempotencyKey] = copy.ID
+	// The intent and provider fact share one key. Bind the external reference
+	// atomically with the fact, without completing cancellation/entitlement work.
+	if id := s.financeOperationKeys[copy.IdempotencyKey]; id != "" {
+		op := s.financeOperations[id]
+		op.ProviderOperationID = copy.ProviderRefundID
+		s.financeOperationEvents[id] = append(s.financeOperationEvents[id], FinanceOperationEvent{ID: uuid.NewString(), OperationID: id, Attempt: op.AttemptCount, EventType: "refund_recorded", Status: op.Status, ProviderOperationID: copy.ProviderRefundID, Payload: json.RawMessage(fmt.Sprintf(`{"refund_uuid":%q}`, copy.ID)), OccurredAt: copy.CreatedAt})
+	}
 	*refund = copy
 	return true, nil
 }
@@ -387,14 +406,14 @@ func (s *memoryStore) BeginFinanceOperation(ctx context.Context, operation *Fina
 		if stored.OperationType != operation.OperationType || stored.TargetType != operation.TargetType || stored.TargetID != operation.TargetID || stored.Provider != operation.Provider || !jsonEqual(stored.Request, operation.Request) {
 			return false, ErrFinanceIdempotencyConflict
 		}
-		if stored.Status == FinanceOperationInProgress {
+		if stored.Status == FinanceOperationInProgress && !financeRefundAttemptExpired(&stored) {
 			return false, ErrFinanceOperationInProgress
 		}
 		if stored.Status == FinanceOperationSucceeded {
 			*operation = stored
 			return false, nil
 		}
-		if stored.Status != FinanceOperationPending && stored.Status != FinanceOperationFailed && stored.Status != FinanceOperationReconciliationRequired {
+		if stored.Status != FinanceOperationPending && stored.Status != FinanceOperationFailed && stored.Status != FinanceOperationReconciliationRequired && !financeRefundAttemptExpired(&stored) {
 			return false, ErrFinanceOperationNotRetryable
 		}
 	} else {
@@ -419,8 +438,9 @@ func (s *memoryStore) BeginFinanceOperation(ctx context.Context, operation *Fina
 			return false, ErrFinanceRecordNotFound
 		}
 		var reserved int64
+		ownFact := s.financeRefundKeys[key]
 		for _, refund := range s.financeRefunds {
-			if refund.PaymentID == payment.ID {
+			if refund.PaymentID == payment.ID && refund.ID != ownFact {
 				reserved += refund.AmountMinor
 			}
 		}
@@ -453,7 +473,22 @@ func (s *memoryStore) BeginFinanceOperation(ctx context.Context, operation *Fina
 	return true, nil
 }
 
-func (s *memoryStore) FinishFinanceOperation(ctx context.Context, operationID, status, providerOperationID string, response json.RawMessage, operationErr error, nextAttemptAt *time.Time) error {
+// Checkpoint persists an external-call boundary before sending the request.
+// A later crash can never reuse an earlier "not submitted" response marker.
+func (s *memoryStore) CheckpointFinanceOperation(ctx context.Context, operationID string, expectedAttempt int, response json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op := s.financeOperations[operationID]
+	if op == nil || op.Status != FinanceOperationInProgress || op.AttemptCount != expectedAttempt {
+		return ErrFinanceOperationNotRetryable
+	}
+	op.Response = financeJSON(response)
+	op.UpdatedAt = time.Now().UTC()
+	s.financeOperationEvents[op.ID] = append(s.financeOperationEvents[op.ID], FinanceOperationEvent{ID: uuid.NewString(), OperationID: op.ID, Attempt: op.AttemptCount, EventType: "attempt_checkpoint", Status: op.Status, Payload: financeJSON(response), OccurredAt: op.UpdatedAt})
+	return nil
+}
+
+func (s *memoryStore) FinishFinanceOperation(ctx context.Context, operationID, status, providerOperationID string, response json.RawMessage, operationErr error, nextAttemptAt *time.Time, expectedAttempt ...int) error {
 	if status != FinanceOperationSucceeded && status != FinanceOperationFailed && status != FinanceOperationReconciliationRequired {
 		return ErrFinanceOperationNotRetryable
 	}
@@ -466,7 +501,16 @@ func (s *memoryStore) FinishFinanceOperation(ctx context.Context, operationID, s
 	if operation.Status != FinanceOperationInProgress {
 		return ErrFinanceOperationNotRetryable
 	}
+	if len(expectedAttempt) > 0 && operation.AttemptCount != expectedAttempt[0] {
+		return ErrFinanceOperationNotRetryable
+	}
 	providerOperationID = strings.TrimSpace(providerOperationID)
+	if operation.ProviderOperationID != "" {
+		if providerOperationID != "" && providerOperationID != operation.ProviderOperationID {
+			return ErrFinanceIdempotencyConflict
+		}
+		providerOperationID = operation.ProviderOperationID
+	}
 	if providerOperationID != "" {
 		for _, existing := range s.financeOperations {
 			if existing.ID != operation.ID && existing.Provider == operation.Provider && existing.OperationType == operation.OperationType && existing.ProviderOperationID == providerOperationID {
@@ -474,7 +518,7 @@ func (s *memoryStore) FinishFinanceOperation(ctx context.Context, operationID, s
 			}
 		}
 	}
-	if operationErr != nil {
+	if operationErr != nil && status != FinanceOperationReconciliationRequired {
 		status = FinanceOperationFailed
 	}
 	operation.Status = status

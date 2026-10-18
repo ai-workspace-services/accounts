@@ -735,7 +735,8 @@ type Store interface {
 	// target_id=local payment UUID, and request JSON amount_minor/currency.
 	// Their outstanding amount is reserved until failed or materialized as a refund fact.
 	BeginFinanceOperation(ctx context.Context, operation *FinanceOperation) (claimed bool, err error)
-	FinishFinanceOperation(ctx context.Context, operationID, status, providerOperationID string, response json.RawMessage, operationErr error, nextAttemptAt *time.Time) error
+	CheckpointFinanceOperation(ctx context.Context, operationID string, expectedAttempt int, response json.RawMessage) error
+	FinishFinanceOperation(ctx context.Context, operationID, status, providerOperationID string, response json.RawMessage, operationErr error, nextAttemptAt *time.Time, expectedAttempt ...int) error
 	GetFinanceOperation(ctx context.Context, idempotencyKey string) (*FinanceOperation, error)
 	ListFinanceOperationsForReconciliation(ctx context.Context, limit int) ([]FinanceOperation, error)
 	ListFinanceOperationEvents(ctx context.Context, operationID string) ([]FinanceOperationEvent, error)
