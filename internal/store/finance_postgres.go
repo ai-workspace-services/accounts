@@ -121,6 +121,20 @@ func (s *postgresStore) ListFinanceInvoices(ctx context.Context, accountUUID, su
 	return invoices, rows.Err()
 }
 
+func (s *postgresStore) GetFinancePaymentByProvider(ctx context.Context, provider, providerPaymentID string) (*FinancePayment, error) {
+	var payment FinancePayment
+	err := s.db.QueryRowContext(ctx, `SELECT id::text, idempotency_key, invoice_id::text, account_uuid::text, provider, COALESCE(provider_payment_id, ''), amount_minor, currency, paid_at, created_at FROM public.finance_payments WHERE provider = $1 AND provider_payment_id = $2`, financeProvider(provider), strings.TrimSpace(providerPaymentID)).Scan(
+		&payment.ID, &payment.IdempotencyKey, &payment.InvoiceID, &payment.AccountUUID, &payment.Provider, &payment.ProviderPaymentID, &payment.AmountMinor, &payment.Currency, &payment.PaidAt, &payment.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrFinanceRecordNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &payment, nil
+}
+
 func (s *postgresStore) GetFinanceInvoice(ctx context.Context, id string) (*FinanceInvoice, error) {
 	invoice, err := scanFinanceInvoice(s.db.QueryRowContext(ctx, `SELECT `+financeInvoiceColumns+` FROM public.finance_invoices WHERE id = $1::uuid`, strings.TrimSpace(id)))
 	if errors.Is(err, sql.ErrNoRows) {

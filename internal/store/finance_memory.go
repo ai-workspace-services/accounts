@@ -251,6 +251,22 @@ func (s *memoryStore) ListFinancePayments(ctx context.Context, accountUUID strin
 	return result, nil
 }
 
+func (s *memoryStore) GetFinancePaymentByProvider(ctx context.Context, provider, providerPaymentID string) (*FinancePayment, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	provider, providerPaymentID = financeProvider(provider), strings.TrimSpace(providerPaymentID)
+	if providerPaymentID == "" {
+		return nil, ErrFinanceRecordNotFound
+	}
+	for _, payment := range s.financePayments {
+		if payment.Provider == provider && payment.ProviderPaymentID == providerPaymentID {
+			copy := *payment
+			return &copy, nil
+		}
+	}
+	return nil, ErrFinanceRecordNotFound
+}
+
 func (s *memoryStore) RecordFinanceRefund(ctx context.Context, refund *FinanceRefund) (bool, error) {
 	if refund == nil || strings.TrimSpace(refund.IdempotencyKey) == "" || refund.AmountMinor <= 0 {
 		return false, ErrFinanceIdempotencyConflict
