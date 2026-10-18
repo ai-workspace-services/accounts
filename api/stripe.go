@@ -24,6 +24,7 @@ import (
 )
 
 const stripeAPIBaseURL = "https://api.stripe.com/v1"
+const stripeAPIVersion = "2026-01-28.clover"
 
 // Stripe signs webhook payloads with a timestamp. Keep the same bounded
 // tolerance used by Stripe's official SDKs so an old captured request cannot
@@ -79,7 +80,9 @@ type stripeSubscription struct {
 	LatestInvoice      any               `json:"latest_invoice"`
 	Items              struct {
 		Data []struct {
-			Price struct {
+			CurrentPeriodStart int64 `json:"current_period_start"`
+			CurrentPeriodEnd   int64 `json:"current_period_end"`
+			Price              struct {
 				ID string `json:"id"`
 			} `json:"price"`
 		} `json:"data"`
@@ -87,9 +90,10 @@ type stripeSubscription struct {
 }
 
 type stripeEvent struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	Data struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Livemode bool   `json:"livemode"`
+	Data     struct {
 		Object json.RawMessage `json:"object"`
 	} `json:"data"`
 }
@@ -111,16 +115,33 @@ type stripeCheckoutSession struct {
 }
 
 type stripeInvoice struct {
-	ID                string `json:"id"`
-	Customer          any    `json:"customer"`
-	Subscription      any    `json:"subscription"`
-	Status            string `json:"status"`
-	PaymentIntent     any    `json:"payment_intent"`
-	AmountPaid        int64  `json:"amount_paid"`
-	PaidOutOfBand     bool   `json:"paid_out_of_band"`
-	Currency          string `json:"currency"`
-	Created           int64  `json:"created"`
-	BillingReason     string `json:"billing_reason"`
+	ID            string `json:"id"`
+	Customer      any    `json:"customer"`
+	Subscription  any    `json:"subscription"`
+	Status        string `json:"status"`
+	PaymentIntent any    `json:"payment_intent"`
+	AmountPaid    int64  `json:"amount_paid"`
+	PaidOutOfBand bool   `json:"paid_out_of_band"`
+	Currency      string `json:"currency"`
+	Created       int64  `json:"created"`
+	BillingReason string `json:"billing_reason"`
+	Parent        struct {
+		SubscriptionDetails struct {
+			Subscription any `json:"subscription"`
+		} `json:"subscription_details"`
+	} `json:"parent"`
+	Payments struct {
+		Data []struct {
+			Status     string `json:"status"`
+			AmountPaid int64  `json:"amount_paid"`
+			Currency   string `json:"currency"`
+			Payment    struct {
+				Type          string `json:"type"`
+				PaymentIntent any    `json:"payment_intent"`
+			} `json:"payment"`
+		} `json:"data"`
+		HasMore bool `json:"has_more"`
+	} `json:"payments"`
 	StatusTransitions struct {
 		PaidAt int64 `json:"paid_at"`
 	} `json:"status_transitions"`
@@ -391,6 +412,7 @@ func (c *stripeClient) doForm(ctx context.Context, method, path string, form url
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.secretKey)
+	req.Header.Set("Stripe-Version", stripeAPIVersion)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
@@ -424,6 +446,7 @@ func (c *stripeClient) doJSON(ctx context.Context, method, path string, out any)
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.secretKey)
+	req.Header.Set("Stripe-Version", stripeAPIVersion)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -532,7 +555,7 @@ func (c *stripeClient) fetchSubscription(ctx context.Context, subscriptionID str
 func (c *stripeClient) fetchInvoice(ctx context.Context, invoiceID string) (*stripeInvoice, error) {
 	var invoice stripeInvoice
 	query := url.Values{}
-	query.Add("expand[]", "lines.data.price")
+	query.Add("expand[]", "payments")
 	if err := c.doJSON(ctx, http.MethodGet, "/invoices/"+url.PathEscape(strings.TrimSpace(invoiceID))+"?"+query.Encode(), &invoice); err != nil {
 		return nil, err
 	}
@@ -544,6 +567,7 @@ func (c *stripeClient) listPaidInvoices(ctx context.Context, customerID string) 
 	startingAfter := ""
 	for page := 0; page < 100; page++ {
 		query := url.Values{"customer": {strings.TrimSpace(customerID)}, "status": {"paid"}, "limit": {"100"}}
+		query.Add("expand[]", "data.payments")
 		if startingAfter != "" {
 			query.Set("starting_after", startingAfter)
 		}
@@ -606,6 +630,7 @@ func (c *stripeClient) refundPaymentIntent(ctx context.Context, paymentIntentID,
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.secretKey)
+	req.Header.Set("Stripe-Version", stripeAPIVersion)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// A retry after Stripe accepted the refund but before Accounts persisted its
@@ -803,6 +828,10 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid stripe event payload")
 		return
 	}
+	if strings.HasPrefix(h.stripe.secretKey, "sk_test_") && event.Livemode {
+		respondError(c, http.StatusBadRequest, "stripe_mode_mismatch", "live events cannot be processed in sandbox mode")
+		return
+	}
 
 	// Persist the event before processing: replays of already-processed
 	// events are acknowledged without side effects, and failures leave an
@@ -924,6 +953,12 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			})
 		}
 		return nil
+	case "refund.created", "refund.updated":
+		var refund stripeRefund
+		if err := json.Unmarshal(event.Data.Object, &refund); err != nil {
+			return err
+		}
+		return h.recordStripeRefund(ctx, &refund)
 	case "charge.refunded":
 		var charge stripeCharge
 		if err := json.Unmarshal(event.Data.Object, &charge); err != nil {
@@ -1028,6 +1063,19 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		// Persist the provider's settled subscription invoice/payment as local
 		// financial facts for every supported SaaS subscription. The referral
 		// helper below remains responsible only for referral eligibility/rewards.
+		if !strings.EqualFold(invoice.Status, "paid") {
+			return errors.New("invoice.paid event does not contain a paid invoice")
+		}
+		if invoice.AmountPaid > 0 && customerIDFromAny(invoice.PaymentIntent) == "" {
+			verified, err := h.stripe.fetchInvoice(ctx, invoice.ID)
+			if err != nil {
+				return err
+			}
+			if verified.ID != invoice.ID || !strings.EqualFold(verified.Status, "paid") || customerIDFromAny(verified.Subscription) != subscriptionID || verified.AmountPaid != invoice.AmountPaid || !strings.EqualFold(verified.Currency, invoice.Currency) {
+				return errors.New("Stripe invoice changed while resolving its payment")
+			}
+			invoice = *verified
+		}
 		if err := h.recordStripePaidInvoice(ctx, &invoice, sub, userID); err != nil {
 			return err
 		}

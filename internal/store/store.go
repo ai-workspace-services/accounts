@@ -728,6 +728,7 @@ type Store interface {
 	// Each invoice accepts exactly one full-amount settled payment; distinct-key repeats fail.
 	RecordFinancePayment(ctx context.Context, payment *FinancePayment) (inserted bool, err error)
 	ListFinancePayments(ctx context.Context, accountUUID string, limit int) ([]FinancePayment, error)
+	GetFinancePaymentByProvider(ctx context.Context, provider, providerPaymentID string) (*FinancePayment, error)
 	RecordFinanceRefund(ctx context.Context, refund *FinanceRefund) (inserted bool, err error)
 	ListFinanceRefunds(ctx context.Context, accountUUID string, limit int) ([]FinanceRefund, error)
 	// Refund operations use operation_type="refund", target_type="payment",
