@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "migration_version": 2026101901,
+  "migration_version": 2026101902,
   "schema_sha256": "dd56a4025442d84bbe03db7be0bd330c8e81d7e1694dafb7fbd895b22ef17527",
   "business_table_count": 72,
   "source_files": [
@@ -123,6 +123,10 @@
     {
       "path": "sql/migrations/2026101901_v3_billing_catalog.up.sql",
       "sha256": "b9fee298512e7d888fe619917c8238120f0e227f4ea348e59397d074c41f878d"
+    },
+    {
+      "path": "sql/migrations/2026101902_v3_payg_offer_reconcile.up.sql",
+      "sha256": "53f9aaf7c56a14fd7c132c6649b79582cd2063f8903b94efb4e23cbf4895437c"
     }
   ],
   "business_tables": [

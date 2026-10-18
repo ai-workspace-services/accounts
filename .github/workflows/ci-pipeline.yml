@@ -210,6 +210,17 @@ jobs:
           --set ON_ERROR_STOP=1
           --file sql/migrations/tests/account_lifecycle_upgrade_test.sql
 
+      - name: Verify V3 fixed PAYG offers reconcile from a partial catalog
+        if: matrix.check == 'account_lifecycle_migration'
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          createdb --host localhost --port 5432 --username postgres v3_payg_offer_reconcile_test
+          psql "postgres://postgres:postgres@localhost:5432/v3_payg_offer_reconcile_test?sslmode=disable" \
+            --set ON_ERROR_STOP=1 \
+            --file sql/migrations/tests/v3_payg_offer_reconcile_test.sql
+
       - name: Apply finance migration fixture twice in a fresh database
         if: matrix.check == 'account_lifecycle_migration'
         env:
