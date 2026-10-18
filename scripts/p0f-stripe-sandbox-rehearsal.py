@@ -96,7 +96,7 @@ def main():
 
     baseline = sql("SELECT json_build_object('users', (SELECT md5(string_agg(row_to_json(t)::text, '' ORDER BY uuid)) FROM users t), 'subscriptions', (SELECT md5(string_agg(row_to_json(t)::text, '' ORDER BY uuid)) FROM subscriptions t), 'usage', (SELECT md5(string_agg(row_to_json(t)::text, '' ORDER BY id)) FROM billing_ledger t), 'users_count',(SELECT count(*) FROM users), 'schema',(SELECT version FROM schema_migrations WHERE NOT dirty));")
     state["baseline"] = json.loads(baseline)
-    if state["baseline"]["users_count"] != 32 or state["baseline"]["schema"] != state["schema"]:
+    if state["baseline"]["users_count"] != receipt["counts"]["public.users"] or state["baseline"]["schema"] != state["schema"]:
         raise RuntimeError("V3 baseline changed; review before testing")
     save()
     product = api("POST", "/products", {"name": run, "metadata[environment]": "prod-v3", "metadata[purpose]": "p0f-sandbox"}, "product")

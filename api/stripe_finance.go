@@ -83,6 +83,22 @@ func (h *handler) recordStripeRefund(ctx context.Context, refund *stripeRefund) 
 	if err != nil {
 		return err
 	}
+	invoice, err := h.store.GetFinanceInvoice(ctx, payment.InvoiceID)
+	if err != nil {
+		return err
+	}
+	// Preserve the existing campaign risk policy for Clover refund snapshots,
+	// which no longer depend on Charge.invoice being present. A successful
+	// partial refund holds/reverses rewards while retaining subscription access.
+	if invoice.ProviderInvoiceID != "" {
+		if err := h.store.RecordReferralRisk(ctx, store.ReferralPaymentRisk{
+			SourceKey: "stripe-refund:" + refund.ID, ProviderInvoiceID: invoice.ProviderInvoiceID,
+			Type: "refund", Reason: "Stripe settled refund",
+			OccurredAt: time.Unix(refund.Created, 0).UTC(),
+		}); err != nil {
+			return err
+		}
+	}
 	// Modern Charge snapshots may omit the legacy invoice reference. Resolve
 	// full-refund access through our immutable payment -> invoice -> subscription
 	// keys, so revocation does not depend on that removed provider field.
@@ -98,10 +114,6 @@ func (h *handler) recordStripeRefund(ctx context.Context, refund *stripeRefund) 
 	}
 	if refunded != payment.AmountMinor {
 		return nil
-	}
-	invoice, err := h.store.GetFinanceInvoice(ctx, payment.InvoiceID)
-	if err != nil {
-		return err
 	}
 	if invoice.SubscriptionUUID == "" {
 		return nil
