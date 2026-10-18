@@ -80,5 +80,40 @@ func (h *handler) recordStripeRefund(ctx context.Context, refund *stripeRefund) 
 		AmountMinor: refund.Amount, Currency: refund.Currency, Reason: refund.Reason,
 		RefundedAt: time.Unix(refund.Created, 0).UTC(),
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	// Modern Charge snapshots may omit the legacy invoice reference. Resolve
+	// full-refund access through our immutable payment -> invoice -> subscription
+	// keys, so revocation does not depend on that removed provider field.
+	facts, err := h.store.ListFinanceRefunds(ctx, payment.AccountUUID, 0)
+	if err != nil {
+		return err
+	}
+	var refunded int64
+	for _, fact := range facts {
+		if fact.PaymentID == payment.ID {
+			refunded += fact.AmountMinor
+		}
+	}
+	if refunded != payment.AmountMinor {
+		return nil
+	}
+	invoice, err := h.store.GetFinanceInvoice(ctx, payment.InvoiceID)
+	if err != nil {
+		return err
+	}
+	if invoice.SubscriptionUUID == "" {
+		return nil
+	}
+	subscriptions, err := h.store.ListSubscriptionsByUser(ctx, payment.AccountUUID)
+	if err != nil {
+		return err
+	}
+	for _, subscription := range subscriptions {
+		if subscription.ID == invoice.SubscriptionUUID && subscription.Provider == "stripe" {
+			return h.revokeRefundedSubscription(ctx, payment.AccountUUID, subscription.ExternalID)
+		}
+	}
+	return errors.New("refunded invoice has no matching local subscription")
 }

@@ -92,6 +92,42 @@ func TestStripeRefundFactsAreIdempotentAndBoundedByOriginalPayment(t *testing.T)
 	}
 }
 
+func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
+	_, st, user := newBillingWebhookHarness(t)
+	ctx := context.Background()
+	sub := &store.Subscription{UserID: user.ID, Provider: "stripe", Kind: "subscription", ExternalID: "sub_full_refund", Status: "active", PlanID: "PRO-M"}
+	if err := st.UpsertSubscription(ctx, sub); err != nil {
+		t.Fatal(err)
+	}
+	invoice := &store.FinanceInvoice{IdempotencyKey: "full-refund-invoice", AccountUUID: user.ID, SubscriptionUUID: sub.ID, Provider: "stripe", ProviderInvoiceID: "in_full", AmountMinor: 1200, Currency: "USD"}
+	if _, err := st.CreateFinanceInvoice(ctx, invoice); err != nil {
+		t.Fatal(err)
+	}
+	payment := &store.FinancePayment{IdempotencyKey: "full-refund-payment", InvoiceID: invoice.ID, AccountUUID: user.ID, Provider: "stripe", ProviderPaymentID: "pi_full", AmountMinor: 1200, Currency: "USD"}
+	if _, err := st.RecordFinancePayment(ctx, payment); err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{store: st}
+	refund := stripeRefund{ID: "re_first", Status: "succeeded", PaymentIntent: "pi_full", Amount: 400, Currency: "usd", Created: 1770000000}
+	if err := h.recordStripeRefund(ctx, &refund); err != nil {
+		t.Fatal(err)
+	}
+	subs, _ := st.ListSubscriptionsByUser(ctx, user.ID)
+	if len(subs) != 1 || subs[0].Status != "active" {
+		t.Fatalf("partial refund revoked access: %#v", subs)
+	}
+	refund.ID, refund.Amount = "re_second", 800
+	for range 2 {
+		if err := h.recordStripeRefund(ctx, &refund); err != nil {
+			t.Fatal(err)
+		}
+	}
+	subs, _ = st.ListSubscriptionsByUser(ctx, user.ID)
+	if len(subs) != 1 || subs[0].Status != "refunded" {
+		t.Fatalf("full refund did not revoke access: %#v", subs)
+	}
+}
+
 func TestRecordStripePaidInvoicePersistsInvoiceAndPaymentIdempotently(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemoryStore()

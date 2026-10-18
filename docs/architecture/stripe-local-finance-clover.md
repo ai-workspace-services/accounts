@@ -17,8 +17,11 @@ The provider refund ID is the idempotency key across different Stripe events.
 The refund references its original local payment and inherits the existing
 currency and total-refund constraints. A refund arriving before its payment
 remains retryable. Pending or failed refunds do not post financial facts;
-partial refunds do not revoke subscription access. Existing `charge.refunded`
-handling controls full-refund entitlement revocation separately.
+partial refunds do not revoke subscription access. A fully refunded payment
+resolves its subscription through the local invoice/payment keys and invokes
+the existing entitlement-revocation policy, including its protection for other
+active subscriptions. This also covers Clover charges without a legacy invoice
+reference; historical `charge.refunded` handling remains supported.
 
 Sandbox Accounts rejects signed events carrying `livemode=true`. The runtime
 receives only `kv/prod/billing-service` keys `SANDBOX_STRIPE_SECRET_KEY` and
