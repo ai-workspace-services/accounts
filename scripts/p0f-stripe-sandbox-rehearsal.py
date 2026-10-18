@@ -29,6 +29,8 @@ def quote(value):
 def main():
     manifest = yaml.safe_load(Path(os.environ["P0F_MANIFEST_FILE"]).read_text())
     target, stripe = manifest["target"], manifest["stripe"]
+    registry = yaml.safe_load(Path(os.environ["P0F_WEBHOOK_REGISTRY_FILE"]).read_text())
+    stripe["webhook_url"] = registry["environments"][stripe["webhook_environment"]]["webhook_url"]
     expected = "https://accounts-selfhost-prod-v3.svc.plus/api/billing/stripe/webhook"
     if target["generation"] != "prod-v3" or stripe["mode"] != "test" or stripe["webhook_url"] != expected:
         raise RuntimeError("only the declared V3 Sandbox endpoint is supported")
