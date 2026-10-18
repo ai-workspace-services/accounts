@@ -128,6 +128,45 @@ func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
 	}
 }
 
+func TestCloverPartialRefundReversesReferralRewardWithoutDeletingHistory(t *testing.T) {
+	ctx := context.Background()
+	harness := newReferralContractHarness(t)
+	owner, _ := harness.user(t, "campaign-owner", "campaign owner", "", store.RoleUser)
+	invitee, _ := harness.user(t, "campaign-invitee", "campaign invitee", "", store.RoleUser)
+	reward := seedReferralReward(t, harness.store, owner, invitee, "campaign@example.invalid")
+	invoice := &store.FinanceInvoice{IdempotencyKey: "campaign-invoice", AccountUUID: invitee.ID, Provider: "stripe", ProviderInvoiceID: reward.ProviderInvoiceID, AmountMinor: 1000, Currency: "USD"}
+	if _, err := harness.store.CreateFinanceInvoice(ctx, invoice); err != nil {
+		t.Fatal(err)
+	}
+	payment := &store.FinancePayment{IdempotencyKey: "campaign-payment", InvoiceID: invoice.ID, AccountUUID: invitee.ID, Provider: "stripe", ProviderPaymentID: "pi_campaign", AmountMinor: 1000, Currency: "USD"}
+	if _, err := harness.store.RecordFinancePayment(ctx, payment); err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{store: harness.store}
+	refund := stripeRefund{ID: "re_campaign", Status: "pending", PaymentIntent: "pi_campaign", Amount: 100, Currency: "USD", Created: 1770000000}
+	if err := h.recordStripeRefund(ctx, &refund); err != nil {
+		t.Fatal(err)
+	}
+	rewards, _ := harness.store.ListReferralRewards(ctx, owner.ID, 0)
+	if len(rewards) != 1 || rewards[0].Status == "reversed" {
+		t.Fatal("pending refund changed reward")
+	}
+	refund.Status = "succeeded"
+	for range 2 {
+		if err := h.recordStripeRefund(ctx, &refund); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rewards, _ = harness.store.ListReferralRewards(ctx, owner.ID, 0)
+	if len(rewards) != 1 || rewards[0].ID != reward.ID || rewards[0].Status != "reversed" {
+		t.Fatalf("reward history not retained/reversed: %#v", rewards)
+	}
+	refunds, _ := harness.store.ListFinanceRefunds(ctx, invitee.ID, 0)
+	if len(refunds) != 1 {
+		t.Fatalf("campaign replay duplicated financial refund: %d", len(refunds))
+	}
+}
+
 func TestRecordStripePaidInvoicePersistsInvoiceAndPaymentIdempotently(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemoryStore()
