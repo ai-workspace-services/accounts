@@ -341,7 +341,7 @@ func (h *handler) validateCheckoutPlan(ctx context.Context, req stripeCheckoutRe
 		}
 		switch strings.ToLower(strings.TrimSpace(plan.Kind)) {
 		case "paygo_topup":
-			return mode == "payment"
+			return mode == "payment" && isFixedPaygoTopUp(plan.PlanID, plan.PriceAmount, plan.PriceCurrency, plan.PriceUnit)
 		case "subscription":
 			return mode == "subscription"
 		default:

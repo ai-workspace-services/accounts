@@ -422,7 +422,7 @@ func TestValidateCheckoutPlanBindsPriceAndModeToCatalog(t *testing.T) {
 		stripe: newStripeClient(StripeConfig{SecretKey: "sk_test_x", AllowedPriceIDs: []string{"price_legacy"}}),
 	}
 	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{
-		PlanID: "PAYG-50", StripePriceID: "price_payg", Kind: "paygo_topup", Active: true,
+		PlanID: "PAYG-TOPUP-50", StripePriceID: "price_payg", Kind: "paygo_topup", PriceAmount: 5000, PriceCurrency: "CNY", PriceUnit: "once", Active: true,
 	}); err != nil {
 		t.Fatalf("seed PAYG plan: %v", err)
 	}
@@ -437,9 +437,9 @@ func TestValidateCheckoutPlanBindsPriceAndModeToCatalog(t *testing.T) {
 		req  stripeCheckoutRequest
 		want bool
 	}{
-		{"PAYG payment", stripeCheckoutRequest{PlanID: "PAYG-50", StripePriceID: "price_payg", Mode: "payment"}, true},
+		{"PAYG payment", stripeCheckoutRequest{PlanID: "PAYG-TOPUP-50", StripePriceID: "price_payg", Mode: "payment"}, true},
 		{"subscription", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_monthly", Mode: "subscription"}, true},
-		{"PAYG cannot use subscription mode", stripeCheckoutRequest{PlanID: "PAYG-50", StripePriceID: "price_payg", Mode: "subscription"}, false},
+		{"PAYG cannot use subscription mode", stripeCheckoutRequest{PlanID: "PAYG-TOPUP-50", StripePriceID: "price_payg", Mode: "subscription"}, false},
 		{"subscription cannot use payment mode", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_monthly", Mode: "payment"}, false},
 		{"plan price mismatch", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_payg", Mode: "subscription"}, false},
 		{"unknown plan rejected once catalog exists", stripeCheckoutRequest{PlanID: "unknown", StripePriceID: "price_legacy", Mode: "subscription"}, false},

@@ -86,6 +86,12 @@ VALUES
    0, true, 20),
 
   -- PAYG 固定充值面额。Stripe Price ID 由目录同步后回填。
+  ('PAYG-TOPUP-10', NULL, '余额充值 ¥10', 'paygo_topup', 0,
+   'payg', 1000, 'CNY', 'once',
+   '{"fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"topup_amount": 10, "wallet_currency": "CNY", "dunning": {"policy": "suspend_on_zero_balance", "grace_hours": 0}}'::jsonb,
+   0, true, 20),
+
   ('PAYG-TOPUP-50', NULL, '余额充值 ¥50', 'paygo_topup', 0,
    'payg',
    5000, 'CNY', 'once',
@@ -106,6 +112,30 @@ VALUES
    '{"fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0}'::jsonb,
    '{"topup_amount": 500, "dunning": {"policy": "suspend_on_zero_balance", "grace_hours": 0}}'::jsonb,
    0, true, 23),
+
+  ('PAYG-TOPUP-USD-5', NULL, 'Balance top-up $5', 'paygo_topup', 0,
+   'payg', 500, 'USD', 'once',
+   '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"topup_amount": 5, "wallet_currency": "USD"}'::jsonb,
+   0, true, 24),
+
+  ('PAYG-TOPUP-USD-10', NULL, 'Balance top-up $10', 'paygo_topup', 0,
+   'payg', 1000, 'USD', 'once',
+   '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"topup_amount": 10, "wallet_currency": "USD"}'::jsonb,
+   0, true, 25),
+
+  ('PAYG-TOPUP-USD-20', NULL, 'Balance top-up $20', 'paygo_topup', 0,
+   'payg', 2000, 'USD', 'once',
+   '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"topup_amount": 20, "wallet_currency": "USD"}'::jsonb,
+   0, true, 26),
+
+  ('PAYG-TOPUP-USD-100', NULL, 'Balance top-up $100', 'paygo_topup', 0,
+   'payg', 10000, 'USD', 'once',
+   '{"fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0}'::jsonb,
+   '{"topup_amount": 100, "wallet_currency": "USD"}'::jsonb,
+   0, true, 27),
 
   -- Pro 月付：¥20/月，含 20GB 高速流量，超出 1 元/GB。
   ('PRO-MONTHLY', NULL, 'Pro 月付', 'subscription', 21474836480,

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,12 @@ func topupHandler(t *testing.T) (*handler, store.Store, *store.User) {
 	t.Helper()
 	st := store.NewMemoryStore()
 	h := &handler{store: st}
+	for planID, denomination := range fixedTopUps {
+		plan := &store.BillingPlan{PlanID: planID, StripePriceID: "price_" + strings.ToLower(planID), DisplayName: planID, Kind: "paygo_topup", PriceAmount: denomination.amount, PriceCurrency: denomination.currency, PriceUnit: "once", Active: true}
+		if err := st.UpsertBillingPlan(context.Background(), plan); err != nil {
+			t.Fatalf("seed top-up plan %s: %v", planID, err)
+		}
+	}
 
 	user := &store.User{
 		ID: "payer-1", Name: "payer", Email: "payer@example.com",
@@ -24,6 +31,15 @@ func topupHandler(t *testing.T) (*handler, store.Store, *store.User) {
 }
 
 func paidSession(intent string, amountTotal int64) *stripeCheckoutSession {
+	planID := "PAYG-TOPUP-50"
+	switch amountTotal {
+	case 1000:
+		planID = "PAYG-TOPUP-10"
+	case 10000:
+		planID = "PAYG-TOPUP-100"
+	case 50000:
+		planID = "PAYG-TOPUP-500"
+	}
 	return &stripeCheckoutSession{
 		ID:            "cs_test_1",
 		Mode:          "payment",
@@ -31,7 +47,37 @@ func paidSession(intent string, amountTotal int64) *stripeCheckoutSession {
 		PaymentStatus: "paid",
 		AmountTotal:   amountTotal,
 		Currency:      "cny",
-		Metadata:      map[string]string{"kind": "paygo"},
+		Metadata:      map[string]string{"kind": "paygo", "plan_id": planID},
+	}
+}
+
+func TestCreditTopUpKeepsUSDInSeparateWallet(t *testing.T) {
+	h, st, user := topupHandler(t)
+	session := paidSession("pi_usd", 1000)
+	session.Currency = "usd"
+	session.Metadata["plan_id"] = "PAYG-TOPUP-USD-10"
+	if err := h.creditTopUpBalance(context.Background(), user.ID, session); err != nil {
+		t.Fatalf("credit USD top-up: %v", err)
+	}
+	state, err := st.GetAccountQuotaState(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usdBalance, _ := st.GetWalletBalance(context.Background(), user.ID, "USD")
+	if usdBalance != 10 || state.CurrentBalance != 0 {
+		t.Fatalf("USD top-up crossed currency wallets: CNY=%v USD=%v", state.CurrentBalance, usdBalance)
+	}
+	ledger, err := st.ListBillingLedgerByAccount(context.Background(), user.ID, 10)
+	if err != nil || len(ledger) != 1 || ledger[0].Currency != "USD" || ledger[0].BalanceAfter != 10 {
+		t.Fatalf("USD ledger did not reconcile: entries=%+v err=%v", ledger, err)
+	}
+}
+
+func TestCreditTopUpRejectsNonCatalogAmount(t *testing.T) {
+	h, _, user := topupHandler(t)
+	session := paidSession("pi_wrong_amount", 6000)
+	if err := h.creditTopUpBalance(context.Background(), user.ID, session); err == nil {
+		t.Fatal("expected non-denomination amount to be rejected")
 	}
 }
 

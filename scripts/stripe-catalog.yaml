@@ -29,8 +29,11 @@ products:
     name: "余额充值"
     description: "Pay-As-You-Go 预充值，按面额一次性支付，充值后计入账户余额"
     prices:
-      # 面额固定套餐（见 01-plan-catalog.md #充值入口）；后续要支持任意
-      # 金额需换用 Stripe Checkout 的 custom amount，这里先覆盖常见面额。
+      # 固定充值面额。Checkout 不接受自定义金额；CNY 和 USD 余额分开记账。
+      - key: payg-topup-10
+        plan_id: PAYG-TOPUP-10
+        unit_amount: 1000             # ¥10.00
+        currency: cny
       - key: payg-topup-50
         plan_id: PAYG-TOPUP-50
         unit_amount: 5000            # ¥50.00
@@ -43,6 +46,22 @@ products:
         plan_id: PAYG-TOPUP-500
         unit_amount: 50000           # ¥500.00
         currency: cny
+      - key: payg-topup-usd-5
+        plan_id: PAYG-TOPUP-USD-5
+        unit_amount: 500              # $5.00
+        currency: usd
+      - key: payg-topup-usd-10
+        plan_id: PAYG-TOPUP-USD-10
+        unit_amount: 1000             # $10.00
+        currency: usd
+      - key: payg-topup-usd-20
+        plan_id: PAYG-TOPUP-USD-20
+        unit_amount: 2000             # $20.00
+        currency: usd
+      - key: payg-topup-usd-100
+        plan_id: PAYG-TOPUP-USD-100
+        unit_amount: 10000            # $100.00
+        currency: usd
 
 # webhook endpoint 的 url 按环境模板化；脚本用 --env/--domain-base 参数渲染。
 # secret 只在创建时由 Stripe 返回一次，脚本会原样打印，不会写文件或落盘。

@@ -253,6 +253,85 @@ func (s *postgresStore) InsertBillingLedgerEntry(ctx context.Context, entry *Bil
 	).Scan(&entry.CreatedAt)
 }
 
+// CreditTopUp atomically inserts the idempotency ledger row and increments the
+// currency-specific wallet. A duplicate payment reference is a successful
+// no-op; the caller can safely acknowledge Stripe's webhook delivery.
+func (s *postgresStore) CreditTopUp(ctx context.Context, entry *BillingLedgerEntry) (bool, error) {
+	if entry == nil || strings.TrimSpace(entry.ID) == "" || entry.AmountDelta <= 0 {
+		return false, errors.New("valid top-up ledger entry is required")
+	}
+	currency := strings.ToUpper(strings.TrimSpace(entry.Currency))
+	if currency != "CNY" && currency != "USD" {
+		return false, errors.New("unsupported wallet currency")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO account_quota_states (account_uuid) VALUES ($1) ON CONFLICT (account_uuid) DO NOTHING`, strings.TrimSpace(entry.AccountUUID)); err != nil {
+		return false, err
+	}
+	var cny float64
+	if err := tx.QueryRowContext(ctx, `SELECT current_balance FROM account_quota_states WHERE account_uuid = $1 FOR UPDATE`, strings.TrimSpace(entry.AccountUUID)).Scan(&cny); err != nil {
+		return false, err
+	}
+	if currency == "CNY" {
+		entry.BalanceAfter = cny + entry.AmountDelta
+	} else {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount_delta), 0) FROM billing_ledger WHERE account_uuid=$1 AND entry_type='wallet_usd'`, strings.TrimSpace(entry.AccountUUID)).Scan(&entry.BalanceAfter); err != nil {
+			return false, err
+		}
+		entry.BalanceAfter += entry.AmountDelta
+	}
+	entry.Currency = currency
+	if currency == "USD" {
+		entry.EntryType = "wallet_usd"
+	} else {
+		entry.EntryType = "topup"
+	}
+	const insert = `INSERT INTO billing_ledger (id, account_uuid, bucket_start, bucket_end, entry_type, rated_bytes, amount_delta, balance_after, pricing_rule_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`
+	result, err := tx.ExecContext(ctx, insert, entry.ID, entry.AccountUUID, entry.BucketStart.UTC(), entry.BucketEnd.UTC(), entry.EntryType, entry.RatedBytes, entry.AmountDelta, entry.BalanceAfter, entry.PricingRuleVersion)
+	if err != nil {
+		return false, err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if inserted == 0 {
+		return true, nil
+	}
+	if currency == "CNY" {
+		_, err = tx.ExecContext(ctx, `UPDATE account_quota_states SET current_balance=$2, arrears=CASE WHEN $2 >= 0 THEN false ELSE arrears END, arrears_since=CASE WHEN $2 >= 0 THEN NULL ELSE arrears_since END, effective_at=now(), updated_at=now() WHERE account_uuid=$1`, entry.AccountUUID, entry.BalanceAfter)
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func (s *postgresStore) GetWalletBalance(ctx context.Context, accountUUID, currency string) (float64, error) {
+	switch strings.ToUpper(strings.TrimSpace(currency)) {
+	case "CNY":
+		var balance float64
+		err := s.db.QueryRowContext(ctx, `SELECT COALESCE(current_balance, 0) FROM account_quota_states WHERE account_uuid=$1`, strings.TrimSpace(accountUUID)).Scan(&balance)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return balance, err
+	case "USD":
+		var balance float64
+		err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount_delta), 0) FROM billing_ledger WHERE account_uuid=$1 AND entry_type='wallet_usd'`, strings.TrimSpace(accountUUID)).Scan(&balance)
+		return balance, err
+	default:
+		return 0, errors.New("unsupported wallet currency")
+	}
+}
+
 func (s *postgresStore) ListBillingLedgerByAccount(ctx context.Context, accountUUID string, limit int) ([]BillingLedgerEntry, error) {
 	query := `
 		SELECT id, account_uuid, bucket_start, bucket_end, entry_type, rated_bytes, amount_delta, balance_after, pricing_rule_version, created_at
@@ -286,6 +365,11 @@ func (s *postgresStore) ListBillingLedgerByAccount(ctx context.Context, accountU
 			&entry.CreatedAt,
 		); err != nil {
 			return nil, err
+		}
+		if entry.EntryType == "wallet_usd" {
+			entry.Currency = "USD"
+		} else {
+			entry.Currency = "CNY"
 		}
 		result = append(result, entry)
 	}

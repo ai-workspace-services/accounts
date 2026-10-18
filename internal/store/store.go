@@ -324,6 +324,7 @@ type TrafficMinuteBucket struct {
 type BillingLedgerEntry struct {
 	ID                 string    `json:"id"`
 	AccountUUID        string    `json:"accountUuid"`
+	Currency           string    `json:"currency"`
 	BucketStart        time.Time `json:"bucketStart"`
 	BucketEnd          time.Time `json:"bucketEnd"`
 	EntryType          string    `json:"entryType"`
@@ -700,6 +701,8 @@ type Store interface {
 	ListTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time) ([]TrafficMinuteBucket, error)
 	ListTrafficMinuteBuckets(ctx context.Context) ([]TrafficMinuteBucket, error)
 	InsertBillingLedgerEntry(ctx context.Context, entry *BillingLedgerEntry) error
+	CreditTopUp(ctx context.Context, entry *BillingLedgerEntry) (bool, error)
+	GetWalletBalance(ctx context.Context, accountUUID, currency string) (float64, error)
 	ListBillingLedgerByAccount(ctx context.Context, accountUUID string, limit int) ([]BillingLedgerEntry, error)
 	UpsertAccountQuotaState(ctx context.Context, state *AccountQuotaState) error
 	GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error)

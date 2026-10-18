@@ -68,6 +68,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	}
 
 	currentBalance := 0.0
+	currentBalanceUSD, _ := h.store.GetWalletBalance(c.Request.Context(), user.ID, "USD")
 	remainingQuota := int64(0)
 	includedQuota := int64(0)
 	usedBytes := int64(0)
@@ -139,6 +140,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		"downlinkBytes":          downlinkBytes,
 		"sourceOfTruth":          accountingDataSource,
 		"currentBalance":         currentBalance,
+		"currentBalanceUsd":      currentBalanceUSD,
 		"remainingIncludedQuota": remainingQuota,
 		// New fields only: keep the existing totalBytes and
 		// remainingIncludedQuota contract intact for deployed Portal clients.

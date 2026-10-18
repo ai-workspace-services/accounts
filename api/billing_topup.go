@@ -70,6 +70,18 @@ func (h *handler) creditTopUpBalance(ctx context.Context, userID string, session
 	if session.AmountTotal <= 0 {
 		return nil
 	}
+	planID := strings.TrimSpace(session.Metadata["plan_id"])
+	plan, err := h.store.GetBillingPlan(ctx, planID)
+	if err != nil || plan == nil || !strings.EqualFold(strings.TrimSpace(plan.Kind), "paygo_topup") || !isFixedPaygoTopUp(planID, plan.PriceAmount, plan.PriceCurrency, plan.PriceUnit) {
+		return errors.New("top-up session does not match an approved fixed denomination")
+	}
+	currency := strings.ToUpper(strings.TrimSpace(session.Currency))
+	if currency != strings.ToUpper(strings.TrimSpace(plan.PriceCurrency)) {
+		return errors.New("top-up currency does not match the billing catalog")
+	}
+	if session.AmountTotal != plan.PriceAmount {
+		return errors.New("top-up amount does not match the billing catalog")
+	}
 
 	// Prefer the payment intent: it is the identifier Stripe keeps stable
 	// across retries of the same payment. The session id is the fallback for
@@ -83,14 +95,6 @@ func (h *handler) creditTopUpBalance(ctx context.Context, userID string, session
 	amount := float64(session.AmountTotal) / 100.0
 	entryID := topUpLedgerID(paymentRef)
 
-	state, err := h.store.GetAccountQuotaState(ctx, userID)
-	if err != nil || state == nil {
-		// A PAYG customer may be topping up before any entitlement sync has
-		// created their quota row; that is a normal first-purchase path.
-		state = &store.AccountQuotaState{AccountUUID: userID}
-	}
-
-	newBalance := state.CurrentBalance + amount
 	now := time.Now().UTC()
 
 	// Ledger first, balance second. Balance has to equal the sum of its
@@ -103,9 +107,9 @@ func (h *handler) creditTopUpBalance(ctx context.Context, userID string, session
 		BucketStart:        now,
 		BucketEnd:          now,
 		EntryType:          topUpEntryType,
+		Currency:           currency,
 		RatedBytes:         0,
 		AmountDelta:        amount,
-		BalanceAfter:       newBalance,
 		PricingRuleVersion: "stripe:" + paymentRef,
 	}
 	// A PK collision means this payment was already credited — by an earlier
@@ -114,41 +118,26 @@ func (h *handler) creditTopUpBalance(ctx context.Context, userID string, session
 	// idempotency guarantee itself, not an optimisation, so it is not preceded
 	// by a "does it already exist" read: a read would still leave a window
 	// between check and insert.
-	if err := h.store.InsertBillingLedgerEntry(ctx, entry); err != nil {
-		if isDuplicateKeyError(err) {
-			slog.Info("top-up already credited, skipping",
-				"userID", userID, "paymentRef", paymentRef, "entryID", entryID)
-			return nil
-		}
+	duplicate, err := h.store.CreditTopUp(ctx, entry)
+	if err != nil {
 		return err
 	}
-
-	state.CurrentBalance = newBalance
-	state.EffectiveAt = now
-	// A successful top-up settles the arrears episode: the customer has paid.
-	// Suspension is lifted by billing-service on its next pass, driven by the
-	// cleared arrears flag.
-	if state.Arrears {
-		state.Arrears = false
-		state.ArrearsSince = nil
+	if duplicate {
+		slog.Info("top-up already credited, skipping", "userID", userID, "paymentRef", paymentRef, "entryID", entryID)
+		return nil
 	}
-	if err := h.store.UpsertAccountQuotaState(ctx, state); err != nil {
-		return err
-	}
-
+	newBalance := entry.BalanceAfter
 	h.publishBillingEvent(ctx, &store.BillingEvent{
 		Type: "balance_topped_up", UserID: userID,
 	})
 
-	slog.Info("credited top-up to balance",
-		"userID", userID, "amount", amount, "currency", session.Currency, "balance", newBalance)
+	slog.Info("credited top-up to currency wallet",
+		"userID", userID, "amount", amount, "currency", currency, "balance", newBalance)
 	return nil
 }
 
-// isDuplicateKeyError reports whether an insert failed because the row already
-// exists. The memory store returns a sentinel; postgres surfaces a driver
-// error, matched on text because the store layer returns it unwrapped and this
-// package does not depend on the pq/pgx error types.
+// isDuplicateKeyError remains for older call sites which still insert ledger
+// rows directly; top-up crediting uses the atomic store operation above.
 func isDuplicateKeyError(err error) bool {
 	if err == nil {
 		return false
@@ -157,7 +146,5 @@ func isDuplicateKeyError(err error) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "duplicate key") ||
-		strings.Contains(msg, "unique constraint") ||
-		strings.Contains(msg, "already exists")
+	return strings.Contains(msg, "duplicate key") || strings.Contains(msg, "unique constraint") || strings.Contains(msg, "already exists")
 }
