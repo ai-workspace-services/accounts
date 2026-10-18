@@ -70,6 +70,24 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	if e = VerifyNativeRuntime(context.Background(), target); e != nil {
 		t.Fatalf("native runtime rejected controlled migration metadata: %v", e)
 	}
+	// Data-only catalog checkpoints retain the old native schema, but require
+	// the exact reviewed migration chain rather than accepting arbitrary versions.
+	for _, version := range []uint{2026101901, 2026101902} {
+		exec(target, `UPDATE public.schema_migrations SET version=`+strconv.Itoa(int(version)))
+		if e = VerifyNativeRuntime(context.Background(), target); e == nil {
+			t.Fatal("missing catalog receipt admitted")
+		}
+		if version == 2026101901 {
+			exec(target, `INSERT INTO public.accounts_controlled_migration_history(from_version,to_version,sql_sha256) VALUES(2026101703,2026101901,'b9fee298512e7d888fe619917c8238120f0e227f4ea348e59397d074c41f878d')`)
+		} else {
+			exec(target, `INSERT INTO public.accounts_controlled_migration_history(from_version,to_version,sql_sha256) VALUES(2026101901,2026101902,'53f9aaf7c56a14fd7c132c6649b79582cd2063f8903b94efb4e23cbf4895437c')`)
+		}
+		got, err := VerifiedNativeRuntimeVersion(context.Background(), target)
+		if err != nil || got != version {
+			t.Fatalf("reviewed catalog checkpoint: %d %v", got, err)
+		}
+	}
+	exec(target, `DELETE FROM public.accounts_controlled_migration_history; UPDATE public.schema_migrations SET version=2026101703`)
 	// Qualify the old 44-table source -> latest 63-table target explicitly. New
 	// tables may be absent in source; they must remain empty in the target.
 	tables, _, e := fullBusinessContract()

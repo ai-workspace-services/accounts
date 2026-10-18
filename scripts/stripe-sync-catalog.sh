@@ -39,6 +39,8 @@ DOMAIN_BASE=""
 ACCOUNTS_BASE_URL="${ACCOUNTS_BASE_URL:-}"
 STRIPE_WEBHOOK_URL="${STRIPE_WEBHOOK_URL:-}"
 STRIPE_WEBHOOK_SECRET="${STRIPE_WEBHOOK_SECRET:-}"
+PRICE_MAP_OUTPUT=""
+EXPECTED_ACCOUNT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,6 +50,8 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=true; shift ;;
     --write-catalog) WRITE_CATALOG=true; shift ;;
     --accounts-base-url) ACCOUNTS_BASE_URL="$2"; shift 2 ;;
+    --price-map-output) PRICE_MAP_OUTPUT="$2"; shift 2 ;;
+    --expected-account) EXPECTED_ACCOUNT="$2"; shift 2 ;;
     *) echo "::error::unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -72,19 +76,32 @@ python3 -c "import yaml" 2>/dev/null || { echo "::error::python3 + pyyaml is req
 
 catalog_json="$(python3 -c "import sys, yaml, json; json.dump(yaml.safe_load(open(sys.argv[1])), sys.stdout)" "${CATALOG_FILE}")"
 
-auth=(-u "${STRIPE_SECRET_KEY}:")
+# Credentials are supplied over stdin, never process arguments or disk files.
+[[ "${STRIPE_SECRET_KEY}" =~ ^[A-Za-z0-9_]+$ ]] || { echo 'invalid Stripe credential format' >&2; exit 1; }
+if [[ "${ENV_NAME}" == prod-v3 ]]; then
+  [[ "${STRIPE_SECRET_KEY}" == sk_test_* && -n "${EXPECTED_ACCOUNT}" ]] || { echo 'V3 requires Test credentials and --expected-account' >&2; exit 1; }
+fi
+stripe_request() {
+  printf 'header = "Authorization: Bearer %s"\n' "${STRIPE_SECRET_KEY}" |
+    curl -g -sS --config - --connect-timeout 10 --max-time 60 "$@"
+}
 
 stripe_get() {
-  curl -sS "${auth[@]}" "${STRIPE_API_BASE}$1"
+  stripe_request "${STRIPE_API_BASE}$1"
 }
 stripe_post() {
   local path="$1"; shift
-  curl -sS "${auth[@]}" -X POST "${STRIPE_API_BASE}${path}" "$@"
+  stripe_request -X POST "${STRIPE_API_BASE}${path}" "$@"
+}
+
+accounts_request() {
+  [[ "${ACCOUNTS_ADMIN_TOKEN}" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'invalid Accounts credential format' >&2; exit 1; }
+  printf 'header = "Authorization: Bearer %s"\n' "${ACCOUNTS_ADMIN_TOKEN}" |
+    curl -sS --config - --connect-timeout 10 --max-time 60 "$@"
 }
 
 accounts_get() {
-  curl -sS \
-    -H "Authorization: Bearer ${ACCOUNTS_ADMIN_TOKEN}" \
+  accounts_request \
     -H "Accept: application/json" \
     "${ACCOUNTS_BASE_URL}/api/auth/admin/billing/plans"
 }
@@ -92,9 +109,8 @@ accounts_get() {
 accounts_put_plan() {
   local plan_id="$1"
   local payload="$2"
-  curl -sS --fail-with-body \
+  accounts_request --fail-with-body \
     -X PUT \
-    -H "Authorization: Bearer ${ACCOUNTS_ADMIN_TOKEN}" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json" \
     "${ACCOUNTS_BASE_URL}/api/auth/admin/billing/plans/${plan_id}" \
@@ -102,8 +118,13 @@ accounts_put_plan() {
 }
 stripe_patch() {
   local path="$1"; shift
-  curl -sS "${auth[@]}" -X POST "${STRIPE_API_BASE}${path}" "$@"
+  stripe_request -X POST "${STRIPE_API_BASE}${path}" "$@"
 }
+
+if [[ -n "${EXPECTED_ACCOUNT}" ]]; then
+  stripe_account="$(stripe_get /account)"
+  [[ "$(jq -r '.id // empty' <<<"${stripe_account}")" == "${EXPECTED_ACCOUNT}" ]] || { echo 'Stripe account identity mismatch' >&2; exit 1; }
+fi
 
 echo "== Stripe catalog sync =="
 echo "env=${ENV_NAME} domain_base=${DOMAIN_BASE} dry_run=${DRY_RUN} catalog=${CATALOG_FILE}"
@@ -163,8 +184,9 @@ for ((pi = 0; pi < product_count; pi++)); do
       actual_currency="$(jq -r '.data[0].currency // empty' <<<"${lookup}")"
       existing_interval="$(jq -r '.data[0].recurring.interval // empty' <<<"${lookup}")"
       [[ -n "${existing_interval}" ]] && actual_unit="${existing_interval}"
-      if [[ "${existing_amount}" != "${amount}" ]]; then
-        echo "::warning::price ${qkey} (${found_id}) is ${existing_amount}, catalog says ${amount} — Stripe prices are immutable, bump the lookup_key (e.g. ${qkey}-v2) to change the amount, do not edit in place"
+      if [[ "${existing_amount}" != "${amount}" || "${actual_currency}" != "${currency}" || "${existing_interval}" != "${interval}" || "$(jq -r '.data[0].product' <<<"${lookup}")" != "${pkey}" ]]; then
+        echo "::error::immutable price ${qkey} differs in amount, currency, interval or product; use a new lookup key" >&2
+        exit 1
       fi
       echo "price ${qkey}: exists -> ${found_id}"
       price_id="${found_id}"
@@ -193,6 +215,14 @@ for ((pi = 0; pi < product_count; pi++)); do
     price_summary+=("${plan_id}|${price_id}|${actual_amount}|${actual_currency}|${actual_unit}")
   done
 done
+
+if [[ -n "${PRICE_MAP_OUTPUT}" && "${DRY_RUN}" == false ]]; then
+  stripe_mode=live
+  [[ "${STRIPE_SECRET_KEY}" != sk_test_* ]] || stripe_mode=test
+  [[ ! -e "${PRICE_MAP_OUTPUT}" ]] || { echo 'refusing to overwrite price-map receipt' >&2; exit 1; }
+  (umask 077; printf '%s\n' "${price_summary[@]}" | jq -Rn --arg environment "${ENV_NAME}" --arg account "${EXPECTED_ACCOUNT}" --arg mode "${stripe_mode}" \
+    '{environment:$environment, stripe_account:$account, stripe_mode:$mode, prices:[inputs | split("|") | {plan_id:.[0],price_id:.[1],amount:(.[2]|tonumber),currency:(.[3]|ascii_upcase),unit:.[4]}]}' >"${PRICE_MAP_OUTPUT}")
+fi
 
 # --- Webhook endpoint -----------------------------------------------------
 webhook_url="${STRIPE_WEBHOOK_URL}"
