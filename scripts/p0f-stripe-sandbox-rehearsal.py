@@ -74,7 +74,7 @@ def main():
     state = {"run": run, "account_uuid": account_id, "webhook_url": expected, "schema": manifest["database"]["expected_schema_version"]}
 
     def save():
-        with state_path.open("w", opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
+        with open(state_path, "w", opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
             json.dump(state, output, sort_keys=True, indent=2)
 
     save()
