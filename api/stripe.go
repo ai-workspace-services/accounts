@@ -1025,6 +1025,12 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			})
 			return nil
 		}
+		// Persist the provider's settled subscription invoice/payment as local
+		// financial facts for every supported SaaS subscription. The referral
+		// helper below remains responsible only for referral eligibility/rewards.
+		if err := h.recordStripePaidInvoice(ctx, &invoice, sub, userID); err != nil {
+			return err
+		}
 		// invoice.paid renews the billing period: re-arm quota and clear
 		// arrears from the plan the subscription is on.
 		plan, err := h.resolveBillingPlan(ctx, subscriptionPriceID(sub), sub.Metadata["plan_id"])
@@ -1071,6 +1077,86 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 	default:
 		return nil
 	}
+}
+
+// recordStripePaidInvoice imports only a settled Stripe invoice and its
+// associated payment. Both writes are idempotent so a webhook retry can finish
+// the payment write if the process fails after persisting the invoice.
+func (h *handler) recordStripePaidInvoice(ctx context.Context, invoice *stripeInvoice, subscription *stripeSubscription, userID string) error {
+	if invoice == nil || subscription == nil || strings.TrimSpace(invoice.ID) == "" ||
+		!strings.EqualFold(strings.TrimSpace(invoice.Status), "paid") || invoice.PaidOutOfBand {
+		return nil
+	}
+
+	paidAtUnix := invoice.StatusTransitions.PaidAt
+	if paidAtUnix <= 0 {
+		return errors.New("Stripe paid invoice is missing paid_at")
+	}
+	if strings.TrimSpace(customerIDFromAny(invoice.Subscription)) != strings.TrimSpace(subscription.ID) {
+		return errors.New("Stripe invoice subscription does not match the processed subscription")
+	}
+	currency := strings.ToUpper(strings.TrimSpace(invoice.Currency))
+	if len(currency) != 3 || currency[0] < 'A' || currency[0] > 'Z' ||
+		currency[1] < 'A' || currency[1] > 'Z' || currency[2] < 'A' || currency[2] > 'Z' {
+		return errors.New("Stripe invoice has invalid currency")
+	}
+	if invoice.AmountPaid < 0 {
+		return errors.New("Stripe invoice has invalid paid amount")
+	}
+
+	paidAt := time.Unix(paidAtUnix, 0).UTC()
+	issuedAt := paidAt
+	if invoice.Created > 0 {
+		issuedAt = time.Unix(invoice.Created, 0).UTC()
+	}
+	subscriptions, err := h.store.ListSubscriptionsByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	var localSubscription *store.Subscription
+	for i := range subscriptions {
+		if strings.EqualFold(subscriptions[i].Provider, "stripe") && subscriptions[i].ExternalID == subscription.ID {
+			localSubscription = &subscriptions[i]
+			break
+		}
+	}
+	if localSubscription == nil {
+		return errors.New("local Stripe subscription is unavailable for paid invoice")
+	}
+
+	localInvoice := &store.FinanceInvoice{
+		IdempotencyKey: "stripe-invoice:" + invoice.ID,
+		AccountUUID:    userID, SubscriptionUUID: localSubscription.ID,
+		Provider: "stripe", ProviderInvoiceID: invoice.ID,
+		AmountMinor: invoice.AmountPaid, Currency: currency,
+		Description: "Settled Stripe subscription invoice", IssuedAt: issuedAt,
+	}
+	if periodStart, periodEnd, ok := referralInvoicePeriod(invoice); ok {
+		localInvoice.ServicePeriodStart, localInvoice.ServicePeriodEnd = &periodStart, &periodEnd
+	}
+	if _, err := h.store.CreateFinanceInvoice(ctx, localInvoice); err != nil {
+		return err
+	}
+
+	// A zero-value invoice has no payment fact. A positive settled invoice must
+	// identify the Stripe PaymentIntent; never substitute the invoice ID for it.
+	if invoice.AmountPaid == 0 {
+		return nil
+	}
+	paymentIntentID := customerIDFromAny(invoice.PaymentIntent)
+	if paymentIntentID == "" {
+		return errors.New("Stripe paid invoice is missing its payment intent")
+	}
+	localPayment := &store.FinancePayment{
+		IdempotencyKey: "stripe-payment:" + invoice.ID,
+		InvoiceID:      localInvoice.ID, AccountUUID: userID,
+		Provider: "stripe", ProviderPaymentID: paymentIntentID,
+		AmountMinor: invoice.AmountPaid, Currency: currency, PaidAt: paidAt,
+	}
+	if _, err := h.store.RecordFinancePayment(ctx, localPayment); err != nil {
+		return err
+	}
+	return nil
 }
 
 // recordReferralPaidInvoice writes only signed Stripe facts for the explicitly
@@ -1136,9 +1222,22 @@ func (h *handler) recordReferralPaidInvoice(ctx context.Context, invoice *stripe
 	if subscriptionUUID == "" {
 		return errors.New("local Stripe subscription is unavailable for verified invoice")
 	}
-	financeInvoice := &store.FinanceInvoice{IdempotencyKey: "stripe-invoice:" + invoice.ID, AccountUUID: userID, SubscriptionUUID: subscriptionUUID, Provider: "stripe", ProviderInvoiceID: invoice.ID, AmountMinor: paidMinor, Currency: currency, Description: "Verified XConnect subscription invoice", IssuedAt: paidAt, ServicePeriodStart: &periodStart, ServicePeriodEnd: &periodEnd}
-	if _, err := h.store.CreateFinanceInvoice(ctx, financeInvoice); err != nil {
+	financeInvoices, err := h.store.ListFinanceInvoices(ctx, userID, subscriptionUUID, 500)
+	if err != nil {
 		return err
+	}
+	var financeInvoice *store.FinanceInvoice
+	for i := range financeInvoices {
+		if financeInvoices[i].Provider == "stripe" && financeInvoices[i].ProviderInvoiceID == invoice.ID {
+			financeInvoice = &financeInvoices[i]
+			break
+		}
+	}
+	if financeInvoice == nil {
+		financeInvoice = &store.FinanceInvoice{IdempotencyKey: "stripe-invoice:" + invoice.ID, AccountUUID: userID, SubscriptionUUID: subscriptionUUID, Provider: "stripe", ProviderInvoiceID: invoice.ID, AmountMinor: paidMinor, Currency: currency, Description: "Verified XConnect subscription invoice", IssuedAt: paidAt, ServicePeriodStart: &periodStart, ServicePeriodEnd: &periodEnd}
+		if _, err := h.store.CreateFinanceInvoice(ctx, financeInvoice); err != nil {
+			return err
+		}
 	}
 	financePayment := &store.FinancePayment{IdempotencyKey: "stripe-payment:" + invoice.ID, InvoiceID: financeInvoice.ID, AccountUUID: userID, Provider: "stripe", ProviderPaymentID: paymentID, AmountMinor: paidMinor, Currency: currency, PaidAt: paidAt}
 	if _, err := h.store.RecordFinancePayment(ctx, financePayment); err != nil && !errors.Is(err, store.ErrFinanceInvoiceAlreadyPaid) {
