@@ -283,7 +283,7 @@ func (s *postgresStore) RecordFinanceRefund(ctx context.Context, refund *Finance
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	refundOperation, operationErr := scanFinanceOperation(tx.QueryRowContext(ctx, `SELECT `+financeOperationColumns+` FROM public.finance_operations WHERE idempotency_key = $1`, copy.IdempotencyKey))
+	refundOperation, operationErr := scanFinanceOperation(tx.QueryRowContext(ctx, `SELECT `+financeOperationColumns+` FROM public.finance_operations WHERE idempotency_key = $1 FOR UPDATE`, copy.IdempotencyKey))
 	if operationErr == nil {
 		if !financeRefundMatchesOperation(refundOperation, &copy) {
 			return false, ErrFinanceIdempotencyConflict
@@ -319,6 +319,15 @@ WHERE o.operation_type = 'refund' AND o.target_type = 'payment' AND o.target_id 
 VALUES ($1::uuid, $2, $3::uuid, $4, NULLIF($5, ''), $6, $7, $8, $9) RETURNING created_at`
 	if err := tx.QueryRowContext(ctx, insert, copy.ID, copy.IdempotencyKey, copy.PaymentID, copy.Provider, copy.ProviderRefundID, copy.AmountMinor, copy.Currency, strings.TrimSpace(copy.Reason), copy.RefundedAt.UTC()).Scan(&copy.CreatedAt); err != nil {
 		return false, err
+	}
+	if refundOperation != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE public.finance_operations SET provider_operation_id = $2 WHERE id = $1::uuid`, refundOperation.ID, copy.ProviderRefundID); err != nil {
+			return false, err
+		}
+		payload, _ := json.Marshal(map[string]string{"refund_uuid": copy.ID})
+		if _, err := tx.ExecContext(ctx, `INSERT INTO public.finance_operation_events (operation_id, attempt, event_type, status, provider_operation_id, payload) VALUES ($1::uuid, $2, 'refund_recorded', $3, $4, $5::jsonb)`, refundOperation.ID, refundOperation.AttemptCount, refundOperation.Status, copy.ProviderRefundID, payload); err != nil {
+			return false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
@@ -412,7 +421,7 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, 'pending', $7::jsonb) ON CONFLICT (idempot
 	if stored.OperationType != copy.OperationType || stored.TargetType != copy.TargetType || stored.TargetID != copy.TargetID || stored.Provider != copy.Provider || !jsonEqual(stored.Request, copy.Request) {
 		return false, ErrFinanceIdempotencyConflict
 	}
-	if stored.Status == FinanceOperationInProgress {
+	if stored.Status == FinanceOperationInProgress && !financeRefundAttemptExpired(stored) {
 		return false, ErrFinanceOperationInProgress
 	}
 	if stored.Status == FinanceOperationSucceeded {
@@ -435,7 +444,7 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, 'pending', $7::jsonb) ON CONFLICT (idempot
 			return false, ErrFinanceIdempotencyConflict
 		}
 		var refunded, reserved int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount_minor), 0) FROM public.finance_refunds WHERE payment_id = $1::uuid`, copy.TargetID).Scan(&refunded); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum(amount_minor), 0) FROM public.finance_refunds WHERE payment_id = $1::uuid AND idempotency_key <> $2`, copy.TargetID, copy.IdempotencyKey).Scan(&refunded); err != nil {
 			return false, err
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(sum((o.request->>'amount_minor')::bigint), 0)
@@ -451,7 +460,7 @@ WHERE o.operation_type = 'refund' AND o.target_type = 'payment' AND o.target_id 
 			return false, ErrFinanceRefundExceedsPayment
 		}
 	}
-	if stored.Status != FinanceOperationPending && stored.Status != FinanceOperationFailed && stored.Status != FinanceOperationReconciliationRequired {
+	if stored.Status != FinanceOperationPending && stored.Status != FinanceOperationFailed && stored.Status != FinanceOperationReconciliationRequired && !financeRefundAttemptExpired(stored) {
 		return false, ErrFinanceOperationNotRetryable
 	}
 	stored.AttemptCount++
@@ -475,11 +484,33 @@ func jsonEqual(a, b json.RawMessage) bool {
 	return json.Unmarshal(a, &left) == nil && json.Unmarshal(b, &right) == nil && reflect.DeepEqual(left, right)
 }
 
-func (s *postgresStore) FinishFinanceOperation(ctx context.Context, operationID, status, providerOperationID string, response json.RawMessage, operationErr error, nextAttemptAt *time.Time) error {
+func (s *postgresStore) CheckpointFinanceOperation(ctx context.Context, operationID string, expectedAttempt int, response json.RawMessage) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	response = financeJSON(response)
+	result, err := tx.ExecContext(ctx, `UPDATE public.finance_operations SET response=$3::jsonb, updated_at=now() WHERE id=$1::uuid AND attempt_count=$2 AND status='in_progress'`, operationID, expectedAttempt, []byte(response))
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected != 1 {
+		return ErrFinanceOperationNotRetryable
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO public.finance_operation_events (operation_id, attempt, event_type, status, payload) VALUES ($1::uuid, $2, 'attempt_checkpoint', 'in_progress', $3::jsonb)`, operationID, expectedAttempt, []byte(response)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *postgresStore) FinishFinanceOperation(ctx context.Context, operationID, status, providerOperationID string, response json.RawMessage, operationErr error, nextAttemptAt *time.Time, expectedAttempt ...int) error {
 	if status != FinanceOperationSucceeded && status != FinanceOperationFailed && status != FinanceOperationReconciliationRequired {
 		return ErrFinanceOperationNotRetryable
 	}
-	if operationErr != nil {
+	if operationErr != nil && status != FinanceOperationReconciliationRequired {
 		status = FinanceOperationFailed
 	}
 	lastError := ""
@@ -493,8 +524,12 @@ func (s *postgresStore) FinishFinanceOperation(ctx context.Context, operationID,
 	}
 	defer tx.Rollback()
 	var attempt int
+	expected := 0
+	if len(expectedAttempt) > 0 {
+		expected = expectedAttempt[0]
+	}
 	var updatedAt = time.Now().UTC()
-	err = tx.QueryRowContext(ctx, `UPDATE public.finance_operations SET status = $2, provider_operation_id = NULLIF($3, ''), response = $4::jsonb, last_error = $5, next_attempt_at = $6, updated_at = $7 WHERE id = $1::uuid AND status = 'in_progress' RETURNING attempt_count`, strings.TrimSpace(operationID), status, strings.TrimSpace(providerOperationID), []byte(response), lastError, nextAttemptAt, updatedAt).Scan(&attempt)
+	err = tx.QueryRowContext(ctx, `UPDATE public.finance_operations SET status = $2, provider_operation_id = COALESCE(NULLIF($3, ''), provider_operation_id), response = $4::jsonb, last_error = $5, next_attempt_at = $6, updated_at = $7 WHERE id = $1::uuid AND status = 'in_progress' AND ($8 = 0 OR attempt_count = $8) AND (provider_operation_id IS NULL OR $3 = '' OR provider_operation_id = $3) RETURNING attempt_count, COALESCE(provider_operation_id, '')`, strings.TrimSpace(operationID), status, strings.TrimSpace(providerOperationID), []byte(response), lastError, nextAttemptAt, updatedAt, expected).Scan(&attempt, &providerOperationID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrFinanceOperationNotRetryable
 	}

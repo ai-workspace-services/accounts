@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -60,6 +59,10 @@ func (h *handler) refundSubscription(c *gin.Context) {
 		respondError(c, http.StatusNotFound, "subscription_not_found", "subscription not found")
 		return
 	}
+	if resumed, err := h.resumeSubscriptionRefund(c.Request.Context(), user.ID, local); resumed {
+		h.respondSubscriptionRefund(c, err)
+		return
+	}
 	for i := range subs {
 		prior := subs[i]
 		if strings.EqualFold(prior.Provider, "stripe") && strings.EqualFold(prior.Kind, "subscription") && prior.ExternalID != local.ExternalID && !prior.CreatedAt.After(local.CreatedAt) {
@@ -110,21 +113,15 @@ func (h *handler) refundSubscription(c *gin.Context) {
 		respondError(c, http.StatusUnprocessableEntity, "refund_payment_not_found", "no refundable payment was found")
 		return
 	}
-	if err := h.stripe.refundPaymentIntent(c.Request.Context(), paymentIntentID, "subscription-refund:"+local.ExternalID); err != nil {
-		respondError(c, http.StatusBadGateway, "stripe_refund_failed", "failed to issue stripe refund")
+	payment, err := h.store.GetFinancePaymentByProvider(c.Request.Context(), "stripe", paymentIntentID)
+	if err != nil || payment.AccountUUID != user.ID {
+		respondError(c, http.StatusUnprocessableEntity, "refund_payment_not_found", "original local payment is required")
 		return
 	}
-	if err := h.stripe.cancelSubscription(c.Request.Context(), local.ExternalID); err != nil {
-		respondError(c, http.StatusBadGateway, "stripe_cancel_failed", "refund issued but subscription cancellation failed")
+	ledgerInvoice, err := h.store.GetFinanceInvoice(c.Request.Context(), payment.InvoiceID)
+	if err != nil || ledgerInvoice.AccountUUID != user.ID || ledgerInvoice.SubscriptionUUID != local.ID || ledgerInvoice.Provider != "stripe" || ledgerInvoice.ProviderInvoiceID != invoiceID || invoice.ID != invoiceID || remote.ID != local.ExternalID || customerIDFromAny(invoice.Subscription) != local.ExternalID || invoice.Status != "paid" || invoice.AmountPaid != payment.AmountMinor || !strings.EqualFold(invoice.Currency, payment.Currency) {
+		respondError(c, http.StatusUnprocessableEntity, "refund_payment_mismatch", "payment ownership or invoice facts do not match")
 		return
 	}
-	if _, err := h.store.CancelSubscription(c.Request.Context(), user.ID, local.ExternalID, now); err != nil && !errors.Is(err, store.ErrSubscriptionNotFound) {
-		respondError(c, http.StatusInternalServerError, "subscription_cancel_failed", "refund issued but local subscription update failed")
-		return
-	}
-	if err := h.downgradeToFreePlan(c.Request.Context(), user.ID); err != nil {
-		respondError(c, http.StatusInternalServerError, "refund_entitlement_update_failed", "refund issued but entitlement update failed")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"refunded": true})
+	h.respondSubscriptionRefund(c, h.startSubscriptionRefund(c.Request.Context(), payment, local))
 }

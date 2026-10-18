@@ -407,7 +407,7 @@ func (c *stripeClient) checkoutURLs(sourcePath string) (string, string) {
 }
 
 func (c *stripeClient) doForm(ctx context.Context, method, path string, form url.Values, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, stripeAPIBaseURL+path, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL()+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
@@ -623,11 +623,18 @@ func (c *stripeClient) fetchPaymentIntentCharge(ctx context.Context, paymentInte
 	return c.fetchCharge(ctx, chargeID)
 }
 
-func (c *stripeClient) refundPaymentIntent(ctx context.Context, paymentIntentID, idempotencyKey string) error {
-	form := url.Values{"payment_intent": []string{strings.TrimSpace(paymentIntentID)}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, stripeAPIBaseURL+"/refunds", strings.NewReader(form.Encode()))
+func (c *stripeClient) baseURL() string {
+	if base := strings.TrimRight(strings.TrimSpace(c.apiBaseURL), "/"); base != "" {
+		return base
+	}
+	return stripeAPIBaseURL
+}
+
+func (c *stripeClient) refundPaymentIntent(ctx context.Context, paymentIntentID, idempotencyKey string, amount int64) (*stripeRefund, error) {
+	form := url.Values{"payment_intent": {strings.TrimSpace(paymentIntentID)}, "amount": {strconv.FormatInt(amount, 10)}, "metadata[finance_operation_key]": {idempotencyKey}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL()+"/refunds", strings.NewReader(form.Encode()))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.secretKey)
 	req.Header.Set("Stripe-Version", stripeAPIVersion)
@@ -640,17 +647,21 @@ func (c *stripeClient) refundPaymentIntent(ctx context.Context, paymentIntentID,
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("stripe refund failed: %s", strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("stripe refund failed: %s", strings.TrimSpace(string(body)))
 	}
-	return nil
+	var refund stripeRefund
+	if err := json.Unmarshal(body, &refund); err != nil {
+		return nil, err
+	}
+	return &refund, nil
 }
 
 func (c *stripeClient) verifyWebhook(payload []byte, signatureHeader string) bool {
