@@ -42,9 +42,9 @@
       "kind": "subscription",
       "includedQuotaBytes": 21474836480,
       "packageName": "plus",
-      "priceAmount": 0,
-      "priceCurrency": "",
-      "priceUnit": "",
+      "priceAmount": 2000,
+      "priceCurrency": "CNY",
+      "priceUnit": "month",
       "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
       "features": {
         "sla": "standard",
@@ -110,7 +110,7 @@
       "priceMultipliers": {},
       "features": { "topup": { "credits_balance": true } },
       "trialDays": 0,
-      "active": true,
+      "active": false,
       "sortOrder": 20
     },
     {
@@ -155,7 +155,7 @@
       "priceMultipliers": {},
       "features": { "topup": { "credits_balance": true, "wallet_currency": "CNY" } },
       "trialDays": 0,
-      "active": true,
+      "active": false,
       "sortOrder": 23
     },
     {
@@ -170,7 +170,7 @@
       "priceMultipliers": {},
       "features": { "topup": { "credits_balance": true, "wallet_currency": "USD" } },
       "trialDays": 0,
-      "active": true,
+      "active": false,
       "sortOrder": 24
     },
     {
@@ -185,7 +185,7 @@
       "priceMultipliers": {},
       "features": { "topup": { "credits_balance": true, "wallet_currency": "USD" } },
       "trialDays": 0,
-      "active": true,
+      "active": false,
       "sortOrder": 25
     },
     {
@@ -195,6 +195,36 @@
       "includedQuotaBytes": 0,
       "packageName": "payg",
       "priceAmount": 2000,
+      "priceCurrency": "USD",
+      "priceUnit": "once",
+      "priceMultipliers": {},
+      "features": { "topup": { "credits_balance": true, "wallet_currency": "USD" } },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 26
+    },
+    {
+      "planId": "PAYG-TOPUP-200",
+      "displayName": "余额充值 ¥200",
+      "kind": "paygo_topup",
+      "includedQuotaBytes": 0,
+      "packageName": "payg",
+      "priceAmount": 20000,
+      "priceCurrency": "CNY",
+      "priceUnit": "once",
+      "priceMultipliers": {},
+      "features": { "topup": { "credits_balance": true, "wallet_currency": "CNY" } },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 23
+    },
+    {
+      "planId": "PAYG-TOPUP-USD-50",
+      "displayName": "Balance top-up $50",
+      "kind": "paygo_topup",
+      "includedQuotaBytes": 0,
+      "packageName": "payg",
+      "priceAmount": 5000,
       "priceCurrency": "USD",
       "priceUnit": "once",
       "priceMultipliers": {},
@@ -219,7 +249,7 @@
     },
     {
       "planId": "PRO-MONTHLY",
-      "displayName": "Pro 月付",
+      "displayName": "Pro 月付（历史方案）",
       "kind": "subscription",
       "includedQuotaBytes": 21474836480,
       "packageName": "pro",
@@ -237,12 +267,12 @@
         "quota_cycle": "natural_month"
       },
       "trialDays": 0,
-      "active": true,
+      "active": false,
       "sortOrder": 30
     },
     {
       "planId": "PRO-YEARLY",
-      "displayName": "Pro 年付",
+      "displayName": "Pro 年付（历史方案）",
       "kind": "subscription",
       "includedQuotaBytes": 21474836480,
       "packageName": "pro",
@@ -258,6 +288,52 @@
         "overage": { "policy": "charge", "cny_per_gb": 1.0 },
         "dunning": { "policy": "grace_then_suspend", "grace_days": 14 },
         "quota_cycle": "natural_month"
+      },
+      "trialDays": 0,
+      "active": false,
+      "sortOrder": 40
+    },
+    {
+      "planId": "PRO-MONTHLY-V2",
+      "displayName": "Pro 月付",
+      "kind": "subscription",
+      "includedQuotaBytes": 53687091200,
+      "packageName": "pro",
+      "priceAmount": 5000,
+      "priceCurrency": "CNY",
+      "priceUnit": "month",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 1.0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "sla": "standard",
+        "session_persistence": true,
+        "resource_cards": { "create": true, "pricing": "list_price_plus_managed_fee", "managed_fee_rate": 0.20 },
+        "fast_lane": { "mode": "quota" },
+        "overage": { "policy": "charge", "cny_per_gb": 1.0 },
+        "dunning": { "policy": "grace_then_suspend", "grace_days": 14 },
+        "quota_cycle": "natural_month"
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 30
+    },
+    {
+      "planId": "PRO-YEARLY-V2",
+      "displayName": "Pro 年付",
+      "kind": "subscription",
+      "includedQuotaBytes": 9223372036854775807,
+      "packageName": "pro",
+      "priceAmount": 50000,
+      "priceCurrency": "CNY",
+      "priceUnit": "year",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "sla": "standard",
+        "session_persistence": true,
+        "resource_cards": { "create": true, "pricing": "list_price_plus_managed_fee", "managed_fee_rate": 0.20 },
+        "fast_lane": { "mode": "unlimited" },
+        "overage": { "policy": "none" },
+        "dunning": { "policy": "grace_then_suspend", "grace_days": 14 },
+        "quota_cycle": "none"
       },
       "trialDays": 0,
       "active": true,

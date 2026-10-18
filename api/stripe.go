@@ -50,6 +50,8 @@ type stripeClient struct {
 type stripeCheckoutRequest struct {
 	PlanID        string `json:"planId"`
 	StripePriceID string `json:"stripePriceId"`
+	AmountMinor   int64  `json:"amountMinor,omitempty"`
+	Currency      string `json:"currency,omitempty"`
 	Mode          string `json:"mode"`
 	ProductSlug   string `json:"productSlug"`
 	SourcePath    string `json:"sourcePath"`
@@ -330,6 +332,9 @@ func (h *handler) validateCheckoutPlan(ctx context.Context, req stripeCheckoutRe
 	planID := strings.TrimSpace(req.PlanID)
 	priceID := strings.TrimSpace(req.StripePriceID)
 	mode := h.stripe.normalizeMode(req.Mode)
+	if mode == "payment" && isCustomPaygoTopUp(planID, req.AmountMinor, req.Currency) {
+		return priceID == ""
+	}
 	if planID == "" || priceID == "" {
 		return false
 	}
@@ -476,13 +481,22 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 		"success_url":             []string{successURL},
 		"cancel_url":              []string{cancelURL},
 		"customer_email":          []string{strings.TrimSpace(strings.ToLower(user.Email))},
-		"line_items[0][price]":    []string{strings.TrimSpace(req.StripePriceID)},
 		"line_items[0][quantity]": []string{"1"},
 		"metadata[user_id]":       []string{strings.TrimSpace(user.ID)},
 		"metadata[user_email]":    []string{strings.TrimSpace(strings.ToLower(user.Email))},
 		"metadata[plan_id]":       []string{strings.TrimSpace(req.PlanID)},
 		"metadata[product_slug]":  []string{strings.TrimSpace(req.ProductSlug)},
 		"metadata[kind]":          []string{map[string]string{"payment": "paygo", "subscription": "subscription"}[mode]},
+	}
+	if isCustomPaygoTopUp(req.PlanID, req.AmountMinor, req.Currency) {
+		currency := strings.ToLower(strings.TrimSpace(req.Currency))
+		form.Set("line_items[0][price_data][currency]", currency)
+		form.Set("line_items[0][price_data][unit_amount]", strconv.FormatInt(req.AmountMinor, 10))
+		form.Set("line_items[0][price_data][product_data][name]", "XConnect balance top-up")
+		form.Set("metadata[amount_minor]", strconv.FormatInt(req.AmountMinor, 10))
+		form.Set("metadata[currency]", strings.ToUpper(currency))
+	} else {
+		form.Set("line_items[0][price]", strings.TrimSpace(req.StripePriceID))
 	}
 	clientReferenceID, err := c.signedClientReferenceID(user.ID)
 	if err == nil {
@@ -762,12 +776,17 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 	}
 	req.PlanID = strings.TrimSpace(req.PlanID)
 	req.StripePriceID = strings.TrimSpace(req.StripePriceID)
+	req.Currency = strings.ToUpper(strings.TrimSpace(req.Currency))
 	req.ProductSlug = strings.TrimSpace(req.ProductSlug)
 	req.SourcePath = strings.TrimSpace(req.SourcePath)
 	req.Mode = h.stripe.normalizeMode(req.Mode)
 
 	if req.ProductSlug == "" || !h.validateCheckoutPlan(c.Request.Context(), req) {
 		respondError(c, http.StatusBadRequest, "invalid_billing_plan", "billing plan is invalid or unavailable")
+		return
+	}
+	if modeErr := h.validateBillingModeCheckout(c.Request.Context(), user.ID, req); modeErr != nil {
+		respondError(c, http.StatusConflict, "billing_mode_conflict", modeErr.Error())
 		return
 	}
 
@@ -1305,7 +1324,7 @@ func (h *handler) recordReferralPaidInvoice(ctx context.Context, invoice *stripe
 	if !referralCampaignActive(paidAt) {
 		return nil
 	}
-	if planID == "PRO-YEARLY" {
+	if isXConnectAnnualPlanID(planID) {
 		if err := h.ensureReferrerPaidPeriod(ctx, userID, paidAt); err != nil {
 			return err
 		}
@@ -1469,11 +1488,11 @@ func (h *handler) referralPlanFromInvoice(ctx context.Context, invoice *stripeIn
 		if err != nil {
 			return "", err
 		}
-		if plan.Kind != "subscription" || (plan.PlanID != "PRO-MONTHLY" && plan.PlanID != "PRO-YEARLY") {
+		if plan.Kind != "subscription" || !isXConnectProPlanID(plan.PlanID) {
 			return "", nil
 		}
 		wantUnit := "month"
-		if plan.PlanID == "PRO-YEARLY" {
+		if isXConnectAnnualPlanID(plan.PlanID) {
 			wantUnit = "year"
 		}
 		if !strings.EqualFold(strings.TrimSpace(plan.PriceUnit), wantUnit) {

@@ -12,12 +12,15 @@ import (
 func topupHandler(t *testing.T) (*handler, store.Store, *store.User) {
 	t.Helper()
 	st := store.NewMemoryStore()
-	h := &handler{store: st}
+	h := &handler{store: st, stripe: newStripeClient(StripeConfig{SecretKey: "sk_test_unit"})}
 	for planID, denomination := range fixedTopUps {
 		plan := &store.BillingPlan{PlanID: planID, StripePriceID: "price_" + strings.ToLower(planID), DisplayName: planID, Kind: "paygo_topup", PriceAmount: denomination.amount, PriceCurrency: denomination.currency, PriceUnit: "once", Active: true}
 		if err := st.UpsertBillingPlan(context.Background(), plan); err != nil {
 			t.Fatalf("seed top-up plan %s: %v", planID, err)
 		}
+	}
+	if err := st.UpsertBillingPlan(context.Background(), &store.BillingPlan{PlanID: "PAYG", Kind: "subscription", PackageName: "payg", Active: true}); err != nil {
+		t.Fatalf("seed PAYG entitlement: %v", err)
 	}
 
 	user := &store.User{
@@ -53,9 +56,9 @@ func paidSession(intent string, amountTotal int64) *stripeCheckoutSession {
 
 func TestCreditTopUpKeepsUSDInSeparateWallet(t *testing.T) {
 	h, st, user := topupHandler(t)
-	session := paidSession("pi_usd", 1000)
+	session := paidSession("pi_usd", 2000)
 	session.Currency = "usd"
-	session.Metadata["plan_id"] = "PAYG-TOPUP-USD-10"
+	session.Metadata["plan_id"] = "PAYG-TOPUP-USD-20"
 	if err := h.creditTopUpBalance(context.Background(), user.ID, session); err != nil {
 		t.Fatalf("credit USD top-up: %v", err)
 	}
@@ -64,11 +67,11 @@ func TestCreditTopUpKeepsUSDInSeparateWallet(t *testing.T) {
 		t.Fatal(err)
 	}
 	usdBalance, _ := st.GetWalletBalance(context.Background(), user.ID, "USD")
-	if usdBalance != 10 || state.CurrentBalance != 0 {
-		t.Fatalf("USD top-up crossed currency wallets: CNY=%v USD=%v", state.CurrentBalance, usdBalance)
+	if usdBalance != 20 || state.CurrentBalance != 0 {
+		t.Fatalf("USD top-up crossed currency wallets: CNY=%v USD=%v; want USD 20", state.CurrentBalance, usdBalance)
 	}
 	ledger, err := st.ListBillingLedgerByAccount(context.Background(), user.ID, 10)
-	if err != nil || len(ledger) != 1 || ledger[0].Currency != "USD" || ledger[0].BalanceAfter != 10 {
+	if err != nil || len(ledger) != 1 || ledger[0].Currency != "USD" || ledger[0].BalanceAfter != 20 {
 		t.Fatalf("USD ledger did not reconcile: entries=%+v err=%v", ledger, err)
 	}
 }
@@ -78,6 +81,86 @@ func TestCreditTopUpRejectsNonCatalogAmount(t *testing.T) {
 	session := paidSession("pi_wrong_amount", 6000)
 	if err := h.creditTopUpBalance(context.Background(), user.ID, session); err == nil {
 		t.Fatal("expected non-denomination amount to be rejected")
+	}
+}
+
+func TestCreditCustomTopUpUsesServerValidatedAmount(t *testing.T) {
+	h, st, user := topupHandler(t)
+	session := paidSession("pi_custom", 1275)
+	session.Currency = "usd"
+	session.Metadata["plan_id"] = customUSDTopUpPlanID
+	session.Metadata["amount_minor"] = "1275"
+	session.Metadata["currency"] = "USD"
+	if err := h.creditTopUpBalance(context.Background(), user.ID, session); err != nil {
+		t.Fatalf("credit custom USD top-up: %v", err)
+	}
+	got, err := st.GetWalletBalance(context.Background(), user.ID, "USD")
+	if err != nil || got != 12.75 {
+		t.Fatalf("custom USD wallet = %v, err=%v; want 12.75", got, err)
+	}
+}
+
+func TestCreditCustomTopUpRejectsOutOfRangeOrForgedMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, planID, currency, metaAmount string
+		amount                             int64
+	}{
+		{"below CNY minimum", customCNYTopUpPlanID, "cny", "999", 999},
+		{"above USD maximum", customUSDTopUpPlanID, "usd", "10001", 10001},
+		{"metadata mismatch", customUSDTopUpPlanID, "usd", "500", 1000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, user := topupHandler(t)
+			session := paidSession("pi_custom_invalid", tc.amount)
+			session.Currency = tc.currency
+			session.Metadata["plan_id"] = tc.planID
+			session.Metadata["amount_minor"] = tc.metaAmount
+			session.Metadata["currency"] = strings.ToUpper(tc.currency)
+			if err := h.creditTopUpBalance(context.Background(), user.ID, session); err == nil {
+				t.Fatal("expected invalid custom top-up to be rejected")
+			}
+		})
+	}
+}
+
+func TestCheckoutEnforcesMutuallyExclusiveBillingModes(t *testing.T) {
+	ctx := context.Background()
+	h, st, user := topupHandler(t)
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "PRO-MONTHLY", Kind: "subscription", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "PAYG-TOPUP-50", Kind: "paygo_topup", PriceAmount: 5000, PriceCurrency: "CNY", PriceUnit: "once", StripePriceID: "price_cny_50", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: user.ID, PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, PricingRuleVersion: "plan:FREE"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: user.ID, RemainingIncludedQuota: 5 * 1024 * 1024 * 1024}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.validateBillingModeCheckout(ctx, user.ID, stripeCheckoutRequest{Mode: "payment"}); err != nil {
+		t.Fatalf("free account should be able to switch to PAYG: %v", err)
+	}
+	if err := h.creditTopUpBalance(ctx, user.ID, paidSession("pi_mode", 5000)); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := st.GetAccountBillingProfile(ctx, user.ID)
+	state, stateErr := st.GetAccountQuotaState(ctx, user.ID)
+	if err != nil || stateErr != nil || profile.PackageName != "payg" || profile.IncludedQuotaBytes != 0 || state.RemainingIncludedQuota != 0 {
+		t.Fatalf("PAYG should replace included quota: profile=%+v state=%+v errors=%v/%v", profile, state, err, stateErr)
+	}
+	if err := h.validateBillingModeCheckout(ctx, user.ID, stripeCheckoutRequest{Mode: "subscription"}); err == nil {
+		t.Fatal("subscription checkout must be blocked while CNY PAYG balance remains")
+	}
+	state.CurrentBalance = 0
+	if err := st.UpsertAccountQuotaState(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertSubscription(ctx, &store.Subscription{UserID: user.ID, Provider: "stripe", Kind: "subscription", Status: "active", PlanID: "PRO-MONTHLY", ExternalID: "sub_active"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.validateBillingModeCheckout(ctx, user.ID, stripeCheckoutRequest{Mode: "payment"}); err == nil {
+		t.Fatal("PAYG checkout must be blocked while subscription is active")
 	}
 }
 

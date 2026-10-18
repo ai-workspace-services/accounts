@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,16 +72,27 @@ func (h *handler) creditTopUpBalance(ctx context.Context, userID string, session
 		return nil
 	}
 	planID := strings.TrimSpace(session.Metadata["plan_id"])
-	plan, err := h.store.GetBillingPlan(ctx, planID)
-	if err != nil || plan == nil || !strings.EqualFold(strings.TrimSpace(plan.Kind), "paygo_topup") || !isFixedPaygoTopUp(planID, plan.PriceAmount, plan.PriceCurrency, plan.PriceUnit) {
-		return errors.New("top-up session does not match an approved fixed denomination")
-	}
 	currency := strings.ToUpper(strings.TrimSpace(session.Currency))
-	if currency != strings.ToUpper(strings.TrimSpace(plan.PriceCurrency)) {
-		return errors.New("top-up currency does not match the billing catalog")
+	amountMinor := session.AmountTotal
+	custom := isCustomPaygoTopUp(planID, amountMinor, currency)
+	var plan *store.BillingPlan
+	if custom {
+		metadataAmount, parseErr := strconv.ParseInt(strings.TrimSpace(session.Metadata["amount_minor"]), 10, 64)
+		if parseErr != nil || metadataAmount != amountMinor || !strings.EqualFold(session.Metadata["currency"], currency) {
+			return errors.New("custom top-up amount does not match checkout metadata")
+		}
+	} else {
+		var err error
+		plan, err = h.store.GetBillingPlan(ctx, planID)
+		if err != nil || plan == nil || !strings.EqualFold(strings.TrimSpace(plan.Kind), "paygo_topup") || !isFixedPaygoTopUp(planID, plan.PriceAmount, plan.PriceCurrency, plan.PriceUnit) {
+			return errors.New("top-up session does not match an approved denomination")
+		}
+		if currency != strings.ToUpper(strings.TrimSpace(plan.PriceCurrency)) || amountMinor != plan.PriceAmount {
+			return errors.New("top-up amount or currency does not match the billing catalog")
+		}
 	}
-	if session.AmountTotal != plan.PriceAmount {
-		return errors.New("top-up amount does not match the billing catalog")
+	if currency != "CNY" && currency != "USD" {
+		return errors.New("unsupported top-up currency")
 	}
 
 	// Prefer the payment intent: it is the identifier Stripe keeps stable
@@ -124,15 +136,65 @@ func (h *handler) creditTopUpBalance(ctx context.Context, userID string, session
 	}
 	if duplicate {
 		slog.Info("top-up already credited, skipping", "userID", userID, "paymentRef", paymentRef, "entryID", entryID)
+	} else {
+		h.publishBillingEvent(ctx, &store.BillingEvent{Type: "balance_topped_up", UserID: userID})
+	}
+	if !h.hasActivePaidSubscription(ctx, userID) {
+		paygPlan, paygErr := h.store.GetBillingPlan(ctx, "PAYG")
+		if paygErr == nil && paygPlan != nil {
+			if err := h.applyPlanEntitlements(ctx, userID, paygPlan); err != nil {
+				return err
+			}
+		}
+		if state, stateErr := h.store.GetAccountQuotaState(ctx, userID); stateErr == nil && state != nil && state.RemainingIncludedQuota != 0 {
+			state.RemainingIncludedQuota = 0
+			state.EffectiveAt = now
+			if err := h.store.UpsertAccountQuotaState(ctx, state); err != nil {
+				return err
+			}
+		} else if stateErr != nil && !errors.Is(stateErr, store.ErrUserNotFound) {
+			return stateErr
+		}
+	}
+	slog.Info("credited top-up to currency wallet", "userID", userID, "amount", amount, "currency", currency)
+	return nil
+}
+
+func (h *handler) hasActivePaidSubscription(ctx context.Context, userID string) bool {
+	subscriptions, err := h.store.ListSubscriptionsByUser(ctx, userID)
+	if err != nil {
+		slog.Warn("failed to check active subscription", "err", err, "userID", userID)
+		return true
+	}
+	for i := range subscriptions {
+		sub := &subscriptions[i]
+		if !strings.EqualFold(strings.TrimSpace(sub.Kind), "subscription") {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(sub.Status)) {
+		case "active", "trialing", "past_due", "canceling":
+			return true
+		}
+	}
+	return false
+}
+
+func (h *handler) validateBillingModeCheckout(ctx context.Context, userID string, req stripeCheckoutRequest) error {
+	if req.Mode == "payment" {
+		if h.hasActivePaidSubscription(ctx, userID) {
+			return errors.New("按量付费与有效订阅互斥；请先取消并等待订阅到期")
+		}
 		return nil
 	}
-	newBalance := entry.BalanceAfter
-	h.publishBillingEvent(ctx, &store.BillingEvent{
-		Type: "balance_topped_up", UserID: userID,
-	})
-
-	slog.Info("credited top-up to currency wallet",
-		"userID", userID, "amount", amount, "currency", currency, "balance", newBalance)
+	// CNY is the metered usage wallet. USD is kept as a separate balance and is
+	// not automatically converted or charged against CNY usage.
+	cnyBalance, err := h.store.GetWalletBalance(ctx, userID, "CNY")
+	if err != nil {
+		return errors.New("无法确认按量付费余额，请稍后重试")
+	}
+	if cnyBalance != 0 {
+		return errors.New("请先结清人民币按量余额，再开通订阅；两种计费方式不叠加")
+	}
 	return nil
 }
 

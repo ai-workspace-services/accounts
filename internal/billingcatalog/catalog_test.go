@@ -124,9 +124,9 @@ func TestSellablePlansArePublishable(t *testing.T) {
 	// price only when priceAmount and priceCurrency are both set. A plan that
 	// misses either renders as 即将上线 with no explanation.
 	sellable := []string{
-		"PRO-MONTHLY", "PRO-YEARLY",
-		"PAYG-TOPUP-10", "PAYG-TOPUP-50", "PAYG-TOPUP-100", "PAYG-TOPUP-500",
-		"PAYG-TOPUP-USD-5", "PAYG-TOPUP-USD-10", "PAYG-TOPUP-USD-20", "PAYG-TOPUP-USD-100",
+		"PLUS", "PRO-MONTHLY-V2", "PRO-YEARLY-V2",
+		"PAYG-TOPUP-50", "PAYG-TOPUP-100", "PAYG-TOPUP-200",
+		"PAYG-TOPUP-USD-20", "PAYG-TOPUP-USD-50", "PAYG-TOPUP-USD-100",
 	}
 
 	plans := make(map[string]manifestPlan)
@@ -148,6 +148,53 @@ func TestSellablePlansArePublishable(t *testing.T) {
 		}
 		if plan.PriceCurrency == "" {
 			t.Errorf("plan %s has an amount but no currency, which accounts rejects", planID)
+		}
+	}
+}
+
+func TestV3CommercialCatalogMatchesApprovedOffers(t *testing.T) {
+	plans := make(map[string]manifestPlan)
+	for _, plan := range loadManifest(t) {
+		plans[plan.PlanID] = plan
+	}
+	for planID, want := range map[string]struct {
+		amount, quota int64
+		unit          string
+	}{
+		"PLUS":           {2000, 20 * 1024 * 1024 * 1024, "month"},
+		"PRO-MONTHLY-V2": {5000, 50 * 1024 * 1024 * 1024, "month"},
+		"PRO-YEARLY-V2":  {50000, int64(^uint64(0) >> 1), "year"},
+	} {
+		plan := plans[planID]
+		if !plan.Active || plan.PriceAmount != want.amount || plan.PriceCurrency != "CNY" || plan.PriceUnit != want.unit || plan.IncludedQuotaBytes != want.quota {
+			t.Errorf("%s does not match approved offer: %+v", planID, plan)
+		}
+	}
+	for planID, want := range map[string]struct {
+		amount int64
+		quota  int64
+		unit   string
+	}{
+		"PRO-MONTHLY": {2000, 20 * 1024 * 1024 * 1024, "month"},
+		"PRO-YEARLY":  {20000, 20 * 1024 * 1024 * 1024, "year"},
+	} {
+		plan := plans[planID]
+		if plan.Active || plan.PriceAmount != want.amount || plan.PriceUnit != want.unit || plan.IncludedQuotaBytes != want.quota {
+			t.Errorf("legacy subscription terms must remain intact and not be sold: %s %+v", planID, plan)
+		}
+	}
+	for planID, want := range map[string]int64{
+		"PAYG-TOPUP-50": 5000, "PAYG-TOPUP-100": 10000, "PAYG-TOPUP-200": 20000,
+		"PAYG-TOPUP-USD-20": 2000, "PAYG-TOPUP-USD-50": 5000, "PAYG-TOPUP-USD-100": 10000,
+	} {
+		plan := plans[planID]
+		if !plan.Active || plan.Kind != "paygo_topup" || plan.PriceAmount != want {
+			t.Errorf("unexpected active PAYG preset %s: %+v", planID, plan)
+		}
+	}
+	for _, planID := range []string{"PAYG-TOPUP-10", "PAYG-TOPUP-500", "PAYG-TOPUP-USD-5", "PAYG-TOPUP-USD-10"} {
+		if plans[planID].Active {
+			t.Errorf("legacy PAYG denomination %s must no longer be offered", planID)
 		}
 	}
 }

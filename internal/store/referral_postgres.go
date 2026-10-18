@@ -86,7 +86,7 @@ func createReferralAttribution(ctx context.Context, executor referralAttribution
 }
 
 func (s *postgresStore) CreateReferralReward(ctx context.Context, reward *ReferralReward) (bool, error) {
-	if reward == nil || strings.TrimSpace(reward.ProviderInvoiceID) == "" || reward.PaidMinor <= 0 || reward.RewardMinor != reward.PaidMinor/10 || !validFinanceCurrency(strings.ToUpper(strings.TrimSpace(reward.Currency))) || reward.ProductSlug != "xconnect" || (reward.PlanID != "PRO-MONTHLY" && reward.PlanID != "PRO-YEARLY") {
+	if reward == nil || strings.TrimSpace(reward.ProviderInvoiceID) == "" || reward.PaidMinor <= 0 || reward.RewardMinor != reward.PaidMinor/10 || !validFinanceCurrency(strings.ToUpper(strings.TrimSpace(reward.Currency))) || reward.ProductSlug != "xconnect" || !isXConnectReferralPlan(reward.PlanID) {
 		return false, ErrReferralNotFound
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
@@ -156,7 +156,7 @@ func (s *postgresStore) CreateReferralReward(ctx context.Context, reward *Referr
 	reward.ID = uuid.NewString()
 	var annualSub string
 	var annualEnd time.Time
-	if reward.PlanID == "PRO-YEARLY" {
+	if isXConnectAnnualReferralPlan(reward.PlanID) {
 		err = tx.QueryRowContext(ctx, `SELECT s.uuid::text,
 	  (p.base_end + COALESCE(e.days,0) * interval '1 day')
  FROM public.subscriptions s
