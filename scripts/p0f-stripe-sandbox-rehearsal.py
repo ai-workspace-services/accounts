@@ -145,7 +145,7 @@ def main():
         else:
             wait_for(lambda f: f["refunded"] == 100 and f["status"] == "refunded", "full refund local ledger and revocation")
     api("DELETE", "/subscriptions/" + state["subscription"], operation="cancel")
-    wait_for(lambda f: f["status"] == "canceled", "Sandbox recurring subscription cancellation")
+    wait_for(lambda f: f["status"] == "cancelled", "Sandbox recurring subscription cancellation")
     after = json.loads(sql("SELECT json_build_object('users',(SELECT md5(string_agg(row_to_json(t)::text, '' ORDER BY uuid)) FROM users t WHERE uuid<>" + quote(account_id) + "),'subscriptions',(SELECT md5(string_agg(row_to_json(t)::text, '' ORDER BY uuid)) FROM subscriptions t WHERE user_uuid<>" + quote(account_id) + "),'usage',(SELECT md5(string_agg(row_to_json(t)::text, '' ORDER BY id)) FROM billing_ledger t WHERE account_uuid<>" + quote(account_id) + "));"))
     state["original_data_preserved"] = all(after[k] == state["baseline"][k] for k in after)
     state["final_facts"] = facts(); save()
