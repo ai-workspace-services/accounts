@@ -3,15 +3,12 @@ package api
 import (
 	"context"
 	"errors"
-	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"account/internal/store"
 )
-
-const defaultPoolRoutePrefix = "/pool"
 
 const agentResourceTeam = "team"
 
@@ -51,25 +48,11 @@ func (h *handler) billingPackageName(ctx context.Context, user *store.User) (str
 	return strings.ToLower(strings.TrimSpace(profile.PackageName)), nil
 }
 
-// poolXHTTPPath prefixes the XHTTP path with the entitlement route consumed
-// by APISIX. The prefix is configurable for a direct-agent compatibility
-// environment, but UAT/prod default to /pool so the shared entrypoint can
-// dispatch free, plus, pro, and team traffic to different upstreams.
-func poolXHTTPPath(basePath, resourceClass string) string {
+// poolXHTTPPath keeps the transport path independent from the resource class.
+// Resource classes are authorization metadata; the edge route remains /split.
+func poolXHTTPPath(basePath, _ string) string {
 	basePath = "/" + strings.TrimLeft(strings.TrimSpace(basePath), "/")
-	resourceClass = strings.Trim(strings.ToLower(resourceClass), "/")
-	if resourceClass == "" {
-		return basePath
-	}
-	prefix := strings.TrimSpace(envOrDefault("XRAY_POOL_ROUTE_PREFIX", defaultPoolRoutePrefix))
-	if raw, ok := os.LookupEnv("XRAY_POOL_ROUTE_PREFIX"); ok && strings.EqualFold(strings.TrimSpace(raw), "none") {
-		return basePath
-	}
-	if prefix == "" {
-		return basePath
-	}
-	prefix = "/" + strings.Trim(prefix, "/")
-	return prefix + "/" + resourceClass + basePath
+	return basePath
 }
 
 func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *store.User, packageName string, now time.Time) []regionalPool {
