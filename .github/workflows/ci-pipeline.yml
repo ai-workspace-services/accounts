@@ -86,6 +86,8 @@ jobs:
             name: Managed Database Runtime (PostgreSQL 17)
           - check: full_business_transfer
             name: Full Business Transfer (PostgreSQL 17)
+          - check: usage_reconciliation
+            name: Controlled Usage Reconciliation (PostgreSQL 17)
           - check: account_lifecycle_migration
             name: Account Lifecycle Migration (PostgreSQL 17)
     services:
@@ -157,6 +159,16 @@ jobs:
           createdb --host localhost --port 5432 --username postgres account
           createdb --host localhost --port 5432 --username postgres full_business_source
           createdb --host localhost --port 5432 --username postgres full_business_native_source
+
+      - name: Qualify isolated usage reconciliation and rollback
+        if: matrix.check == 'usage_reconciliation'
+        env:
+          PGPASSWORD: postgres
+          MIGRATECTL_USAGE_MERGE_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
+        run: |
+          createdb --host localhost --port 5432 --username postgres account
+          createdb --host localhost --port 5432 --username postgres usage_merge_source
+          go test -count=1 -v ./internal/migrate -run '^TestFullBusinessUsageMergePostgres17$'
 
       - name: Qualify compiled schema and native initialization guards
         if: matrix.check == 'native_schema_initialization'
