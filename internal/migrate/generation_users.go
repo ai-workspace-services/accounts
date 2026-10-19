@@ -449,8 +449,14 @@ func canonicalRowHash(row rawRow) (string, error) {
 
 func userRelatedColumns(name string, table businessTable) []string {
 	set := map[string]bool{}
+	available := map[string]bool{}
+	for _, column := range table.Columns {
+		available[column.Name] = true
+	}
 	for _, column := range businessUserReferences[name] {
-		set[column] = true
+		if available[column] {
+			set[column] = true
+		}
 	}
 	for _, column := range []string{"account_uuid", "user_uuid"} {
 		for _, definition := range table.Columns {
