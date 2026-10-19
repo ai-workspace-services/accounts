@@ -65,6 +65,7 @@ func newCoreUsersCmd(compare bool) *cobra.Command {
 	if !compare {
 		cmd.Flags().BoolVar(&options.Preview, "dry-run", true, "Preview users only; no target writes")
 		cmd.Flags().StringVar(&options.ExpectedPlanSHA256, "plan-sha256", "", "Exact reviewed preview plan SHA256 required for apply")
+		cmd.Flags().BoolVar(&options.WritersPaused, "writers-paused", false, "Execution owner verified paused target writers before applying users")
 	}
 	if compare {
 		cmd.Flags().StringVarP(&outputFormat, "output", "o", "raw", "safe diff output: raw (legacy JSON), yaml, or markdown")
