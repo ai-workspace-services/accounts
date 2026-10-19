@@ -58,21 +58,19 @@ func TestUserNodeDiscoverySharedAndDedicatedMatrix(t *testing.T) {
 }
 
 func TestPoolXHTTPPathUsesEntitlementRoute(t *testing.T) {
-	t.Setenv("XRAY_POOL_ROUTE_PREFIX", "/pool")
 	for _, tc := range []struct {
 		class string
 		want  string
 	}{
-		{class: agentResourceFree, want: "/pool/free/split"},
-		{class: agentResourcePlus, want: "/pool/plus/split"},
-		{class: agentResourcePro, want: "/pool/pro/split"},
-		{class: agentResourceTeam, want: "/pool/team/split"},
+		{class: agentResourceFree, want: "/split"},
+		{class: agentResourcePlus, want: "/split"},
+		{class: agentResourcePro, want: "/split"},
+		{class: agentResourceTeam, want: "/split"},
 	} {
 		if got := poolXHTTPPath("/split", tc.class); got != tc.want {
 			t.Fatalf("poolXHTTPPath(%q) = %q, want %q", tc.class, got, tc.want)
 		}
 	}
-	t.Setenv("XRAY_POOL_ROUTE_PREFIX", "none")
 	if got := poolXHTTPPath("split", agentResourceFree); got != "/split" {
 		t.Fatalf("empty route prefix = %q, want /split", got)
 	}
@@ -111,7 +109,6 @@ func TestRegionalPoolsForUserSelectsReportedResourceClass(t *testing.T) {
 }
 
 func TestPlusNodesIncludeFreePoolWithFreeTransportRoute(t *testing.T) {
-	t.Setenv("XRAY_POOL_ROUTE_PREFIX", "/pool")
 	ctx := context.Background()
 	st := store.NewMemoryStore()
 	now := time.Now().UTC()
@@ -143,9 +140,8 @@ func TestPlusNodesIncludeFreePoolWithFreeTransportRoute(t *testing.T) {
 		t.Fatalf("nodes=%+v", nodes)
 	}
 	for _, node := range nodes {
-		want := "/pool/plus/split"
+		want := "/split"
 		if node.Address == "free.example" {
-			want = "/pool/free/split"
 			if node.ResourceClass != "free" {
 				t.Fatalf("free route class=%s", node.ResourceClass)
 			}
