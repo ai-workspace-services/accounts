@@ -284,6 +284,25 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		if strings.Contains(string(raw), "isolated-password") || strings.Contains(string(raw), "@example.invalid") || strings.Contains(string(raw), proxyID) {
 			t.Fatal("core-user receipt contains private user fields")
 		}
+		// A differing preview must return a usable safe report while leaving
+		// every source and target user field (including trigger metadata) intact.
+		exec(target, `UPDATE public.users SET proxy_uuid='00000000-0000-0000-0000-000000000334'`)
+		fingerprint := func(db *sql.DB) string {
+			t.Helper()
+			var hash string
+			if err := db.QueryRow(`SELECT md5(string_agg(to_jsonb(u)::text,'' ORDER BY uuid)) FROM public.users u`).Scan(&hash); err != nil {
+				t.Fatal("cannot fingerprint isolated user fixture")
+			}
+			return hash
+		}
+		sourceBefore, targetBefore := fingerprint(sourceAdmin), fingerprint(target)
+		r, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		if e == nil || r.Result != "different" || r.CoreUsersDiff == nil || r.CoreUsersDiff.ProxyUUIDMismatches != 1 || r.TargetWrites || !r.SourceReadOnly {
+			t.Fatal("differing comparison did not fail with a readonly diff receipt")
+		}
+		if fingerprint(sourceAdmin) != sourceBefore || fingerprint(target) != targetBefore {
+			t.Fatal("readonly comparison changed user data or trigger metadata")
+		}
 	})
 	t.Run("native63_finance_and_late_trigger", func(t *testing.T) {
 		// Explicit synthetic fixture reset, behind the loopback-only test DSN.
