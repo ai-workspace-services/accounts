@@ -85,6 +85,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newCaptureGenerationUserBaselineCmd())
 	cmd.AddCommand(newCheckLateGenerationUsersCmd())
 	cmd.AddCommand(newSyncSingleGenerationUserCmd())
+	cmd.AddCommand(newDiffCmd())
 	cmd.AddCommand(newUsageMergeCmd())
 	cmd.AddCommand(newBusinessAppendCmd())
 	cmd.AddCommand(newIdentityReconcileCmd())
