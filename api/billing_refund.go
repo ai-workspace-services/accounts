@@ -10,14 +10,14 @@ import (
 	"account/internal/store"
 )
 
-const refundEligibilityWindow = 7 * 24 * time.Hour
+const refundEligibilityWindow = 72 * time.Hour
 
 type subscriptionRefundRequest struct {
 	ExternalID string `json:"externalId"`
 }
 
 // refundSubscription applies the published first-subscription policy: a
-// Stripe subscription bought within seven days is refundable only when its
+// Stripe subscription bought within 72 hours is refundable only when its
 // measured usage is below 5% of that plan's included allowance. Usage is read
 // from the same minute buckets used for billing, never from a client value.
 func (h *handler) refundSubscription(c *gin.Context) {
@@ -71,8 +71,8 @@ func (h *handler) refundSubscription(c *gin.Context) {
 		}
 	}
 	now := time.Now().UTC()
-	if local.CreatedAt.IsZero() || now.Sub(local.CreatedAt) > refundEligibilityWindow {
-		respondError(c, http.StatusUnprocessableEntity, "refund_window_expired", "this subscription is outside the seven-day refund window")
+	if local.CreatedAt.IsZero() || local.CreatedAt.After(now) || now.Sub(local.CreatedAt) > refundEligibilityWindow {
+		respondError(c, http.StatusUnprocessableEntity, "refund_window_expired", "this subscription is outside the 72-hour refund window")
 		return
 	}
 	plan, err := h.store.GetBillingPlan(c.Request.Context(), local.PlanID)

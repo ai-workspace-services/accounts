@@ -266,7 +266,7 @@ func TestAgentUsersWithholdExhaustedQuotaWithoutDeletingAccounts(t *testing.T) {
 	if err := json.Unmarshal(usageRec.Body.Bytes(), &access); err != nil {
 		t.Fatalf("decode access state: %v", err)
 	}
-	if !access.QuotaExhausted || access.NetworkAccessState != "active" || access.NetworkAccessReason != "" {
+	if !access.QuotaExhausted || access.NetworkAccessState != "paused" || access.NetworkAccessReason != "quota_exhausted" {
 		t.Fatalf("unexpected exhausted access state: %+v", access)
 	}
 	if access.IncludedQuotaBytes != 3<<30 || access.RemainingQuota != 0 || access.UsedBytes != 3<<30 {

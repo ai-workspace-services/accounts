@@ -101,9 +101,15 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if err = dst.QueryRowContext(ctx, `SELECT current_database(),current_setting('server_version_num')::int`).Scan(&dbName, &pgVersion); err != nil || dbName != "account" || pgVersion < 170000 || pgVersion >= 180000 {
 		return receipt, errors.New("target must be the native PostgreSQL17 account database")
 	}
-	if err = dst.QueryRowContext(ctx, `SELECT count(*),COALESCE(min(version),0),COALESCE(bool_or(dirty),true) FROM public.schema_migrations`).Scan(&count, &version, &dirty); err != nil || count != 1 || version != FullBusinessVersion || dirty {
+	if err = dst.QueryRowContext(ctx, `SELECT count(*),COALESCE(min(version),0),COALESCE(bool_or(dirty),true) FROM public.schema_migrations`).Scan(&count, &version, &dirty); err != nil || count != 1 || dirty {
 		return receipt, errors.New("target requires the exact clean native Billing checkpoint")
 	}
+	// The two reviewed catalog-only upgrades leave users and core identity
+	// columns unchanged. Require their exact receipts; never force a version.
+	if err = verifyCatalogCheckpoint(ctx, dst, uint(version)); err != nil {
+		return receipt, err
+	}
+	receipt.MigrationVersion = uint(version)
 	if err = validateBusinessTarget(ctx, dst, "users", usersTable); err != nil {
 		return receipt, err
 	}
