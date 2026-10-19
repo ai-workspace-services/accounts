@@ -109,7 +109,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	}
 
 	quotaExhausted := billingProfile != nil &&
-		store.IsMonthlyQuotaLimitMember(user) && remainingQuota <= 0
+		billingProfile.IncludedQuotaBytes > 0 && store.IsMonthlyQuotaLimitMember(user) && remainingQuota <= 0
 	if store.HasSubscriptionUnlimitedOverride(user, time.Now()) && planContract.CurrentPlan != nil {
 		planContract.CurrentPlan.Unlimited = true
 		planContract.CurrentPlan.Source = "temporary_subscription_override"
@@ -123,6 +123,9 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	case suspendState == "suspended":
 		networkAccessState = "paused"
 		networkAccessReason = "billing_suspended"
+	case quotaExhausted:
+		networkAccessState = "paused"
+		networkAccessReason = "quota_exhausted"
 	}
 
 	syncDelaySeconds := 0

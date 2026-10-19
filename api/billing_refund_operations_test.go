@@ -485,7 +485,7 @@ func (s *refundSubscriptionTimeStore) ListSubscriptionsByUser(ctx context.Contex
 }
 
 func TestV3SandboxRefundEndpointEligibilityAndResume(t *testing.T) {
-	for _, scenario := range []string{"no_mfa", "expired", "not_first", "usage_limit", "eligible", "resume_expired"} {
+	for _, scenario := range []string{"no_mfa", "expired", "within_72_hours", "outside_72_hours", "future", "not_first", "usage_limit", "eligible", "resume_expired"} {
 		t.Run(scenario, func(t *testing.T) {
 			h, user, sub, payment, sandbox := refundOperationHarness(t)
 			ctx := context.Background()
@@ -497,6 +497,14 @@ func TestV3SandboxRefundEndpointEligibilityAndResume(t *testing.T) {
 				want = http.StatusForbidden
 			case "expired":
 				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(-8 * 24 * time.Hour)}}
+				want = http.StatusUnprocessableEntity
+			case "within_72_hours":
+				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(-72*time.Hour + time.Minute)}}
+			case "outside_72_hours":
+				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(-72*time.Hour - time.Minute)}}
+				want = http.StatusUnprocessableEntity
+			case "future":
+				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(time.Hour)}}
 				want = http.StatusUnprocessableEntity
 			case "not_first":
 				_ = h.store.UpsertSubscription(ctx, &store.Subscription{UserID: user.ID, ExternalID: "sub_prior", Provider: "stripe", Kind: "subscription", CreatedAt: sub.CreatedAt.Add(-time.Hour)})
