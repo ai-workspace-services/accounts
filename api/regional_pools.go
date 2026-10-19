@@ -81,7 +81,12 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 			c.JSON(http.StatusOK, []regionalPool{})
 			return
 		}
-		pools = regionalPoolsForUser(h.networkStatusReader(access), access, user, time.Now().UTC())
+		packageName, err := h.billingPackageName(c.Request.Context(), user)
+		if err != nil {
+			respondError(c, 503, "billing_profile_unavailable", "failed to evaluate subscription resource class")
+			return
+		}
+		pools = regionalPoolsForUser(h.networkStatusReader(access), access, user, packageName, time.Now().UTC())
 	}
 	if !canViewRegionalPoolInventory(user) {
 		visible := make([]regionalPool, 0, len(pools))

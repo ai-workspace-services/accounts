@@ -129,8 +129,13 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		respondError(c, 403, "team_access_inactive", "team access is inactive")
 		return
 	}
-	resourceClass := effectiveAgentResourceClass(access, user)
-	pools := regionalPoolsForUser(h.networkStatusReader(access), access, user, time.Now().UTC())
+	packageName, err := h.billingPackageName(c.Request.Context(), user)
+	if err != nil {
+		respondError(c, 503, "billing_profile_unavailable", "failed to evaluate subscription resource class")
+		return
+	}
+	resourceClass := effectiveAgentResourceClass(access, user, packageName)
+	pools := regionalPoolsForUser(h.networkStatusReader(access), access, user, packageName, time.Now().UTC())
 	xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
 	xhttpPort := envIntOrDefault("XRAY_XHTTP_PORT", defaultXHTTPPort)
 	tcpPort := envIntOrDefault("XRAY_TCP_PORT", defaultTCPPort)

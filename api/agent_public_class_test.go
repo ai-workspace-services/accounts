@@ -30,9 +30,9 @@ func TestManagedAgentPublicClassReconcilesStaleRegistration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"free", "plus", "free-blocked", "plus-blocked", "member", "admin", "team-blocked", "other", "registered", "sandbox-blocked"} {
+	for _, name := range []string{"free", "plus", "pro", "free-blocked", "plus-blocked", "member", "admin", "team-blocked", "other", "registered", "sandbox-blocked"} {
 		group := store.MonthlyFreeQuotaLimitGroup
-		if strings.HasPrefix(name, "plus") {
+		if strings.HasPrefix(name, "plus") || name == "pro" {
 			group = store.MonthlyPlusQuotaLimitGroup
 		}
 		groups := []string{group}
@@ -45,6 +45,11 @@ func TestManagedAgentPublicClassReconcilesStaleRegistration(t *testing.T) {
 		}
 		if err := st.CreateUser(ctx, u); err != nil {
 			t.Fatal(err)
+		}
+		if name == "pro" {
+			if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: u.ID, PackageName: "pro", IncludedQuotaBytes: 50 << 30}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		quota := &store.AccountQuotaState{AccountUUID: u.ID, RemainingIncludedQuota: 1 << 30, PeriodStart: &start, PeriodEnd: &end, SuspendState: "active"}
 		if strings.HasSuffix(name, "blocked") {
@@ -104,10 +109,11 @@ func TestManagedAgentPublicClassReconcilesStaleRegistration(t *testing.T) {
 		class string
 		names []string
 	}{
-		{"shared", []string{"free@example.invalid", "plus@example.invalid", "registered@example.invalid"}},
+		{"shared", []string{"free@example.invalid", "plus@example.invalid", "pro@example.invalid", "registered@example.invalid"}},
 		{"free", []string{"free@example.invalid", "plus@example.invalid", "registered@example.invalid"}},
 		{"plus", []string{"plus@example.invalid"}},
-		{"shared", []string{"free@example.invalid", "plus@example.invalid", "registered@example.invalid"}},
+		{"pro", []string{"pro@example.invalid"}},
+		{"shared", []string{"free@example.invalid", "plus@example.invalid", "pro@example.invalid", "registered@example.invalid"}},
 	} {
 		t.Run(tc.class, func(t *testing.T) {
 			resp, err := client.Do(request("deployment-secret", "node-with-arbitrary-pool", tc.class, "", "/users"))

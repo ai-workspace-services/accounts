@@ -128,7 +128,11 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		if !networkScopeAllows(access, groups) {
 			continue
 		}
-		if !agentResourceScopeAllowsUser(scope, access, &u) {
+		packageName, err := h.billingPackageName(ctx, &u)
+		if err != nil {
+			return nil, "", err
+		}
+		if !agentResourceScopeAllowsUser(scope, access, &u, packageName) {
 			continue
 		}
 		if !u.Active {

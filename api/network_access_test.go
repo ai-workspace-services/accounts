@@ -41,22 +41,27 @@ func TestNetworkScopeMatrix(t *testing.T) {
 func TestAgentResourceScopeFiltersPublicEntitlements(t *testing.T) {
 	free := &store.User{Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
 	plus := &store.User{Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
+	pro := &store.User{Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
 	personal := networkAccess{Mode: "personal", Allowed: true}
 	for _, tc := range []struct {
-		name   string
-		groups []string
-		user   *store.User
-		want   bool
+		name        string
+		groups      []string
+		user        *store.User
+		packageName string
+		want        bool
 	}{
-		{"free accepts free", []string{"resource:free"}, free, true},
-		{"free accepts plus", []string{"resource:free"}, plus, true},
-		{"plus accepts plus", []string{"resource:plus"}, plus, true},
-		{"plus rejects free", []string{"resource:plus"}, free, false},
-		{"shared accepts personal", []string{"resource:shared"}, plus, true},
+		{"free accepts free", []string{"resource:free"}, free, "free", true},
+		{"free accepts plus", []string{"resource:free"}, plus, "plus", true},
+		{"plus accepts plus", []string{"resource:plus"}, plus, "plus", true},
+		{"plus rejects free", []string{"resource:plus"}, free, "free", false},
+		{"plus excludes pro", []string{"resource:plus"}, pro, "pro", false},
+		{"pro accepts pro", []string{"resource:pro"}, pro, "pro", true},
+		{"pro rejects plus", []string{"resource:pro"}, plus, "plus", false},
+		{"shared accepts personal", []string{"resource:shared"}, plus, "plus", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scope, ok := agentResourceScope(tc.groups)
-			got := ok && agentResourceScopeAllowsUser(scope, personal, tc.user)
+			got := ok && agentResourceScopeAllowsUser(scope, personal, tc.user, tc.packageName)
 			if got != tc.want {
 				t.Fatalf("scope=%+v valid=%v allowed=%v", scope, ok, got)
 			}

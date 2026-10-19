@@ -64,9 +64,14 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		respondError(c, 403, "team_access_inactive", "team access is inactive")
 		return
 	}
+	packageName, err := h.billingPackageName(c.Request.Context(), user)
+	if err != nil {
+		respondError(c, 503, "billing_profile_unavailable", "failed to evaluate subscription resource class")
+		return
+	}
 	scopedReader := h.networkStatusReader(access)
-	resourceClass := effectiveAgentResourceClass(access, user)
-	selectedPools := regionalPoolsForUser(scopedReader, access, user, time.Now().UTC())
+	resourceClass := effectiveAgentResourceClass(access, user, packageName)
+	selectedPools := regionalPoolsForUser(scopedReader, access, user, packageName, time.Now().UTC())
 	teamHosts := []string{}
 	if access.Mode == "dedicated" {
 		for _, pool := range selectedPools {
@@ -132,7 +137,7 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 
 		// The entrypoint is sourced from the authenticated agent status report.
 		// Do not synthesize a static domain list: the same entrypoint can route
-		// free/plus/team traffic by the entitlement path.
+		// free/plus/pro/team traffic by the entitlement path.
 		xhttpPath := poolXHTTPPath(envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), resourceClass)
 		xhttpMode := envOrDefault("XRAY_XHTTP_MODE", defaultXHTTPMode)
 		xhttpScheme := xrayconfig.VLESSXHTTPScheme()

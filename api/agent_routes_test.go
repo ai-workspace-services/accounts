@@ -45,7 +45,7 @@ func TestUserNodeDiscoverySharedAndDedicatedMatrix(t *testing.T) {
 		{"team b", "", networkAccess{Mode: "dedicated", TeamID: "b", Allowed: true}, []string{"team-b.example"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pools := regionalPoolsForUser(reader, tc.access, &store.User{Groups: []string{tc.group}}, now)
+			pools := regionalPoolsForUser(reader, tc.access, &store.User{Groups: []string{tc.group}}, "", now)
 			var got []string
 			for _, pool := range pools {
 				got = append(got, pool.Entry)
@@ -65,6 +65,7 @@ func TestPoolXHTTPPathUsesEntitlementRoute(t *testing.T) {
 	}{
 		{class: agentResourceFree, want: "/pool/free/split"},
 		{class: agentResourcePlus, want: "/pool/plus/split"},
+		{class: agentResourcePro, want: "/pool/pro/split"},
 		{class: agentResourceTeam, want: "/pool/team/split"},
 	} {
 		if got := poolXHTTPPath("/split", tc.class); got != tc.want {
@@ -89,17 +90,23 @@ func TestRegionalPoolsForUserSelectsReportedResourceClass(t *testing.T) {
 	reader := stubAgentStatusReader{statuses: []agentserver.StatusSnapshot{
 		status("free-1", "jp-free", []string{"resource:free"}),
 		status("plus-1", "jp-plus", []string{"resource:plus"}),
+		status("pro-1", "jp-pro", []string{"resource:pro"}),
 	}}
 	free := &store.User{Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
 	plus := &store.User{Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
+	pro := &store.User{Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
 	personal := networkAccess{Mode: "personal", Allowed: true}
-	freePools := regionalPoolsForUser(reader, personal, free, now)
-	plusPools := regionalPoolsForUser(reader, personal, plus, now)
+	freePools := regionalPoolsForUser(reader, personal, free, "free", now)
+	plusPools := regionalPoolsForUser(reader, personal, plus, "plus", now)
+	proPools := regionalPoolsForUser(reader, personal, pro, "pro", now)
 	if len(freePools) != 1 || freePools[0].ResourceClass != agentResourceFree || freePools[0].Entry != "jp-xconnect.onwalk.net" {
 		t.Fatalf("free pools = %#v", freePools)
 	}
 	if len(plusPools) != 2 {
 		t.Fatalf("plus pools = %#v", plusPools)
+	}
+	if len(proPools) != 1 || proPools[0].ResourceClass != agentResourcePro || proPools[0].Entry != "jp-xconnect.onwalk.net" {
+		t.Fatalf("pro pools = %#v", proPools)
 	}
 }
 
