@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"os"
 	"sort"
 	"strings"
@@ -15,24 +17,44 @@ const agentResourceTeam = "team"
 
 // effectiveAgentResourceClass is the single control-plane decision used when
 // rendering a subscription path. Team access wins over the personal plan;
-// every other user is either a paid (plus) or free user, with free as the
-// safe fallback. The agent independently enforces the same decision while
-// building its Xray client list.
-func effectiveAgentResourceClass(access networkAccess, user *store.User) string {
+// otherwise the billing package selects Pro, quota groups select Plus, and
+// Free is the safe fallback. The agent independently enforces this scope.
+func effectiveAgentResourceClass(access networkAccess, user *store.User, packageName string) string {
 	if access.Mode == "dedicated" {
 		return agentResourceTeam
 	}
-	if store.MonthlyQuotaGroup(user) == store.MonthlyPlusQuotaLimitGroup ||
-		store.MonthlyQuotaGroup(user) == store.MonthlyUnlimitedBetaQuotaGroup {
+	group := store.MonthlyQuotaGroup(user)
+	if strings.EqualFold(strings.TrimSpace(packageName), agentResourcePro) &&
+		(group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup) {
+		return agentResourcePro
+	}
+	if group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup {
 		return agentResourcePlus
 	}
 	return agentResourceFree
 }
 
+func (h *handler) billingPackageName(ctx context.Context, user *store.User) (string, error) {
+	if user == nil {
+		return "", nil
+	}
+	profile, err := h.store.GetAccountBillingProfile(ctx, user.ID)
+	if errors.Is(err, store.ErrUserNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if profile == nil {
+		return "", nil
+	}
+	return strings.ToLower(strings.TrimSpace(profile.PackageName)), nil
+}
+
 // poolXHTTPPath prefixes the XHTTP path with the entitlement route consumed
 // by APISIX. The prefix is configurable for a direct-agent compatibility
 // environment, but UAT/prod default to /pool so the shared entrypoint can
-// dispatch free, plus, and team traffic to different upstreams.
+// dispatch free, plus, pro, and team traffic to different upstreams.
 func poolXHTTPPath(basePath, resourceClass string) string {
 	basePath = "/" + strings.TrimLeft(strings.TrimSpace(basePath), "/")
 	resourceClass = strings.Trim(strings.ToLower(resourceClass), "/")
@@ -50,8 +72,8 @@ func poolXHTTPPath(basePath, resourceClass string) string {
 	return prefix + "/" + resourceClass + basePath
 }
 
-func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *store.User, now time.Time) []regionalPool {
-	wantClass := effectiveAgentResourceClass(access, user)
+func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *store.User, packageName string, now time.Time) []regionalPool {
+	wantClass := effectiveAgentResourceClass(access, user, packageName)
 	wantTeam := strings.TrimSpace(access.TeamID)
 	if reader == nil {
 		return nil

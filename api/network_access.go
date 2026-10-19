@@ -19,6 +19,7 @@ const (
 	agentResourceShared      = "shared"
 	agentResourceFree        = "free"
 	agentResourcePlus        = "plus"
+	agentResourcePro         = "pro"
 )
 
 // agentResourceScope resolves the pool entitlement from the enrolled
@@ -41,7 +42,7 @@ func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 			continue
 		}
 		class := strings.TrimPrefix(group, agentResourceGroupPrefix)
-		if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus {
+		if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus && class != agentResourcePro {
 			return agentproto.UserScope{}, false
 		}
 		if seen != "" && seen != class {
@@ -59,22 +60,22 @@ func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 	return scope, true
 }
 
-func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAccess, user *store.User) bool {
+func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAccess, user *store.User, packageName string) bool {
 	if scope.ResourceClass == "team" {
 		return access.Mode == "dedicated" && access.TeamID == scope.TeamID
 	}
 	if access.Mode == "dedicated" {
 		return false
 	}
+	class := effectiveAgentResourceClass(access, user, packageName)
 	switch scope.ResourceClass {
 	case agentResourceFree:
-		// Free pools accept registered Free users and personal Plus users.
-		group := store.MonthlyQuotaGroup(user)
-		return group == "" || group == store.MonthlyFreeQuotaLimitGroup ||
-			group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup
+		// Preserve existing Plus access to Free pools without broadening Pro.
+		return class == agentResourceFree || class == agentResourcePlus
 	case agentResourcePlus:
-		group := store.MonthlyQuotaGroup(user)
-		return group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup
+		return class == agentResourcePlus
+	case agentResourcePro:
+		return class == agentResourcePro
 	default:
 		return true
 	}
@@ -741,8 +742,8 @@ func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Iden
 	if class == "" && teamID == "" {
 		return identity, true
 	}
-	if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus && class != agentResourceTeam {
-		respondError(c, 400, "agent_scope_invalid", "resource class must be shared, free, plus or team")
+	if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus && class != agentResourcePro && class != agentResourceTeam {
+		respondError(c, 400, "agent_scope_invalid", "resource class must be shared, free, plus, pro or team")
 		return identity, false
 	}
 	if class != agentResourceTeam && teamID != "" || class == agentResourceTeam && teamID == "" {

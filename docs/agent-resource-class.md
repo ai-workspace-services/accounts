@@ -4,18 +4,19 @@
 
 | 类型 | 用户下发范围 |
 | --- | --- |
-| shared | Free + Plus，排除团队用户及黑名单 |
-| free | 注册 Free 用户，包含未分组个人用户，排除黑名单 |
+| shared | Free + Plus + Pro，排除团队用户及黑名单 |
+| free | 注册 Free 用户（含未分组个人用户）及兼容的 Plus 用户，排除 Pro、团队和黑名单 |
 | plus | 有效 Plus 用户，排除黑名单 |
+| pro | `packageName=pro` 的有效订阅用户，排除黑名单 |
 | team | 指定团队管理员和成员，排除其他团队、公共用户及黑名单 |
 
 现有停用、邮箱验证、有效期及额度控制继续生效。黑名单以 `ListProxyBlockedAccountUUIDs` 为准，包括操作员暂停和计费停用；Sandbox 也不能绕过黑名单。
 
 ## 节点属性授权
 
-- 配置凭据含 `agent:configure-public` 时，可为该凭据绑定的公共节点选择 shared/free/plus。
+- 配置凭据含 `agent:configure-public` 时，可为该凭据绑定的公共节点选择 shared/free/plus/pro。
 - 内部通配部署凭据（ID 为 `*`，含 `internal`，授权为 shared）可管理公共节点别名，兼容已有部署。旧数据库资源类型不会覆盖已授权的显式选择。
-- 固定为 free/plus 的受限凭据，不能通过请求头或其他公共别名扩大范围。
+- 固定为 free/plus/pro 的受限凭据，不能通过请求头或其他公共别名扩大范围。
 - Team 仍由平台登记的团队权限确定；公共凭据不能切为 Team、覆盖团队节点，团队凭据不能切公共池或其他团队。
 - 没有显式类型的旧请求沿用原有登记。建议部署时明确设置类型。
 
