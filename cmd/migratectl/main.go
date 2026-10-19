@@ -84,6 +84,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newFullBusinessCmd(true))
 	cmd.AddCommand(newCoreUsersCmd(false))
 	cmd.AddCommand(newCoreUsersCmd(true))
+	cmd.AddCommand(newUsageMergeCmd())
 
 	return cmd
 }
