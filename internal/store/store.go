@@ -746,6 +746,10 @@ type Store interface {
 	// Subscription purchases reserve one durable slot per account until provider
 	// expiry or verified webhook fulfillment, across replicas and restarts.
 	ReserveSubscriptionPurchase(ctx context.Context, userID string, request json.RawMessage) (*FinanceOperation, error)
+	GetSubscriptionLifecycle(ctx context.Context, userID string) (*SubscriptionLifecycle, error)
+	CreateSubscriptionRefundReview(ctx context.Context, operation *FinanceOperation, expectedVersion int64) error
+	ReserveSubscriptionAction(ctx context.Context, userID, key, action string, request json.RawMessage) (*FinanceOperation, error)
+	FinishSubscriptionAction(ctx context.Context, userID, operationID, providerID string, response json.RawMessage, confirmed bool, pendingPlan string, effectiveAt *time.Time) error
 	PendingSubscriptionPurchase(ctx context.Context, userID string) (*FinanceOperation, error)
 	UpgradeSubscriptionQuota(ctx context.Context, userID string, previous, target int64, start, end time.Time) error
 	UpdateSubscriptionPurchase(ctx context.Context, operationID, providerID string, response json.RawMessage, complete bool) error
@@ -852,6 +856,7 @@ type memoryStore struct {
 	financeInvoices         map[string]*FinanceInvoice
 	financeInvoiceKeys      map[string]string
 	financePayments         map[string]*FinancePayment
+	subscriptionLifecycles  map[string]SubscriptionLifecycle
 	referralCodes           map[string]*ReferralCode
 	referralCodesByValue    map[string]string
 	referralsByInvitee      map[string]*ReferralAttribution

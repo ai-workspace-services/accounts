@@ -50,6 +50,13 @@ func TestSubscriptionPurchasePostgres(t *testing.T) {
 	if _, err = db.Exec(string(migration)); err != nil {
 		t.Fatal(err)
 	}
+	migration, err = os.ReadFile("../../sql/migrations/2026102001_subscription_lifecycle.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(string(migration)); err != nil {
+		t.Fatal(err)
+	}
 	subscriptionPurchaseContract(t, &postgresStore{db: db}, db)
 }
 

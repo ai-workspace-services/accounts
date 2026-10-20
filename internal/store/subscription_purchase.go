@@ -29,26 +29,27 @@ func (s *memoryStore) PendingSubscriptionPurchase(_ context.Context, userID stri
 	}
 	return nil, nil
 }
-func (s *memoryStore) ReserveSubscriptionPurchase(_ context.Context, userID string, request json.RawMessage) (*FinanceOperation, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.byID[userID]; !ok {
-		return nil, ErrUserNotFound
-	}
-	for _, op := range s.financeOperations {
-		if purchasePending(op, userID) {
-			return nil, ErrFinanceOperationInProgress
-		}
-	}
-	now := time.Now().UTC()
-	id := uuid.NewString()
-	op := &FinanceOperation{ID: id, IdempotencyKey: "subscription-purchase:" + id, OperationType: subscriptionPurchaseType, TargetType: "account", TargetID: userID, Provider: "stripe", Status: FinanceOperationInProgress, AttemptCount: 1, Request: financeJSON(request), Response: financeJSON(nil), CreatedAt: now, UpdatedAt: now}
-	s.financeOperations[id] = op
-	s.financeOperationKeys[op.IdempotencyKey] = id
-	copy := *op
-	return &copy, nil
+func (s *memoryStore) ReserveSubscriptionPurchase(ctx context.Context, userID string, request json.RawMessage) (*FinanceOperation, error) {
+	return s.ReserveSubscriptionAction(ctx, userID, "subscription-purchase:"+uuid.NewString(), "purchase", request)
 }
-func (s *memoryStore) UpdateSubscriptionPurchase(_ context.Context, id, providerID string, response json.RawMessage, complete bool) error {
+func (s *memoryStore) UpdateSubscriptionPurchase(ctx context.Context, id, providerID string, response json.RawMessage, complete bool) error {
+	if complete {
+		s.mu.RLock()
+		op := s.financeOperations[id]
+		var userID string
+		if op != nil {
+			userID = op.TargetID
+		}
+		s.mu.RUnlock()
+		if userID == "" {
+			return ErrFinanceRecordNotFound
+		}
+		var receipt struct {
+			Outcome string `json:"outcome"`
+		}
+		_ = json.Unmarshal(response, &receipt)
+		return s.FinishSubscriptionAction(ctx, userID, id, providerID, response, receipt.Outcome == "webhook_confirmed", "", nil)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	op := s.financeOperations[id]
@@ -58,7 +59,7 @@ func (s *memoryStore) UpdateSubscriptionPurchase(_ context.Context, id, provider
 	if op.ProviderOperationID != "" && op.ProviderOperationID != providerID {
 		return ErrFinanceIdempotencyConflict
 	}
-	if op.Status == FinanceOperationSucceeded {
+	if op.Status == FinanceOperationSucceeded || op.Status == FinanceOperationFailed {
 		return nil
 	}
 	op.ProviderOperationID = providerID
@@ -79,40 +80,20 @@ func (s *postgresStore) PendingSubscriptionPurchase(ctx context.Context, userID 
 	return op, err
 }
 func (s *postgresStore) ReserveSubscriptionPurchase(ctx context.Context, userID string, request json.RawMessage) (*FinanceOperation, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	// Account-scoped transaction lock serializes different plans and quote IDs.
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "subscription-purchase:"+userID); err != nil {
-		return nil, err
-	}
-	var userExists bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.users WHERE uuid=$1)`, userID).Scan(&userExists); err != nil {
-		return nil, err
-	}
-	if !userExists {
-		return nil, ErrUserNotFound
-	}
-	var exists bool
-	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM public.finance_operations WHERE operation_type='subscription_purchase' AND target_type='account' AND target_id=$1 AND status NOT IN ('succeeded','failed'))`, userID).Scan(&exists); err != nil {
-		return nil, err
-	}
-	if exists {
-		return nil, ErrFinanceOperationInProgress
-	}
-	id := uuid.NewString()
-	op, err := scanFinanceOperation(tx.QueryRowContext(ctx, `INSERT INTO public.finance_operations (id,idempotency_key,operation_type,target_type,target_id,provider,status,attempt_count,request) VALUES ($1::uuid,$2,'subscription_purchase','account',$3,'stripe','in_progress',1,$4::jsonb) RETURNING `+financeOperationColumns, id, "subscription-purchase:"+id, userID, []byte(financeJSON(request))))
-	if err != nil {
-		return nil, err
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, err
-	}
-	return op, nil
+	return s.ReserveSubscriptionAction(ctx, userID, "subscription-purchase:"+uuid.NewString(), "purchase", request)
 }
 func (s *postgresStore) UpdateSubscriptionPurchase(ctx context.Context, id, providerID string, response json.RawMessage, complete bool) error {
+	if complete {
+		var userID string
+		if err := s.db.QueryRowContext(ctx, `SELECT target_id FROM public.finance_operations WHERE id=$1 AND operation_type='subscription_purchase'`, id).Scan(&userID); err != nil {
+			return err
+		}
+		var receipt struct {
+			Outcome string `json:"outcome"`
+		}
+		_ = json.Unmarshal(response, &receipt)
+		return s.FinishSubscriptionAction(ctx, userID, id, providerID, response, receipt.Outcome == "webhook_confirmed", "", nil)
+	}
 	status := FinanceOperationReconciliationRequired
 	if complete {
 		status = FinanceOperationSucceeded
@@ -131,7 +112,7 @@ func (s *postgresStore) UpdateSubscriptionPurchase(ctx context.Context, id, prov
 		if err = s.db.QueryRowContext(ctx, `SELECT status,provider_operation_id FROM public.finance_operations WHERE id=$1::uuid AND operation_type='subscription_purchase'`, id).Scan(&status, &savedProvider); err != nil {
 			return err
 		}
-		if status != FinanceOperationSucceeded || savedProvider.String != providerID {
+		if (status != FinanceOperationSucceeded && status != FinanceOperationFailed) || savedProvider.String != providerID {
 			return ErrFinanceIdempotencyConflict
 		}
 	}

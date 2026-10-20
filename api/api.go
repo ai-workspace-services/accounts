@@ -557,6 +557,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/subscriptions", h.upsertSubscription)
 	authProtected.POST("/subscriptions/cancel", h.cancelSubscription)
 	authProtected.POST("/subscriptions/refund", h.refundSubscription)
+	authProtected.GET("/subscriptions/refund", h.subscriptionRefundStatus)
 	authProtected.POST("/stripe/checkout", h.stripeCheckout)
 	authProtected.POST("/stripe/subscription/preview", h.stripeSubscriptionPreview)
 	authProtected.GET("/stripe/subscription/pending", h.stripeSubscriptionPending)
@@ -3152,21 +3153,8 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 			respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
 			return
 		}
-		remote, err := h.stripe.scheduleSubscriptionCancellation(c.Request.Context(), externalID)
-		if err != nil {
+		if err := h.cancelStripeSubscription(c.Request.Context(), sub); err != nil {
 			respondError(c, http.StatusBadGateway, "stripe_cancel_failed", "failed to schedule cancellation at period end")
-			return
-		}
-		sub.Status = "canceling"
-		if sub.Meta == nil {
-			sub.Meta = make(map[string]any)
-		}
-		sub.Meta["cancelAtPeriodEnd"] = "true"
-		if remote != nil && remote.CurrentPeriodEnd > 0 {
-			sub.Meta["expiresAt"] = epochToRFC3339(remote.CurrentPeriodEnd)
-		}
-		if err := h.store.UpsertSubscription(c.Request.Context(), sub); err != nil {
-			respondError(c, http.StatusInternalServerError, "subscription_cancel_failed", "failed to update subscription")
 			return
 		}
 	} else {

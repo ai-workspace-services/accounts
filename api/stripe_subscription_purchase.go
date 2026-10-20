@@ -34,6 +34,7 @@ type subscriptionQuote struct {
 	RenewalAmount  int64  `json:"renewalAmount"`
 	RenewalAt      int64  `json:"renewalAt"`
 	PeriodStart    int64  `json:"periodStart,omitempty"`
+	StateVersion   int64  `json:"stateVersion"`
 }
 
 // Retain the exact submitted inputs for an explicitly requested idempotent
@@ -108,6 +109,11 @@ func (h *handler) currentPurchaseSubscription(ctx context.Context, userID string
 
 func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, plan *store.BillingPlan, at int64) (subscriptionQuote, error) {
 	q := subscriptionQuote{UserID: userID, PlanID: plan.PlanID, PriceID: plan.StripePriceID, Action: "subscribe", ProrationDate: at, ExpiresAt: at + 600}
+	lifecycle, err := h.store.GetSubscriptionLifecycle(ctx, userID)
+	if err != nil {
+		return q, err
+	}
+	q.StateVersion = lifecycle.Version
 	if !plan.Active || plan.Kind != "subscription" || plan.PriceAmount <= 0 || plan.StripePriceID == "" {
 		return q, errors.New("plan unavailable")
 	}
@@ -240,7 +246,16 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 		respondError(c, 409, "subscription_change_unavailable", "This subscription change is unavailable; refresh the account or settle its current invoice")
 		return
 	}
-	c.JSON(200, gin.H{"action": quote.Action, "planId": quote.PlanID, "amountDue": quote.AmountDue, "currency": quote.Currency, "renewalAmount": quote.RenewalAmount, "renewalAt": quote.RenewalAt, "effectiveAt": quote.ProrationDate, "expiresAt": quote.ExpiresAt, "previewToken": h.stripe.signSubscriptionQuote(quote)})
+	lifecycle, err := h.store.GetSubscriptionLifecycle(c.Request.Context(), user.ID)
+	if err != nil {
+		respondError(c, 503, "subscription_state_unavailable", "Cannot verify subscription state")
+		return
+	}
+	if err := store.CheckSubscriptionAction(*lifecycle, quote.Action, time.Now().UTC()); err != nil {
+		c.JSON(409, gin.H{"error": "subscription_change_blocked", "cooldownUntil": lifecycle.CooldownUntil(), "pendingPlanId": lifecycle.PendingPlanID})
+		return
+	}
+	c.JSON(200, gin.H{"action": quote.Action, "planId": quote.PlanID, "amountDue": quote.AmountDue, "currency": quote.Currency, "renewalAmount": quote.RenewalAmount, "renewalAt": quote.RenewalAt, "effectiveAt": quote.ProrationDate, "expiresAt": quote.ExpiresAt, "previewToken": h.stripe.signSubscriptionQuote(quote), "stateVersion": lifecycle.Version, "cooldownUntil": lifecycle.CooldownUntil()})
 }
 
 func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, req stripeCheckoutRequest) {
@@ -507,6 +522,11 @@ func (h *handler) stripeSubscriptionPending(c *gin.Context) {
 		return
 	}
 	if op == nil {
+		lifecycle, e := h.store.GetSubscriptionLifecycle(c.Request.Context(), user.ID)
+		if e != nil {
+			respondError(c, 503, "subscription_state_unavailable", "Cannot verify subscription state")
+			return
+		}
 		current, e := h.currentPurchaseSubscription(c.Request.Context(), user.ID)
 		if e != nil {
 			c.JSON(200, gin.H{"pending": true})
@@ -516,7 +536,7 @@ func (h *handler) stripeSubscriptionPending(c *gin.Context) {
 		if current != nil {
 			planID = current.PlanID
 		}
-		c.JSON(200, gin.H{"pending": false, "planId": planID})
+		c.JSON(200, gin.H{"pending": lifecycle.OperationID != "", "planId": planID, "stateVersion": lifecycle.Version, "cooldownUntil": lifecycle.CooldownUntil(), "pendingPlanId": lifecycle.PendingPlanID, "effectiveAt": lifecycle.EffectiveAt, "refundReviewPending": lifecycle.RefundReviewPending})
 		return
 	}
 	var q subscriptionQuote

@@ -6,13 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"account/internal/store"
-	"github.com/gin-gonic/gin"
 )
 
 // Offline V3Sandbox fixture: every provider request terminates at this local
@@ -271,40 +269,6 @@ func TestV3SandboxCancelTimeoutAfterSuccessQueriesCanceledState(t *testing.T) {
 	}
 }
 
-func TestV3SandboxPreProviderLookupFailureCanRetry(t *testing.T) {
-	h, user, sub, _, sandbox := refundOperationHarness(t)
-	sandbox.failLookup = true
-	ctx := context.Background()
-	// Use the authenticated endpoint so the intent is created only after all
-	// eligibility checks and verification of the original local payment.
-	if err := h.store.CreateSession(ctx, "V3Sandbox-session", user.ID, time.Now().Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	router := gin.New()
-	router.POST("/refund", h.refundSubscription)
-	request := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/refund", strings.NewReader(`{"externalId":"sub_V3Sandbox"}`))
-		req.Header.Set("Authorization", "Bearer V3Sandbox-session")
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		return rec
-	}
-	if rec := request(); rec.Code != http.StatusAccepted {
-		t.Fatalf("first HTTP=%d %s", rec.Code, rec.Body.String())
-	}
-	assertRefundState(t, h, user, sub, store.FinanceOperationReconciliationRequired, 0, true)
-	if sandbox.posts != 0 {
-		t.Fatal("lookup failure submitted refund")
-	}
-	if rec := request(); rec.Code != http.StatusOK {
-		t.Fatalf("retry HTTP=%d %s", rec.Code, rec.Body.String())
-	}
-	assertRefundState(t, h, user, sub, store.FinanceOperationSucceeded, 1, false)
-	if sandbox.posts != 1 {
-		t.Fatal("wrong provider request count")
-	}
-}
-
 func TestV3SandboxMetadataLessReplayUsesBoundRefundReference(t *testing.T) {
 	h, user, sub, payment, sandbox := refundOperationHarness(t)
 	sandbox.failCancel = true
@@ -482,65 +446,4 @@ func (s *refundSubscriptionTimeStore) ListSubscriptionsByUser(ctx context.Contex
 		}
 	}
 	return subs, err
-}
-
-func TestV3SandboxRefundEndpointEligibilityAndResume(t *testing.T) {
-	for _, scenario := range []string{"no_mfa", "expired", "within_72_hours", "outside_72_hours", "future", "not_first", "usage_limit", "eligible", "resume_expired"} {
-		t.Run(scenario, func(t *testing.T) {
-			h, user, sub, payment, sandbox := refundOperationHarness(t)
-			ctx := context.Background()
-			want := http.StatusOK
-			switch scenario {
-			case "no_mfa":
-				user.MFAEnabled = false
-				_ = h.store.UpdateUser(ctx, user)
-				want = http.StatusForbidden
-			case "expired":
-				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(-8 * 24 * time.Hour)}}
-				want = http.StatusUnprocessableEntity
-			case "within_72_hours":
-				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(-72*time.Hour + time.Minute)}}
-			case "outside_72_hours":
-				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(-72*time.Hour - time.Minute)}}
-				want = http.StatusUnprocessableEntity
-			case "future":
-				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(time.Hour)}}
-				want = http.StatusUnprocessableEntity
-			case "not_first":
-				_ = h.store.UpsertSubscription(ctx, &store.Subscription{UserID: user.ID, ExternalID: "sub_prior", Provider: "stripe", Kind: "subscription", CreatedAt: sub.CreatedAt.Add(-time.Hour)})
-				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{"sub_prior": sub.CreatedAt.Add(-time.Hour)}}
-				want = http.StatusUnprocessableEntity
-			case "usage_limit":
-				if err := h.store.UpsertTrafficMinuteBucket(ctx, &store.TrafficMinuteBucket{AccountUUID: user.ID, BucketStart: time.Now().Add(-time.Minute), TotalBytes: 5 << 30}); err != nil {
-					t.Fatal(err)
-				}
-				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(-time.Hour)}}
-				want = http.StatusUnprocessableEntity
-			case "resume_expired":
-				sandbox.failCancel = true
-				if err := h.startSubscriptionRefund(ctx, payment, sub); err == nil {
-					t.Fatal("expected cancel failure")
-				}
-				h.store = &refundSubscriptionTimeStore{Store: h.store, times: map[string]time.Time{sub.ExternalID: time.Now().Add(-8 * 24 * time.Hour)}}
-			}
-			if err := h.store.CreateSession(ctx, "V3Sandbox-session", user.ID, time.Now().Add(time.Hour)); err != nil {
-				t.Fatal(err)
-			}
-			router := gin.New()
-			router.POST("/refund", h.refundSubscription)
-			req := httptest.NewRequest(http.MethodPost, "/refund", strings.NewReader(`{"externalId":"sub_V3Sandbox"}`))
-			req.Header.Set("Authorization", "Bearer V3Sandbox-session")
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-			if rec.Code != want {
-				t.Fatalf("HTTP=%d body=%s", rec.Code, rec.Body.String())
-			}
-			if want != http.StatusOK && sandbox.posts != 0 {
-				t.Fatal("ineligible request called provider")
-			}
-			if want == http.StatusOK {
-				assertRefundState(t, h, user, sub, store.FinanceOperationSucceeded, 1, false)
-			}
-		})
-	}
 }

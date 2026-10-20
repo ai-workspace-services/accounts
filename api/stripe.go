@@ -32,19 +32,21 @@ const stripeAPIVersion = "2026-01-28.clover"
 const stripeWebhookTimestampTolerance = 5 * time.Minute
 
 type StripeConfig struct {
-	SecretKey       string
-	WebhookSecret   string
-	AllowedPriceIDs []string
-	FrontendURL     string
+	SecretKey             string
+	WebhookSecret         string
+	AllowedPriceIDs       []string
+	FrontendURL           string
+	PortalConfigurationID string
 }
 
 type stripeClient struct {
-	secretKey      string
-	webhookSecret  string
-	frontendURL    string
-	apiBaseURL     string
-	allowedPriceID map[string]struct{}
-	httpClient     *http.Client
+	secretKey             string
+	webhookSecret         string
+	frontendURL           string
+	apiBaseURL            string
+	allowedPriceID        map[string]struct{}
+	httpClient            *http.Client
+	portalConfigurationID string
 }
 
 type stripeCheckoutRequest struct {
@@ -224,10 +226,11 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 	}
 
 	return &stripeClient{
-		secretKey:      secretKey,
-		webhookSecret:  strings.TrimSpace(cfg.WebhookSecret),
-		frontendURL:    strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/"),
-		allowedPriceID: allowed,
+		secretKey:             secretKey,
+		webhookSecret:         strings.TrimSpace(cfg.WebhookSecret),
+		frontendURL:           strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/"),
+		allowedPriceID:        allowed,
+		portalConfigurationID: strings.TrimSpace(cfg.PortalConfigurationID),
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -557,9 +560,41 @@ func (c *stripeClient) listCustomersByEmail(ctx context.Context, email string) (
 }
 
 func (c *stripeClient) createPortalSession(ctx context.Context, customerID, returnURL string) (*stripeSessionResponse, error) {
+	if !strings.HasPrefix(c.portalConfigurationID, "bpc_") {
+		return nil, errors.New("reviewed read-only billing portal configuration is required")
+	}
+	var configuration struct {
+		ID       string `json:"id"`
+		Active   bool   `json:"active"`
+		Features struct {
+			SubscriptionUpdate struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"subscription_update"`
+			SubscriptionCancel struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"subscription_cancel"`
+			PaymentMethodUpdate struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"payment_method_update"`
+			InvoiceHistory struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"invoice_history"`
+			CustomerUpdate struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"customer_update"`
+		} `json:"features"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/billing_portal/configurations/"+url.PathEscape(c.portalConfigurationID), &configuration); err != nil {
+		return nil, err
+	}
+	f := configuration.Features
+	if configuration.ID != c.portalConfigurationID || !configuration.Active || f.SubscriptionUpdate.Enabled == nil || *f.SubscriptionUpdate.Enabled || f.SubscriptionCancel.Enabled == nil || *f.SubscriptionCancel.Enabled || f.CustomerUpdate.Enabled == nil || *f.CustomerUpdate.Enabled || f.InvoiceHistory.Enabled == nil || !*f.InvoiceHistory.Enabled || f.PaymentMethodUpdate.Enabled == nil || !*f.PaymentMethodUpdate.Enabled {
+		return nil, errors.New("billing portal configuration permits unreviewed operations or lacks required features")
+	}
 	form := url.Values{
-		"customer":   []string{strings.TrimSpace(customerID)},
-		"return_url": []string{returnURL},
+		"customer":      []string{strings.TrimSpace(customerID)},
+		"return_url":    []string{returnURL},
+		"configuration": {c.portalConfigurationID},
 	}
 	var session stripeSessionResponse
 	if err := c.doForm(ctx, http.MethodPost, "/billing_portal/sessions", form, &session); err != nil {
