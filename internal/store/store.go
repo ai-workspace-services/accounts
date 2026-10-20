@@ -743,6 +743,12 @@ type Store interface {
 	GetFinanceOperation(ctx context.Context, idempotencyKey string) (*FinanceOperation, error)
 	ListFinanceOperationsForReconciliation(ctx context.Context, limit int) ([]FinanceOperation, error)
 	ListFinanceOperationEvents(ctx context.Context, operationID string) ([]FinanceOperationEvent, error)
+	// Subscription purchases reserve one durable slot per account until provider
+	// expiry or verified webhook fulfillment, across replicas and restarts.
+	ReserveSubscriptionPurchase(ctx context.Context, userID string, request json.RawMessage) (*FinanceOperation, error)
+	PendingSubscriptionPurchase(ctx context.Context, userID string) (*FinanceOperation, error)
+	UpgradeSubscriptionQuota(ctx context.Context, userID string, previous, target int64, start, end time.Time) error
+	UpdateSubscriptionPurchase(ctx context.Context, operationID, providerID string, response json.RawMessage, complete bool) error
 	// BeginStripeWebhookEvent records an inbound event before processing and
 	// reports whether it was already processed (idempotent replay guard).
 	BeginStripeWebhookEvent(ctx context.Context, event *StripeWebhookEvent) (alreadyProcessed bool, err error)

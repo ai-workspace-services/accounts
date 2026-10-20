@@ -98,10 +98,27 @@ func newBillingWebhookHarness(t *testing.T) (*gin.Engine, store.Store, *store.Us
 	}
 
 	router := gin.New()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/subscriptions/sub_123" {
+			var event stripeEvent
+			_ = json.Unmarshal(subscriptionEventPayload("fixture", "customer.subscription.updated", user.ID, "price_pro_month", "active"), &event)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(event.Data.Object)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/invoices/in_settled" {
+			http.Error(w, "unexpected Stripe request", 404)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"in_settled","subscription":"sub_123","status":"paid"}`)
+	}))
+	t.Cleanup(provider.Close)
 	RegisterRoutes(
 		router,
 		WithStore(st),
 		WithStripeConfig(StripeConfig{SecretKey: "sk_test_x", WebhookSecret: testStripeWebhookSecret}),
+		func(h *handler) { h.stripe.apiBaseURL = provider.URL; h.stripe.httpClient = provider.Client() },
 	)
 	return router, st, user
 }
@@ -123,6 +140,7 @@ func subscriptionEventPayload(eventID, eventType, userID, priceID, status string
 			"id": "sub_123",
 			"status": %q,
 			"customer": "cus_123",
+			"latest_invoice": "in_settled",
 			"metadata": {"user_id": %q, "plan_id": "PRO-M"},
 			"current_period_start": 1750000000,
 			"current_period_end": 1752600000,

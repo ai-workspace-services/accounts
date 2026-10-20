@@ -202,12 +202,16 @@ func TestInvoicePaidKeepsCoreQuotaOnReferralHistoryFailureAndRetryIsIdempotent(t
 	stripeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/v1/subscriptions/sub-invitee-retry" {
-			body := fmt.Sprintf(`{"id":"sub-invitee-retry","status":"active","customer":"cus-invitee-retry","metadata":{"user_id":%q,"plan_id":"PRO-YEARLY","product_slug":"xconnect"},"current_period_start":%d,"current_period_end":%d,"items":{"data":[{"price":{"id":"price-retry-yearly"}}]}}`, invitee.ID, periodStart.Unix(), periodEnd.Unix())
+			body := fmt.Sprintf(`{"id":"sub-invitee-retry","status":"active","latest_invoice":"in-invitee-retry","customer":"cus-invitee-retry","metadata":{"user_id":%q,"plan_id":"PRO-YEARLY","product_slug":"xconnect"},"current_period_start":%d,"current_period_end":%d,"items":{"data":[{"price":{"id":"price-retry-yearly"}}]}}`, invitee.ID, periodStart.Unix(), periodEnd.Unix())
 			_, _ = fmt.Fprint(w, body)
 			return
 		}
 		if r.URL.Path == "/v1/invoices" {
 			http.Error(w, `{"error":"temporary Stripe history failure"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if r.URL.Path == "/v1/invoices/in-invitee-retry" {
+			fmt.Fprint(w, `{"id":"in-invitee-retry","subscription":"sub-invitee-retry","status":"paid"}`)
 			return
 		}
 		http.NotFound(w, r)
