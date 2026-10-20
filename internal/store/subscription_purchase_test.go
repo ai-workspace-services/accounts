@@ -58,6 +58,89 @@ func TestSubscriptionPurchasePostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	subscriptionPurchaseContract(t, &postgresStore{db: db}, db)
+	subscriptionLifecyclePostgresContract(t, dsn, db)
+}
+
+// Independent connection pools model two application instances and a restart.
+func subscriptionLifecyclePostgresContract(t *testing.T, dsn string, db *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	other, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	stores := []*postgresStore{{db: db}, {db: other}}
+	id := uuid.NewString()
+	if _, err = db.Exec(`INSERT INTO users(uuid) VALUES($1)`, id); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var winner *FinanceOperation
+	wins := 0
+	for i := range 16 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			action := "upgrade"
+			if i%2 == 1 {
+				action = "downgrade"
+			}
+			op, e := stores[i%2].ReserveSubscriptionAction(ctx, id, uuid.NewString(), action, nil)
+			if e == nil {
+				mu.Lock()
+				wins++
+				winner = op
+				mu.Unlock()
+			}
+		}(i)
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("cross-instance gate admitted %d operations", wins)
+	}
+	// A proven unsubmitted failure releases the gate without consuming cooldown.
+	if err = stores[0].FinishSubscriptionAction(ctx, id, winner.ID, "", json.RawMessage(`{"outcome":"not_submitted"}`), false, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	up, err := stores[1].ReserveSubscriptionAction(ctx, id, "confirmed-upgrade:"+id, "upgrade", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = stores[0].FinishSubscriptionAction(ctx, id, up.ID, "in_confirmed", json.RawMessage(`{"paid":true}`), true, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	other.Close()
+	reopened, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	restarted := &postgresStore{db: reopened}
+	if _, err = restarted.ReserveSubscriptionAction(ctx, id, "after-restart:"+id, "downgrade", nil); !errors.Is(err, ErrSubscriptionCooldown) {
+		t.Fatal("restart lost user cooldown", err)
+	}
+	cancel, err := restarted.ReserveSubscriptionAction(ctx, id, "cancel-after-upgrade:"+id, "cancel", nil)
+	if err != nil {
+		t.Fatal("cooldown blocked cancellation", err)
+	}
+	end := time.Now().Add(time.Hour).UTC()
+	response := json.RawMessage(`{"scheduled":true}`)
+	if err = restarted.FinishSubscriptionAction(ctx, id, cancel.ID, "sub_original", response, true, "FREE", &end); err != nil {
+		t.Fatal(err)
+	}
+	before, err := restarted.GetSubscriptionLifecycle(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = restarted.FinishSubscriptionAction(ctx, id, cancel.ID, "sub_original", response, true, "FREE", &end); err != nil {
+		t.Fatal(err)
+	}
+	after, err := restarted.GetSubscriptionLifecycle(ctx, id)
+	if err != nil || before.Version != after.Version || before.LastChangeAt == nil || !before.LastChangeAt.Equal(*after.LastChangeAt) {
+		t.Fatal("replay mutated persistent gate", err)
+	}
 }
 
 func subscriptionPurchaseContract(t *testing.T, st Store, db *sql.DB) {

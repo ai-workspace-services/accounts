@@ -1,16 +1,24 @@
 {
   "format": 1,
-  "migration_version": 2026101902,
-  "schema_sha256": "dd56a4025442d84bbe03db7be0bd330c8e81d7e1694dafb7fbd895b22ef17527",
-  "business_table_count": 72,
+  "migration_version": 2026102001,
+  "schema_sha256": "51c28550be7508c3a6abb4a2352904e8d0416c3408d00faf44e391c2a3ad8812",
+  "business_table_count": 73,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "e3257deae35f710953abe29eec46fe16891fac7d9aecf3a04f5203cbaa23ae57"
+      "sha256": "1900d1f2e5a9603e554bbc05d657a9925437133c1a1ab9b190945f1032f25a62"
     },
     {
       "path": "internal/model/admin_setting.go",
       "sha256": "03c367e2f17733d6a34a2f4e4f6a439e4de1ce639c4ca3814b68ff3050ae3aac"
+    },
+    {
+      "path": "internal/model/email_campaigns.go",
+      "sha256": "e38f5da25c297ed28e4c3d739655c30aa9d62ac9ce328e0f5747a5fbfbe70dda"
+    },
+    {
+      "path": "internal/model/email_preferences.go",
+      "sha256": "23fe94b8eb75d5cd61df54a3ca1a318b159522b9811bd4021fcb5c807793b734"
     },
     {
       "path": "internal/model/homepage_video_setting.go",
@@ -35,6 +43,10 @@
     {
       "path": "scripts/native-schema-render/main.go",
       "sha256": "27b6521cb3be05b117945a65a6007c34628fc6d8702319ffdb1fd6839a5725e1"
+    },
+    {
+      "path": "scripts/qualify-native-schema.mjs",
+      "sha256": "0d9e967e5ec95bfa0002c17f7add536c1751bfd236eb9d51696ce053fbc16a85"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -97,24 +109,12 @@
       "sha256": "94d29b50208543517b5816bca9450d796fb9ff6458b57e37c7ec200f20c47e3a"
     },
     {
-      "path": "sql/schema.sql",
-      "sha256": "ca9b3d5dee8b34246edc1d8ed51779670063b6eb8c52e6459cc0cc41e2188b89"
-    },
-    {
       "path": "sql/migrations/2026101701_free_quota_5gb.up.sql",
       "sha256": "21da5da1f05a79707bac527147a07b58d84dcadeab96933935a03ca8f7e25a1b"
     },
     {
-      "path": "internal/model/email_preferences.go",
-      "sha256": "23fe94b8eb75d5cd61df54a3ca1a318b159522b9811bd4021fcb5c807793b734"
-    },
-    {
       "path": "sql/migrations/2026101702_email_preferences.up.sql",
       "sha256": "6453608516d620773565b343d2397a0d3dc2415332a86f989a8952bcb044c5eb"
-    },
-    {
-      "path": "internal/model/email_campaigns.go",
-      "sha256": "e38f5da25c297ed28e4c3d739655c30aa9d62ac9ce328e0f5747a5fbfbe70dda"
     },
     {
       "path": "sql/migrations/2026101703_email_campaigns.up.sql",
@@ -127,6 +127,14 @@
     {
       "path": "sql/migrations/2026101902_v3_payg_offer_reconcile.up.sql",
       "sha256": "53f9aaf7c56a14fd7c132c6649b79582cd2063f8903b94efb4e23cbf4895437c"
+    },
+    {
+      "path": "sql/migrations/2026102001_subscription_lifecycle.up.sql",
+      "sha256": "6e1528c1ef6259270fba1a8fae7f86da25d8d695c63e3da24b597f62cd89096d"
+    },
+    {
+      "path": "sql/schema.sql",
+      "sha256": "ca9b3d5dee8b34246edc1d8ed51779670063b6eb8c52e6459cc0cc41e2188b89"
     }
   ],
   "business_tables": [
@@ -189,6 +197,7 @@
     "sessions",
     "stripe_webhook_events",
     "subscription_extension_ledger",
+    "subscription_lifecycle_states",
     "subscription_records",
     "subscriptions",
     "task_namespaces",

@@ -1,4 +1,20 @@
 {
+  "subscription_lifecycle_states": {
+    "columns": [
+      {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},
+      {"generated": false,"name": "version","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "last_change_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "operation_id","nullable": true,"type": "uuid"},
+      {"generated": false,"name": "pending_plan_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "effective_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["account_uuid"],
+    "foreign_keys": [
+      {"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]},
+      {"columns": ["operation_id"],"parent": "finance_operations","parent_columns": ["id"]}
+    ]
+  },
   "account_billing_profiles": {
     "columns": [
       {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},

@@ -73,9 +73,11 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	if err != nil {
 		return r, err
 	}
-	// This first owner is intentionally limited to the authorized V2 -> V3 lane.
-	if opts.SourceGeneration != "prod-v2" || opts.TargetGeneration != "prod-v3" || opts.ExpectedTargetVersion == 0 || opts.SchemaSHA256 != manifest.SchemaSHA256 || opts.BillingSHA256 != FullBusinessBillingSHA256 {
-		return r, errors.New("usage merge requires the exact V2 to V3 lane, target version and compiled schema hashes")
+	if err := validateGenerationPair(opts.SourceGeneration, opts.TargetGeneration); err != nil {
+		return r, err
+	}
+	if !strings.HasPrefix(opts.SourceGeneration, "prod-v") || opts.ExpectedTargetVersion == 0 || opts.SchemaSHA256 != manifest.SchemaSHA256 || opts.BillingSHA256 != FullBusinessBillingSHA256 {
+		return r, errors.New("usage merge requires consecutive PROD generations, target version and compiled schema hashes")
 	}
 	if opts.Apply && (!opts.WritersPaused || !validUsageHash(opts.ExpectedPlanSHA256)) {
 		return r, errors.New("apply requires paused target writers and the reviewed preview SHA-256")
