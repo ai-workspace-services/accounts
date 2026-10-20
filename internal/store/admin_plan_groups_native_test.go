@@ -34,7 +34,7 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.ExecContext(ctx, string(artifact)); err != nil {
+	if _, err = db.ExecContext(ctx, string(artifact)+"\nSET search_path TO public;\n"); err != nil {
 		t.Fatal(err)
 	}
 	// Selfhost's transferred native users omit the optional legacy date columns.
