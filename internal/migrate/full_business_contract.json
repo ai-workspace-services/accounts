@@ -1,4 +1,54 @@
 {
+  "team_agent_enrollments": {
+  "columns": [
+    {
+      "generated": false,
+      "name": "agent_id",
+      "nullable": false,
+      "type": "text"
+    },
+    {
+      "generated": false,
+      "name": "suggested_team_id",
+      "nullable": false,
+      "type": "text"
+    },
+    {
+      "generated": false,
+      "name": "assigned_team_id",
+      "nullable": false,
+      "type": "text"
+    },
+    {
+      "generated": false,
+      "name": "status",
+      "nullable": false,
+      "type": "text"
+    },
+    {
+      "generated": false,
+      "name": "decided_by",
+      "nullable": false,
+      "type": "text"
+    },
+    {
+      "generated": false,
+      "name": "reason",
+      "nullable": false,
+      "type": "text"
+    },
+    {
+      "generated": false,
+      "name": "updated_at",
+      "nullable": false,
+      "type": "timestamp with time zone"
+    }
+  ],
+  "primary_key": [
+    "agent_id"
+  ],
+  "foreign_keys": []
+},
   "subscription_lifecycle_states": {
     "columns": [
       {"generated": false,"name": "account_uuid","nullable": false,"type": "uuid"},

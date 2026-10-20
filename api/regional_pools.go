@@ -59,7 +59,7 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 	// closed and team-dedicated pools. Ordinary users remain constrained by
 	// their effective entitlement scope below.
 	if canViewRegionalPoolInventory(user) {
-		pools = registeredRegionalPools(h.agentStatusReader, time.Now().UTC())
+		pools = registeredRegionalPools(h.enrollmentStatusReader(), time.Now().UTC())
 	} else {
 		if blocked, err := h.proxyAccountBlocked(c.Request.Context(), user); err != nil {
 			respondError(c, 503, "network_access_unavailable", "network access is unavailable")

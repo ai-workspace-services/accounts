@@ -816,6 +816,7 @@ var (
 // unit tests and local development where a persistent database is not yet
 // configured.
 type memoryStore struct {
+	teamAgentEnrollments    map[string]TeamAgentEnrollment
 	networkTeams            map[string]NetworkTeam
 	networkMembers          map[string]NetworkMembership
 	mu                      sync.RWMutex

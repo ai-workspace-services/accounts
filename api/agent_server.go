@@ -44,6 +44,9 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if pendingTeamResponse(c) {
+		return
+	}
 	scope, valid := agentResourceScope(identity.Groups)
 	if !valid {
 		c.JSON(http.StatusForbidden, gin.H{"error": "agent_scope_invalid"})
@@ -55,17 +58,25 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list_users_failed"})
 		return
 	}
+	approvalStatus := ""
+	if e, ok := teamEnrollment(c); ok {
+		approvalStatus = e.Status
+		revision = enrollmentRevision(e) + "-" + revision
+	}
 	c.Header("ETag", `"`+revision+`"`)
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, agentproto.ClientListResponse{
-		Scope:       &scope,
-		Clients:     clients,
-		Total:       len(clients),
-		Revision:    revision,
-		GeneratedAt: time.Now().UTC(),
+		EnrollmentStatus: approvalStatus,
+		Scope:            &scope,
+		Clients:          clients,
+		Total:            len(clients),
+		Revision:         revision,
+		GeneratedAt:      time.Now().UTC(),
 	})
 }
 
-// groups must come from the authenticated credential, never request metadata.
+// groups must come from the authenticated credential or an approved persisted
+// assignment, never directly from node request metadata.
 // Requiring the argument prevents a caller from silently defaulting to public.
 func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) ([]xrayconfig.Client, string, error) {
 	if _, valid := agentNetworkScope(groups); !valid {
@@ -215,6 +226,25 @@ func (h *handler) watchAgentUsers(c *gin.Context) {
 
 	identity, ok := h.resolveScopedAgent(c, *credIdentity, "")
 	if !ok {
+		return
+	}
+
+	if e, managed := teamEnrollment(c); managed {
+		revision := enrollmentRevision(e)
+		if e.Status == "approved" {
+			_, usersRevision, err := h.authorizedAgentClients(c.Request.Context(), identity.Groups)
+			if err != nil {
+				respondError(c, 503, "agent_users_unavailable", "team users unavailable")
+				return
+			}
+			revision += "-" + usersRevision
+		}
+		// Explicit bounded polling rechecks assignment authority on every
+		// connection; no captured identity survives a revoke/reassignment.
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-store")
+		c.Header("X-Agent-Event-Mode", "poll")
+		c.String(200, "event: users-changed\ndata: %s\n\n", revision)
 		return
 	}
 

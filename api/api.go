@@ -529,6 +529,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.DELETE("/network-team/members/:userId", h.removeNetworkTeamMember)
 	authProtected.GET("/admin/network-teams", h.adminListNetworkTeams)
 	authProtected.PUT("/admin/network-teams/:teamId", h.adminPutNetworkTeam)
+	authProtected.GET("/admin/agents/team-enrollments", h.adminListTeamAgents)
+	authProtected.PUT("/admin/agents/team-enrollments", h.adminDecideTeamAgent)
 	authProtected.GET("/admin/users/:userId/network-access", h.adminGetNetworkMembership)
 	authProtected.PUT("/admin/users/:userId/network-access", h.adminPutNetworkMembership)
 	authProtected.GET("/session", h.session)

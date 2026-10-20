@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 --
 
 
--- Dumped from database version 17.11 (Homebrew)
+-- Dumped from database version 17.11
 -- Dumped by pg_dump version 17.11 (Homebrew)
 
 SET idle_in_transaction_session_timeout = 0;
@@ -1380,6 +1380,22 @@ CREATE TABLE public.task_sessions (
 
 
 --
+-- Name: team_agent_enrollments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.team_agent_enrollments (
+    agent_id text NOT NULL,
+    suggested_team_id text DEFAULT ''::text NOT NULL,
+    assigned_team_id text DEFAULT ''::text NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    decided_by text DEFAULT ''::text NOT NULL,
+    reason text DEFAULT ''::text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT team_agent_enrollments_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'revoked'::text])))
+);
+
+
+--
 -- Name: tenant_domains; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2285,6 +2301,14 @@ ALTER TABLE public.task_sessions
 
 ALTER TABLE ONLY public.task_sessions
     ADD CONSTRAINT task_sessions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: team_agent_enrollments team_agent_enrollments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.team_agent_enrollments
+    ADD CONSTRAINT team_agent_enrollments_pkey PRIMARY KEY (agent_id);
 
 
 --
@@ -3800,6 +3824,12 @@ ALTER TABLE public.password_recovery_challenges ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.subscription_lifecycle_states ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: team_agent_enrollments; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.team_agent_enrollments ENABLE ROW LEVEL SECURITY;
 
 --
 -- PostgreSQL database dump complete

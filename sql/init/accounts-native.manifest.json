@@ -1,8 +1,8 @@
 {
   "format": 1,
-  "migration_version": 2026102001,
-  "schema_sha256": "51c28550be7508c3a6abb4a2352904e8d0416c3408d00faf44e391c2a3ad8812",
-  "business_table_count": 73,
+  "migration_version": 2026102002,
+  "schema_sha256": "f45db2423f11d9dcc7f3cc58c72b52228a27d7b6ccfc717faf2bbb56fa0498b1",
+  "business_table_count": 74,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
@@ -46,7 +46,7 @@
     },
     {
       "path": "scripts/qualify-native-schema.mjs",
-      "sha256": "0d9e967e5ec95bfa0002c17f7add536c1751bfd236eb9d51696ce053fbc16a85"
+      "sha256": "9dd63e3342792324f1eaff8af98a29e7f1bba6a14235e6db38e641a8c5a619f2"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -133,6 +133,10 @@
       "sha256": "6e1528c1ef6259270fba1a8fae7f86da25d8d695c63e3da24b597f62cd89096d"
     },
     {
+      "path": "sql/migrations/2026102002_team_agent_enrollments.up.sql",
+      "sha256": "5ae75bdf216f243523abf0c9e26bef37b45cb289a1b7f39993c8e71e6c13d0cc"
+    },
+    {
       "path": "sql/schema.sql",
       "sha256": "ca9b3d5dee8b34246edc1d8ed51779670063b6eb8c52e6459cc0cc41e2188b89"
     }
@@ -204,6 +208,7 @@
     "task_runs",
     "task_session_events",
     "task_sessions",
+    "team_agent_enrollments",
     "tenant_domains",
     "tenant_memberships",
     "tenants",
