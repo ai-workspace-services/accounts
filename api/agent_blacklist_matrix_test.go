@@ -22,12 +22,24 @@ func TestAgentBlacklistAcrossEveryResourceClass(t *testing.T) {
 	}
 	for _, tc := range []struct{ name, group, team string }{
 		{"free", "", ""}, {"plus", store.MonthlyPlusQuotaLimitGroup, ""},
+		{"pro", store.MonthlyPlusQuotaLimitGroup, ""},
 		{"admin", "team-admin:a", "a"}, {"member", "", "a"}, {"other", "", "b"},
 		{"blocked-free", "", ""}, {"blocked-plus", store.MonthlyPlusQuotaLimitGroup, ""}, {"blocked-team", "", "a"},
+		{"blocked-pro", store.MonthlyPlusQuotaLimitGroup, ""},
 	} {
 		u := &store.User{Name: tc.name, Email: tc.name + "@example.test", Active: true, EmailVerified: true, ProxyUUID: "proxy-" + tc.name, Groups: []string{tc.group}}
 		if err := st.CreateUser(ctx, u); err != nil {
 			t.Fatal(err)
+		}
+		if tc.name == "pro" || tc.name == "blocked-pro" {
+			if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: u.ID, PackageName: "pro", IncludedQuotaBytes: 50 << 30}); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+			end := start.AddDate(0, 1, 0)
+			if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: u.ID, RemainingIncludedQuota: 50 << 30, PeriodStart: &start, PeriodEnd: &end, SuspendState: "active"}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if tc.team != "" {
 			if err := teams.PutNetworkMembership(ctx, store.NetworkMembership{UserID: u.ID, DedicatedOnly: true}, &store.AuditLog{}); err != nil {
@@ -48,9 +60,10 @@ func TestAgentBlacklistAcrossEveryResourceClass(t *testing.T) {
 		class        string
 		groups, want []string
 	}{
-		{"shared", []string{"resource:shared"}, []string{"free@example.test", "plus@example.test"}},
-		{"free", []string{"resource:free"}, []string{"free@example.test", "plus@example.test"}},
-		{"plus", []string{"resource:plus"}, []string{"plus@example.test"}},
+		{"shared", []string{"resource:shared"}, []string{"free@example.test", "plus@example.test", "pro@example.test"}},
+		{"free", []string{"resource:free"}, []string{"free@example.test", "plus@example.test", "pro@example.test"}},
+		{"plus", []string{"resource:plus"}, []string{"plus@example.test", "pro@example.test"}},
+		{"pro", []string{"resource:pro"}, []string{"pro@example.test"}},
 		{"team", []string{"team:a"}, []string{"admin@example.test", "member@example.test"}},
 	} {
 		t.Run(tc.class, func(t *testing.T) {

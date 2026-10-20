@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"account/internal/agentserver"
+	"account/internal/store"
 )
 
 type agentStatusReader interface {
@@ -37,11 +38,32 @@ func (h *handler) adminAgentStatus(c *gin.Context) {
 		return
 	}
 
-	if _, ok := h.requireAdminPermission(c, permissionAdminAgentsStatus); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminAgentsStatus)
+	if !ok {
 		return
 	}
 
 	snapshots := h.agentStatusReader.Statuses()
+	if !store.IsRootRole(actor.Role) {
+		access, err := h.networkAccessForUser(c.Request.Context(), actor)
+		if err != nil {
+			respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+			return
+		}
+		packageName, err := h.billingPackageName(c.Request.Context(), actor)
+		if err != nil {
+			respondError(c, 503, "billing_profile_unavailable", "failed to evaluate subscription resource class")
+			return
+		}
+		visible := make([]agentserver.StatusSnapshot, 0)
+		for _, snapshot := range h.networkStatusReader(access).Statuses() {
+			scope, valid := agentResourceScope(snapshot.Agent.Groups)
+			if valid && agentResourceScopeAllowsUser(scope, access, actor, packageName) {
+				visible = append(visible, snapshot)
+			}
+		}
+		snapshots = visible
+	}
 	entries := make([]agentStatusEntry, 0, len(snapshots))
 	for _, snapshot := range snapshots {
 		entry := agentStatusEntry{

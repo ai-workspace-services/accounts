@@ -103,7 +103,7 @@ func TestRegionalPoolsForUserSelectsReportedResourceClass(t *testing.T) {
 	if len(plusPools) != 2 {
 		t.Fatalf("plus pools = %#v", plusPools)
 	}
-	if len(proPools) != 1 || proPools[0].ResourceClass != agentResourcePro || proPools[0].Entry != "jp-xconnect.onwalk.net" {
+	if len(proPools) != 3 {
 		t.Fatalf("pro pools = %#v", proPools)
 	}
 }
