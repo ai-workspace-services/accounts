@@ -48,7 +48,7 @@ func NativeArtifact() ([]byte, NativeManifest, error) {
 	}
 	sum := sha256.Sum256(sql)
 	if manifest.Format != 1 || manifest.SchemaSHA256 != hex.EncodeToString(sum[:]) ||
-		manifest.BusinessTableCount != 73 || len(manifest.BusinessTables) != manifest.BusinessTableCount {
+		manifest.BusinessTableCount != 74 || len(manifest.BusinessTables) != manifest.BusinessTableCount {
 		return nil, manifest, fmt.Errorf("native schema manifest or SQL checksum differs")
 	}
 	expected := make(map[string]string)

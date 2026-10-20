@@ -201,7 +201,6 @@ func TestManagedAgentPublicClassReconcilesStaleRegistration(t *testing.T) {
 		t.Fatalf("team clients=%v", names)
 	}
 	for _, tc := range []struct{ token, id, class, team string }{
-		{"deployment-secret", "node-with-arbitrary-pool", "team", "acme"},
 		{"deployment-secret", "team-agent", "shared", ""},
 		{"restricted-secret", "restricted", "shared", ""},
 		{"restricted-secret", "restricted", "plus", ""},

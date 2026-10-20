@@ -185,7 +185,7 @@ func (r scopedAgentStatuses) Statuses() []agentserver.StatusSnapshot { return r.
 func (h *handler) networkStatusReader(access networkAccess) agentStatusReader {
 	result := scopedAgentStatuses{}
 	if h.agentStatusReader != nil {
-		for _, snapshot := range h.agentStatusReader.Statuses() {
+		for _, snapshot := range h.enrollmentStatusReader().Statuses() {
 			if networkScopeAllows(access, snapshot.Agent.Groups) {
 				result.snapshots = append(result.snapshots, snapshot)
 			}
@@ -733,6 +733,9 @@ func (h *handler) networkWriteError(c *gin.Context, err error) {
 // deployment credential can manage public pools. Team and restricted credentials
 // remain bound to their enrolled scope; pool names never authorize a scope.
 func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
+	if identity, ok, handled := h.resolveManagedTeam(c, credential, requested); handled {
+		return identity, ok
+	}
 	identity, ok := h.resolveAgentIdentity(c, credential, requested)
 	if !ok {
 		return identity, false
@@ -840,10 +843,23 @@ func (h *handler) networkAccessForUser(ctx context.Context, user *store.User) (n
 }
 
 func (h *handler) reservedDedicatedHost(host string) bool {
+	if st, ok := h.store.(store.TeamAgentEnrollmentStore); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		rows, err := st.ListTeamAgents(ctx)
+		if err != nil {
+			return true
+		} // Never leak a reserved host through static-config fallback.
+		for _, e := range rows {
+			if normalizeHost(e.AgentID) == host {
+				return true
+			}
+		}
+	}
 	if h.agentStatusReader == nil {
 		return false
 	}
-	for _, snapshot := range h.agentStatusReader.Statuses() {
+	for _, snapshot := range h.enrollmentStatusReader().Statuses() {
 		team, valid := agentNetworkScope(snapshot.Agent.Groups)
 		if (!valid || team != "") && (normalizeHost(snapshot.Agent.ID) == host || regionalEntryHost(snapshot.Report.Xray.EntryPoint) == host) {
 			return true

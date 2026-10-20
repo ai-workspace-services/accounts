@@ -21,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const FullBusinessVersion = 2026102001
+const FullBusinessVersion = 2026102002
 const FullBusinessBillingSHA256 = "a7133f3ef2ea9013a055cfd1442a7488d2b837f289e0f5d9b61624d4fde9bc53"
 const fullBusinessBatch = 1000
 
@@ -114,7 +114,7 @@ type CoreUsersDiff struct {
 
 func fullBusinessContract() (map[string]businessTable, []string, error) {
 	var tables map[string]businessTable
-	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 74 {
+	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 75 {
 		return nil, nil, errors.New("invalid compiled full-business catalog")
 	}
 	_, manifest, err := schema.NativeArtifact()
@@ -174,6 +174,7 @@ func businessColumnList(names []string) string {
 }
 
 var optionalBusinessTables = map[string]bool{
+	"team_agent_enrollments":        true,
 	"subscription_lifecycle_states": true,
 	"email_campaigns":               true,
 	"email_onboarding_steps":        true,
@@ -771,7 +772,8 @@ func businessUserMap(source, target map[string]businessUser) (map[string]string,
 // UUID-like references without a database FK are still business references.
 // Historical audit actors and non-UUID service actors are preserved verbatim.
 var businessUserReferences = map[string][]string{
-	"users": {"uuid", "account_lifecycle_actor_ref"}, "audit_logs": {"actor_uuid"}, "finance_payments": {"account_uuid"}, "finance_operations": {"actor_ref"},
+	"team_agent_enrollments": {"decided_by"},
+	"users":                  {"uuid", "account_lifecycle_actor_ref"}, "audit_logs": {"actor_uuid"}, "finance_payments": {"account_uuid"}, "finance_operations": {"actor_ref"},
 	"finance_operation_events": {"actor_ref"}, "overlay_devices": {"user_id"}, "overlay_networks": {"owner_user_id"},
 	"overlay_registrations": {"owner_user_id"}, "tenant_memberships": {"user_id"}, "xworkmate_profiles": {"user_id"},
 	"email_campaigns": {"created_by"}, "email_onboarding_steps": {"updated_by"}, "email_deliveries": {"user_id"}, "email_recipient_leases": {"user_id"}, "email_suppressions": {"updated_by"},

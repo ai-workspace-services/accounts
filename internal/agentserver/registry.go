@@ -332,3 +332,20 @@ func normalizeStrings(values []string) []string {
 	}
 	return result
 }
+
+// SetAgentGroups updates inventory atomically after the API resolves persisted
+// enrollment authority. It never changes the authentication credential itself.
+func (r *Registry) SetAgentGroups(id string, groups []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	identity, ok := r.byID[id]
+	if !ok {
+		return
+	}
+	identity.Groups = append([]string(nil), groups...)
+	r.byID[id] = identity
+	if snapshot, ok := r.statuses[id]; ok {
+		snapshot.Agent = identity
+		r.statuses[id] = snapshot
+	}
+}
