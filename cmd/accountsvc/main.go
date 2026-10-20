@@ -1587,10 +1587,11 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		api.WithOAuthFrontendURL(cfg.Auth.OAuth.FrontendURL),
 		api.WithServerPublicURL(cfg.Server.PublicURL),
 		api.WithStripeConfig(api.StripeConfig{
-			SecretKey:       strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
-			WebhookSecret:   strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
-			AllowedPriceIDs: api.ParseStripeAllowedPriceIDs(os.Getenv("STRIPE_ALLOWED_PRICE_IDS")),
-			FrontendURL:     strings.TrimSpace(cfg.Auth.OAuth.FrontendURL),
+			SecretKey:             strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
+			WebhookSecret:         strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
+			AllowedPriceIDs:       api.ParseStripeAllowedPriceIDs(os.Getenv("STRIPE_ALLOWED_PRICE_IDS")),
+			FrontendURL:           strings.TrimSpace(cfg.Auth.OAuth.FrontendURL),
+			PortalConfigurationID: strings.TrimSpace(os.Getenv("STRIPE_PORTAL_CONFIGURATION_ID")),
 		}),
 	}
 	if xworkmateVaultService != nil {

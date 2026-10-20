@@ -183,48 +183,7 @@ func (h *handler) resetQuotaForPlanOnce(ctx context.Context, userID string, plan
 // applyPlanUpgradeQuota grants only the increase in the plan's monthly
 // allowance, preserving usage already consumed in the current period.
 func (h *handler) applyPlanUpgradeQuota(ctx context.Context, userID string, previousIncluded, upgradedIncluded int64, start, end time.Time) error {
-	profile, profileErr := h.store.GetAccountBillingProfile(ctx, userID)
-	if profileErr != nil && !errors.Is(profileErr, store.ErrUserNotFound) {
-		return profileErr
-	}
-	if profile != nil && profile.IncludedQuotaBytes >= upgradedIncluded {
-		return nil // The plan projection is the durable replay marker for this upgrade.
-	}
-	state, err := h.store.GetAccountQuotaState(ctx, userID)
-	if err != nil {
-		if !errors.Is(err, store.ErrUserNotFound) {
-			return err
-		}
-		state = &store.AccountQuotaState{AccountUUID: userID}
-	}
-	if state == nil {
-		state = &store.AccountQuotaState{AccountUUID: userID}
-	}
-	if state.PeriodStart == nil || state.PeriodEnd == nil {
-		state.RemainingIncludedQuota = upgradedIncluded
-		periodStart, periodEnd := start.UTC(), end.UTC()
-		state.PeriodStart, state.PeriodEnd = &periodStart, &periodEnd
-		state.EffectiveAt = time.Now().UTC()
-		return h.store.UpsertAccountQuotaState(ctx, state)
-	}
-	if !state.PeriodStart.Equal(start.UTC()) || !state.PeriodEnd.Equal(end.UTC()) {
-		currentMonthStart, currentMonthEnd := naturalMonthPeriod(time.Now().UTC())
-		if !state.PeriodStart.Equal(currentMonthStart) || !state.PeriodEnd.Equal(currentMonthEnd) {
-			return h.resetQuotaForPlan(ctx, userID, &store.BillingPlan{IncludedQuotaBytes: upgradedIncluded}, start, end)
-		}
-	}
-	if state.RemainingIncludedQuota > previousIncluded {
-		return nil // A concurrent delivery already applied this plan increase.
-	}
-	delta := upgradedIncluded - previousIncluded
-	if delta <= 0 {
-		return nil
-	}
-	state.RemainingIncludedQuota += delta
-	periodStart, periodEnd := start.UTC(), end.UTC()
-	state.PeriodStart, state.PeriodEnd = &periodStart, &periodEnd
-	state.EffectiveAt = time.Now().UTC()
-	return h.store.UpsertAccountQuotaState(ctx, state)
+	return h.store.UpgradeSubscriptionQuota(ctx, userID, previousIncluded, upgradedIncluded, start, end)
 }
 
 // restoreQuotaGroupForPlan reverses only a prior Free quota-group downgrade;

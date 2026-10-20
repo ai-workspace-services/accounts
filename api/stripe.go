@@ -32,29 +32,34 @@ const stripeAPIVersion = "2026-01-28.clover"
 const stripeWebhookTimestampTolerance = 5 * time.Minute
 
 type StripeConfig struct {
-	SecretKey       string
-	WebhookSecret   string
-	AllowedPriceIDs []string
-	FrontendURL     string
+	SecretKey             string
+	WebhookSecret         string
+	AllowedPriceIDs       []string
+	FrontendURL           string
+	PortalConfigurationID string
 }
 
 type stripeClient struct {
-	secretKey      string
-	webhookSecret  string
-	frontendURL    string
-	apiBaseURL     string
-	allowedPriceID map[string]struct{}
-	httpClient     *http.Client
+	secretKey             string
+	webhookSecret         string
+	frontendURL           string
+	apiBaseURL            string
+	allowedPriceID        map[string]struct{}
+	httpClient            *http.Client
+	portalConfigurationID string
 }
 
 type stripeCheckoutRequest struct {
-	PlanID        string `json:"planId"`
-	StripePriceID string `json:"stripePriceId"`
-	AmountMinor   int64  `json:"amountMinor,omitempty"`
-	Currency      string `json:"currency,omitempty"`
-	Mode          string `json:"mode"`
-	ProductSlug   string `json:"productSlug"`
-	SourcePath    string `json:"sourcePath"`
+	PlanID           string `json:"planId"`
+	StripePriceID    string `json:"stripePriceId"`
+	AmountMinor      int64  `json:"amountMinor,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	Mode             string `json:"mode"`
+	ProductSlug      string `json:"productSlug"`
+	SourcePath       string `json:"sourcePath"`
+	PreviewToken     string `json:"previewToken,omitempty"`
+	OperationKey     string `json:"-"`
+	SessionExpiresAt int64  `json:"-"`
 }
 
 type stripePortalRequest struct {
@@ -80,10 +85,15 @@ type stripeSubscription struct {
 	CurrentPeriodEnd   int64             `json:"current_period_end"`
 	CurrentPeriodStart int64             `json:"current_period_start"`
 	LatestInvoice      any               `json:"latest_invoice"`
+	CollectionMethod   string            `json:"collection_method"`
+	PendingUpdate      json.RawMessage   `json:"pending_update"`
+	Schedule           any               `json:"schedule"`
 	Items              struct {
 		Data []struct {
-			CurrentPeriodStart int64 `json:"current_period_start"`
-			CurrentPeriodEnd   int64 `json:"current_period_end"`
+			ID                 string `json:"id"`
+			Quantity           int64  `json:"quantity"`
+			CurrentPeriodStart int64  `json:"current_period_start"`
+			CurrentPeriodEnd   int64  `json:"current_period_end"`
 			Price              struct {
 				ID string `json:"id"`
 			} `json:"price"`
@@ -108,6 +118,8 @@ type stripeCheckoutSession struct {
 	PaymentIntent     string `json:"payment_intent"`
 	Customer          string `json:"customer"`
 	PaymentStatus     string `json:"payment_status"`
+	Status            string `json:"status"`
+	URL               string `json:"url"`
 	// AmountTotal is in the currency's smallest unit (cents/分), which is how
 	// Stripe reports every amount. It has to be divided by 100 before it means
 	// anything in balance terms.
@@ -117,17 +129,20 @@ type stripeCheckoutSession struct {
 }
 
 type stripeInvoice struct {
-	ID            string `json:"id"`
-	Customer      any    `json:"customer"`
-	Subscription  any    `json:"subscription"`
-	Status        string `json:"status"`
-	PaymentIntent any    `json:"payment_intent"`
-	AmountPaid    int64  `json:"amount_paid"`
-	PaidOutOfBand bool   `json:"paid_out_of_band"`
-	Currency      string `json:"currency"`
-	Created       int64  `json:"created"`
-	BillingReason string `json:"billing_reason"`
-	Parent        struct {
+	AmountDue        int64  `json:"amount_due"`
+	Total            int64  `json:"total"`
+	HostedInvoiceURL string `json:"hosted_invoice_url"`
+	ID               string `json:"id"`
+	Customer         any    `json:"customer"`
+	Subscription     any    `json:"subscription"`
+	Status           string `json:"status"`
+	PaymentIntent    any    `json:"payment_intent"`
+	AmountPaid       int64  `json:"amount_paid"`
+	PaidOutOfBand    bool   `json:"paid_out_of_band"`
+	Currency         string `json:"currency"`
+	Created          int64  `json:"created"`
+	BillingReason    string `json:"billing_reason"`
+	Parent           struct {
 		SubscriptionDetails struct {
 			Subscription any `json:"subscription"`
 		} `json:"subscription_details"`
@@ -211,10 +226,11 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 	}
 
 	return &stripeClient{
-		secretKey:      secretKey,
-		webhookSecret:  strings.TrimSpace(cfg.WebhookSecret),
-		frontendURL:    strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/"),
-		allowedPriceID: allowed,
+		secretKey:             secretKey,
+		webhookSecret:         strings.TrimSpace(cfg.WebhookSecret),
+		frontendURL:           strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/"),
+		allowedPriceID:        allowed,
+		portalConfigurationID: strings.TrimSpace(cfg.PortalConfigurationID),
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -411,7 +427,7 @@ func (c *stripeClient) checkoutURLs(sourcePath string) (string, string) {
 	return successURL, c.buildFrontendURL(cancelPath)
 }
 
-func (c *stripeClient) doForm(ctx context.Context, method, path string, form url.Values, out any) error {
+func (c *stripeClient) doForm(ctx context.Context, method, path string, form url.Values, out any, idempotencyKey ...string) error {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL()+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
@@ -419,6 +435,9 @@ func (c *stripeClient) doForm(ctx context.Context, method, path string, form url
 	req.Header.Set("Authorization", "Bearer "+c.secretKey)
 	req.Header.Set("Stripe-Version", stripeAPIVersion)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if len(idempotencyKey) > 0 && idempotencyKey[0] != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey[0])
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -503,6 +522,13 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 		form.Set("client_reference_id", clientReferenceID)
 	}
 	if mode == "subscription" {
+		expires := req.SessionExpiresAt
+		if expires == 0 {
+			expires = time.Now().Add(time.Hour).Unix()
+		}
+		form.Set("expires_at", strconv.FormatInt(expires, 10))
+		form.Set("metadata[purchase_operation_key]", req.OperationKey)
+		form.Set("subscription_data[metadata][purchase_operation_key]", req.OperationKey)
 		form.Set("subscription_data[metadata][user_id]", strings.TrimSpace(user.ID))
 		form.Set("subscription_data[metadata][user_email]", strings.TrimSpace(strings.ToLower(user.Email)))
 		form.Set("subscription_data[metadata][plan_id]", strings.TrimSpace(req.PlanID))
@@ -517,7 +543,7 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 	}
 
 	var session stripeSessionResponse
-	if err := c.doForm(ctx, http.MethodPost, "/checkout/sessions", form, &session); err != nil {
+	if err := c.doForm(ctx, http.MethodPost, "/checkout/sessions", form, &session, req.OperationKey); err != nil {
 		return nil, err
 	}
 	return &session, nil
@@ -534,9 +560,41 @@ func (c *stripeClient) listCustomersByEmail(ctx context.Context, email string) (
 }
 
 func (c *stripeClient) createPortalSession(ctx context.Context, customerID, returnURL string) (*stripeSessionResponse, error) {
+	if !strings.HasPrefix(c.portalConfigurationID, "bpc_") {
+		return nil, errors.New("reviewed read-only billing portal configuration is required")
+	}
+	var configuration struct {
+		ID       string `json:"id"`
+		Active   bool   `json:"active"`
+		Features struct {
+			SubscriptionUpdate struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"subscription_update"`
+			SubscriptionCancel struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"subscription_cancel"`
+			PaymentMethodUpdate struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"payment_method_update"`
+			InvoiceHistory struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"invoice_history"`
+			CustomerUpdate struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"customer_update"`
+		} `json:"features"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/billing_portal/configurations/"+url.PathEscape(c.portalConfigurationID), &configuration); err != nil {
+		return nil, err
+	}
+	f := configuration.Features
+	if configuration.ID != c.portalConfigurationID || !configuration.Active || f.SubscriptionUpdate.Enabled == nil || *f.SubscriptionUpdate.Enabled || f.SubscriptionCancel.Enabled == nil || *f.SubscriptionCancel.Enabled || f.CustomerUpdate.Enabled == nil || *f.CustomerUpdate.Enabled || f.InvoiceHistory.Enabled == nil || !*f.InvoiceHistory.Enabled || f.PaymentMethodUpdate.Enabled == nil || !*f.PaymentMethodUpdate.Enabled {
+		return nil, errors.New("billing portal configuration permits unreviewed operations or lacks required features")
+	}
 	form := url.Values{
-		"customer":   []string{strings.TrimSpace(customerID)},
-		"return_url": []string{returnURL},
+		"customer":      []string{strings.TrimSpace(customerID)},
+		"return_url":    []string{returnURL},
+		"configuration": {c.portalConfigurationID},
 	}
 	var session stripeSessionResponse
 	if err := c.doForm(ctx, http.MethodPost, "/billing_portal/sessions", form, &session); err != nil {
@@ -574,6 +632,10 @@ func (c *stripeClient) fetchInvoice(ctx context.Context, invoiceID string) (*str
 		return nil, err
 	}
 	return &invoice, nil
+}
+
+func invoiceSubscriptionID(invoice *stripeInvoice) string {
+	return firstNonEmpty(customerIDFromAny(invoice.Subscription), customerIDFromAny(invoice.Parent.SubscriptionDetails.Subscription))
 }
 
 func (c *stripeClient) listPaidInvoices(ctx context.Context, customerID string) ([]stripeInvoice, error) {
@@ -789,6 +851,14 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 		respondError(c, http.StatusConflict, "billing_mode_conflict", modeErr.Error())
 		return
 	}
+	if req.Mode == "subscription" {
+		h.executeSubscriptionPurchase(c, user, req)
+		return
+	}
+	if pending, err := h.store.PendingSubscriptionPurchase(c.Request.Context(), user.ID); err != nil || pending != nil {
+		respondError(c, http.StatusConflict, "purchase_pending", "Finish subscription payment reconciliation before changing billing mode")
+		return
+	}
 
 	session, err := h.stripe.createCheckoutSession(c.Request.Context(), user, req)
 	if err != nil {
@@ -956,6 +1026,16 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := json.Unmarshal(event.Data.Object, &subscription); err != nil {
 			return err
 		}
+		// Webhooks can arrive out of order. Re-read Stripe's current item and
+		// invoice instead of replaying an obsolete plan from an older event.
+		current, err := h.stripe.fetchSubscription(ctx, subscription.ID)
+		if err != nil {
+			return err
+		}
+		if current.ID != subscription.ID {
+			return errors.New("subscription identity changed")
+		}
+		subscription = *current
 		if err := h.upsertStripeSubscription(ctx, &subscription, customerIDFromAny(subscription.Customer)); err != nil {
 			return err
 		}
@@ -1015,7 +1095,8 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err != nil {
 			return err
 		}
-		subscriptionID := customerIDFromAny(invoice.Subscription)
+		subscriptionID := invoiceSubscriptionID(invoice)
+		invoice.Subscription = subscriptionID
 		if subscriptionID == "" {
 			return nil
 		}
@@ -1027,6 +1108,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if userID == "" {
 			return nil
 		}
+		subscription.Status = "refunded" // This branch has verified a completed full refund.
 		if err := h.upsertStripeSubscription(ctx, subscription, customerIDFromAny(subscription.Customer)); err != nil {
 			return err
 		}
@@ -1062,7 +1144,8 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := json.Unmarshal(event.Data.Object, &invoice); err != nil {
 			return err
 		}
-		subscriptionID := customerIDFromAny(invoice.Subscription)
+		subscriptionID := invoiceSubscriptionID(&invoice)
+		invoice.Subscription = subscriptionID
 		if subscriptionID == "" {
 			return nil
 		}
@@ -1108,6 +1191,9 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		}
 		if err := h.recordStripePaidInvoice(ctx, &invoice, sub, userID); err != nil {
 			return err
+		}
+		if hasPendingUpdate(sub) || customerIDFromAny(sub.LatestInvoice) != invoice.ID {
+			return nil
 		}
 		// invoice.paid renews the billing period: re-arm quota and clear
 		// arrears from the plan the subscription is on.
@@ -1596,6 +1682,12 @@ func subscriptionPriceID(source *stripeSubscription) string {
 // natural month when Stripe hasn't populated the period (defensive; every
 // real subscription object carries it).
 func subscriptionPeriod(source *stripeSubscription) (time.Time, time.Time) {
+	if source != nil && len(source.Items.Data) == 1 {
+		item := source.Items.Data[0]
+		if item.CurrentPeriodStart > 0 && item.CurrentPeriodEnd > item.CurrentPeriodStart {
+			return time.Unix(item.CurrentPeriodStart, 0).UTC(), time.Unix(item.CurrentPeriodEnd, 0).UTC()
+		}
+	}
 	if source == nil || source.CurrentPeriodStart <= 0 || source.CurrentPeriodEnd <= source.CurrentPeriodStart {
 		return naturalMonthPeriod(time.Now())
 	}
@@ -1616,6 +1708,24 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 	status := strings.ToLower(strings.TrimSpace(source.Status))
 	if status != "active" && status != "trialing" {
 		return nil
+	}
+	// A subscription update is not proof of payment. In particular, pending
+	// upgrades must never grant their target allowance before settlement.
+	if h.stripe != nil && h.stripe.enabled() {
+		if hasPendingUpdate(source) {
+			return nil
+		}
+		invoiceID := customerIDFromAny(source.LatestInvoice)
+		if invoiceID == "" {
+			return errors.New("paid subscription invoice required")
+		}
+		invoice, err := h.stripe.fetchInvoice(ctx, invoiceID)
+		if err != nil {
+			return err
+		}
+		if invoice.Status != "paid" || invoiceSubscriptionID(invoice) != source.ID {
+			return nil
+		}
 	}
 	plan, err := h.resolveBillingPlan(ctx, subscriptionPriceID(source), source.Metadata["plan_id"])
 	if err != nil {
@@ -1674,6 +1784,21 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 	if userID == "" {
 		return nil
 	}
+	if source.Status == "active" && h.stripe != nil && h.stripe.enabled() {
+		if hasPendingUpdate(source) {
+			return nil
+		}
+		if customerIDFromAny(source.LatestInvoice) == "" {
+			return nil
+		}
+		invoice, err := h.stripe.fetchInvoice(ctx, customerIDFromAny(source.LatestInvoice))
+		if err != nil {
+			return err
+		}
+		if invoice.Status != "paid" || invoiceSubscriptionID(invoice) != source.ID {
+			return nil
+		}
+	}
 	priceID := ""
 	if len(source.Items.Data) > 0 {
 		priceID = strings.TrimSpace(source.Items.Data[0].Price.ID)
@@ -1698,6 +1823,17 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 		"expiresAt":         epochToRFC3339(source.CurrentPeriodEnd),
 		"cancelAtPeriodEnd": strconv.FormatBool(source.CancelAtPeriodEnd),
 	})
+	planID := strings.TrimSpace(source.Metadata["plan_id"])
+	if plan, err := h.store.GetBillingPlanByPriceID(ctx, priceID); err == nil {
+		planID = plan.PlanID // Pending updates cannot change Stripe metadata.
+	} else if !errors.Is(err, store.ErrBillingPlanNotFound) {
+		return err
+	}
+	start, end := subscriptionPeriod(source)
+	if source.CurrentPeriodStart > 0 || (len(source.Items.Data) == 1 && source.Items.Data[0].CurrentPeriodStart > 0) {
+		meta["startsAt"] = start.Format(time.RFC3339)
+		meta["expiresAt"] = end.Format(time.RFC3339)
+	}
 	if source.CancelAtPeriodEnd && status != "cancelled" {
 		status = "canceling"
 	}
@@ -1706,7 +1842,7 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 		Provider:      "stripe",
 		PaymentMethod: "stripe",
 		Kind:          kind,
-		PlanID:        strings.TrimSpace(source.Metadata["plan_id"]),
+		PlanID:        planID,
 		ExternalID:    strings.TrimSpace(source.ID),
 		Status:        status,
 		Meta:          meta,

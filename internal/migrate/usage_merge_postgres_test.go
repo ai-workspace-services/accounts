@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func TestFullBusinessUsageMergePostgres17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=2026101902;
+	exec(target, string(billing)+`; UPDATE public.schema_migrations SET version=`+strconv.Itoa(FullBusinessVersion)+`;
 CREATE TABLE public.accounts_controlled_migration_history(from_version bigint NOT NULL,to_version bigint PRIMARY KEY,sql_sha256 text NOT NULL,applied_at timestamptz NOT NULL DEFAULT now());
 INSERT INTO public.accounts_controlled_migration_history(from_version,to_version,sql_sha256) VALUES
 (2026101703,2026101901,'b9fee298512e7d888fe619917c8238120f0e227f4ea348e59397d074c41f878d'),
@@ -74,7 +75,7 @@ INSERT INTO public.account_quota_states(account_uuid,remaining_included_quota,cu
 INSERT INTO public.billing_ledger(id,account_uuid,bucket_start,bucket_end,entry_type,rated_bytes,amount_delta,balance_after,created_at)
 SELECT md5('usage-'||g::text)::uuid,'`+srcID+`','2026-10-01T00:00:00Z'::timestamptz+g*interval '1 minute','2026-10-01T00:01:00Z'::timestamptz+g*interval '1 minute','usage',9007199254740993,0.125,0,'2026-10-01T00:00:00Z' FROM generate_series(1,1003)g;
 INSERT INTO public.traffic_minute_buckets(account_uuid,node_id,bucket_start,total_bytes) SELECT '`+srcID+`','fixture-node','2026-10-01T00:00:00Z'::timestamptz+g*interval '1 minute',9007199254740993 FROM generate_series(1,1003)g;`)
-	options := UsageMergeOptions{SourceGeneration: "prod-v2", TargetGeneration: "prod-v3", SchemaSHA256: manifest.SchemaSHA256, BillingSHA256: FullBusinessBillingSHA256, ExpectedTargetVersion: 2026101902}
+	options := UsageMergeOptions{SourceGeneration: "prod-v3", TargetGeneration: "prod-v4", SchemaSHA256: manifest.SchemaSHA256, BillingSHA256: FullBusinessBillingSHA256, ExpectedTargetVersion: FullBusinessVersion}
 	ctx := context.Background()
 	preview, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
 	if err != nil {

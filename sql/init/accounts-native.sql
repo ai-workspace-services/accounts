@@ -1,16 +1,23 @@
 -- Latest native Accounts business schema for absent/empty PostgreSQL only.
--- Apply through migratectl init with its reviewed hash and an empty-database guard.
--- No business rows, historical migration replay, environment grants or replication config.
+-- Generated from the isolated PostgreSQL 17 fixture; no business rows.
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-
 --
 -- PostgreSQL database dump
 --
 
 
--- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
--- Dumped by pg_dump version 17.11 (Debian 17.11-1.pgdg13+2)
+-- Dumped from database version 17.11 (Homebrew)
+-- Dumped by pg_dump version 17.11 (Homebrew)
 
+SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
 
 --
 -- Name: public; Type: SCHEMA; Schema: -; Owner: -
@@ -124,7 +131,9 @@ END;
 $$;
 
 
+SET default_tablespace = '';
 
+SET default_table_access_method = heap;
 
 --
 -- Name: account_billing_profiles; Type: TABLE; Schema: public; Owner: -
@@ -343,6 +352,157 @@ CREATE TABLE public.email_blacklist (
     uuid uuid DEFAULT gen_random_uuid() NOT NULL,
     email text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: email_campaigns; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_campaigns (
+    id text NOT NULL,
+    version bigint NOT NULL,
+    kind text NOT NULL,
+    subject text NOT NULL,
+    body text NOT NULL,
+    action_label text NOT NULL,
+    action_url text NOT NULL,
+    audience text NOT NULL,
+    delivery_mode text NOT NULL,
+    status text NOT NULL,
+    created_by text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: email_deliveries; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_deliveries (
+    id text NOT NULL,
+    dedupe_key text NOT NULL,
+    campaign_id text NOT NULL,
+    step_id text NOT NULL,
+    user_id text NOT NULL,
+    email text NOT NULL,
+    subject text NOT NULL,
+    body text NOT NULL,
+    action_label text NOT NULL,
+    action_url text NOT NULL,
+    category text NOT NULL,
+    delivery_mode text NOT NULL,
+    audience text NOT NULL,
+    status text NOT NULL,
+    attempts bigint NOT NULL,
+    due_at timestamp with time zone NOT NULL,
+    lease_token text NOT NULL,
+    lease_until timestamp with time zone,
+    sent_at timestamp with time zone,
+    last_error text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: email_management_settings; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_management_settings (
+    id text NOT NULL,
+    version bigint NOT NULL,
+    company_name text NOT NULL,
+    postal_address text NOT NULL,
+    contact_email text NOT NULL,
+    console_url text NOT NULL,
+    updated_by text NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: email_onboarding_steps; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_onboarding_steps (
+    id text NOT NULL,
+    version bigint NOT NULL,
+    enabled boolean NOT NULL,
+    subject text NOT NULL,
+    body text NOT NULL,
+    action_label text NOT NULL,
+    action_url text NOT NULL,
+    delay_hours bigint NOT NULL,
+    activated_at timestamp with time zone NOT NULL,
+    updated_by text NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: email_preference_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_preference_events (
+    id text NOT NULL,
+    user_id text NOT NULL,
+    source text NOT NULL,
+    policy_version text NOT NULL,
+    preferences text NOT NULL,
+    created_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: email_preference_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_preference_tokens (
+    hash text NOT NULL,
+    user_id text NOT NULL,
+    email text NOT NULL,
+    purpose text NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: email_preferences; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_preferences (
+    user_id text NOT NULL,
+    product_updates boolean NOT NULL,
+    tutorials boolean NOT NULL,
+    offers boolean NOT NULL,
+    frequency text NOT NULL,
+    version bigint NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: email_recipient_leases; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_recipient_leases (
+    user_id text NOT NULL,
+    token text NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+
+--
+-- Name: email_suppressions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.email_suppressions (
+    email text NOT NULL,
+    reason text NOT NULL,
+    updated_by text NOT NULL,
+    created_at timestamp with time zone NOT NULL
 );
 
 
@@ -1080,6 +1240,45 @@ CREATE TABLE public.subscription_extension_ledger (
 
 
 --
+-- Name: subscription_lifecycle_states; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.subscription_lifecycle_states (
+    account_uuid uuid NOT NULL,
+    version bigint DEFAULT 0 NOT NULL,
+    last_change_at timestamp with time zone,
+    operation_id uuid,
+    pending_plan_id text DEFAULT ''::text NOT NULL,
+    effective_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT subscription_lifecycle_states_check CHECK (((pending_plan_id = ''::text) = (effective_at IS NULL))),
+    CONSTRAINT subscription_lifecycle_states_version_check CHECK ((version >= 0))
+);
+
+
+--
+-- Name: subscription_records; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.subscription_records (
+    user_uuid uuid NOT NULL,
+    subscription_type text DEFAULT ''::text NOT NULL,
+    monthly_quota_bytes bigint DEFAULT 0 NOT NULL,
+    annual_quota_bytes bigint DEFAULT 0 NOT NULL,
+    fee_minor bigint DEFAULT 0 NOT NULL,
+    payment_status text DEFAULT ''::text NOT NULL,
+    note text DEFAULT ''::text NOT NULL,
+    valid_from timestamp with time zone,
+    valid_until timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT subscription_records_annual_quota_bytes_check CHECK ((annual_quota_bytes >= 0)),
+    CONSTRAINT subscription_records_fee_minor_check CHECK ((fee_minor >= 0)),
+    CONSTRAINT subscription_records_monthly_quota_bytes_check CHECK ((monthly_quota_bytes >= 0)),
+    CONSTRAINT subscription_records_validity_ck CHECK (((valid_until IS NULL) OR (valid_from IS NULL) OR (valid_until >= valid_from)))
+);
+
+
+--
 -- Name: subscriptions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1462,6 +1661,78 @@ ALTER TABLE ONLY public.email_blacklist
 
 ALTER TABLE ONLY public.email_blacklist
     ADD CONSTRAINT email_blacklist_pkey PRIMARY KEY (uuid);
+
+
+--
+-- Name: email_campaigns email_campaigns_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_campaigns
+    ADD CONSTRAINT email_campaigns_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_deliveries email_deliveries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_deliveries
+    ADD CONSTRAINT email_deliveries_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_management_settings email_management_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_management_settings
+    ADD CONSTRAINT email_management_settings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_onboarding_steps email_onboarding_steps_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_onboarding_steps
+    ADD CONSTRAINT email_onboarding_steps_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_preference_events email_preference_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_preference_events
+    ADD CONSTRAINT email_preference_events_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: email_preference_tokens email_preference_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_preference_tokens
+    ADD CONSTRAINT email_preference_tokens_pkey PRIMARY KEY (hash);
+
+
+--
+-- Name: email_preferences email_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_preferences
+    ADD CONSTRAINT email_preferences_pkey PRIMARY KEY (user_id);
+
+
+--
+-- Name: email_recipient_leases email_recipient_leases_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_recipient_leases
+    ADD CONSTRAINT email_recipient_leases_pkey PRIMARY KEY (user_id);
+
+
+--
+-- Name: email_suppressions email_suppressions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.email_suppressions
+    ADD CONSTRAINT email_suppressions_pkey PRIMARY KEY (email);
 
 
 --
@@ -1929,6 +2200,22 @@ ALTER TABLE ONLY public.subscription_extension_ledger
 
 
 --
+-- Name: subscription_lifecycle_states subscription_lifecycle_states_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_lifecycle_states
+    ADD CONSTRAINT subscription_lifecycle_states_pkey PRIMARY KEY (account_uuid);
+
+
+--
+-- Name: subscription_records subscription_records_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_records
+    ADD CONSTRAINT subscription_records_pkey PRIMARY KEY (user_uuid);
+
+
+--
 -- Name: subscriptions subscriptions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2181,6 +2468,83 @@ CREATE INDEX idx_audit_logs_created_at ON public.audit_logs USING btree (created
 --
 
 CREATE INDEX idx_billing_ledger_account_created ON public.billing_ledger USING btree (account_uuid, created_at DESC);
+
+
+--
+-- Name: idx_email_campaigns_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_campaigns_status ON public.email_campaigns USING btree (status);
+
+
+--
+-- Name: idx_email_deliveries_campaign_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_deliveries_campaign_id ON public.email_deliveries USING btree (campaign_id);
+
+
+--
+-- Name: idx_email_deliveries_dedupe_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_email_deliveries_dedupe_key ON public.email_deliveries USING btree (dedupe_key);
+
+
+--
+-- Name: idx_email_deliveries_due_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_deliveries_due_at ON public.email_deliveries USING btree (due_at);
+
+
+--
+-- Name: idx_email_deliveries_sent_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_deliveries_sent_at ON public.email_deliveries USING btree (sent_at);
+
+
+--
+-- Name: idx_email_deliveries_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_deliveries_status ON public.email_deliveries USING btree (status);
+
+
+--
+-- Name: idx_email_deliveries_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_deliveries_user_id ON public.email_deliveries USING btree (user_id);
+
+
+--
+-- Name: idx_email_delivery_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_email_delivery_identity ON public.email_deliveries USING btree (campaign_id, step_id, user_id);
+
+
+--
+-- Name: idx_email_preference_events_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_preference_events_user_id ON public.email_preference_events USING btree (user_id);
+
+
+--
+-- Name: idx_email_preference_tokens_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_preference_tokens_expires_at ON public.email_preference_tokens USING btree (expires_at);
+
+
+--
+-- Name: idx_email_preference_tokens_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_email_preference_tokens_user_id ON public.email_preference_tokens USING btree (user_id);
 
 
 --
@@ -2664,6 +3028,20 @@ CREATE INDEX stripe_webhook_events_received_at_idx ON public.stripe_webhook_even
 --
 
 CREATE INDEX subscription_extension_owner_idx ON public.subscription_extension_ledger USING btree (user_uuid, created_at DESC);
+
+
+--
+-- Name: subscription_lifecycle_due_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX subscription_lifecycle_due_idx ON public.subscription_lifecycle_states USING btree (effective_at) WHERE (effective_at IS NOT NULL);
+
+
+--
+-- Name: subscription_records_validity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX subscription_records_validity_idx ON public.subscription_records USING btree (valid_until);
 
 
 --
@@ -3226,6 +3604,30 @@ ALTER TABLE ONLY public.subscription_extension_ledger
 
 
 --
+-- Name: subscription_lifecycle_states subscription_lifecycle_states_account_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_lifecycle_states
+    ADD CONSTRAINT subscription_lifecycle_states_account_uuid_fkey FOREIGN KEY (account_uuid) REFERENCES public.users(uuid);
+
+
+--
+-- Name: subscription_lifecycle_states subscription_lifecycle_states_operation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_lifecycle_states
+    ADD CONSTRAINT subscription_lifecycle_states_operation_id_fkey FOREIGN KEY (operation_id) REFERENCES public.finance_operations(id);
+
+
+--
+-- Name: subscription_records subscription_records_user_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.subscription_records
+    ADD CONSTRAINT subscription_records_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE CASCADE;
+
+
+--
 -- Name: subscriptions subscriptions_user_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3394,184 +3796,11 @@ ALTER TABLE public.overlay_nodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.password_recovery_challenges ENABLE ROW LEVEL SECURITY;
 
 --
--- PostgreSQL database dump complete
+-- Name: subscription_lifecycle_states; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
-CREATE TABLE public.subscription_records (
-    user_uuid uuid NOT NULL,
-    subscription_type text DEFAULT ''::text NOT NULL,
-    monthly_quota_bytes bigint DEFAULT 0 NOT NULL,
-    annual_quota_bytes bigint DEFAULT 0 NOT NULL,
-    fee_minor bigint DEFAULT 0 NOT NULL,
-    payment_status text DEFAULT ''::text NOT NULL,
-    note text DEFAULT ''::text NOT NULL,
-    valid_from timestamp with time zone,
-    valid_until timestamp with time zone,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT subscription_records_monthly_quota_bytes_check CHECK ((monthly_quota_bytes >= 0)),
-    CONSTRAINT subscription_records_annual_quota_bytes_check CHECK ((annual_quota_bytes >= 0)),
-    CONSTRAINT subscription_records_fee_minor_check CHECK ((fee_minor >= 0)),
-    CONSTRAINT subscription_records_validity_ck CHECK (((valid_until IS NULL) OR (valid_from IS NULL) OR (valid_until >= valid_from)))
-);
+ALTER TABLE public.subscription_lifecycle_states ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE ONLY public.subscription_records
-    ADD CONSTRAINT subscription_records_pkey PRIMARY KEY (user_uuid);
-ALTER TABLE ONLY public.subscription_records
-    ADD CONSTRAINT subscription_records_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE CASCADE;
-CREATE INDEX subscription_records_validity_idx ON public.subscription_records USING btree (valid_until);
-
--- Marketing sender identity and independent, explicit recipient preferences.
-CREATE TABLE public.email_management_settings (
-    id text NOT NULL,
-    version bigint NOT NULL,
-    company_name text NOT NULL,
-    postal_address text NOT NULL,
-    contact_email text NOT NULL,
-    console_url text NOT NULL,
-    updated_by text NOT NULL,
-    updated_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_management_settings
-    ADD CONSTRAINT email_management_settings_pkey PRIMARY KEY (id);
-
-CREATE TABLE public.email_preferences (
-    user_id text NOT NULL,
-    product_updates boolean NOT NULL,
-    tutorials boolean NOT NULL,
-    offers boolean NOT NULL,
-    frequency text NOT NULL,
-    version bigint NOT NULL,
-    updated_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_preferences
-    ADD CONSTRAINT email_preferences_pkey PRIMARY KEY (user_id);
-
-CREATE TABLE public.email_preference_tokens (
-    hash text NOT NULL,
-    user_id text NOT NULL,
-    email text NOT NULL,
-    purpose text NOT NULL,
-    expires_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_preference_tokens
-    ADD CONSTRAINT email_preference_tokens_pkey PRIMARY KEY (hash);
-
-CREATE INDEX idx_email_preference_tokens_expires_at ON public.email_preference_tokens USING btree (expires_at);
-
-CREATE INDEX idx_email_preference_tokens_user_id ON public.email_preference_tokens USING btree (user_id);
-
-CREATE TABLE public.email_preference_events (
-    id text NOT NULL,
-    user_id text NOT NULL,
-    source text NOT NULL,
-    policy_version text NOT NULL,
-    preferences text NOT NULL,
-    created_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_preference_events
-    ADD CONSTRAINT email_preference_events_pkey PRIMARY KEY (id);
-
-CREATE INDEX idx_email_preference_events_user_id ON public.email_preference_events USING btree (user_id);
-
--- Durable announcement delivery and opt-in welcome journey.
-CREATE TABLE public.email_campaigns (
-    id text NOT NULL,
-    version bigint NOT NULL,
-    kind text NOT NULL,
-    subject text NOT NULL,
-    body text NOT NULL,
-    action_label text NOT NULL,
-    action_url text NOT NULL,
-    audience text NOT NULL,
-    delivery_mode text NOT NULL,
-    status text NOT NULL,
-    created_by text NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_campaigns
-    ADD CONSTRAINT email_campaigns_pkey PRIMARY KEY (id);
-
-CREATE INDEX idx_email_campaigns_status ON public.email_campaigns USING btree (status);
-
-CREATE TABLE public.email_onboarding_steps (
-    id text NOT NULL,
-    version bigint NOT NULL,
-    enabled boolean NOT NULL,
-    subject text NOT NULL,
-    body text NOT NULL,
-    action_label text NOT NULL,
-    action_url text NOT NULL,
-    delay_hours bigint NOT NULL,
-    activated_at timestamp with time zone NOT NULL,
-    updated_by text NOT NULL,
-    updated_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_onboarding_steps
-    ADD CONSTRAINT email_onboarding_steps_pkey PRIMARY KEY (id);
-
-CREATE TABLE public.email_deliveries (
-    id text NOT NULL,
-    dedupe_key text NOT NULL,
-    campaign_id text NOT NULL,
-    step_id text NOT NULL,
-    user_id text NOT NULL,
-    email text NOT NULL,
-    subject text NOT NULL,
-    body text NOT NULL,
-    action_label text NOT NULL,
-    action_url text NOT NULL,
-    category text NOT NULL,
-    delivery_mode text NOT NULL,
-    audience text NOT NULL,
-    status text NOT NULL,
-    attempts bigint NOT NULL,
-    due_at timestamp with time zone NOT NULL,
-    lease_token text NOT NULL,
-    lease_until timestamp with time zone,
-    sent_at timestamp with time zone,
-    last_error text NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_deliveries
-    ADD CONSTRAINT email_deliveries_pkey PRIMARY KEY (id);
-
-CREATE INDEX idx_email_deliveries_campaign_id ON public.email_deliveries USING btree (campaign_id);
-
-CREATE UNIQUE INDEX idx_email_deliveries_dedupe_key ON public.email_deliveries USING btree (dedupe_key);
-
-CREATE INDEX idx_email_deliveries_due_at ON public.email_deliveries USING btree (due_at);
-
-CREATE INDEX idx_email_deliveries_sent_at ON public.email_deliveries USING btree (sent_at);
-
-CREATE INDEX idx_email_deliveries_status ON public.email_deliveries USING btree (status);
-
-CREATE INDEX idx_email_deliveries_user_id ON public.email_deliveries USING btree (user_id);
-
-CREATE TABLE public.email_recipient_leases (
-    user_id text NOT NULL,
-    token text NOT NULL,
-    expires_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_recipient_leases
-    ADD CONSTRAINT email_recipient_leases_pkey PRIMARY KEY (user_id);
-
-CREATE TABLE public.email_suppressions (
-    email text NOT NULL,
-    reason text NOT NULL,
-    updated_by text NOT NULL,
-    created_at timestamp with time zone NOT NULL
-);
-
-ALTER TABLE ONLY public.email_suppressions
-    ADD CONSTRAINT email_suppressions_pkey PRIMARY KEY (email);
-CREATE UNIQUE INDEX idx_email_delivery_identity ON public.email_deliveries USING btree (campaign_id, step_id, user_id);
+--
+-- PostgreSQL database dump complete
+--

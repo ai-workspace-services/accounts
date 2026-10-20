@@ -87,7 +87,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 			t.Fatalf("reviewed catalog checkpoint: %d %v", got, err)
 		}
 	}
-	exec(target, `DELETE FROM public.accounts_controlled_migration_history; UPDATE public.schema_migrations SET version=2026101703`)
+	exec(target, `DELETE FROM public.accounts_controlled_migration_history; UPDATE public.schema_migrations SET version=`+strconv.Itoa(FullBusinessVersion))
 	// Qualify the old 44-table source -> latest 63-table target explicitly. New
 	// tables may be absent in source; they must remain empty in the target.
 	tables, _, e := fullBusinessContract()
@@ -179,7 +179,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	}
 	exec(target, `ALTER TABLE public.billing_ledger DROP CONSTRAINT fixture_reject`)
 	receipt, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
-	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 73 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
+	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 74 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
 		t.Fatalf("full copy: %#v %v", receipt, e)
 	}
 	var after string
@@ -370,7 +370,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `DROP TRIGGER fixture_late_mutation ON public.users; DROP FUNCTION public.fixture_late_mutation()`)
 		copied, e := CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions)
-		if e != nil || copied.SourceTables != 73 || len(copied.Tables) != 73 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
+		if e != nil || copied.SourceTables != 74 || len(copied.Tables) != 74 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
 			t.Fatalf("native finance copy failed: %v", e)
 		}
 
