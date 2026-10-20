@@ -48,15 +48,16 @@ type stripeClient struct {
 }
 
 type stripeCheckoutRequest struct {
-	PlanID        string `json:"planId"`
-	StripePriceID string `json:"stripePriceId"`
-	AmountMinor   int64  `json:"amountMinor,omitempty"`
-	Currency      string `json:"currency,omitempty"`
-	Mode          string `json:"mode"`
-	ProductSlug   string `json:"productSlug"`
-	SourcePath    string `json:"sourcePath"`
-	PreviewToken  string `json:"previewToken,omitempty"`
-	OperationKey  string `json:"-"`
+	PlanID           string `json:"planId"`
+	StripePriceID    string `json:"stripePriceId"`
+	AmountMinor      int64  `json:"amountMinor,omitempty"`
+	Currency         string `json:"currency,omitempty"`
+	Mode             string `json:"mode"`
+	ProductSlug      string `json:"productSlug"`
+	SourcePath       string `json:"sourcePath"`
+	PreviewToken     string `json:"previewToken,omitempty"`
+	OperationKey     string `json:"-"`
+	SessionExpiresAt int64  `json:"-"`
 }
 
 type stripePortalRequest struct {
@@ -116,6 +117,7 @@ type stripeCheckoutSession struct {
 	Customer          string `json:"customer"`
 	PaymentStatus     string `json:"payment_status"`
 	Status            string `json:"status"`
+	URL               string `json:"url"`
 	// AmountTotal is in the currency's smallest unit (cents/分), which is how
 	// Stripe reports every amount. It has to be divided by 100 before it means
 	// anything in balance terms.
@@ -517,7 +519,11 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 		form.Set("client_reference_id", clientReferenceID)
 	}
 	if mode == "subscription" {
-		form.Set("expires_at", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+		expires := req.SessionExpiresAt
+		if expires == 0 {
+			expires = time.Now().Add(time.Hour).Unix()
+		}
+		form.Set("expires_at", strconv.FormatInt(expires, 10))
 		form.Set("metadata[purchase_operation_key]", req.OperationKey)
 		form.Set("subscription_data[metadata][purchase_operation_key]", req.OperationKey)
 		form.Set("subscription_data[metadata][user_id]", strings.TrimSpace(user.ID))

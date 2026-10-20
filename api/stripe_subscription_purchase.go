@@ -36,6 +36,15 @@ type subscriptionQuote struct {
 	PeriodStart    int64  `json:"periodStart,omitempty"`
 }
 
+// Retain the exact submitted inputs for an explicitly requested idempotent
+// retry. In particular, account edits must not change customer_email on replay.
+type subscriptionPurchaseRequest struct {
+	subscriptionQuote
+	SourcePath    string `json:"sourcePath"`
+	CheckoutEmail string `json:"checkoutEmail"`
+	QuoteProof    string `json:"quoteProof"`
+}
+
 func (c *stripeClient) signSubscriptionQuote(q subscriptionQuote) string {
 	raw, _ := json.Marshal(q)
 	payload := base64.RawURLEncoding.EncodeToString(raw)
@@ -255,13 +264,12 @@ func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, 
 		respondError(c, 409, "quote_changed", "The quote changed; preview again before paying")
 		return
 	}
-	raw, _ := json.Marshal(q)
+	raw, _ := json.Marshal(subscriptionPurchaseRequest{subscriptionQuote: q, SourcePath: req.SourcePath, CheckoutEmail: user.Email, QuoteProof: req.PreviewToken})
 	op, err := h.store.ReserveSubscriptionPurchase(ctx, user.ID, raw)
 	if err != nil {
 		respondError(c, 409, "purchase_pending", "Another purchase is already pending")
 		return
 	}
-	req.OperationKey = op.IdempotencyKey
 	// Recheck local subscription state after obtaining the account reservation.
 	// A webhook might have completed between preview and reservation.
 	current, err := h.currentPurchaseSubscription(ctx, user.ID)
@@ -270,10 +278,73 @@ func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, 
 		respondError(c, 409, "subscription_changed", "Refresh the subscription state")
 		return
 	}
+	h.submitSubscriptionPurchase(c, user, op)
+}
+
+func retryableSubscriptionPurchase(op *store.FinanceOperation) bool {
+	return op != nil && op.ProviderOperationID == "" && time.Since(op.CreatedAt) >= 0 && time.Since(op.CreatedAt) < 20*time.Minute
+}
+
+// Replay only this same account reservation and same provider idempotency key.
+// Never release an ambiguous outcome or mint a second purchase to retry it.
+func (h *handler) stripeSubscriptionRetry(c *gin.Context) {
+	user, ok := h.requireAuthenticatedUser(c)
+	if !ok {
+		return
+	}
+	if !user.MFAEnabled || h.isReadOnlyAccount(user) {
+		respondError(c, 403, "mfa_required", "MFA is required before payment")
+		return
+	}
+	if h.stripe == nil || !h.stripe.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+		return
+	}
+	op, err := h.store.PendingSubscriptionPurchase(c.Request.Context(), user.ID)
+	if err != nil || !retryableSubscriptionPurchase(op) {
+		respondError(c, 409, "purchase_retry_unavailable", "Resume the existing payment or request reconciliation")
+		return
+	}
+	var stored subscriptionPurchaseRequest
+	if json.Unmarshal(op.Request, &stored) != nil || stored.UserID != user.ID {
+		respondError(c, 409, "purchase_retry_unavailable", "Purchase provenance needs reconciliation")
+		return
+	}
+	current, err := h.currentPurchaseSubscription(c.Request.Context(), user.ID)
+	if err != nil || stored.Action == "subscribe" && current != nil || stored.Action == "upgrade" && (current == nil || current.ExternalID != stored.SubscriptionID || current.PlanID != "PLUS") {
+		respondError(c, 409, "purchase_retry_unavailable", "Subscription state changed; reconcile the original payment")
+		return
+	}
+	if err := h.validateBillingModeCheckout(c.Request.Context(), user.ID, stripeCheckoutRequest{Mode: "subscription"}); err != nil {
+		respondError(c, 409, "billing_mode_conflict", "Reconcile the current billing mode before retrying")
+		return
+	}
+	h.submitSubscriptionPurchase(c, user, op)
+}
+
+func (h *handler) submitSubscriptionPurchase(c *gin.Context, user *store.User, op *store.FinanceOperation) {
+	ctx := c.Request.Context()
+	var stored subscriptionPurchaseRequest
+	if json.Unmarshal(op.Request, &stored) != nil || stored.UserID != user.ID || stored.CheckoutEmail == "" {
+		respondError(c, 409, "purchase_retry_unavailable", "Purchase provenance needs reconciliation")
+		return
+	}
+	q := stored.subscriptionQuote
+	// A credential/account change must not replay this operation against a
+	// different Stripe authority. Quote expiry was checked before reservation;
+	// this bounded retry checks its original proof, not a newly issued quote.
+	if !hmac.Equal([]byte(stored.QuoteProof), []byte(h.stripe.signSubscriptionQuote(q))) {
+		respondError(c, 409, "purchase_retry_unavailable", "Payment authority changed; reconcile the original request")
+		return
+	}
+	req := stripeCheckoutRequest{PlanID: q.PlanID, StripePriceID: q.PriceID, Mode: "subscription", ProductSlug: "xconnect", SourcePath: stored.SourcePath, OperationKey: op.IdempotencyKey, SessionExpiresAt: op.CreatedAt.Add(time.Hour).Unix()}
+	checkoutUser := *user
+	checkoutUser.Email = stored.CheckoutEmail
+	var err error
 	result := stripeSessionResponse{}
 	providerID := ""
 	if q.Action == "subscribe" {
-		session, e := h.stripe.createCheckoutSession(ctx, user, req)
+		session, e := h.stripe.createCheckoutSession(ctx, &checkoutUser, req)
 		err = e
 		if e == nil {
 			result = *session
@@ -287,7 +358,6 @@ func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, 
 			if sub.ID != q.SubscriptionID {
 				err = errors.New("provider subscription mismatch")
 			} else {
-				providerID = sub.ID
 				result.ID = sub.ID
 				invoiceID := customerIDFromAny(sub.LatestInvoice)
 				if invoiceID != "" {
@@ -345,6 +415,9 @@ func (h *handler) reconcileSubscriptionPurchase(ctx context.Context, userID stri
 		expired = session.Status == "expired"
 		paid = session.Status == "complete" && session.PaymentStatus == "paid"
 		providerSub = session.Subscription
+		if session.URL != "" {
+			op.Response, _ = json.Marshal(stripeSessionResponse{ID: session.ID, URL: session.URL})
+		}
 		if paid {
 			settled, err = h.stripe.fetchSubscription(ctx, providerSub)
 			if err != nil {
@@ -370,6 +443,9 @@ func (h *handler) reconcileSubscriptionPurchase(ctx context.Context, userID stri
 			}
 			if invoice.ID != invoiceID || invoiceSubscriptionID(invoice) != q.SubscriptionID {
 				return op, errors.New("invoice identity mismatch")
+			}
+			if invoice.HostedInvoiceURL != "" {
+				op.Response, _ = json.Marshal(stripeSessionResponse{ID: invoiceID, URL: invoice.HostedInvoiceURL})
 			}
 			paid = invoice.Status == "paid" && subscriptionPriceID(sub) == q.PriceID && !hasPendingUpdate(sub)
 			expired = !hasPendingUpdate(sub) && subscriptionPriceID(sub) == q.FromPriceID && invoice.Status == "void"
@@ -447,5 +523,5 @@ func (h *handler) stripeSubscriptionPending(c *gin.Context) {
 	_ = json.Unmarshal(op.Request, &q)
 	var receipt stripeSessionResponse
 	_ = json.Unmarshal(op.Response, &receipt)
-	c.JSON(200, gin.H{"pending": true, "planId": q.PlanID, "url": receipt.URL})
+	c.JSON(200, gin.H{"pending": true, "planId": q.PlanID, "url": receipt.URL, "retryable": retryableSubscriptionPurchase(op)})
 }

@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,6 +207,7 @@ func TestFreshPurchaseAndAmbiguousNetworkFailureKeepDurableGate(t *testing.T) {
 				t.Fatal(err)
 			}
 			var charges atomic.Int32
+			var originalBody, originalKey string
 			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
@@ -212,13 +215,17 @@ func TestFreshPurchaseAndAmbiguousNetworkFailureKeepDurableGate(t *testing.T) {
 					fmt.Fprint(w, `{"amount_due":50000,"total":50000,"currency":"cny"}`)
 				case r.Method == "POST" && r.URL.Path == "/checkout/sessions":
 					charges.Add(1)
+					body, _ := io.ReadAll(r.Body)
+					r.Body = io.NopCloser(strings.NewReader(string(body)))
+					if originalBody == "" {
+						originalBody = string(body)
+						originalKey = r.Header.Get("Idempotency-Key")
+					} else if originalBody != string(body) || originalKey != r.Header.Get("Idempotency-Key") {
+						t.Error("retry changed the original request or provider key")
+					}
 					_ = r.ParseForm()
 					if r.Form.Get("mode") != "subscription" || r.Form.Get("line_items[0][price]") != "price_year" || r.Header.Get("Idempotency-Key") == "" {
 						t.Error("unsafe fresh checkout")
-					}
-					if failure {
-						http.Error(w, "ambiguous upstream outcome", 500)
-						return
 					}
 					fmt.Fprint(w, `{"id":"cs_fresh","url":"https://checkout.stripe.test/fresh"}`)
 				case r.Method == "GET" && r.URL.Path == "/checkout/sessions/cs_fresh":
@@ -232,6 +239,9 @@ func TestFreshPurchaseAndAmbiguousNetworkFailureKeepDurableGate(t *testing.T) {
 			h := &handler{store: st, stripe: newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"})}
 			h.stripe.apiBaseURL = provider.URL
 			h.stripe.httpClient = provider.Client()
+			if failure {
+				h.stripe.httpClient.Transport = &subscriptionLostReplyTransport{base: h.stripe.httpClient.Transport}
+			}
 			q, err := h.buildSubscriptionQuote(ctx, u.ID, plan, time.Now().Unix())
 			if err != nil {
 				t.Fatal(err)
@@ -254,9 +264,57 @@ func TestFreshPurchaseAndAmbiguousNetworkFailureKeepDurableGate(t *testing.T) {
 			if code := execute(); code != 409 || charges.Load() != 1 {
 				t.Fatalf("duplicate fresh checkout: %d %d", code, charges.Load())
 			}
+			if failure {
+				op, err := st.PendingSubscriptionPurchase(ctx, u.ID)
+				if err != nil || !retryableSubscriptionPurchase(op) {
+					t.Fatal("missing retryable original reservation", err)
+				}
+				u.Email = "changed-after-checkout@example.invalid"
+				w := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(w)
+				c.Request = httptest.NewRequest("POST", "/retry", nil)
+				h.submitSubscriptionPurchase(c, u, op)
+				if w.Code != 200 || charges.Load() != 2 {
+					t.Fatal("did not safely replay the original request", w.Code, charges.Load())
+				}
+				op, _ = st.PendingSubscriptionPurchase(ctx, u.ID)
+				if op.ProviderOperationID != "cs_fresh" || retryableSubscriptionPurchase(op) {
+					t.Fatal("did not checkpoint the original checkout")
+				}
+				h.stripe.secretKey = "sk_test_other_account"
+				blocked := httptest.NewRecorder()
+				other, _ := gin.CreateTestContext(blocked)
+				other.Request = httptest.NewRequest("POST", "/retry", nil)
+				h.submitSubscriptionPurchase(other, u, op)
+				if blocked.Code != 409 || charges.Load() != 2 {
+					t.Fatal("replayed against a changed payment authority")
+				}
+			}
 			if profile, _ := st.GetAccountBillingProfile(ctx, u.ID); profile != nil {
 				t.Fatal("granted before paid webhook")
 			}
 		})
+	}
+}
+
+type subscriptionLostReplyTransport struct {
+	base    http.RoundTripper
+	dropped atomic.Bool
+}
+
+func (transport *subscriptionLostReplyTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := transport.base.RoundTrip(request)
+	if err == nil && request.Method == "POST" && request.URL.Path == "/checkout/sessions" && transport.dropped.CompareAndSwap(false, true) {
+		response.Body.Close()
+		return nil, errors.New("simulated lost reply after provider acceptance")
+	}
+	return response, err
+}
+
+func TestSubscriptionRetryWindowNeverAllowsNewProviderOperation(t *testing.T) {
+	for _, op := range []*store.FinanceOperation{nil, {CreatedAt: time.Now().Add(-21 * time.Minute)}, {CreatedAt: time.Now(), ProviderOperationID: "cs_existing"}} {
+		if retryableSubscriptionPurchase(op) {
+			t.Fatal("unsafe provider retry")
+		}
 	}
 }
