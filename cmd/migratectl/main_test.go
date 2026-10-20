@@ -34,6 +34,30 @@ func TestControlledMigrateUsesEnvironmentDSNOnly(t *testing.T) {
 	}
 }
 
+func TestReconcileUsageCommandUsesExplicitGenerations(t *testing.T) {
+	cmd := newUsageMergeCmd()
+	if strings.Contains(cmd.Short, "V2") || strings.Contains(cmd.Short, "V3") {
+		t.Fatalf("reconcile-usage help must not hardcode a generation pair: %q", cmd.Short)
+	}
+	for _, name := range []string{"source-dsn-env", "target-dsn-env", "source-generation", "target-generation", "schema-sha256", "billing-schema-sha256", "expected-target-version", "apply", "writers-paused", "expected-plan-sha256"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("missing --%s flag", name)
+		}
+	}
+	for _, name := range []string{"source-dsn-env", "target-dsn-env"} {
+		usage := cmd.Flags().Lookup(name).Usage
+		if strings.Contains(usage, "V2") || strings.Contains(usage, "V3") {
+			t.Errorf("--%s help must describe a generic source/destination: %q", name, usage)
+		}
+	}
+	for name, example := range map[string]string{"source-generation": "prod-v3", "target-generation": "prod-v4"} {
+		usage := cmd.Flags().Lookup(name).Usage
+		if !strings.Contains(usage, example) {
+			t.Errorf("--%s should show a generic adjacent-generation example, got %q", name, usage)
+		}
+	}
+}
+
 func TestMigrateDSNEnvironmentContract(t *testing.T) {
 	dir := t.TempDir()
 	t.Run("requires a value", func(t *testing.T) {
