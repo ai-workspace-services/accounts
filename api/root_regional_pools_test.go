@@ -26,19 +26,19 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 		}
 	}
 	users := map[string]*store.User{}
-	for _, name := range []string{"root", "admin", "operator", "free", "plus", "alpha", "beta", "removed", "blocked"} {
+	for _, name := range []string{"root", "admin", "operator", "admin-alpha", "free", "plus", "pro", "alpha", "beta", "removed", "blocked"} {
 		role := store.RoleUser
 		if name == "root" {
 			role = store.RoleRoot
 		}
-		if name == "admin" {
+		if name == "admin" || name == "admin-alpha" {
 			role = store.RoleAdmin
 		}
 		if name == "operator" {
 			role = store.RoleOperator
 		}
 		u := &store.User{Name: name, Email: name + "@example.test", Role: role, Active: true, EmailVerified: true}
-		if name == "plus" {
+		if name == "plus" || name == "pro" {
 			u.Groups = []string{store.MonthlyPlusQuotaLimitGroup}
 		}
 		if name == "alpha" {
@@ -51,12 +51,21 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 			t.Fatal(err)
 		}
 		users[name] = u
-		if name == "alpha" || name == "beta" || name == "removed" {
+		if name == "pro" {
+			if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: u.ID, PackageName: "pro", IncludedQuotaBytes: 50 << 30}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if name == "alpha" || name == "beta" || name == "removed" || name == "admin-alpha" {
 			if err := teams.PutNetworkMembership(ctx, store.NetworkMembership{UserID: u.ID, DedicatedOnly: true}, &store.AuditLog{}); err != nil {
 				t.Fatal(err)
 			}
 			if name != "removed" {
-				if err := teams.PutNetworkMembership(ctx, store.NetworkMembership{UserID: u.ID, TeamID: name, DedicatedOnly: true}, &store.AuditLog{}); err != nil {
+				teamID := name
+				if name == "admin-alpha" {
+					teamID = "alpha"
+				}
+				if err := teams.PutNetworkMembership(ctx, store.NetworkMembership{UserID: u.ID, TeamID: teamID, DedicatedOnly: true}, &store.AuditLog{}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -79,12 +88,14 @@ func TestRegionalPoolsRootInventoryDoesNotExpandUserScope(t *testing.T) {
 	r := gin.New()
 	RegisterRoutes(r, WithStore(st), WithAgentStatusReader(stubAgentStatusReader{statuses: statuses}))
 	want := map[string][]string{
-		"root":     {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
-		"admin":    {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
-		"operator": {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
-		"free":     {"free.example.test", "public.example.test"},
-		"plus":     {"free.example.test", "plus.example.test", "public.example.test"},
-		"alpha":    {"alpha.example.test"}, "beta": {"beta.example.test"}, "removed": {}, "blocked": {},
+		"root":        {"alpha.example.test", "beta.example.test", "closed.example.test", "free.example.test", "plus.example.test", "public.example.test"},
+		"admin":       {"closed.example.test", "free.example.test", "public.example.test"},
+		"operator":    {"closed.example.test", "free.example.test", "public.example.test"},
+		"admin-alpha": {"alpha.example.test"},
+		"free":        {"free.example.test", "public.example.test"},
+		"plus":        {"free.example.test", "plus.example.test", "public.example.test"},
+		"pro":         {"free.example.test", "plus.example.test", "public.example.test"},
+		"alpha":       {"alpha.example.test"}, "beta": {"beta.example.test"}, "removed": {}, "blocked": {},
 	}
 
 	for name, entries := range want {

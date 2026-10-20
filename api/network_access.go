@@ -68,17 +68,22 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 		return false
 	}
 	class := effectiveAgentResourceClass(access, user, packageName)
-	switch scope.ResourceClass {
-	case agentResourceFree:
-		// Preserve existing Plus access to Free pools without broadening Pro.
-		return class == agentResourceFree || class == agentResourcePlus
-	case agentResourcePlus:
-		return class == agentResourcePlus
-	case agentResourcePro:
-		return class == agentResourcePro
-	default:
+	return publicAgentResourceClassAllows(scope.ResourceClass, class)
+}
+
+// Public tiers inherit the lower-tier pools. Team resources never participate
+// in this hierarchy; membership is checked separately by the caller.
+func publicAgentResourceClassAllows(poolClass, userClass string) bool {
+	rank := map[string]int{agentResourceFree: 1, agentResourcePlus: 2, agentResourcePro: 3}
+	userRank, known := rank[userClass]
+	if !known {
+		return false
+	}
+	if poolClass == agentResourceShared {
 		return true
 	}
+	poolRank, known := rank[poolClass]
+	return known && userRank >= poolRank
 }
 
 const (

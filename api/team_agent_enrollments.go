@@ -146,8 +146,21 @@ func pendingTeamResponse(c *gin.Context) bool {
 	return true
 }
 func (h *handler) adminListTeamAgents(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminAgentsStatus); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminAgentsStatus)
+	if !ok {
 		return
+	}
+	teamID := ""
+	root := store.IsRootRole(actor.Role)
+	if !root {
+		access, err := h.networkAccessForUser(c.Request.Context(), actor)
+		if err != nil {
+			respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+			return
+		}
+		if access.Allowed && access.Mode == "dedicated" {
+			teamID = access.TeamID
+		}
 	}
 	st, ok := h.store.(store.TeamAgentEnrollmentStore)
 	if !ok {
@@ -168,6 +181,13 @@ func (h *handler) adminListTeamAgents(c *gin.Context) {
 	}
 	out := make([]row, 0, len(rows))
 	for _, e := range rows {
+		// Suggested ownership is untrusted; only an assigned team grants visibility.
+		if !root && (teamID == "" || e.AssignedTeamID != teamID) {
+			continue
+		}
+		if !root {
+			e.SuggestedTeamID = ""
+		}
 		v := row{TeamAgentEnrollment: e}
 		if h.agentStatusReader != nil {
 			for _, s := range h.agentStatusReader.Statuses() {

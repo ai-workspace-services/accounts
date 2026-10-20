@@ -21,7 +21,13 @@ func canViewRegionalPoolInventory(user *store.User) bool {
 	if user == nil {
 		return false
 	}
-	return isRootUser(user) || store.IsOperatorRole(user.Role) || user.Level == store.LevelOperator
+	return store.IsRootRole(user.Role)
+}
+
+// Operational diagnostics retain closed rows, but only inside the caller's
+// already filtered entitlement/team scope. They do not expand that scope.
+func canViewRegionalPoolDiagnostics(user *store.User) bool {
+	return user != nil && (store.IsAdminRole(user.Role) || store.IsOperatorRole(user.Role))
 }
 
 type regionalClosureReason string
@@ -55,9 +61,9 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	var pools []regionalPool
-	// Administrators and operators can inspect the full inventory, including
-	// closed and team-dedicated pools. Ordinary users remain constrained by
-	// their effective entitlement scope below.
+	// Only root can inspect the full cross-team inventory. All other callers,
+	// including administrators and operators, retain their own entitlement and
+	// team scope. Inventory visibility does not grant proxy configuration access.
 	if canViewRegionalPoolInventory(user) {
 		pools = registeredRegionalPools(h.enrollmentStatusReader(), time.Now().UTC())
 	} else {
@@ -88,7 +94,7 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 		}
 		pools = regionalPoolsForUser(h.networkStatusReader(access), access, user, packageName, time.Now().UTC())
 	}
-	if !canViewRegionalPoolInventory(user) {
+	if !canViewRegionalPoolDiagnostics(user) {
 		visible := make([]regionalPool, 0, len(pools))
 		for _, pool := range pools {
 			if pool.OpenToUsers {
