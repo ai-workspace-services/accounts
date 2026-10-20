@@ -14,7 +14,7 @@ import (
 func newUsageMergeCmd() *cobra.Command {
 	var sourceEnv, targetEnv string
 	options := migrate.UsageMergeOptions{}
-	cmd := &cobra.Command{Use: "reconcile-usage", Args: cobra.NoArgs, Short: "Preview or transactionally reconcile V2 accounting facts into V3 without schema changes", RunE: func(cmd *cobra.Command, args []string) error {
+	cmd := &cobra.Command{Use: "reconcile-usage", Args: cobra.NoArgs, Short: "Preview or transactionally reconcile reviewed accounting facts between adjacent generations without schema changes", RunE: func(cmd *cobra.Command, args []string) error {
 		if sourceEnv == "" || targetEnv == "" || sourceEnv == targetEnv {
 			return errors.New("distinct source and target DSN environment names are required")
 		}
@@ -31,10 +31,10 @@ func newUsageMergeCmd() *cobra.Command {
 		}
 		return err
 	}}
-	cmd.Flags().StringVar(&sourceEnv, "source-dsn-env", "", "Environment variable for the read-only V2 database DSN")
-	cmd.Flags().StringVar(&targetEnv, "target-dsn-env", "", "Environment variable for the V3 database DSN")
-	cmd.Flags().StringVar(&options.SourceGeneration, "source-generation", "", "Explicit source generation")
-	cmd.Flags().StringVar(&options.TargetGeneration, "target-generation", "", "Explicit target generation")
+	cmd.Flags().StringVar(&sourceEnv, "source-dsn-env", "", "Environment variable containing the read-only source database DSN")
+	cmd.Flags().StringVar(&targetEnv, "target-dsn-env", "", "Environment variable containing the target database DSN")
+	cmd.Flags().StringVar(&options.SourceGeneration, "source-generation", "", "Source generation (for example prod-v3)")
+	cmd.Flags().StringVar(&options.TargetGeneration, "target-generation", "", "Immediately following target generation (for example prod-v4)")
 	cmd.Flags().StringVar(&options.SchemaSHA256, "schema-sha256", "", "Exact compiled native schema SHA-256")
 	cmd.Flags().StringVar(&options.BillingSHA256, "billing-schema-sha256", "", "Exact compiled Billing schema SHA-256")
 	cmd.Flags().UintVar(&options.ExpectedTargetVersion, "expected-target-version", 0, "Exact clean target migration checkpoint")
