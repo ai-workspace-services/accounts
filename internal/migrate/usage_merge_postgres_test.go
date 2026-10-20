@@ -76,6 +76,26 @@ INSERT INTO public.billing_ledger(id,account_uuid,bucket_start,bucket_end,entry_
 SELECT md5('usage-'||g::text)::uuid,'`+srcID+`','2026-10-01T00:00:00Z'::timestamptz+g*interval '1 minute','2026-10-01T00:01:00Z'::timestamptz+g*interval '1 minute','usage',9007199254740993,0.125,0,'2026-10-01T00:00:00Z' FROM generate_series(1,1003)g;
 INSERT INTO public.traffic_minute_buckets(account_uuid,node_id,bucket_start,total_bytes) SELECT '`+srcID+`','fixture-node','2026-10-01T00:00:00Z'::timestamptz+g*interval '1 minute',9007199254740993 FROM generate_series(1,1003)g;`)
 	options := UsageMergeOptions{SourceGeneration: "prod-v3", TargetGeneration: "prod-v4", SchemaSHA256: manifest.SchemaSHA256, BillingSHA256: FullBusinessBillingSHA256, ExpectedTargetVersion: FullBusinessVersion}
+	// Exercise the actual dedicated source role, including native indexes and
+	// sequences; an administrator source cannot qualify its permission checks.
+	exec(source, `DO $reader$ BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='readonly_release') THEN
+ CREATE ROLE readonly_release LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'isolated-readonly-fixture';
+END IF; END $reader$;
+ALTER ROLE readonly_release SET default_transaction_read_only=on;
+GRANT USAGE ON SCHEMA public TO readonly_release;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_release;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO readonly_release;`)
+	for _, name := range usageMergeTables {
+		var rls bool
+		if err := source.QueryRow(`SELECT relrowsecurity FROM pg_class WHERE oid=$1::regclass`, "public."+name).Scan(&rls); err != nil {
+			t.Fatal(err)
+		}
+		if rls {
+			exec(source, "CREATE POLICY release_initialization_readonly ON public."+quoteBusiness(name)+" FOR SELECT TO readonly_release USING(true)")
+		}
+	}
+	sourceDSN = "postgres://readonly_release:isolated-readonly-fixture@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/usage_merge_source?sslmode=disable"
 	ctx := context.Background()
 	preview, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
 	if err != nil {
