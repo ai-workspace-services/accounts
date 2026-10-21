@@ -15,6 +15,9 @@
 - 错误诊断
 - 应急处理
 
+### 🔍 开发调试
+- [Stripe MCP Sandbox Debugging](./Stripe-MCP-Sandbox-Debugging.md) - 在 Codex 中使用 Stripe MCP 只读排查 Sandbox 付款。
+
 ### 🔄 运维操作
 - [Security Scrubbing Archive](./Security-Scrubbing-Archive-2026-02-06.md) - 历史敏感信息深度脱敏记录。
 - [Fix Rotating UUID Sync Archive](./Fix-Rotating-UUID-Sync-Archive-2026-02-06.md) - P1 级别 Sandbox 旋转 UUID 同步故障修复记录。
