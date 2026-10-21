@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -95,6 +96,14 @@ func TestStripeRefundFactsAreIdempotentAndBoundedByOriginalPayment(t *testing.T)
 func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
 	_, st, user := newBillingWebhookHarness(t)
 	ctx := context.Background()
+	// A stale validity window can survive a later explicit Free assignment.
+	// It must not keep a just-refunded Stripe purchase entitled to Plus.
+	validUntil := time.Now().UTC().AddDate(0, 6, 0)
+	user.SubscriptionValidUntil = &validUntil
+	user.Groups = []string{"User", "segment:free", store.MonthlyPlusQuotaLimitGroup, "operator:keep"}
+	if err := st.UpdateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
 	sub := &store.Subscription{UserID: user.ID, Provider: "stripe", Kind: "subscription", ExternalID: "sub_full_refund", Status: "active", PlanID: "PRO-M"}
 	if err := st.UpsertSubscription(ctx, sub); err != nil {
 		t.Fatal(err)
@@ -139,6 +148,14 @@ func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
 	if len(subs) != 1 || subs[0].Status != "refunded" {
 		t.Fatalf("full refund did not revoke access: %#v", subs)
 	}
+	storedUser, _ := st.GetUserByID(ctx, user.ID)
+	if store.MonthlyQuotaGroup(storedUser) != store.MonthlyFreeQuotaLimitGroup || !slices.Contains(storedUser.Groups, "operator:keep") {
+		t.Fatalf("full refund did not restore Free quota group or removed unrelated group: %#v", storedUser.Groups)
+	}
+	profile, err := st.GetAccountBillingProfile(ctx, user.ID)
+	if err != nil || profile.PricingRuleVersion != "plan:FREE" {
+		t.Fatalf("full refund did not restore Free billing profile: %#v %v", profile, err)
+	}
 
 	source := &stripeSubscription{ID: sub.ExternalID, Status: "active", LatestInvoice: "in_full", Metadata: map[string]string{"user_id": user.ID}}
 	if err := h.upsertStripeSubscription(ctx, source, ""); err != nil {
@@ -158,6 +175,29 @@ func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
 	lifecycle, err = st.GetSubscriptionLifecycle(ctx, user.ID)
 	if err != nil || lifecycle.RefundReviewPending {
 		t.Fatalf("review gate remains blocked: %#v %v", lifecycle, err)
+	}
+}
+
+func TestRefundPreservesActiveListedLocalSubscription(t *testing.T) {
+	_, st, user := newBillingWebhookHarness(t)
+	ctx := context.Background()
+	validUntil := time.Now().UTC().AddDate(0, 6, 0)
+	user.SubscriptionValidUntil = &validUntil
+	user.Groups = []string{"User", store.MonthlyPlusQuotaLimitGroup, store.SubscriptionListedGroup, "segment:yearly"}
+	if err := st.UpdateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	sub := &store.Subscription{UserID: user.ID, Provider: "stripe", Kind: "subscription", ExternalID: "sub_local_grant", Status: "active", PlanID: "PLUS"}
+	if err := st.UpsertSubscription(ctx, sub); err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{store: st}
+	if err := h.revokeRefundedSubscription(ctx, user.ID, sub.ExternalID); err != nil {
+		t.Fatal(err)
+	}
+	storedUser, _ := st.GetUserByID(ctx, user.ID)
+	if store.MonthlyQuotaGroup(storedUser) != store.MonthlyPlusQuotaLimitGroup {
+		t.Fatalf("active listed local subscription was removed: %#v", storedUser.Groups)
 	}
 }
 

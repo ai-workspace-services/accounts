@@ -253,6 +253,28 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 	if strings.TrimSpace(userID) == "" {
 		return nil
 	}
+	user, userErr := h.store.GetUserByID(ctx, userID)
+	if userErr != nil && !errors.Is(userErr, store.ErrUserNotFound) {
+		return userErr
+	}
+	if user != nil {
+		groups := make([]string, 0, len(user.Groups)+2)
+		for _, group := range user.Groups {
+			switch group {
+			case store.MonthlyFreeQuotaLimitGroup, store.MonthlyPlusQuotaLimitGroup,
+				store.MonthlyUnlimitedBetaQuotaGroup, store.SubscriptionListedGroup,
+				"segment:subscribed", "segment:monthly", "segment:yearly",
+				"segment:subscription:monthly", "segment:subscription:yearly":
+				continue
+			}
+			groups = append(groups, group)
+		}
+		groups = append(groups, store.MonthlyFreeQuotaLimitGroup, "segment:free")
+		user.Groups = normalizeGroups(groups)
+		if err := h.store.UpdateUser(ctx, user); err != nil {
+			return err
+		}
+	}
 	plan, err := h.store.GetBillingPlan(ctx, store.BillingPlanFree)
 	if err != nil {
 		if !errors.Is(err, store.ErrBillingPlanNotFound) {
@@ -342,7 +364,7 @@ func (h *handler) revokeRefundedSubscription(ctx context.Context, userID, refund
 	if !found {
 		return nil
 	}
-	if user, err := h.store.GetUserByID(ctx, userID); err == nil && subscriptionValidityActive(user, time.Now().UTC()) {
+	if user, err := h.store.GetUserByID(ctx, userID); err == nil && activeListedSubscriptionGrant(user, time.Now().UTC()) {
 		return nil
 	} else if err != nil && !errors.Is(err, store.ErrUserNotFound) {
 		return err
@@ -372,6 +394,21 @@ func (h *handler) revokeRefundedSubscription(ctx context.Context, userID, refund
 		}
 	}
 	return h.downgradeToFreePlan(ctx, userID)
+}
+
+// A date left behind after an entitlement was explicitly removed is historical
+// state, not a current grant. Preserve local subscription access only while the
+// account still carries the authoritative subscription-list marker.
+func activeListedSubscriptionGrant(user *store.User, now time.Time) bool {
+	if !subscriptionValidityActive(user, now) {
+		return false
+	}
+	for _, group := range user.Groups {
+		if group == store.SubscriptionListedGroup {
+			return true
+		}
+	}
+	return false
 }
 
 // supersedeActiveTrials marks the user's active trial subscriptions as
