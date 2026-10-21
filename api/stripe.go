@@ -957,6 +957,8 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 	if tracked {
 		if err := h.store.FinishStripeWebhookEvent(c.Request.Context(), event.ID, procErr); err != nil {
 			slog.Warn("failed to finalize stripe webhook event record", "err", err, "eventID", event.ID)
+			respondError(c, http.StatusServiceUnavailable, "stripe_event_finalize_failed", "failed to persist stripe event processing result")
+			return
 		}
 	}
 	if procErr != nil {
