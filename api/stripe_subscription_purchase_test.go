@@ -35,6 +35,26 @@ func TestSubscriptionQuoteUserExpiryAndTamper(t *testing.T) {
 	}
 }
 
+func TestRefundedSubscriptionDoesNotKeepPurchaseStatusPending(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := seedActiveUser(t, st, "Refunded", "refunded-terminal@example.invalid", "refunded-terminal")
+	if err := st.UpsertSubscription(ctx, &store.Subscription{
+		UserID: user.ID, Provider: "stripe", Kind: "subscription", PlanID: "PLUS",
+		ExternalID: "sub_refunded_terminal", Status: "refunded",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := (&handler{store: st}).currentPurchaseSubscription(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("refunded subscription should be terminal: %v", err)
+	}
+	if current != nil {
+		t.Fatalf("refunded subscription must not be treated as current: %+v", current)
+	}
+}
+
 func TestMonthlyUpgradeReplacesOneItemAndPreservesUsageAfterPayment(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemoryStore()

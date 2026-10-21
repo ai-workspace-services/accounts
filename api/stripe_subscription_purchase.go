@@ -96,7 +96,7 @@ func (h *handler) currentPurchaseSubscription(ctx context.Context, userID string
 			continue
 		}
 		switch s.Status {
-		case "canceled", "cancelled", "incomplete_expired", "expired":
+		case "canceled", "cancelled", "incomplete_expired", "expired", "refunded":
 			continue
 		}
 		if s.Status != "active" || s.Provider != "stripe" || !strings.HasPrefix(s.ExternalID, "sub_") || active != nil {
