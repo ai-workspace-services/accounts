@@ -752,6 +752,7 @@ type Store interface {
 	FinishSubscriptionAction(ctx context.Context, userID, operationID, providerID string, response json.RawMessage, confirmed bool, pendingPlan string, effectiveAt *time.Time) error
 	PendingSubscriptionPurchase(ctx context.Context, userID string) (*FinanceOperation, error)
 	UpgradeSubscriptionQuota(ctx context.Context, userID string, previous, target int64, start, end time.Time) error
+	ActivateSubscriptionQuota(ctx context.Context, userID string, previous, target int64, start, end time.Time) error
 	UpdateSubscriptionPurchase(ctx context.Context, operationID, providerID string, response json.RawMessage, complete bool) error
 	// BeginStripeWebhookEvent records an inbound event before processing and
 	// reports whether it was already processed (idempotent replay guard).
