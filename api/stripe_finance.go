@@ -163,8 +163,62 @@ func (h *handler) recordStripeRefund(ctx context.Context, refund *stripeRefund) 
 	}
 	for _, subscription := range subscriptions {
 		if subscription.ID == invoice.SubscriptionUUID && subscription.Provider == "stripe" {
-			return h.revokeRefundedSubscription(ctx, payment.AccountUUID, subscription.ExternalID)
+			settled, _, err := h.refundReviewSettlement(ctx, refundReviewRequest{AccountID: payment.AccountUUID, SubscriptionID: subscription.ID})
+			if err != nil || !settled {
+				return err
+			}
+			if err := h.revokeRefundedSubscription(ctx, payment.AccountUUID, subscription.ExternalID); err != nil {
+				return err
+			}
+			return h.completeSettledRefundReview(ctx, payment.AccountUUID, subscription.ID)
 		}
 	}
 	return errors.New("refunded invoice has no matching local subscription")
+}
+
+// A paid invoice remains "paid" at Stripe after a refund. Do not let a late
+// subscription/invoice event turn that old payment back into paid access.
+func (h *handler) reconcileRefundedLatestInvoice(ctx context.Context, source *stripeSubscription) (bool, error) {
+	if source == nil || source.Metadata["user_id"] == "" || customerIDFromAny(source.LatestInvoice) == "" {
+		return false, nil
+	}
+	userID := source.Metadata["user_id"]
+	payments, err := h.store.ListFinancePayments(ctx, userID, 0)
+	if err != nil {
+		return false, err
+	}
+	refunds, err := h.store.ListFinanceRefunds(ctx, userID, 0)
+	if err != nil {
+		return false, err
+	}
+	count := 0
+	for _, payment := range payments {
+		if payment.Provider != "stripe" {
+			continue
+		}
+		invoice, err := h.store.GetFinanceInvoice(ctx, payment.InvoiceID)
+		if err != nil {
+			return false, err
+		}
+		if invoice.AccountUUID != userID || invoice.ProviderInvoiceID != customerIDFromAny(source.LatestInvoice) {
+			continue
+		}
+		if payment.AmountMinor <= 0 {
+			continue
+		}
+		count++
+		var total int64
+		for _, refund := range refunds {
+			if refund.PaymentID == payment.ID {
+				total += refund.AmountMinor
+			}
+		}
+		if total != payment.AmountMinor {
+			return false, nil
+		}
+	}
+	if count == 0 {
+		return false, nil
+	}
+	return true, h.revokeRefundedSubscription(ctx, userID, source.ID)
 }

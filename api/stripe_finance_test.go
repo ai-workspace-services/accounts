@@ -107,6 +107,15 @@ func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
 	if _, err := st.RecordFinancePayment(ctx, payment); err != nil {
 		t.Fatal(err)
 	}
+	reviewBody, _ := json.Marshal(refundReviewRequest{AccountID: user.ID, SubscriptionID: sub.ID, ExternalID: sub.ExternalID, RequestedAt: time.Now().UTC()})
+	review := &store.FinanceOperation{IdempotencyKey: refundReviewKey(user.ID), OperationType: "refund_review", TargetType: "account", TargetID: user.ID, Provider: "stripe", Request: reviewBody}
+	lifecycle, err := st.GetSubscriptionLifecycle(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateSubscriptionRefundReview(ctx, review, lifecycle.Version); err != nil {
+		t.Fatal(err)
+	}
 	h := &handler{store: st}
 	refund := stripeRefund{ID: "re_first", Status: "succeeded", PaymentIntent: "pi_full", Amount: 400, Currency: "usd", Created: 1770000000}
 	if err := h.recordStripeRefund(ctx, &refund); err != nil {
@@ -115,6 +124,10 @@ func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
 	subs, _ := st.ListSubscriptionsByUser(ctx, user.ID)
 	if len(subs) != 1 || subs[0].Status != "active" {
 		t.Fatalf("partial refund revoked access: %#v", subs)
+	}
+	pending, _ := st.GetSubscriptionLifecycle(ctx, user.ID)
+	if !pending.RefundReviewPending {
+		t.Fatal("partial refund cleared review")
 	}
 	refund.ID, refund.Amount = "re_second", 800
 	for range 2 {
@@ -125,6 +138,26 @@ func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
 	subs, _ = st.ListSubscriptionsByUser(ctx, user.ID)
 	if len(subs) != 1 || subs[0].Status != "refunded" {
 		t.Fatalf("full refund did not revoke access: %#v", subs)
+	}
+
+	source := &stripeSubscription{ID: sub.ExternalID, Status: "active", LatestInvoice: "in_full", Metadata: map[string]string{"user_id": user.ID}}
+	if err := h.upsertStripeSubscription(ctx, source, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.syncSubscriptionEntitlements(ctx, source, false); err != nil {
+		t.Fatal(err)
+	}
+	subs, _ = st.ListSubscriptionsByUser(ctx, user.ID)
+	if subs[0].Status != "refunded" {
+		t.Fatal("late active event restored refunded access")
+	}
+	review, err = st.GetFinanceOperation(ctx, refundReviewKey(user.ID))
+	if err != nil || review.Status != store.FinanceOperationSucceeded {
+		t.Fatalf("review not completed: %#v %v", review, err)
+	}
+	lifecycle, err = st.GetSubscriptionLifecycle(ctx, user.ID)
+	if err != nil || lifecycle.RefundReviewPending {
+		t.Fatalf("review gate remains blocked: %#v %v", lifecycle, err)
 	}
 }
 
