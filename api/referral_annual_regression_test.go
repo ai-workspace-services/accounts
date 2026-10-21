@@ -96,7 +96,7 @@ func TestEnsureReferrerPaidPeriodUsesHistoricalStripeInvoicePeriod(t *testing.T)
 		}
 	}))
 	defer stripeServer.Close()
-	client := newStripeClient(StripeConfig{SecretKey: "sk_test"})
+	client := newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"})
 	client.httpClient = stripeServer.Client()
 	client.httpClient.Transport = redirectStripeTestTransport{target: stripeServer.URL}
 	h := &handler{store: st, stripe: client}
@@ -153,7 +153,7 @@ func TestEnsureReferrerPaidPeriodFailsClosedWithoutHistoricalCoverage(t *testing
 		http.NotFound(w, r)
 	}))
 	defer stripeServer.Close()
-	client := newStripeClient(StripeConfig{SecretKey: "sk_test"})
+	client := newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"})
 	client.httpClient = stripeServer.Client()
 	client.httpClient.Transport = redirectStripeTestTransport{target: stripeServer.URL}
 	if err := (&handler{store: st, stripe: client}).ensureReferrerPaidPeriod(ctx, invitee.ID, paidAt); err != nil {
@@ -217,7 +217,7 @@ func TestInvoicePaidKeepsCoreQuotaOnReferralHistoryFailureAndRetryIsIdempotent(t
 		http.NotFound(w, r)
 	}))
 	defer stripeServer.Close()
-	client := newStripeClient(StripeConfig{SecretKey: "sk_test"})
+	client := newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"})
 	client.apiBaseURL = stripeServer.URL + "/v1"
 	client.httpClient = stripeServer.Client()
 	h := &handler{store: st, stripe: client}
@@ -294,7 +294,7 @@ func TestEnsureReferrerPaidPeriodRejectsProviderRefundAndDisputeHistory(t *testi
 				}
 			}))
 			defer server.Close()
-			client := newStripeClient(StripeConfig{SecretKey: "sk_test"})
+			client := newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"})
 			client.apiBaseURL = server.URL + "/v1"
 			client.httpClient = server.Client()
 			if err := (&handler{store: st, stripe: client}).ensureReferrerPaidPeriod(ctx, invitee.ID, paidAt); err != nil {
@@ -354,7 +354,7 @@ func TestMonthlyReferralDoesNotQueryReferrerPaymentHistory(t *testing.T) {
 		_, _ = fmt.Fprint(w, body)
 	}))
 	defer server.Close()
-	client := newStripeClient(StripeConfig{SecretKey: "sk_test"})
+	client := newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"})
 	client.apiBaseURL = server.URL + "/v1"
 	client.httpClient = server.Client()
 	h := &handler{store: st, stripe: client}
