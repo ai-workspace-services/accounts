@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"account/internal/agentserver"
 	"account/internal/store"
@@ -737,5 +743,432 @@ func TestInternalNetworkIdentitiesEndpoint(t *testing.T) {
 	}
 	if !foundExporter {
 		t.Fatalf("expected exporter identity in payload, got %#v", payload.Identities)
+	}
+}
+
+type failingAccountingStore struct {
+	store.Store
+	quotaCalls int
+	quotaErr   error
+	bucketsErr error
+	profileErr error
+}
+
+func (f *failingAccountingStore) GetAccountQuotaState(ctx context.Context, accountUUID string) (*store.AccountQuotaState, error) {
+	f.quotaCalls++
+	if f.quotaErr != nil && f.quotaCalls > 1 {
+		return nil, f.quotaErr
+	}
+	return f.Store.GetAccountQuotaState(ctx, accountUUID)
+}
+
+func (f *failingAccountingStore) ListTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time) ([]store.TrafficMinuteBucket, error) {
+	if f.bucketsErr != nil {
+		return nil, f.bucketsErr
+	}
+	return f.Store.ListTrafficMinuteBucketsByAccount(ctx, accountUUID, start, end)
+}
+
+func (f *failingAccountingStore) GetAccountBillingProfile(ctx context.Context, accountUUID string) (*store.AccountBillingProfile, error) {
+	if f.profileErr != nil {
+		return nil, f.profileErr
+	}
+	return f.Store.GetAccountBillingProfile(ctx, accountUUID)
+}
+
+func TestAccountUsageAndIdentitiesOTelTracePropagationAndRedaction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("INTERNAL_SERVICE_TOKEN", "secret-internal-service-token-999")
+
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}))
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+		_ = tp.Shutdown(context.Background())
+	})
+
+	st := store.NewMemoryStore()
+	ctx := context.Background()
+	if err := st.CreateUser(ctx, &store.User{
+		Name:          "Trace User",
+		Email:         "trace-sensitive@example.com",
+		PasswordHash:  "hashed",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+		ProxyUUID:     "proxy-sensitive-uuid-777",
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	user, err := st.GetUserByEmail(ctx, "trace-sensitive@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	sessionToken := "session-secret-token-888"
+	if err := st.CreateSession(ctx, sessionToken, user.ID, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	if err := st.UpsertTrafficMinuteBucket(ctx, &store.TrafficMinuteBucket{
+		BucketStart:   now.Add(-2 * time.Minute),
+		NodeID:        "node-hk",
+		AccountUUID:   user.ID,
+		Region:        "hk",
+		LineCode:      "default",
+		UplinkBytes:   100,
+		DownlinkBytes: 200,
+		TotalBytes:    300,
+		Multiplier:    1.0,
+		RatingStatus:  store.RatingStatusRated,
+	}); err != nil {
+		t.Fatalf("upsert bucket: %v", err)
+	}
+
+	router := gin.New()
+	router.Use(otelgin.Middleware("web-saas-accounts"))
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+
+	const traceID = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const traceparent = "00-" + traceID + "-00f067aa0ba902b7-01"
+
+	endpoints := []struct {
+		path       string
+		headerName string
+		headerVal  string
+		spanName   string
+	}{
+		{
+			path:       "/api/account/usage/summary",
+			headerName: "Authorization",
+			headerVal:  "Bearer " + sessionToken,
+			spanName:   "accounts.usage.summary",
+		},
+		{
+			path:       "/api/account/usage/buckets?start=" + now.Add(-10*time.Minute).Format(time.RFC3339) + "&end=" + now.Format(time.RFC3339),
+			headerName: "Authorization",
+			headerVal:  "Bearer " + sessionToken,
+			spanName:   "accounts.usage.buckets",
+		},
+		{
+			path:       "/api/account/billing/summary",
+			headerName: "Authorization",
+			headerVal:  "Bearer " + sessionToken,
+			spanName:   "accounts.billing.summary",
+		},
+		{
+			path:       "/api/internal/network/identities",
+			headerName: "X-Service-Token",
+			headerVal:  "secret-internal-service-token-999",
+			spanName:   "accounts.network.identities",
+		},
+	}
+
+	for _, ep := range endpoints {
+		req := httptest.NewRequest(http.MethodGet, ep.path, nil)
+		req.Header.Set("traceparent", traceparent)
+		req.Header.Set(ep.headerName, ep.headerVal)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("endpoint %s returned %d: %s", ep.path, rec.Code, rec.Body.String())
+		}
+	}
+
+	spans := recorder.Ended()
+	foundSpans := make(map[string]bool)
+	forbiddenSubstrings := []string{
+		user.ID,
+		user.Email,
+		user.ProxyUUID,
+		sessionToken,
+		"secret-internal-service-token-999",
+	}
+
+	for _, sp := range spans {
+		foundSpans[sp.Name()] = true
+		if gotTraceID := sp.SpanContext().TraceID().String(); gotTraceID != traceID {
+			t.Fatalf("span %s trace_id = %s, want %s", sp.Name(), gotTraceID, traceID)
+		}
+		for _, attr := range sp.Attributes() {
+			val := attr.Value.Emit()
+			for _, forbidden := range forbiddenSubstrings {
+				if forbidden != "" && strings.Contains(val, forbidden) {
+					t.Fatalf("span %s attribute %s leaked sensitive value %q in %q", sp.Name(), attr.Key, forbidden, val)
+				}
+			}
+		}
+		for _, forbidden := range forbiddenSubstrings {
+			if forbidden != "" && strings.Contains(sp.Status().Description, forbidden) {
+				t.Fatalf("span %s status description leaked sensitive value %q", sp.Name(), forbidden)
+			}
+		}
+	}
+
+	for _, ep := range endpoints {
+		if !foundSpans[ep.spanName] {
+			t.Fatalf("expected child span %q to be recorded, got %v", ep.spanName, foundSpans)
+		}
+	}
+}
+
+func TestAccountUsageWindowFilteringFreshnessAndDBErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	st := store.NewMemoryStore()
+	ctx := context.Background()
+	if err := st.CreateUser(ctx, &store.User{
+		Name:          "Window User",
+		Email:         "window@example.com",
+		PasswordHash:  "hashed",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	user, err := st.GetUserByEmail(ctx, "window@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	sessionToken := "window-session"
+	if err := st.CreateSession(ctx, sessionToken, user.ID, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+
+	// 1. No buckets -> freshnessState == "no_data"
+	req := httptest.NewRequest(http.MethodGet, "/api/account/usage/summary", nil)
+	req.Header.Set("Authorization", "Bearer "+sessionToken)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	var summary struct {
+		FreshnessState string `json:"freshnessState"`
+		TotalBytes     int64  `json:"totalBytes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if summary.FreshnessState != "no_data" {
+		t.Fatalf("expected freshnessState no_data, got %q", summary.FreshnessState)
+	}
+
+	// 2. Stale bucket (> 300s ago) -> freshnessState == "stale"
+	t1 := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Minute)
+	if err := st.UpsertTrafficMinuteBucket(ctx, &store.TrafficMinuteBucket{
+		BucketStart:   t1,
+		NodeID:        "node-1",
+		AccountUUID:   user.ID,
+		UplinkBytes:   50,
+		DownlinkBytes: 50,
+		TotalBytes:    100,
+		RatingStatus:  store.RatingStatusRated,
+	}); err != nil {
+		t.Fatalf("upsert t1: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if summary.FreshnessState != "stale" {
+		t.Fatalf("expected freshnessState stale, got %q", summary.FreshnessState)
+	}
+
+	// 3. Fresh bucket (<= 300s ago) -> freshnessState == "fresh"
+	t2 := time.Now().UTC().Add(-1 * time.Minute).Truncate(time.Minute)
+	if err := st.UpsertTrafficMinuteBucket(ctx, &store.TrafficMinuteBucket{
+		BucketStart:   t2,
+		NodeID:        "node-1",
+		AccountUUID:   user.ID,
+		UplinkBytes:   150,
+		DownlinkBytes: 150,
+		TotalBytes:    300,
+		RatingStatus:  store.RatingStatusRated,
+	}); err != nil {
+		t.Fatalf("upsert t2: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if summary.FreshnessState != "fresh" || summary.TotalBytes != 400 {
+		t.Fatalf("expected freshnessState fresh and totalBytes 400, got %+v", summary)
+	}
+
+	// 4. UTC window query on /api/account/usage/buckets
+	bucketsURL := "/api/account/usage/buckets?start=" + t2.Add(-30*time.Second).Format(time.RFC3339) + "&end=" + t2.Add(30*time.Second).Format(time.RFC3339)
+	bReq := httptest.NewRequest(http.MethodGet, bucketsURL, nil)
+	bReq.Header.Set("Authorization", "Bearer "+sessionToken)
+	bRec := httptest.NewRecorder()
+	router.ServeHTTP(bRec, bReq)
+	if bRec.Code != http.StatusOK {
+		t.Fatalf("buckets status: %d", bRec.Code)
+	}
+	var bPayload struct {
+		Buckets []struct {
+			TotalBytes int64 `json:"totalBytes"`
+		} `json:"buckets"`
+	}
+	if err := json.Unmarshal(bRec.Body.Bytes(), &bPayload); err != nil {
+		t.Fatalf("decode buckets: %v", err)
+	}
+	if len(bPayload.Buckets) != 1 || bPayload.Buckets[0].TotalBytes != 300 {
+		t.Fatalf("expected 1 filtered bucket with 300 bytes, got %+v", bPayload.Buckets)
+	}
+
+	// 5. DB error on GetAccountQuotaState returns 500 instead of silently returning 0 quota
+	failQuotaRouter := gin.New()
+	RegisterRoutes(failQuotaRouter, WithStore(&failingAccountingStore{
+		Store:    st,
+		quotaErr: errors.New("simulated db connection timeout"),
+	}), WithEmailVerification(false))
+
+	qRec := httptest.NewRecorder()
+	failQuotaRouter.ServeHTTP(qRec, req)
+	if qRec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when GetAccountQuotaState fails with DB error, got %d body=%s", qRec.Code, qRec.Body.String())
+	}
+
+	// 6. DB error on ListTrafficMinuteBucketsByAccount returns 500
+	failBucketsRouter := gin.New()
+	RegisterRoutes(failBucketsRouter, WithStore(&failingAccountingStore{
+		Store:      st,
+		bucketsErr: errors.New("simulated db buckets error"),
+	}), WithEmailVerification(false))
+
+	fbRec := httptest.NewRecorder()
+	failBucketsRouter.ServeHTTP(fbRec, req)
+	if fbRec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 when ListTrafficMinuteBucketsByAccount fails, got %d body=%s", fbRec.Code, fbRec.Body.String())
+	}
+}
+
+type delayedAccountingStore struct {
+	store.Store
+	dbDelay time.Duration
+}
+
+func (d *delayedAccountingStore) ListTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time) ([]store.TrafficMinuteBucket, error) {
+	ctx, dbSpan := otel.Tracer("otelsql").Start(ctx, "sql.conn.query")
+	if d.dbDelay > 0 {
+		time.Sleep(d.dbDelay)
+	}
+	res, err := d.Store.ListTrafficMinuteBucketsByAccount(ctx, accountUUID, start, end)
+	dbSpan.End()
+	return res, err
+}
+
+func TestSlowServiceVsSlowDatabaseIndependentSpanClassification(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	prevTP := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		_ = tp.Shutdown(context.Background())
+	})
+
+	baseStore := store.NewMemoryStore()
+	ctx := context.Background()
+	if err := baseStore.CreateUser(ctx, &store.User{
+		Name:          "Latency User",
+		Email:         "latency@example.com",
+		PasswordHash:  "hashed",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	user, err := baseStore.GetUserByEmail(ctx, "latency@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	sessionToken := "latency-session"
+	if err := baseStore.CreateSession(ctx, sessionToken, user.ID, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	const iterations = 20
+	const injectedDelay = 12 * time.Millisecond
+
+	// Scenario A: 20 requests with slow application middleware (+12ms) and fast DB (0ms)
+	slowServiceStore := &delayedAccountingStore{Store: baseStore, dbDelay: 0}
+	slowServiceRouter := gin.New()
+	slowServiceRouter.Use(otelgin.Middleware("web-saas-accounts", otelgin.WithTracerProvider(tp)))
+	slowServiceRouter.Use(func(c *gin.Context) {
+		time.Sleep(injectedDelay)
+		c.Next()
+	})
+	RegisterRoutes(slowServiceRouter, WithStore(slowServiceStore), WithEmailVerification(false))
+
+	for i := 0; i < iterations; i++ {
+		recorder.Reset()
+		req := httptest.NewRequest(http.MethodGet, "/api/account/usage/buckets", nil)
+		req.Header.Set("Authorization", "Bearer "+sessionToken)
+		rec := httptest.NewRecorder()
+		slowServiceRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("slow service iter %d status=%d", i, rec.Code)
+		}
+		var httpDur, dbDur time.Duration
+		for _, sp := range recorder.Ended() {
+			switch sp.Name() {
+			case "/api/account/usage/buckets", "GET /api/account/usage/buckets":
+				httpDur = sp.EndTime().Sub(sp.StartTime())
+			case "sql.conn.query":
+				dbDur = sp.EndTime().Sub(sp.StartTime())
+			}
+		}
+		if httpDur < injectedDelay || dbDur >= injectedDelay/2 {
+			t.Fatalf("iter %d slow-service misclassified: httpDur=%v dbDur=%v", i, httpDur, dbDur)
+		}
+	}
+
+	// Scenario B: 20 requests with fast application middleware (0ms) and slow DB (+12ms)
+	slowDBStore := &delayedAccountingStore{Store: baseStore, dbDelay: injectedDelay}
+	slowDBRouter := gin.New()
+	slowDBRouter.Use(otelgin.Middleware("web-saas-accounts", otelgin.WithTracerProvider(tp)))
+	RegisterRoutes(slowDBRouter, WithStore(slowDBStore), WithEmailVerification(false))
+
+	for i := 0; i < iterations; i++ {
+		recorder.Reset()
+		req := httptest.NewRequest(http.MethodGet, "/api/account/usage/buckets", nil)
+		req.Header.Set("Authorization", "Bearer "+sessionToken)
+		rec := httptest.NewRecorder()
+		slowDBRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("slow db iter %d status=%d", i, rec.Code)
+		}
+		var usageDur, dbDur time.Duration
+		for _, sp := range recorder.Ended() {
+			switch sp.Name() {
+			case "accounts.usage.buckets":
+				usageDur = sp.EndTime().Sub(sp.StartTime())
+			case "sql.conn.query":
+				dbDur = sp.EndTime().Sub(sp.StartTime())
+			}
+		}
+		nonDBAppTime := usageDur - dbDur
+		if dbDur < injectedDelay || nonDBAppTime >= injectedDelay/2 {
+			t.Fatalf("iter %d slow-db misclassified: usageDur=%v dbDur=%v nonDBAppTime=%v", i, usageDur, dbDur, nonDBAppTime)
+		}
 	}
 }
