@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -247,7 +248,11 @@ func (h *handler) accountPolicy(c *gin.Context) {
 
 	policy, err := h.store.GetLatestAccountPolicySnapshot(c.Request.Context(), user.ID)
 	if err != nil {
-		respondError(c, http.StatusNotFound, "policy_not_found", "account policy snapshot is not available")
+		if errors.Is(err, store.ErrUserNotFound) {
+			respondError(c, http.StatusNotFound, "policy_not_found", "account policy snapshot is not available")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "account_policy_unavailable", "failed to load account policy snapshot")
 		return
 	}
 

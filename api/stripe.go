@@ -1211,7 +1211,12 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		}
 		upgraded := previous != nil && plan.IncludedQuotaBytes > previous.IncludedQuotaBytes
 		periodStart, periodEnd := subscriptionQuotaPeriod(plan, sub, time.Now())
-		if upgraded {
+		activation := previous != nil && previous.PricingRuleVersion == "plan:FREE" && invoice.BillingReason == "subscription_create"
+		if activation {
+			if err := h.store.ActivateSubscriptionQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+				return err
+			}
+		} else if upgraded {
 			if err := h.applyPlanUpgradeQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
 				return err
 			}
@@ -1219,7 +1224,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
-		if !upgraded {
+		if !upgraded && !activation {
 			if err := h.resetQuotaForPlanOnce(ctx, userID, plan, periodStart, periodEnd); err != nil {
 				return err
 			}
@@ -1711,6 +1716,7 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 	}
 	// A subscription update is not proof of payment. In particular, pending
 	// upgrades must never grant their target allowance before settlement.
+	freshActivation := created
 	if h.stripe != nil && h.stripe.enabled() {
 		if hasPendingUpdate(source) {
 			return nil
@@ -1726,6 +1732,7 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		if invoice.Status != "paid" || invoiceSubscriptionID(invoice) != source.ID {
 			return nil
 		}
+		freshActivation = invoice.BillingReason == "subscription_create"
 	}
 	plan, err := h.resolveBillingPlan(ctx, subscriptionPriceID(source), source.Metadata["plan_id"])
 	if err != nil {
@@ -1740,7 +1747,15 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		return previousErr
 	}
 	upgraded := previous != nil && plan.IncludedQuotaBytes > previous.IncludedQuotaBytes
-	if created {
+	if freshActivation && previous != nil && previous.PricingRuleVersion == "plan:FREE" {
+		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
+		if err := h.store.ActivateSubscriptionQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+			return err
+		}
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+			return err
+		}
+	} else if created {
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
