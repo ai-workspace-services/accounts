@@ -6,7 +6,7 @@
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "1900d1f2e5a9603e554bbc05d657a9925437133c1a1ab9b190945f1032f25a62"
+      "sha256": "5b94da534d1ce02b4e36699a09ce6db9510e536ea25d66608f2ca9e70267b300"
     },
     {
       "path": "internal/model/admin_setting.go",
