@@ -32,6 +32,7 @@ const stripeAPIVersion = "2026-01-28.clover"
 const stripeWebhookTimestampTolerance = 5 * time.Minute
 
 type StripeConfig struct {
+	Mode                  string
 	SecretKey             string
 	WebhookSecret         string
 	AllowedPriceIDs       []string
@@ -40,6 +41,8 @@ type StripeConfig struct {
 }
 
 type stripeClient struct {
+	liveMode              bool
+	configurationValid    bool
 	secretKey             string
 	webhookSecret         string
 	frontendURL           string
@@ -104,7 +107,8 @@ type stripeSubscription struct {
 type stripeEvent struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`
-	Livemode bool   `json:"livemode"`
+	Livemode *bool  `json:"livemode"`
+	Account  string `json:"account"`
 	Data     struct {
 		Object json.RawMessage `json:"object"`
 	} `json:"data"`
@@ -216,6 +220,10 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 	if secretKey == "" {
 		return nil
 	}
+	liveMode, configurationValid := stripeRuntimeMode(secretKey, cfg.Mode)
+	if !configurationValid {
+		slog.Error("Stripe disabled: unsupported API key or conflicting payment mode")
+	}
 
 	allowed := make(map[string]struct{}, len(cfg.AllowedPriceIDs))
 	for _, priceID := range cfg.AllowedPriceIDs {
@@ -226,6 +234,8 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 	}
 
 	return &stripeClient{
+		liveMode:              liveMode,
+		configurationValid:    configurationValid,
 		secretKey:             secretKey,
 		webhookSecret:         strings.TrimSpace(cfg.WebhookSecret),
 		frontendURL:           strings.TrimRight(strings.TrimSpace(cfg.FrontendURL), "/"),
@@ -238,7 +248,34 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 }
 
 func (c *stripeClient) enabled() bool {
-	return c != nil && c.secretKey != ""
+	return c != nil && c.secretKey != "" && c.configurationValid
+}
+
+// Account secret and restricted keys encode their Stripe mode. Organization
+// keys require an account/context contract that this integration does not yet
+// support, so an unknown key must not silently select a mode.
+func stripeRuntimeMode(key, configured string) (live, valid bool) {
+	if len(key) <= len("sk_test_") {
+		return false, false
+	}
+	switch {
+	case strings.HasPrefix(key, "sk_test_"), strings.HasPrefix(key, "rk_test_"):
+		live = false
+	case strings.HasPrefix(key, "sk_live_"), strings.HasPrefix(key, "rk_live_"):
+		live = true
+	default:
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(configured)) {
+	case "":
+		return live, true
+	case "test", "sandbox":
+		return live, !live
+	case "live":
+		return live, live
+	default:
+		return false, false
+	}
 }
 
 func validStripeClientReferenceID(value string) bool {
@@ -428,6 +465,9 @@ func (c *stripeClient) checkoutURLs(sourcePath string) (string, string) {
 }
 
 func (c *stripeClient) doForm(ctx context.Context, method, path string, form url.Values, out any, idempotencyKey ...string) error {
+	if !c.enabled() {
+		return errors.New("Stripe configuration is unavailable")
+	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL()+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
@@ -461,6 +501,9 @@ func (c *stripeClient) doForm(ctx context.Context, method, path string, form url
 }
 
 func (c *stripeClient) doJSON(ctx context.Context, method, path string, out any) error {
+	if !c.enabled() {
+		return errors.New("Stripe configuration is unavailable")
+	}
 	baseURL := strings.TrimRight(strings.TrimSpace(c.apiBaseURL), "/")
 	if baseURL == "" {
 		baseURL = stripeAPIBaseURL
@@ -707,6 +750,9 @@ func (c *stripeClient) baseURL() string {
 }
 
 func (c *stripeClient) refundPaymentIntent(ctx context.Context, paymentIntentID, idempotencyKey string, amount int64) (*stripeRefund, error) {
+	if !c.enabled() {
+		return nil, errors.New("Stripe configuration is unavailable")
+	}
 	form := url.Values{"payment_intent": {strings.TrimSpace(paymentIntentID)}, "amount": {strconv.FormatInt(amount, 10)}, "metadata[finance_operation_key]": {idempotencyKey}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL()+"/refunds", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -928,8 +974,16 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid stripe event payload")
 		return
 	}
-	if strings.HasPrefix(h.stripe.secretKey, "sk_test_") && event.Livemode {
-		respondError(c, http.StatusBadRequest, "stripe_mode_mismatch", "live events cannot be processed in sandbox mode")
+	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.Type) == "" || event.Livemode == nil {
+		respondError(c, http.StatusBadRequest, "invalid_stripe_event", "event ID, type and payment mode are required")
+		return
+	}
+	if *event.Livemode != h.stripe.liveMode {
+		respondError(c, http.StatusBadRequest, "stripe_mode_mismatch", "event payment mode does not match the configured Stripe mode")
+		return
+	}
+	if strings.TrimSpace(event.Account) != "" {
+		respondError(c, http.StatusBadRequest, "stripe_account_mismatch", "connected account events are not supported by this endpoint")
 		return
 	}
 

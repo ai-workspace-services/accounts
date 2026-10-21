@@ -443,7 +443,7 @@ func TestScheduleSubscriptionCancellationUsesPeriodEndUpdate(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"sub_1"}`))
 	}))
 	defer server.Close()
-	client := newStripeClient(StripeConfig{SecretKey: "sk_test"})
+	client := newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"})
 	client.httpClient = server.Client()
 	// Stripe's endpoint is fixed to HTTPS; a custom transport redirects the
 	// request to this local test server while preserving the request fields.
@@ -466,7 +466,7 @@ func TestRefundReconciliationRequiresExplicitCompletedFullRefund(t *testing.T) {
 	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: store.BillingPlanFree, PackageName: "free", IncludedQuotaBytes: defaultFreeQuotaBytes, Active: true}); err != nil {
 		t.Fatal(err)
 	}
-	h := &handler{store: st, stripe: newStripeClient(StripeConfig{SecretKey: "sk_test"})}
+	h := &handler{store: st, stripe: newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"})}
 	if err := h.applyPlanEntitlements(ctx, user.ID, &store.BillingPlan{PlanID: "PRO-M", PackageName: "pro", IncludedQuotaBytes: 20 << 30}); err != nil {
 		t.Fatal(err)
 	}

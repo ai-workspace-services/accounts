@@ -136,6 +136,7 @@ func subscriptionEventPayload(eventID, eventType, userID, priceID, status string
 	return []byte(fmt.Sprintf(`{
 		"id": %q,
 		"type": %q,
+		"livemode": false,
 		"data": {"object": {
 			"id": "sub_123",
 			"status": %q,

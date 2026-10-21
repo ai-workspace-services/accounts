@@ -1587,6 +1587,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		api.WithOAuthFrontendURL(cfg.Auth.OAuth.FrontendURL),
 		api.WithServerPublicURL(cfg.Server.PublicURL),
 		api.WithStripeConfig(api.StripeConfig{
+			Mode:                  strings.TrimSpace(os.Getenv("STRIPE_MODE")),
 			SecretKey:             strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
 			WebhookSecret:         strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")),
 			AllowedPriceIDs:       api.ParseStripeAllowedPriceIDs(os.Getenv("STRIPE_ALLOWED_PRICE_IDS")),

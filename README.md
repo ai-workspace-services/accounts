@@ -263,6 +263,7 @@ Stripe 相关服务端能力现在由 `accounts.svc.plus` 承担，包括：
 | 变量 | 用途 |
 | --- | --- |
 | `STRIPE_SECRET_KEY` | Stripe API secret key |
+| `STRIPE_MODE` | Optional `test`/`sandbox` or `live`; must match the secret or restricted API key. When omitted, the mode is derived from the supported key type. Unknown keys or a mismatch disable Stripe. |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook endpoint secret |
 | `STRIPE_ALLOWED_PRICE_IDS` | 允许下单的 `price_...` 白名单，逗号分隔 |
 
