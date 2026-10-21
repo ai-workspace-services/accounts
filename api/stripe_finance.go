@@ -176,6 +176,116 @@ func (h *handler) recordStripeRefund(ctx context.Context, refund *stripeRefund) 
 	return errors.New("refunded invoice has no matching local subscription")
 }
 
+// reconcileProcessedStripeRefund repairs the access postcondition for a
+// verified full refund after a prior webhook attempt was already acknowledged.
+// It requires a complete local refund ledger, a matching local
+// payment-to-subscription link, and Stripe's current subscription still
+// pointing at that refunded invoice before changing access.
+func (h *handler) reconcileProcessedStripeRefund(ctx context.Context, event stripeEvent) error {
+	if h.stripe == nil || !h.stripe.enabled() {
+		return nil
+	}
+	var paymentIntentID string
+	switch event.Type {
+	case "refund.created", "refund.updated":
+		var refund stripeRefund
+		if err := json.Unmarshal(event.Data.Object, &refund); err != nil {
+			return err
+		}
+		if !strings.EqualFold(strings.TrimSpace(refund.Status), "succeeded") || refund.Amount <= 0 {
+			return nil
+		}
+		paymentIntentID = customerIDFromAny(refund.PaymentIntent)
+	case "charge.refunded":
+		var charge stripeCharge
+		if err := json.Unmarshal(event.Data.Object, &charge); err != nil {
+			return err
+		}
+		if !charge.Refunded || charge.Amount <= 0 || charge.AmountRefunded < charge.Amount {
+			return nil
+		}
+		for _, refund := range charge.Refunds.Data {
+			if !strings.EqualFold(strings.TrimSpace(refund.Status), "succeeded") {
+				return nil
+			}
+		}
+		paymentIntentID = customerIDFromAny(charge.PaymentIntent)
+	default:
+		return nil
+	}
+	if paymentIntentID == "" {
+		return nil
+	}
+	payment, err := h.store.GetFinancePaymentByProvider(ctx, "stripe", paymentIntentID)
+	if errors.Is(err, store.ErrFinanceRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	invoice, err := h.store.GetFinanceInvoice(ctx, payment.InvoiceID)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(invoice.Provider, "stripe") || invoice.AccountUUID != payment.AccountUUID || invoice.SubscriptionUUID == "" || invoice.ProviderInvoiceID == "" {
+		return nil
+	}
+	refunds, err := h.store.ListFinanceRefunds(ctx, payment.AccountUUID, 0)
+	if err != nil {
+		return err
+	}
+	var refunded int64
+	for _, refund := range refunds {
+		if refund.PaymentID != payment.ID {
+			continue
+		}
+		if !strings.EqualFold(refund.Currency, payment.Currency) || refund.AmountMinor <= 0 || refund.AmountMinor > payment.AmountMinor-refunded {
+			return store.ErrFinanceIdempotencyConflict
+		}
+		refunded += refund.AmountMinor
+	}
+	if refunded != payment.AmountMinor {
+		return nil
+	}
+	subscriptions, err := h.store.ListSubscriptionsByUser(ctx, payment.AccountUUID)
+	if err != nil {
+		return err
+	}
+	var local *store.Subscription
+	for i := range subscriptions {
+		if subscriptions[i].ID == invoice.SubscriptionUUID && strings.EqualFold(subscriptions[i].Provider, "stripe") && strings.EqualFold(subscriptions[i].Kind, "subscription") {
+			local = &subscriptions[i]
+			break
+		}
+	}
+	if local == nil || strings.TrimSpace(local.ExternalID) == "" {
+		return nil
+	}
+	settled, _, err := h.refundReviewSettlement(ctx, refundReviewRequest{AccountID: payment.AccountUUID, SubscriptionID: local.ID})
+	if err != nil || !settled {
+		return err
+	}
+	remote, err := h.stripe.fetchSubscription(ctx, local.ExternalID)
+	if err != nil {
+		return err
+	}
+	if remote.ID != local.ExternalID || strings.TrimSpace(remote.Metadata["user_id"]) != payment.AccountUUID || customerIDFromAny(remote.LatestInvoice) != invoice.ProviderInvoiceID {
+		return nil
+	}
+	wasReconciled := strings.EqualFold(local.Status, "refunded")
+	if err := h.revokeRefundedSubscription(ctx, payment.AccountUUID, local.ExternalID); err != nil {
+		return err
+	}
+	profile, profileErr := h.store.GetAccountBillingProfile(ctx, payment.AccountUUID)
+	if profileErr != nil && !errors.Is(profileErr, store.ErrUserNotFound) {
+		return profileErr
+	}
+	if !wasReconciled || profile == nil || !strings.EqualFold(profile.PricingRuleVersion, "plan:"+store.BillingPlanFree) {
+		h.publishBillingEvent(ctx, &store.BillingEvent{Type: "subscription_refunded", UserID: payment.AccountUUID, PlanID: local.PlanID, ExternalID: local.ExternalID})
+	}
+	return nil
+}
+
 // A paid invoice remains "paid" at Stripe after a refund. Do not let a late
 // subscription/invoice event turn that old payment back into paid access.
 func (h *handler) reconcileRefundedLatestInvoice(ctx context.Context, source *stripeSubscription) (bool, error) {

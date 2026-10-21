@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"account/internal/store"
 )
@@ -198,6 +203,85 @@ func TestRefundPreservesActiveListedLocalSubscription(t *testing.T) {
 	storedUser, _ := st.GetUserByID(ctx, user.ID)
 	if store.MonthlyQuotaGroup(storedUser) != store.MonthlyPlusQuotaLimitGroup {
 		t.Fatalf("active listed local subscription was removed: %#v", storedUser.Groups)
+	}
+}
+
+func TestProcessedFullRefundEventRepairsEntitlementsWhenChargeHasNoInvoice(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	user := &store.User{Name: "Refunded Sandbox", Email: "refund-reconcile@example.invalid", EmailVerified: true, Role: store.RoleUser, Level: store.LevelUser, Active: true}
+	if err := st.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "PRO-M", StripePriceID: "price_pro_month", Kind: "subscription", IncludedQuotaBytes: 100 << 30, PackageName: "pro", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: store.BillingPlanFree, Kind: "subscription", IncludedQuotaBytes: defaultFreeQuotaBytes, PackageName: "default", Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	plus, err := st.GetBillingPlan(ctx, "PRO-M")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&handler{store: st}).applyPlanEntitlements(ctx, user.ID, plus); err != nil {
+		t.Fatal(err)
+	}
+	sub := &store.Subscription{UserID: user.ID, Provider: "stripe", Kind: "subscription", ExternalID: "sub_refund_reconcile", Status: "refunded", PlanID: "PRO-M"}
+	if err := st.UpsertSubscription(ctx, sub); err != nil {
+		t.Fatal(err)
+	}
+	subs, err := st.ListSubscriptionsByUser(ctx, user.ID)
+	if err != nil || len(subs) != 1 {
+		t.Fatalf("local subscription setup: %#v %v", subs, err)
+	}
+	invoice := &store.FinanceInvoice{IdempotencyKey: "refund-reconcile-invoice", AccountUUID: user.ID, SubscriptionUUID: subs[0].ID, Provider: "stripe", ProviderInvoiceID: "in_refund_reconcile", AmountMinor: 2000, Currency: "CNY"}
+	if _, err := st.CreateFinanceInvoice(ctx, invoice); err != nil {
+		t.Fatal(err)
+	}
+	payment := &store.FinancePayment{IdempotencyKey: "refund-reconcile-payment", InvoiceID: invoice.ID, AccountUUID: user.ID, Provider: "stripe", ProviderPaymentID: "pi_refund_reconcile", AmountMinor: 2000, Currency: "CNY"}
+	if _, err := st.RecordFinancePayment(ctx, payment); err != nil {
+		t.Fatal(err)
+	}
+	payments, err := st.ListFinancePayments(ctx, user.ID, 0)
+	if err != nil || len(payments) != 1 {
+		t.Fatalf("local payment setup: %#v %v", payments, err)
+	}
+	if _, err := st.RecordFinanceRefund(ctx, &store.FinanceRefund{IdempotencyKey: "stripe-refund:re_refund_reconcile", PaymentID: payments[0].ID, Provider: "stripe", ProviderRefundID: "re_refund_reconcile", AmountMinor: 2000, Currency: "CNY", RefundedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/subscriptions/sub_refund_reconcile" {
+			http.Error(w, "unexpected Stripe request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"sub_refund_reconcile","status":"active","customer":"cus_refund_reconcile","latest_invoice":"in_refund_reconcile","metadata":{"user_id":%q,"plan_id":"PRO-M"}}`, user.ID)
+	}))
+	defer provider.Close()
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithStripeConfig(StripeConfig{SecretKey: "sk_test_refund_reconcile", WebhookSecret: testStripeWebhookSecret}), func(h *handler) {
+		h.stripe.apiBaseURL = provider.URL
+		h.stripe.httpClient = provider.Client()
+	})
+	payload := []byte(fmt.Sprintf(`{"id":"evt_refund_reconcile","type":"charge.refunded","livemode":false,"data":{"object":{"id":"ch_refund_reconcile","amount":2000,"amount_refunded":2000,"refunded":true,"payment_intent":"pi_refund_reconcile"}}}`))
+	if already, err := st.BeginStripeWebhookEvent(ctx, &store.StripeWebhookEvent{EventID: "evt_refund_reconcile", EventType: "charge.refunded", Payload: payload}); err != nil || already {
+		t.Fatalf("seed webhook event: already=%v err=%v", already, err)
+	}
+	if err := st.FinishStripeWebhookEvent(ctx, "evt_refund_reconcile", nil); err != nil {
+		t.Fatal(err)
+	}
+	rec := postStripeEvent(t, router, payload)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"duplicate":true`) {
+		t.Fatalf("processed refund replay failed: %d %s", rec.Code, rec.Body.String())
+	}
+	profile, err := st.GetAccountBillingProfile(ctx, user.ID)
+	if err != nil || profile.PricingRuleVersion != "plan:"+store.BillingPlanFree {
+		t.Fatalf("full refund did not restore Free profile: %#v %v", profile, err)
+	}
+	storedUser, err := st.GetUserByID(ctx, user.ID)
+	if err != nil || store.MonthlyQuotaGroup(storedUser) != store.MonthlyFreeQuotaLimitGroup {
+		t.Fatalf("full refund did not restore Free quota group: %#v %v", storedUser, err)
 	}
 }
 

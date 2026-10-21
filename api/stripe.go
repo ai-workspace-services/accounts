@@ -192,6 +192,7 @@ type stripeCharge struct {
 	ID             string `json:"id"`
 	Status         string `json:"status"`
 	Invoice        any    `json:"invoice"`
+	PaymentIntent  any    `json:"payment_intent"`
 	Disputed       bool   `json:"disputed"`
 	Refunded       bool   `json:"refunded"`
 	Amount         int64  `json:"amount"`
@@ -1002,6 +1003,13 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 			return
 		}
 		if alreadyProcessed {
+			// A previous release may have acknowledged a refund event before its
+			// entitlement postcondition was repaired. Reconcile only derived
+			// access state from already-settled, locally recorded refund facts.
+			if err := h.reconcileProcessedStripeRefund(c.Request.Context(), event); err != nil {
+				respondError(c, http.StatusBadGateway, "stripe_refund_reconcile_failed", "failed to reconcile refunded subscription access")
+				return
+			}
 			c.JSON(http.StatusOK, gin.H{"received": true, "duplicate": true})
 			return
 		}
@@ -1144,8 +1152,11 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 				return nil // Pending or failed refund states never revoke access.
 			}
 		}
-		if invoiceID == "" || h.stripe == nil {
+		if h.stripe == nil {
 			return nil
+		}
+		if invoiceID == "" {
+			return h.reconcileProcessedStripeRefund(ctx, event)
 		}
 		invoice, err := h.stripe.fetchInvoice(ctx, invoiceID)
 		if err != nil {
