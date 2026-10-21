@@ -1248,6 +1248,9 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := h.recordStripePaidInvoice(ctx, &invoice, sub, userID); err != nil {
 			return err
 		}
+		if refunded, err := h.reconcileRefundedLatestInvoice(ctx, sub); err != nil || refunded {
+			return err
+		}
 		if hasPendingUpdate(sub) || customerIDFromAny(sub.LatestInvoice) != invoice.ID {
 			return nil
 		}
@@ -1759,6 +1762,10 @@ func subscriptionPeriod(source *stripeSubscription) (time.Time, time.Time) {
 // trialing subscription; freshly created subscriptions also re-arm quota and
 // supersede any live trial.
 func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stripeSubscription, created bool) error {
+	if refunded, err := h.reconcileRefundedLatestInvoice(ctx, source); err != nil || refunded {
+		return err
+	}
+
 	if source == nil {
 		return nil
 	}
@@ -1848,6 +1855,10 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 }
 
 func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSubscription, customerID string) error {
+	if refunded, err := h.reconcileRefundedLatestInvoice(ctx, source); err != nil || refunded {
+		return err
+	}
+
 	if source == nil {
 		return nil
 	}

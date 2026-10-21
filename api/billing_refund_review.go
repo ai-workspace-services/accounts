@@ -115,7 +115,18 @@ func (h *handler) respondRefundReview(c *gin.Context, op *store.FinanceOperation
 	if intent.Investigation != "" {
 		status = "needs_investigation"
 	}
-	c.JSON(http.StatusAccepted, gin.H{"id": op.ID, "status": status, "requestedAt": intent.RequestedAt, "firstPaidAt": intent.FirstPaidAt, "payments": intent.Payments, "refunded": false})
+	settled, partial, err := h.refundReviewSettlement(c.Request.Context(), intent)
+	if err != nil {
+		respondError(c, 503, "refund_status_unavailable", "Cannot verify settled refund")
+		return
+	}
+	if partial {
+		status = "partially_completed"
+	}
+	if settled {
+		status = "refunded"
+	}
+	c.JSON(http.StatusAccepted, gin.H{"id": op.ID, "status": status, "requestedAt": intent.RequestedAt, "firstPaidAt": intent.FirstPaidAt, "payments": intent.Payments, "refunded": settled})
 }
 
 func (h *handler) subscriptionRefundStatus(c *gin.Context) {
@@ -236,4 +247,77 @@ func (h *handler) collectRefundReview(ctx context.Context, intent *refundReviewR
 	}
 	intent.FirstPaidAt = &first
 	return nil
+}
+
+// Derive completion from immutable local payment/refund facts, including refunds
+// issued in the provider Dashboard without an application operation key.
+func (h *handler) refundReviewSettlement(ctx context.Context, intent refundReviewRequest) (bool, bool, error) {
+	payments, err := h.store.ListFinancePayments(ctx, intent.AccountID, 0)
+	if err != nil {
+		return false, false, err
+	}
+	refunds, err := h.store.ListFinanceRefunds(ctx, intent.AccountID, 0)
+	if err != nil {
+		return false, false, err
+	}
+	count, complete := 0, true
+	partial := false
+	for _, payment := range payments {
+		if payment.Provider != "stripe" {
+			continue
+		}
+		invoice, err := h.store.GetFinanceInvoice(ctx, payment.InvoiceID)
+		if err != nil {
+			return false, false, err
+		}
+		if invoice.AccountUUID != intent.AccountID || invoice.SubscriptionUUID != intent.SubscriptionID {
+			continue
+		}
+		if payment.AmountMinor <= 0 {
+			continue
+		}
+		count++
+		var total int64
+		for _, refund := range refunds {
+			if refund.PaymentID != payment.ID {
+				continue
+			}
+			if !strings.EqualFold(refund.Currency, payment.Currency) || refund.AmountMinor <= 0 || refund.AmountMinor > payment.AmountMinor-total {
+				return false, false, store.ErrFinanceIdempotencyConflict
+			}
+			total += refund.AmountMinor
+		}
+		partial = partial || total > 0
+		complete = complete && total == payment.AmountMinor
+	}
+	return count > 0 && complete, partial, nil
+}
+
+func (h *handler) completeSettledRefundReview(ctx context.Context, accountID, subscriptionID string) error {
+	op, err := h.store.GetFinanceOperation(ctx, refundReviewKey(accountID))
+	if errors.Is(err, store.ErrFinanceRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var intent refundReviewRequest
+	if json.Unmarshal(op.Request, &intent) != nil || intent.AccountID != accountID || op.OperationType != "refund_review" {
+		return store.ErrFinanceIdempotencyConflict
+	}
+	if intent.SubscriptionID != subscriptionID || op.Status != store.FinanceOperationInProgress {
+		return nil
+	}
+	settled, _, err := h.refundReviewSettlement(ctx, intent)
+	if err != nil || !settled {
+		return err
+	}
+	err = h.store.FinishFinanceOperation(ctx, op.ID, store.FinanceOperationSucceeded, "", json.RawMessage(`{"status":"refunded","source":"settled_provider_refunds"}`), nil, nil, op.AttemptCount)
+	if errors.Is(err, store.ErrFinanceOperationNotRetryable) {
+		current, readErr := h.store.GetFinanceOperation(ctx, op.IdempotencyKey)
+		if readErr == nil && current.Status == store.FinanceOperationSucceeded {
+			return nil
+		}
+	}
+	return err
 }
