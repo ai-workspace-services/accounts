@@ -303,7 +303,7 @@ func (s *postgresStore) CreditTopUp(ctx context.Context, entry *BillingLedgerEnt
 		return true, nil
 	}
 	if currency == "CNY" {
-		_, err = tx.ExecContext(ctx, `UPDATE account_quota_states SET current_balance=$2, arrears=CASE WHEN $2 >= 0 THEN false ELSE arrears END, arrears_since=CASE WHEN $2 >= 0 THEN NULL ELSE arrears_since END, effective_at=now(), updated_at=now() WHERE account_uuid=$1`, entry.AccountUUID, entry.BalanceAfter)
+		_, err = tx.ExecContext(ctx, `UPDATE account_quota_states SET current_balance=$2::double precision, arrears=CASE WHEN $2::double precision >= 0 THEN false ELSE arrears END, arrears_since=CASE WHEN $2::double precision >= 0 THEN NULL ELSE arrears_since END, effective_at=now(), updated_at=now() WHERE account_uuid=$1`, entry.AccountUUID, entry.BalanceAfter)
 	}
 	if err != nil {
 		return false, err
