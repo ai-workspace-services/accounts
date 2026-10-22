@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 --
 
 
--- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
+-- Dumped from database version 17.11 (Homebrew)
 -- Dumped by pg_dump version 17.11 (Homebrew)
 
 SET idle_in_transaction_session_timeout = 0;
@@ -711,6 +711,30 @@ CREATE TABLE public.mfa_recovery_codes (
 --
 
 COMMENT ON TABLE public.mfa_recovery_codes IS 'One-time MFA recovery code hashes; plaintext values are returned only on issuance.';
+
+
+--
+-- Name: mfa_reset_requests; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mfa_reset_requests (
+    id uuid NOT NULL,
+    user_uuid uuid NOT NULL,
+    email_snapshot text NOT NULL,
+    mfa_fingerprint text NOT NULL,
+    code_hash text NOT NULL,
+    status text NOT NULL,
+    reason text DEFAULT ''::text NOT NULL,
+    review_reason text DEFAULT ''::text NOT NULL,
+    reviewer_uuid uuid,
+    failed_attempts integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    authorized_at timestamp with time zone,
+    reviewed_at timestamp with time zone,
+    CONSTRAINT mfa_reset_requests_failed_attempts_check CHECK ((failed_attempts >= 0)),
+    CONSTRAINT mfa_reset_requests_status_check CHECK ((status = ANY (ARRAY['pending_email'::text, 'pending_review'::text, 'approved'::text, 'rejected'::text, 'expired'::text])))
+);
 
 
 --
@@ -2011,6 +2035,14 @@ ALTER TABLE ONLY public.mfa_recovery_codes
 
 
 --
+-- Name: mfa_reset_requests mfa_reset_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mfa_reset_requests
+    ADD CONSTRAINT mfa_reset_requests_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: network_team_members network_team_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3066,6 +3098,20 @@ CREATE INDEX mfa_recovery_codes_expiry_idx ON public.mfa_recovery_codes USING bt
 
 
 --
+-- Name: mfa_reset_active_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX mfa_reset_active_user ON public.mfa_reset_requests USING btree (user_uuid) WHERE (status = ANY (ARRAY['pending_email'::text, 'pending_review'::text]));
+
+
+--
+-- Name: mfa_reset_review_queue; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX mfa_reset_review_queue ON public.mfa_reset_requests USING btree (status, created_at);
+
+
+--
 -- Name: network_team_members_team_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3578,6 +3624,22 @@ ALTER TABLE ONLY public.mfa_recovery_codes
 
 
 --
+-- Name: mfa_reset_requests mfa_reset_requests_reviewer_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mfa_reset_requests
+    ADD CONSTRAINT mfa_reset_requests_reviewer_uuid_fkey FOREIGN KEY (reviewer_uuid) REFERENCES public.users(uuid);
+
+
+--
+-- Name: mfa_reset_requests mfa_reset_requests_user_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mfa_reset_requests
+    ADD CONSTRAINT mfa_reset_requests_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
 -- Name: network_team_members network_team_members_team_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3978,6 +4040,12 @@ ALTER TABLE public.finance_refunds ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.mfa_recovery_codes ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: mfa_reset_requests; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.mfa_reset_requests ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: network_team_members; Type: ROW SECURITY; Schema: public; Owner: -

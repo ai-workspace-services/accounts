@@ -902,10 +902,6 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
 		return
 	}
-	if !user.MFAEnabled {
-		respondError(c, http.StatusForbidden, "mfa_required", "multi-factor authentication is required before starting a payment")
-		return
-	}
 	if h.stripe == nil || !h.stripe.enabled() {
 		respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
 		return
@@ -954,8 +950,8 @@ func (h *handler) stripePortal(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !user.MFAEnabled {
-		respondError(c, http.StatusForbidden, "mfa_required", "multi-factor authentication is required before managing billing")
+	if h.isReadOnlyAccount(user) {
+		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
 		return
 	}
 	if h.stripe == nil || !h.stripe.enabled() {
