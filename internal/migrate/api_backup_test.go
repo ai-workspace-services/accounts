@@ -6,12 +6,46 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
 
+type migrationOwnerFixture struct {
+	os.FileInfo
+	uid uint32
+}
+
+func (f migrationOwnerFixture) Sys() any { return &syscall.Stat_t{Uid: f.uid} }
+func TestMigrationBackupFileOwnership(t *testing.T) {
+	for _, test := range []struct {
+		owner   uint32
+		service int
+		allowed bool
+	}{{0, 0, true}, {0, 501, true}, {501, 501, true}, {502, 501, false}, {501, 0, false}} {
+		if migrationTrustedOwner(migrationOwnerFixture{uid: test.owner}, test.service) != test.allowed {
+			t.Fatal("backup owner boundary", test)
+		}
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(dir, 0770); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+	if migrationTrustedBackupParents(filepath.Join(dir, "proof.json")) == nil {
+		t.Fatal("group-writable backup parent accepted")
+	}
+}
+
 func TestMigrationAPIBackupGate(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "verified-backup.json")
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "verified-backup.json")
 	if _, err := MigrationBackupFileGate(path); err == nil {
 		t.Fatal("missing backup proof accepted")
 	}

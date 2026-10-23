@@ -32,10 +32,35 @@ type MigrationBackupGate func(context.Context, MigrationPlan) error
 
 var migrationSHA = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
+func migrationTrustedOwner(info os.FileInfo, uid int) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && (stat.Uid == 0 || stat.Uid == uint32(uid))
+}
+func migrationTrustedBackupParents(path string) error {
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		info, err := os.Lstat(dir)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !migrationTrustedOwner(info, os.Geteuid()) {
+			return errors.New("backup receipt requires trusted non-symlink parent directories")
+		}
+		stat := info.Sys().(*syscall.Stat_t)
+		// A root-owned sticky temporary root cannot replace another owner's private
+		// child directory. All other writable shared ancestors are refused.
+		if info.Mode().Perm()&0022 != 0 && !(stat.Uid == 0 && info.Mode()&os.ModeSticky != 0) {
+			return errors.New("backup receipt parent is writable by another user")
+		}
+		if dir == filepath.Dir(dir) {
+			return nil
+		}
+	}
+}
+
 func readMigrationBackupReceipt(path string) (MigrationBackupReceipt, error) {
 	var receipt MigrationBackupReceipt
 	if !filepath.IsAbs(path) {
 		return receipt, errors.New("absolute migration-owner backup receipt path required")
+	}
+	if err := migrationTrustedBackupParents(path); err != nil {
+		return receipt, err
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
@@ -43,7 +68,7 @@ func readMigrationBackupReceipt(path string) (MigrationBackupReceipt, error) {
 	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > 16<<10 {
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > 16<<10 || !migrationTrustedOwner(info, os.Geteuid()) {
 		return receipt, errors.New("backup receipt requires private mode 0600 regular file")
 	}
 	decoder := json.NewDecoder(io.LimitReader(f, (16<<10)+1))
