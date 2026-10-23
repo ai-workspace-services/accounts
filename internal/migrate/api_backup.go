@@ -56,7 +56,7 @@ func migrationTrustedBackupParents(path string) error {
 
 func readMigrationBackupReceipt(path string) (MigrationBackupReceipt, error) {
 	var receipt MigrationBackupReceipt
-	if !filepath.IsAbs(path) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return receipt, errors.New("absolute migration-owner backup receipt path required")
 	}
 	if err := migrationTrustedBackupParents(path); err != nil {
