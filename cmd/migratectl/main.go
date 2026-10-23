@@ -88,6 +88,9 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newCheckLateGenerationUsersCmd())
 	cmd.AddCommand(newSyncSingleGenerationUserCmd())
 	cmd.AddCommand(newUsageMergeCmd())
+	cmd.AddCommand(newMigrationServeCmd())
+	cmd.AddCommand(newMigrationTokenCmd())
+	cmd.AddCommand(newMigrationAPICmd())
 
 	return cmd
 }
