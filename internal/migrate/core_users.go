@@ -23,7 +23,6 @@ type CoreUsersOptions struct {
 	SchemaSHA256       string
 	Preview            bool
 	ExpectedPlanSHA256 string
-	WritersPaused      bool
 	CompareOnly        bool
 }
 
@@ -39,9 +38,9 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if err != nil {
 		return receipt, err
 	}
-	if (options.Environment != "prod" && options.Environment != "uat") || !options.WritersPaused ||
+	if (options.Environment != "prod" && options.Environment != "uat") ||
 		options.SchemaSHA256 != manifest.SchemaSHA256 {
-		return receipt, errors.New("core-user transfer requires explicit environment, paused writers and the reviewed Accounts schema hash")
+		return receipt, errors.New("core-user transfer requires explicit environment and the reviewed Accounts schema hash")
 	}
 	if !options.Preview && !options.CompareOnly {
 		decoded, decodeErr := hex.DecodeString(options.ExpectedPlanSHA256)
@@ -83,13 +82,32 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if _, err = src.ExecContext(ctx, `SET LOCAL default_transaction_read_only=on; SET LOCAL timezone='UTC'; SET LOCAL datestyle='ISO,YMD'; SET LOCAL statement_timeout='5min'; SET LOCAL lock_timeout='15s'; SET LOCAL idle_in_transaction_session_timeout='5min'`); err != nil {
 		return receipt, errors.New("cannot enforce core-user readonly transaction")
 	}
-	dst, err := target.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: options.CompareOnly || options.Preview})
+	isolation := sql.LevelSerializable
+	if !options.CompareOnly && !options.Preview {
+		// Reads occur only after both transaction locks. Read committed avoids
+		// taking a stale serializable snapshot while waiting for the advisory
+		// lock; exclusive table locks then keep users/checkpoint stable.
+		isolation = sql.LevelReadCommitted
+	}
+	dst, err := target.BeginTx(ctx, &sql.TxOptions{Isolation: isolation, ReadOnly: options.CompareOnly || options.Preview})
 	if err != nil {
 		return receipt, errors.New("cannot start core-user target transaction")
 	}
 	defer dst.Rollback()
 	if _, err = dst.ExecContext(ctx, `SET LOCAL timezone='UTC'; SET LOCAL datestyle='ISO,YMD'; SET LOCAL statement_timeout='5min'; SET LOCAL lock_timeout='15s'; SET LOCAL idle_in_transaction_session_timeout='5min'`); err != nil {
 		return receipt, errors.New("cannot enforce core-user transaction budgets")
+	}
+	if !options.CompareOnly && !options.Preview {
+		// Lock before the first target snapshot/catalog/row read. A writer that
+		// commits while this waits must be visible to the plan recheck. Service
+		// processes stay running; PostgreSQL serializes their users writes.
+		// Match other migration paths: advisory lock, then table locks.
+		if _, err = dst.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1::bigint)`, migrationAdvisoryLockKey); err != nil {
+			return receipt, errors.New("cannot lock core-user transfer")
+		}
+		if _, err = dst.ExecContext(ctx, `LOCK TABLE public.schema_migrations, public.users IN ACCESS EXCLUSIVE MODE`); err != nil {
+			return receipt, errors.New("cannot exclusively lock target users table")
+		}
 	}
 	receipt.SnapshotStartedAt = time.Now().UTC()
 	if err = businessSourceRole(ctx, src); err != nil {
@@ -147,12 +165,6 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 		missing, err = coreUserMissing(sourceUsers, targetUsers)
 		if err != nil {
 			return receipt, err
-		}
-		if _, err = dst.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1::bigint)`, migrationAdvisoryLockKey); err != nil {
-			return receipt, errors.New("cannot lock core-user transfer")
-		}
-		if _, err = dst.ExecContext(ctx, `LOCK TABLE public.schema_migrations, public.users IN ACCESS EXCLUSIVE MODE`); err != nil {
-			return receipt, errors.New("cannot exclusively lock target users table")
 		}
 		// Refresh after the lock so the email set and retained UUIDs are based on
 		// the same target state that receives the reconciliation.

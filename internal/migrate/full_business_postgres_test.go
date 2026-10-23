@@ -246,7 +246,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `UPDATE public.users SET email='user@example.invalid',password='stale-core-fixture',proxy_uuid='00000000-0000-0000-0000-000000000333'`)
 		coreOptions := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256,
-			Preview: true, WritersPaused: true}
+			Preview: true}
 		expectedIdentity, e := dbruntime.ConnectionIdentity(sourceDSN)
 		if e != nil {
 			t.Fatal("fixture source identity unavailable")
@@ -333,7 +333,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		if _, err := InitializeNative(context.Background(), targetDSN, NativeInitOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, LockTimeout: time.Second, StatementTimeout: time.Minute}); err != nil {
 			t.Fatal(err)
 		}
-		core := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, Preview: true, WritersPaused: true}
+		core := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, Preview: true}
 		preview, err := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, core)
 		if err != nil || preview.CoreUsers.Source.Count != 1 || preview.CoreUsers.Target.Count != 0 || preview.TargetWrites || preview.FullBusinessEqual || len(preview.CoreUsersPlanSHA256) != 64 {
 			t.Fatalf("fresh target preview failed: %v", err)
@@ -341,6 +341,58 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		var count int
 		if err = target.QueryRow(`SELECT count(*) FROM users`).Scan(&count); err != nil || count != 0 {
 			t.Fatal("preview wrote target users")
+		}
+		core.Preview = false
+		core.ExpectedPlanSHA256 = preview.CoreUsersPlanSHA256
+		// Simulate a running service writer committing while migration waits
+		// for its users lock. The old preview must never overwrite this user.
+		writer, err := target.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer writer.Rollback()
+		if _, err = writer.Exec(`INSERT INTO users(uuid,username,password,email,proxy_uuid) VALUES('00000000-0000-0000-0000-000000000999','concurrent-writer','concurrent-password',' User@example.invalid ','00000000-0000-0000-0000-000000000998')`); err != nil {
+			t.Fatal(err)
+		}
+		result := make(chan error, 1)
+		go func() {
+			_, err := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, core)
+			result <- err
+		}()
+		waiting := false
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if err = target.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_locks WHERE relation='public.users'::regclass AND database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND mode='AccessExclusiveLock' AND NOT granted)`).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+			if waiting {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !waiting {
+			t.Fatal("migration did not wait for the running writer")
+		}
+		if err = writer.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if err = <-result; err == nil || !strings.Contains(err.Error(), "plan") {
+			t.Fatalf("concurrent commit was not rejected by the locked plan check: %v", err)
+		}
+		var retainedPassword string
+		if err = target.QueryRow(`SELECT password FROM users`).Scan(&retainedPassword); err != nil || retainedPassword != "concurrent-password" {
+			t.Fatal("concurrent writer was overwritten")
+		}
+		// Reset only this disposable loopback fixture, as above. Runtime user
+		// retention triggers stay enabled and are never bypassed by migration.
+		exec(target, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`)
+		if _, err = InitializeNative(context.Background(), targetDSN, NativeInitOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, LockTimeout: time.Second, StatementTimeout: time.Minute}); err != nil {
+			t.Fatal(err)
+		}
+		core.Preview = true
+		preview, err = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, core)
+		if err != nil {
+			t.Fatal(err)
 		}
 		core.Preview = false
 		core.ExpectedPlanSHA256 = preview.CoreUsersPlanSHA256

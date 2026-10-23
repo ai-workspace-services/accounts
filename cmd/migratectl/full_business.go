@@ -62,7 +62,6 @@ func newCoreUsersCmd(compare bool) *cobra.Command {
 	cmd.Flags().StringVar(&targetEnv, "target-dsn-env", "", "Environment variable containing the native target DSN")
 	cmd.Flags().StringVar(&options.Environment, "environment", "", "Explicit uat or prod target")
 	cmd.Flags().StringVar(&options.SchemaSHA256, "schema-sha256", "", "Exact compiled Accounts native schema SHA-256")
-	cmd.Flags().BoolVar(&options.WritersPaused, "writers-paused", false, "Execution owner verified paused target writers")
 	if !compare {
 		cmd.Flags().BoolVar(&options.Preview, "dry-run", true, "Preview users only; no target writes")
 		cmd.Flags().StringVar(&options.ExpectedPlanSHA256, "plan-sha256", "", "Exact reviewed preview plan SHA256 required for apply")
