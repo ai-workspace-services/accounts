@@ -64,7 +64,6 @@ func newRootCmd() *cobra.Command {
 	cmd.Flags().StringVar(&targetEnv, "target-dsn-env", "", "Environment variable containing the target PostgreSQL DSN")
 	cmd.Flags().StringVar(&coreUserOpts.Environment, "environment", "", "Explicit uat or prod target")
 	cmd.Flags().StringVar(&coreUserOpts.SchemaSHA256, "schema-sha256", "", "Exact compiled Accounts native schema SHA-256")
-	cmd.Flags().BoolVar(&coreUserOpts.WritersPaused, "writers-paused", false, "Execution owner verified paused target writers")
 	cmd.Flags().StringVarP(&outputFormat, "output", "o", "raw", "safe diff output: raw (legacy JSON), yaml, or markdown")
 
 	cmd.AddCommand(newMigrateCmd(&migrationDir))
