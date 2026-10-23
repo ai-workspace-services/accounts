@@ -60,6 +60,7 @@ type BusinessEquality struct {
 	SHA256 string `json:"sha256"`
 }
 type FullBusinessReceipt struct {
+	CoreUsersPlanSHA256     string                      `json:"core_users_plan_sha256,omitempty"`
 	SourceIdentitySHA256    string                      `json:"source_identity_sha256"`
 	SourceSnapshotSHA256    string                      `json:"source_snapshot_sha256"`
 	SourceCatalogSHA256     string                      `json:"source_catalog_sha256"`
