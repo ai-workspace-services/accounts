@@ -272,6 +272,7 @@ type migrationServer struct {
 	MigrationServerOptions
 	store  *migrationStore
 	active chan struct{}
+	rate   migrationRateLimiter
 }
 type migrationStagePlan struct {
 	Binding  string            `json:"binding"`
@@ -406,6 +407,11 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 	subject, status := s.authenticate(r, claimScope)
 	if status != 0 {
 		migrationError(w, status, "migration_auth_denied")
+		return
+	}
+	if !s.rate.allow(s.JobID, subject, time.Now()) {
+		w.Header().Set("Retry-After", "1")
+		migrationError(w, 429, "migration_rate_limit")
 		return
 	}
 	select {

@@ -52,6 +52,12 @@ primary-key content conflicts return a persisted HTTP 200 preview with
 values or driver errors are returned. Authentication errors are 401/403, expired
 objects 410, malformed/oversized JSON requests 400, unsupported endpoints 404/405.
 A busy listener returns 503; retry the same request IDs. The client explicitly
+enforces no automatic retry. Authenticated requests are also rate limited per
+configured job/operator: burst 120 requests, refill 30 requests/second, at most
+1024 subject buckets, with inactive buckets reclaimed after one minute. Rate
+refusal returns HTTP 429 and `Retry-After: 1`. This permits short page-fetch
+bursts while bounding request amplification; chunk resume remains blocked by #505.
+The client explicitly
 reports 404/405/501 as unsupported without fallback.
 
 ## Data and recovery contract
