@@ -657,6 +657,7 @@ type Store interface {
 
 	// Session management
 	CreateSession(ctx context.Context, token, userID string, expiresAt time.Time) error
+	CreateMFASession(ctx context.Context, token, userID, factorFingerprint string, expiresAt time.Time) error
 	GetSession(ctx context.Context, token string) (string, time.Time, error)
 	DeleteSession(ctx context.Context, token string) error
 
@@ -667,6 +668,13 @@ type Store interface {
 	RecordPasswordRecoveryFailure(ctx context.Context, challengeID string, now time.Time, maxAttempts int, lockout time.Duration) (time.Time, error)
 	InvalidatePasswordRecoveryChallenge(ctx context.Context, challengeID string, now time.Time) error
 	CompletePasswordRecovery(ctx context.Context, challengeID, passwordHash string, now time.Time) error
+	CreateMFAResetRequest(ctx context.Context, request *MFAResetRequest) error
+	GetMFAResetRequestByEmail(ctx context.Context, email string) (*MFAResetRequest, error)
+	GetMFAResetRequestByID(ctx context.Context, id string) (*MFAResetRequest, error)
+	ConfirmMFAResetRequest(ctx context.Context, id, codeHash, reason string, now time.Time) error
+	FailMFAResetCode(ctx context.Context, id string) error
+	ListMFAResetRequests(ctx context.Context) ([]MFAResetRequest, error)
+	DecideMFAResetRequest(ctx context.Context, id, actorID, decision, reason string, now time.Time) error
 	ReplaceMFARecoveryCodes(ctx context.Context, userID string, codes []MFARecoveryCode) error
 	ListMFARecoveryCodes(ctx context.Context, userID string, now time.Time) ([]MFARecoveryCode, error)
 	RecordMFARecoveryCodeFailure(ctx context.Context, userID string, now time.Time, maxAttempts int, lockout time.Duration) (time.Time, error)
@@ -834,6 +842,7 @@ type memoryStore struct {
 	overlayConfigAcks       map[string]*OverlayConfigAck
 	sessions                map[string]*sessionRecord
 	passwordRecovery        map[string]*PasswordRecoveryChallenge
+	mfaResetRequests        map[string]*MFAResetRequest
 	mfaRecoveryCodes        map[string]*MFARecoveryCode
 	oauthExchangeCodes      map[string]*oauthExchangeRecord
 	tenants                 map[string]*Tenant
@@ -952,6 +961,7 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		overlayConfigAcks:       make(map[string]*OverlayConfigAck),
 		sessions:                make(map[string]*sessionRecord),
 		passwordRecovery:        make(map[string]*PasswordRecoveryChallenge),
+		mfaResetRequests:        make(map[string]*MFAResetRequest),
 		mfaRecoveryCodes:        make(map[string]*MFARecoveryCode),
 		oauthExchangeCodes:      make(map[string]*oauthExchangeRecord),
 		tenants:                 make(map[string]*Tenant),

@@ -485,6 +485,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authGroup.POST("/password/forgot/confirm", h.confirmPasswordReset)
 	authGroup.POST("/password/forgot/send-code", h.requestPasswordResetCode)
 	authGroup.POST("/password/forgot/confirm-code", h.confirmPasswordResetCode)
+	authGroup.POST("/mfa/recovery/request", h.requestMFAReset)
+	authGroup.POST("/mfa/recovery/confirm", h.confirmMFAReset)
 	authGroup.POST("/account/reactivate", h.reactivateAccount)
 
 	authGroup.POST("/login", h.login)
@@ -545,6 +547,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/mfa/totp/provision", h.provisionTOTP)
 	authProtected.POST("/mfa/totp/verify", h.verifyTOTP)
 	authProtected.POST("/mfa/disable", h.disableMFA)
+	authProtected.GET("/admin/mfa-recovery", h.adminListMFAResets)
+	authProtected.POST("/admin/mfa-recovery/:requestId", h.adminDecideMFAReset)
 	authProtected.GET("/mfa/recovery-codes", h.getMFARecoveryCodeStatus)
 	authProtected.POST("/mfa/recovery-codes", h.rotateMFARecoveryCodes)
 	authProtected.DELETE("/mfa/recovery-codes", h.revokeMFARecoveryCodes)
@@ -1746,7 +1750,7 @@ func (h *handler) verifyMFALogin(c *gin.Context) {
 
 	h.removeMFAChallenge(mfaTicket)
 
-	token, expiresAt, err := h.createSession(user.ID)
+	token, expiresAt, err := h.createSession(user.ID, store.MFAFingerprint(user.MFATOTPSecret))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "session_creation_failed", "failed to create session")
 		return
@@ -2000,7 +2004,7 @@ func (h *handler) rejectIfBillingSuspended(c *gin.Context, userID string) bool {
 	return false
 }
 
-func (h *handler) createSession(userID string) (string, time.Time, error) {
+func (h *handler) createSession(userID string, factorFingerprint ...string) (string, time.Time, error) {
 	token, err := h.newRandomToken()
 	if err != nil {
 		return "", time.Time{}, err
@@ -2011,7 +2015,11 @@ func (h *handler) createSession(userID string) (string, time.Time, error) {
 	}
 	expiresAt := time.Now().Add(ttl)
 
-	if err := h.store.CreateSession(context.Background(), token, userID, expiresAt); err != nil {
+	if len(factorFingerprint) > 0 {
+		if err := h.store.CreateMFASession(context.Background(), token, userID, factorFingerprint[0], expiresAt); err != nil {
+			return "", time.Time{}, err
+		}
+	} else if err := h.store.CreateSession(context.Background(), token, userID, expiresAt); err != nil {
 		return "", time.Time{}, err
 	}
 	return token, expiresAt, nil

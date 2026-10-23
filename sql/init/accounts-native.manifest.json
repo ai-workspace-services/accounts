@@ -1,8 +1,8 @@
 {
   "format": 1,
-  "migration_version": 2026102002,
-  "schema_sha256": "f45db2423f11d9dcc7f3cc58c72b52228a27d7b6ccfc717faf2bbb56fa0498b1",
-  "business_table_count": 74,
+  "migration_version": 2026102201,
+  "schema_sha256": "3816a4ea2764c98d7b9f58c44b576f8a47e4c977928540b0a0231d4660c95050",
+  "business_table_count": 75,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
@@ -46,7 +46,7 @@
     },
     {
       "path": "scripts/qualify-native-schema.mjs",
-      "sha256": "9dd63e3342792324f1eaff8af98a29e7f1bba6a14235e6db38e641a8c5a619f2"
+      "sha256": "7e4b3fdcf8a3eace32c5a9e48d55891482bd1a961a019e7d64fcca3a9c1725ef"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -137,6 +137,10 @@
       "sha256": "5ae75bdf216f243523abf0c9e26bef37b45cb289a1b7f39993c8e71e6c13d0cc"
     },
     {
+      "path": "sql/migrations/2026102201_mfa_reset_reviews.up.sql",
+      "sha256": "6af662b1c3cc8cc3aa993cfc5c1b6d3d6ef17fa8ce1a304f79963afd20444068"
+    },
+    {
       "path": "sql/schema.sql",
       "sha256": "ca9b3d5dee8b34246edc1d8ed51779670063b6eb8c52e6459cc0cc41e2188b89"
     }
@@ -171,6 +175,7 @@
     "homepage_video_settings",
     "identities",
     "mfa_recovery_codes",
+    "mfa_reset_requests",
     "network_team_members",
     "network_teams",
     "node_health_snapshots",
