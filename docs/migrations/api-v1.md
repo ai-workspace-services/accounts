@@ -19,6 +19,8 @@ except the authenticated snapshot stream. Every response is `Cache-Control: no-s
 | POST `/snapshots` | `source.read` | `{request_id}` -> immutable manifest |
 | GET `/snapshots/{id}/manifest` | `source.read` | manifest |
 | GET `/snapshots/{id}/stream` | `source.read` | NDJSON: manifest record then table/row records |
+| GET `/snapshots/{id}/chunks/{chunk_id}` | `source.read` | authenticated immutable JSON page |
+| POST `/transfers` | `target.plan` | preview request body -> encrypted transfer-only receipt |
 | POST `/plans/preview` | `target.plan` | `{request_id,source_url,snapshot_id,source_token}` -> plan |
 | POST `/plans/{id}/apply` | `target.apply` | `{plan_sha256}` -> committed receipt |
 | GET `/plans/{id}` | `target.plan` | persisted plan/committed receipt |
@@ -39,7 +41,7 @@ and plan even if the live source changes. Source credentials are forwarded only 
 an exactly configured peer base URL, never persisted, and never sent on redirects.
 
 Manifest fields: `format`, `scope`, `snapshot_id`, `tool_sha256`, `authorization`, `source_identity_sha256`,
-`source_schema_sha256`, `snapshot_sha256`, `created_at`, `expires_at`, `tables`
+`source_schema_sha256`, `snapshot_sha256`, `created_at`, `expires_at`, `chunks`, `tables`
 (per-table rows/SHA-256), `columns` (complete per-table field/type/null/generated
 coverage). Plan fields: `plan_id`, `plan_sha256`, `tool_sha256`, `state`,
 `snapshot`, `target_identity_sha256`, `target_schema_sha256`,
@@ -56,7 +58,8 @@ enforces no automatic retry. Authenticated requests are also rate limited per
 configured job/operator: burst 120 requests, refill 30 requests/second, at most
 1024 subject buckets, with inactive buckets reclaimed after one minute. Rate
 refusal returns HTTP 429 and `Retry-After: 1`. This permits short page-fetch
-bursts while bounding request amplification; chunk resume remains blocked by #505.
+bursts while bounding request amplification. Cross-repository restore/release
+acceptance remains tracked by GitOps #505.
 The client explicitly
 reports 404/405/501 as unsupported without fallback.
 
@@ -72,8 +75,9 @@ or another unique-key collision rejects the entire operation.
 
 Source uses one read-only repeatable-read transaction. The schema fingerprint
 and canonical row hashing reuse `internal/migrate`'s reviewed catalog/semantics.
-Snapshots and plans are AES-256-GCM encrypted, authenticated with object type,
-ID and subject, atomically persisted under a private staging directory. Keys
+Snapshot manifests, individual pages and plans are AES-256-GCM encrypted, authenticated with object type,
+ID and subject, atomically persisted under a private staging directory. Plans
+contain the manifest rather than complete source rows. Keys
 come from environment references and must survive listener restart.
 
 Apply locks the reviewed target tables, checks physical database identity,
@@ -175,7 +179,10 @@ isolated restore before writing this assertion (mode 0600, no symlink):
 }
 ```
 
-Receipt fingerprints must match the exact plan target. Expiry, baseline change,
+Receipt files and every parent directory must be owned by the service UID or
+root, with no symlinks or group/world-writable parents (a root-owned sticky
+temporary root may contain a privately owned child). A root listener accepts
+only root-owned receipts/parents. Receipt fingerprints must match the exact plan target. Expiry, baseline change,
 missing/invalid proof or mismatch blocks apply. The Playbook owner must enforce
 artifact decryptability, restore validation and file ownership when issuing this
 receipt; this API does not infer backup success from a filename or claim to run
@@ -183,16 +190,42 @@ a restore. Embedders may inject the same verified `MigrationBackupGate`. Existin
 committed receipts remain readable/retryable after backup proof expiry because
 those requests perform no business writes.
 
-## Bounded v1 and validation
+## Encrypted pages and resumable transfer
 
-V1 supports at most 32 MiB of serialized row data per captured scope and 64 MiB
-per response/encrypted object. Per-row/page limits also reuse existing migration
-budgets. Each listener materializes one authenticated operation at a time. These
-are serialized payload budgets, not a claim of 64 MiB process RSS. Larger migrations
-fail before target apply. The NDJSON stream is bounded
-transport, not arbitrary-size chunk persistence. Resume is at immutable snapshot
-and plan IDs; byte/chunk resume is not implemented in v1. Encrypted expired staging
-files require owner-managed retention cleanup; expiration prevents new use.
+Source capture streams one repeatable-read snapshot into encrypted pages of about
+2 MiB (a row must fit within 1 MiB). The manifest lists every page's stable UUID,
+table, ordinal, row count, exact serialized bytes and SHA-256. IDs bind the snapshot,
+table/ordinal and content hash. A manifest is published only after all pages are
+durable and the source transaction commits. An interrupted unpublished capture
+can restart; incomplete capture pages are inaccessible through the API. Once
+published, the source snapshot never changes.
+
+Target persists the immutable manifest and each verified page independently.
+Retry the same `--snapshot-id` and `--plan-id` with refreshed credentials retaining
+the same subject/job/pair. The target checks durable cached pages and downloads
+only missing pages, with at most two network attempts per missing page. Failed
+client requests report the safe IDs needed for recovery. Corrupt cached pages
+fail closed rather than silently replacing evidence. `--transfer-only` stages
+and verifies all pages/table fingerprints without previewing or writing business
+data. It cannot be combined with apply/status and is not an apply authorization.
+
+Preview and apply load pages into transaction-local temporary native tables.
+SQL compares primary keys and complete native row content, validates source FK
+closure and union unique/check constraints, and retains target-only facts.
+Preview rolls back all temporary data. Apply inserts only absent rows in FK order
+and verifies complete target union fingerprints before atomic receipt commit.
+Neither path creates a complete source/target row map in Go. The 32 MiB total API
+snapshot restriction is removed; source manifests and target plan files contain
+references, not all rows. Canonical checksum sorting still retains compact
+per-row digest metadata; this is not a constant-RSS guarantee for unbounded row
+counts. Metadata objects are limited to 64 MiB, requests have bounded deadlines,
+and temporary-table disk capacity remains an owner preflight responsibility.
+One authenticated operation is active per listener; there is no waiting queue.
+
+PostgreSQL17 regression covers a scope exceeding 32 MiB, interrupted chunk
+fetch, handler restart, no redownload of completed pages, large native preview,
+apply and exact retry, manifest-only staging and cached-page tamper refusal.
+Encrypted expired/orphan staging files require owner-managed retention cleanup.
 
 Run isolated integration tests with `MIGRATECTL_API_TEST_DSN` pointing to a dedicated
 loopback PostgreSQL17 `postgres` database. Tests create only randomly named new

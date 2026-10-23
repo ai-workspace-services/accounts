@@ -402,6 +402,52 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 	})
 	// Run real authenticated target-driven HTTP, encrypted restart, lost response.
+	parentTest := t
+	t.Run("dedicated-target-executor", func(t *testing.T) {
+		role := "migration_executor_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		execSQL(admin, `CREATE ROLE `+quoteBusiness(role)+` LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`)
+		parentTest.Cleanup(func() {
+			if _, e := admin.Exec(`DROP ROLE ` + quoteBusiness(role)); e != nil {
+				parentTest.Error(e)
+			}
+		})
+		db, name := newDB()
+		execSQL(db, `GRANT USAGE,CREATE ON SCHEMA public TO `+quoteBusiness(role))
+		for _, table := range migrationAPITables {
+			execSQL(db, `ALTER TABLE public.`+quoteBusiness(table)+` OWNER TO `+quoteBusiness(role))
+		}
+		execSQL(db, `REVOKE CREATE ON SCHEMA public FROM `+quoteBusiness(role)+`; GRANT SELECT ON public.schema_migrations TO `+quoteBusiness(role)+`; GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO `+quoteBusiness(role))
+		if e := InitializeMigrationReceipts(ctx, db); e != nil {
+			t.Fatal(e)
+		}
+		execSQL(db, `GRANT USAGE ON SCHEMA accounts_migration_api TO `+quoteBusiness(role)+`; GRANT SELECT,INSERT ON accounts_migration_api.receipts TO `+quoteBusiness(role))
+		executor, e := sql.Open("pgx", "postgres://"+role+"@"+cfg.Host+":"+fmtPort(cfg.Port)+"/"+name+"?sslmode=disable")
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer executor.Close()
+		var privileged bool
+		if executor.QueryRow(`SELECT rolsuper OR rolbypassrls OR rolcreatedb OR rolcreaterole FROM pg_roles WHERE rolname=current_user`).Scan(&privileged) != nil || privileged {
+			t.Fatal("executor unexpectedly privileged")
+		}
+		if _, e = executor.Exec(`CREATE TABLE public.executor_must_not_create(id int)`); e == nil {
+			t.Fatal("executor unexpectedly has public CREATE")
+		}
+		if _, e = executor.Exec(`CREATE SCHEMA executor_must_not_create`); e == nil {
+			t.Fatal("executor unexpectedly has database CREATE")
+		}
+		p, e := PreviewMigration(ctx, executor, snapshot, uuid.NewString(), time.Hour)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = ApplyMigration(ctx, executor, snapshot, p, p.PlanSHA256, "operator"); e != nil {
+			t.Fatal(e)
+		}
+		if _, e = ApplyMigration(ctx, executor, snapshot, p, p.PlanSHA256, "operator"); e != nil {
+			t.Fatal("executor retry", e)
+		}
+	})
+
 	t.Run("http-persisted-recovery", func(t *testing.T) {
 		httpTarget, _ := newDB()
 		sourceDir := t.TempDir()
@@ -495,6 +541,7 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 		targetHTTP = httptest.NewServer(h)
 		options.TargetURL = targetHTTP.URL
+		options.TargetToken = dstToken
 		options.Apply = true
 		done, e := RunMigrationClient(ctx, options)
 		if e != nil || done.State != "applied" {
@@ -541,7 +588,238 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 				t.Fatal("auth scope/owner", res.StatusCode)
 			}
 		}
+		t.Run("large-chunk-transfer-interrupt-restart", func(t *testing.T) {
+			previousOptions := targetOptions
+			defer func() {
+				targetHTTP.Close()
+				targetOptions = previousOptions
+				handler, e := NewMigrationHandler(targetOptions)
+				if e != nil {
+					t.Error(e)
+					return
+				}
+				targetHTTP = httptest.NewServer(handler)
+			}()
+			largeTarget, _ := newDB()
+			execSQL(largeTarget, `INSERT INTO public.users(uuid,username,password,email,proxy_uuid) VALUES('00000000-0000-0000-0000-000000000199','large-target-only','protected-target-hash','large-target@example.invalid','00000000-0000-0000-0000-000000000299')`)
+			targetOptions.DB = largeTarget
+			targetOptions.InitializeReceipts = true
+			execSQL(source, `INSERT INTO public.audit_logs(action,details) SELECT 'large-chunk-fixture',jsonb_build_object('payload',repeat('private-chunk-payload-',30000)) FROM generate_series(1,70)`)
+			t.Run("unpublished-capture-interruption", func(t *testing.T) {
+				captureOptions := sourceOptions
+				captureOptions.StagingDirectory = t.TempDir()
+				os.Chmod(captureOptions.StagingDirectory, 0700)
+				handler, e := NewMigrationHandler(captureOptions)
+				if e != nil {
+					t.Fatal(e)
+				}
+				finished := make(chan struct{})
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r); close(finished) }))
+				defer server.Close()
+				captureCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+				id := uuid.NewString()
+				go func() {
+					ticker := time.NewTicker(time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-captureCtx.Done():
+							return
+						case <-ticker.C:
+							entries, _ := os.ReadDir(captureOptions.StagingDirectory)
+							for _, entry := range entries {
+								if strings.HasPrefix(entry.Name(), "source-chunk-") {
+									cancel()
+									return
+								}
+							}
+						}
+					}
+				}()
+				var m MigrationManifest
+				if e = migrationHTTP(captureCtx, http.DefaultClient, "POST", server.URL+MigrationAPIBase+"/snapshots", srcToken, map[string]string{"request_id": id}, &m); e == nil {
+					t.Fatal("interrupted capture unexpectedly published")
+				}
+				select {
+				case <-finished:
+				case <-time.After(10 * time.Second):
+					t.Fatal("source failed to cancel capture")
+				}
+				if _, e = os.Stat(filepath.Join(captureOptions.StagingDirectory, "snapshot-"+id+".gcm")); !os.IsNotExist(e) {
+					t.Fatal("incomplete source manifest was exposed")
+				}
+			})
+			chunkHandler, e := NewMigrationHandler(sourceOptions)
+			if e != nil {
+				t.Fatal(e)
+			}
+			var mu sync.Mutex
+			approvedLargeBaseline := ""
+			targetOptions.BackupGate = func(ctx context.Context, p MigrationPlan) error {
+				mu.Lock()
+				defer mu.Unlock()
+				if approvedLargeBaseline == "" || p.TargetBaselineSHA256 != approvedLargeBaseline {
+					return io.ErrUnexpectedEOF
+				}
+				return nil
+			}
+			fail := true
+			seen := map[string]int{}
+			attempts := 0
+			chunkSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				handler := chunkHandler
+				refuse := false
+				if strings.Contains(r.URL.Path, "/chunks/") {
+					id := filepath.Base(r.URL.Path)
+					seen[id]++
+					attempts++
+					refuse = fail && attempts >= 3
+				}
+				mu.Unlock()
+				if refuse {
+					w.WriteHeader(503)
+					return
+				}
+				handler.ServeHTTP(w, r)
+			}))
+			defer chunkSource.Close()
+			targetHTTP.Close()
+			targetOptions.Peers.URLs = []string{chunkSource.URL}
+			nextTarget, e := NewMigrationHandler(targetOptions)
+			if e != nil {
+				t.Fatal(e)
+			}
+			targetHTTP = httptest.NewServer(nextTarget)
+			srcToken, e = MintMigrationToken(sourceKey, "source-fixture", "operator", []string{"source.read"}, 10*time.Minute, binding)
+			if e != nil {
+				t.Fatal(e)
+			}
+			dstToken, e = MintMigrationToken(targetKey, "target-fixture", "operator", []string{"target.plan", "target.apply"}, 10*time.Minute, binding)
+			if e != nil {
+				t.Fatal(e)
+			}
+			large := MigrationClientOptions{SourceURL: chunkSource.URL, TargetURL: targetHTTP.URL, SourceToken: srcToken, TargetToken: dstToken, SnapshotID: uuid.NewString(), PlanID: uuid.NewString(), TransferOnly: true, AllowLoopbackHTTP: true}
+			if _, e = RunMigrationClient(ctx, large); e == nil {
+				t.Fatal("injected transfer interruption ignored")
+			}
+			entries, _ := os.ReadDir(targetDir)
+			var cached []string
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), "target-chunk-") {
+					cached = append(cached, strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "target-chunk-"), ".gcm"))
+				}
+			}
+			if len(cached) == 0 {
+				t.Fatal("no durable pages after interruption")
+			}
+			nextSource, e := NewMigrationHandler(sourceOptions)
+			if e != nil {
+				t.Fatal(e)
+			}
+			mu.Lock()
+			chunkHandler = nextSource
+			fail = false
+			prior := map[string]int{}
+			for _, id := range cached {
+				prior[id] = seen[id]
+			}
+			mu.Unlock()
+			targetHTTP.Close()
+			nextTarget, e = NewMigrationHandler(targetOptions)
+			if e != nil {
+				t.Fatal(e)
+			}
+			targetHTTP = httptest.NewServer(nextTarget)
+			large.TargetURL = targetHTTP.URL
+			receipt, e := RunMigrationClient(ctx, large)
+			if e != nil || receipt.State != "transfer_staged" {
+				t.Fatal("resumable large transfer", e)
+			}
+			var total int64
+			for _, chunk := range receipt.Snapshot.Chunks {
+				total += int64(chunk.Bytes)
+			}
+			if total <= 32<<20 {
+				t.Fatal("fixture did not exceed old cap")
+			}
+			mu.Lock()
+			for id, count := range prior {
+				if seen[id] != count {
+					t.Error("completed page redownloaded", id)
+				}
+			}
+			mu.Unlock()
+			if info, e := os.Stat(filepath.Join(sourceDir, "snapshot-"+large.SnapshotID+".gcm")); e != nil || info.Size() > 256<<10 {
+				t.Fatal("source persisted whole snapshot instead of manifest")
+			}
+			large.TransferOnly = false
+			largePlan, e := RunMigrationClient(ctx, large)
+			if e != nil || largePlan.State != "preview" || largePlan.ConflictRows != 0 {
+				t.Fatal("large native preview", largePlan.State, e)
+			}
+			if largeTarget.QueryRow(`SELECT count(*) FROM public.audit_logs WHERE action='large-chunk-fixture'`).Scan(&count) != nil || count != 0 {
+				t.Fatal("transfer-only wrote business data")
+			}
+			mu.Lock()
+			approvedLargeBaseline = largePlan.TargetBaselineSHA256
+			mu.Unlock()
+			large.Apply = true
+			large.PlanSHA256 = largePlan.PlanSHA256
+			applied, e := RunMigrationClient(ctx, large)
+			if e != nil || applied.State != "applied" {
+				t.Fatal("large native apply", e)
+			}
+			if _, e = RunMigrationClient(ctx, large); e != nil {
+				t.Fatal("large apply retry", e)
+			}
+			if largeTarget.QueryRow(`SELECT count(*) FROM public.audit_logs WHERE action='large-chunk-fixture'`).Scan(&count) != nil || count != 70 {
+				t.Fatal("large native rows not committed")
+			}
+			var protected string
+			if largeTarget.QueryRow(`SELECT password FROM public.users WHERE uuid='00000000-0000-0000-0000-000000000199'`).Scan(&protected) != nil || protected != "protected-target-hash" {
+				t.Fatal("large apply changed target-only fact")
+			}
+			check := large
+			check.Apply = false
+			check.PlanSHA256 = ""
+			check.PlanID = uuid.NewString()
+			noop, e := RunMigrationClient(ctx, check)
+			if e != nil || noop.InsertRows != 0 || noop.ConflictRows != 0 {
+				t.Fatal("large exact-content replay preview", e)
+			}
+			execSQL(largeTarget, `UPDATE public.users SET password='independent-target-password' WHERE uuid='`+userA+`'`)
+			check.PlanID = uuid.NewString()
+			conflicted, e := RunMigrationClient(ctx, check)
+			if e != nil || conflicted.State != "conflict" || conflicted.ConflictRows == 0 {
+				t.Fatal("large identity conflict not retained", e)
+			}
+			check.Apply = true
+			check.PlanSHA256 = conflicted.PlanSHA256
+			if _, e = RunMigrationClient(ctx, check); e == nil {
+				t.Fatal("large conflicting identity overwritten")
+			}
+			if info, e := os.Stat(filepath.Join(targetDir, "plan-"+large.PlanID+".gcm")); e != nil || info.Size() > 256<<10 {
+				t.Fatal("plan persisted full rows")
+			}
+			first := receipt.Snapshot.Chunks[0]
+			path := filepath.Join(targetDir, "target-chunk-"+first.ID+".gcm")
+			encrypted, e := os.ReadFile(path)
+			if e != nil {
+				t.Fatal(e)
+			}
+			encrypted[len(encrypted)-1] ^= 1
+			os.WriteFile(path, encrypted, 0600)
+			large.TransferOnly = true
+			large.Apply = false
+			large.PlanSHA256 = ""
+			if _, e = RunMigrationClient(ctx, large); e == nil {
+				t.Fatal("tampered cached chunk accepted")
+			}
+		})
 		// Encrypt/authenticate files: one bit changed cannot become a usable plan.
+		options.TargetURL = targetHTTP.URL
 		path := filepath.Join(targetDir, "plan-"+preview.PlanID+".gcm")
 		encrypted, _ := os.ReadFile(path)
 		encrypted[len(encrypted)-1] ^= 1

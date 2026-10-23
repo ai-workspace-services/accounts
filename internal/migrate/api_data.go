@@ -39,6 +39,7 @@ var migrationAPITables = strings.Fields(`users identities mfa_recovery_codes acc
  audit_logs tenants tenant_domains tenant_memberships rbac_roles rbac_permissions rbac_role_permissions`)
 
 type MigrationManifest struct {
+	Chunks               []MigrationChunk            `json:"chunks,omitempty"`
 	ToolSHA256           string                      `json:"tool_sha256"`
 	Authorization        MigrationAuthorization      `json:"authorization"`
 	Format               int                         `json:"format"`
@@ -221,6 +222,10 @@ func migrationSchema(ctx context.Context, tx *sql.Tx, order []string) (string, e
 }
 
 func migrationRows(ctx context.Context, tx *sql.Tx, source bool) (map[string][]rawRow, map[string]BusinessEquality, error) {
+	return migrationReadPages(ctx, tx, source, nil)
+}
+
+func migrationReadPages(ctx context.Context, tx *sql.Tx, source bool, sink func(string, []rawRow) error) (map[string][]rawRow, map[string]BusinessEquality, error) {
 	tables, order, err := migrationCatalog()
 	if err != nil {
 		return nil, nil, err
@@ -264,7 +269,11 @@ func migrationRows(ctx context.Context, tx *sql.Tx, source bool) (map[string][]r
 			if err != nil {
 				return nil, nil, err
 			}
-			err = streamBusiness(ctx, tx, name, table.PrimaryKey, func(page []rawRow) error {
+			stream := streamBusiness
+			if sink != nil {
+				stream = streamMigrationPages
+			}
+			err = stream(ctx, tx, name, table.PrimaryKey, func(page []rawRow) error {
 				for _, row := range page {
 					if source {
 						if err := projectBusinessRow(name, row, cols, table, mapping); err != nil {
@@ -279,10 +288,15 @@ func migrationRows(ctx context.Context, tx *sql.Tx, source bool) (map[string][]r
 						return err
 					}
 					size += len(b)
-					if size > MigrationAPIMaxBytes/2 {
-						return errors.New("snapshot exceeds migration API data budget")
+					if sink == nil && size > MigrationAPIMaxBytes/2 {
+						return errors.New("legacy in-memory snapshot budget exceeded; use chunk API")
 					}
-					data[name] = append(data[name], row)
+					if sink == nil {
+						data[name] = append(data[name], row)
+					}
+				}
+				if sink != nil {
+					return sink(name, page)
 				}
 				return nil
 			})
@@ -299,6 +313,10 @@ func migrationRows(ctx context.Context, tx *sql.Tx, source bool) (map[string][]r
 }
 
 func CaptureMigrationSnapshot(ctx context.Context, db *sql.DB, id string, lifetime time.Duration, authorization MigrationAuthorization) (MigrationSnapshot, error) {
+	return captureMigrationPages(ctx, db, id, lifetime, authorization, nil)
+}
+
+func captureMigrationPages(ctx context.Context, db *sql.DB, id string, lifetime time.Duration, authorization MigrationAuthorization, sink func(string, []rawRow) error) (MigrationSnapshot, error) {
 	var result MigrationSnapshot
 	tx, err := migrationBegin(ctx, db, true)
 	if err != nil {
@@ -327,7 +345,7 @@ func CaptureMigrationSnapshot(ctx context.Context, db *sql.DB, id string, lifeti
 	if err != nil {
 		return result, err
 	}
-	rows, digests, err := migrationRows(ctx, tx, true)
+	rows, digests, err := migrationReadPages(ctx, tx, true, sink)
 	if err != nil {
 		return result, err
 	}
@@ -339,8 +357,10 @@ func CaptureMigrationSnapshot(ctx context.Context, db *sql.DB, id string, lifeti
 	result = MigrationSnapshot{Manifest: MigrationManifest{Authorization: authorization, Format: 1, Scope: MigrationAPIScope, SnapshotID: id, SourceIdentitySHA256: identity, SourceSchemaSHA256: fingerprint, CreatedAt: now, ExpiresAt: now.Add(lifetime), Tables: digests, Columns: columns}, Rows: rows}
 	result.Manifest.ToolSHA256 = migrationExecutableSHA256()
 	result.Manifest.SnapshotSHA256 = migrationSnapshotHash(result.Manifest)
-	if err = validateMigrationSnapshot(result); err != nil {
-		return MigrationSnapshot{}, err
+	if sink == nil {
+		if err = validateMigrationSnapshot(result); err != nil {
+			return MigrationSnapshot{}, err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return MigrationSnapshot{}, errors.New("source snapshot failed")

@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -126,11 +127,15 @@ func (s *migrationStore) read(kind, id, subject string, out any) error {
 		return err
 	}
 	defer f.Close()
+	limit := int64(MigrationAPIMaxBytes)
+	if kind == "source-chunk" || kind == "target-chunk" {
+		limit = migrationChunkBytes + (1 << 20)
+	}
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > MigrationAPIMaxBytes+1024 {
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > limit+1024 {
 		return errors.New("invalid staging object")
 	}
-	b, err := io.ReadAll(io.LimitReader(f, MigrationAPIMaxBytes+1025))
+	b, err := io.ReadAll(io.LimitReader(f, limit+1025))
 	if err != nil || len(b) < s.aead.NonceSize() {
 		return errors.New("invalid encrypted staging object")
 	}
@@ -379,6 +384,12 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 	} else if s.Role == "source" && len(parts) == 3 && parts[0] == "snapshots" && migrationUUID(parts[1]) && (parts[2] == "manifest" || parts[2] == "stream") {
 		scope = "source"
 		method = "GET"
+	} else if s.Role == "source" && len(parts) == 4 && parts[0] == "snapshots" && migrationUUID(parts[1]) && parts[2] == "chunks" && migrationUUID(parts[3]) {
+		scope = "source"
+		method = "GET"
+	} else if s.Role == "target" && path == "/transfers" {
+		scope = "transfer"
+		method = "POST"
 	} else if s.Role == "target" && path == "/plans/preview" {
 		scope = "preview"
 		method = "POST"
@@ -432,6 +443,10 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 		s.preview(w, r, subject)
 		return
 	}
+	if scope == "transfer" {
+		s.transfer(w, r, subject)
+		return
+	}
 	s.target(w, r, parts, subject, scope)
 }
 
@@ -458,7 +473,7 @@ func (s *migrationServer) source(w http.ResponseWriter, r *http.Request, parts [
 		if !errors.Is(err, os.ErrNotExist) || r.Method != "POST" {
 			return err
 		}
-		snapshot, err = CaptureMigrationSnapshot(r.Context(), s.DB, id, s.Lifetime, s.authorization(subject))
+		snapshot, err = s.captureChunks(r.Context(), id, subject)
 		if err != nil {
 			return err
 		}
@@ -480,18 +495,33 @@ func (s *migrationServer) source(w http.ResponseWriter, r *http.Request, parts [
 		migrationJSON(w, 200, snapshot.Manifest)
 		return
 	}
+	if parts[2] == "chunks" {
+		for _, chunk := range snapshot.Manifest.Chunks {
+			if chunk.ID == parts[3] {
+				var page migrationChunkPage
+				if err = s.store.read("source-chunk", chunk.ID, subject, &page); err != nil || validateMigrationChunk(id, chunk, page) != nil {
+					migrationError(w, 409, "source_chunk_corrupt")
+					return
+				}
+				migrationJSON(w, 200, page)
+				return
+			}
+		}
+		migrationError(w, 404, "unknown_snapshot_chunk")
+		return
+	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	if encoder.Encode(migrationStreamRecord{Manifest: &snapshot.Manifest}) != nil {
 		return
 	}
-	_, order, err := migrationCatalog()
-	if err != nil {
-		return
-	}
-	for _, name := range order {
-		for _, row := range snapshot.Rows[name] {
-			if encoder.Encode(migrationStreamRecord{Table: name, Row: row}) != nil {
+	for _, chunk := range snapshot.Manifest.Chunks {
+		var page migrationChunkPage
+		if s.store.read("source-chunk", chunk.ID, subject, &page) != nil || validateMigrationChunk(id, chunk, page) != nil {
+			return
+		}
+		for _, row := range page.Rows {
+			if encoder.Encode(migrationStreamRecord{Table: chunk.Table, Row: row}) != nil {
 				return
 			}
 		}
@@ -499,6 +529,19 @@ func (s *migrationServer) source(w http.ResponseWriter, r *http.Request, parts [
 }
 
 func migrationHTTP(ctx context.Context, client *http.Client, method, endpoint, token string, input, output any) error {
+	return migrationHTTPBudget(ctx, client, method, endpoint, token, input, output, MigrationAPIMaxBytes)
+}
+
+type migrationHTTPStatusError struct {
+	status     int
+	retryAfter time.Duration
+}
+
+func (e *migrationHTTPStatusError) Error() string {
+	return fmt.Sprintf("migration endpoint refused request (HTTP %d)", e.status)
+}
+
+func migrationHTTPBudget(ctx context.Context, client *http.Client, method, endpoint, token string, input, output any, budget int64) error {
 	var body io.Reader
 	if input != nil {
 		b, err := json.Marshal(input)
@@ -524,13 +567,20 @@ func migrationHTTP(ctx context.Context, client *http.Client, method, endpoint, t
 		return errors.New("unsupported migration endpoint; no fallback")
 	}
 	if response.StatusCode != 200 {
-		return fmt.Errorf("migration endpoint refused request (HTTP %d)", response.StatusCode)
+		seconds, _ := strconv.Atoi(response.Header.Get("Retry-After"))
+		if seconds < 1 {
+			seconds = 1
+		}
+		if seconds > 5 {
+			seconds = 5
+		}
+		return &migrationHTTPStatusError{status: response.StatusCode, retryAfter: time.Duration(seconds) * time.Second}
 	}
 	if output == nil {
 		return nil
 	}
-	b, err := io.ReadAll(io.LimitReader(response.Body, MigrationAPIMaxBytes+1))
-	if err != nil || len(b) > MigrationAPIMaxBytes {
+	b, err := io.ReadAll(io.LimitReader(response.Body, budget+1))
+	if err != nil || int64(len(b)) > budget {
 		return errors.New("migration response exceeds budget")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(b))
@@ -543,71 +593,6 @@ func migrationHTTP(ctx context.Context, client *http.Client, method, endpoint, t
 
 func (s *migrationServer) authorization(subject string) MigrationAuthorization {
 	return MigrationAuthorization{SourceAudience: s.SourceAudience, TargetAudience: s.TargetAudience, JobID: s.JobID, SubjectSHA256: migrationDigest(subject)}
-}
-
-func (s *migrationServer) pull(ctx context.Context, request MigrationPreviewRequest, subject string) (MigrationSnapshot, error) {
-	var snapshot MigrationSnapshot
-	client, base, err := s.Peers.client(request.SourceURL)
-	if err != nil {
-		return snapshot, err
-	}
-	var manifest MigrationManifest
-	if err = migrationHTTP(ctx, client, "GET", base+MigrationAPIBase+"/snapshots/"+request.SnapshotID+"/manifest", request.SourceToken, nil, &manifest); err != nil {
-		return snapshot, err
-	}
-	if manifest.Authorization != s.authorization(subject) {
-		return snapshot, errors.New("source token belongs to a different migration peer pair, job or operator")
-	}
-	r, err := http.NewRequestWithContext(ctx, "GET", base+MigrationAPIBase+"/snapshots/"+request.SnapshotID+"/stream", nil)
-	if err != nil {
-		return snapshot, err
-	}
-	r.Header.Set("Authorization", "Bearer "+request.SourceToken)
-	response, err := client.Do(r)
-	if err != nil {
-		return snapshot, errors.New("snapshot stream unavailable")
-	}
-	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		return snapshot, errors.New("snapshot stream refused")
-	}
-	limited := &io.LimitedReader{R: response.Body, N: MigrationAPIMaxBytes + 1}
-	decoder := json.NewDecoder(limited)
-	decoder.DisallowUnknownFields()
-	var first migrationStreamRecord
-	if decoder.Decode(&first) != nil || first.Manifest == nil || first.Table != "" || first.Row != nil || migrationDigest(*first.Manifest) != migrationDigest(manifest) || manifest.SnapshotID != request.SnapshotID {
-		return snapshot, errors.New("snapshot manifest changed")
-	}
-	snapshot.Manifest = manifest
-	snapshot.Rows = map[string][]rawRow{}
-	tables, order, err := migrationCatalog()
-	if err != nil {
-		return snapshot, err
-	}
-	for _, name := range order {
-		snapshot.Rows[name] = []rawRow{}
-	}
-	for {
-		var record migrationStreamRecord
-		err = decoder.Decode(&record)
-		if err == io.EOF {
-			break
-		}
-		if err != nil || record.Manifest != nil || record.Row == nil {
-			return snapshot, errors.New("snapshot stream corrupt")
-		}
-		if _, ok := tables[record.Table]; !ok {
-			return snapshot, errors.New("snapshot stream scope mismatch")
-		}
-		snapshot.Rows[record.Table] = append(snapshot.Rows[record.Table], record.Row)
-	}
-	if limited.N <= 0 {
-		return snapshot, errors.New("snapshot stream exceeds budget")
-	}
-	if err = validateMigrationSnapshot(snapshot); err != nil {
-		return snapshot, err
-	}
-	return snapshot, nil
 }
 
 func (s *migrationServer) preview(w http.ResponseWriter, r *http.Request, subject string) {
@@ -633,15 +618,15 @@ func (s *migrationServer) preview(w http.ResponseWriter, r *http.Request, subjec
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		snapshot, err := s.pull(r.Context(), request, subject)
+		manifest, err := s.downloadChunks(r.Context(), request, subject)
 		if err != nil {
 			return err
 		}
-		plan, err := PreviewMigration(r.Context(), s.DB, snapshot, request.RequestID, s.Lifetime)
+		plan, err := PreviewMigrationChunks(r.Context(), s.DB, manifest, request.RequestID, s.Lifetime, s.chunkReader(subject))
 		if err != nil {
 			return err
 		}
-		stage = migrationStagePlan{Binding: binding, Plan: plan, Snapshot: snapshot}
+		stage = migrationStagePlan{Binding: binding, Plan: plan, Snapshot: MigrationSnapshot{Manifest: manifest}}
 		return s.store.write("plan", request.RequestID, subject, stage)
 	})
 	if err != nil {
@@ -712,7 +697,7 @@ func (s *migrationServer) target(w http.ResponseWriter, r *http.Request, parts [
 		migrationError(w, 409, "verified_target_backup_required")
 		return
 	}
-	plan, err := ApplyMigration(r.Context(), s.DB, stage.Snapshot, stage.Plan, request.PlanSHA256, subject, s.BackupGate)
+	plan, err := ApplyMigrationChunks(r.Context(), s.DB, stage.Plan, request.PlanSHA256, subject, s.chunkReader(subject), s.BackupGate)
 	if err != nil {
 		migrationError(w, 409, "apply_conflicted_or_unavailable")
 		return
@@ -723,6 +708,7 @@ func (s *migrationServer) target(w http.ResponseWriter, r *http.Request, parts [
 type MigrationClientOptions struct {
 	SourceURL, TargetURL, SourceToken, TargetToken, SnapshotID, PlanID, PlanSHA256 string
 	Apply, Status, AllowLoopbackHTTP                                               bool
+	TransferOnly                                                                   bool
 }
 
 func validateRemoteMigrationPlan(plan MigrationPlan, id, hash string) error {
@@ -732,7 +718,7 @@ func validateRemoteMigrationPlan(plan MigrationPlan, id, hash string) error {
 	preview := plan
 	if plan.State == "applied" {
 		preview.State = "preview"
-	} else if plan.State != "preview" && plan.State != "conflict" {
+	} else if plan.State != "preview" && plan.State != "conflict" && plan.State != "transfer_staged" {
 		return errors.New("unknown migration plan state")
 	}
 	if plan.PlanSHA256 != migrationPlanHash(preview) {
@@ -797,7 +783,14 @@ func RunMigrationClient(ctx context.Context, options MigrationClientOptions) (Mi
 		return plan, errors.New("source manifest binding mismatch")
 	}
 	request := MigrationPreviewRequest{RequestID: options.PlanID, SourceURL: source.String(), SnapshotID: options.SnapshotID, SourceToken: options.SourceToken}
-	err = migrationHTTP(ctx, client, "POST", target.String()+MigrationAPIBase+"/plans/preview", options.TargetToken, request, &plan)
+	endpoint := "/plans/preview"
+	if options.TransferOnly {
+		endpoint = "/transfers"
+	}
+	err = migrationHTTP(ctx, client, "POST", target.String()+MigrationAPIBase+endpoint, options.TargetToken, request, &plan)
+	if err != nil {
+		return plan, fmt.Errorf("retry --snapshot-id %s --plan-id %s: %w", options.SnapshotID, options.PlanID, err)
+	}
 	if err == nil && plan.Snapshot.SnapshotSHA256 != manifest.SnapshotSHA256 {
 		return MigrationPlan{}, errors.New("target preview snapshot differs")
 	}

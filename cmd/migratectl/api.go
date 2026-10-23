@@ -83,6 +83,9 @@ func newMigrationAPICmd() *cobra.Command {
 		if options.Apply && options.Status {
 			return errors.New("--apply and --status are mutually exclusive")
 		}
+		if options.TransferOnly && (options.Apply || options.Status) {
+			return errors.New("--transfer-only cannot be combined with --apply or --status")
+		}
 		if options.Apply && (options.PlanID == "" || options.PlanSHA256 == "") {
 			return errors.New("apply requires exact --plan-id and --plan-sha256")
 		}
@@ -125,6 +128,7 @@ func newMigrationAPICmd() *cobra.Command {
 	flags.StringVar(&sourceKV, "source-auth-kv", "", "Vault KV reference with a token field")
 	flags.StringVar(&targetKV, "target-auth-kv", "", "Vault KV reference with a token field")
 	flags.BoolVar(&options.Apply, "apply", false, "Apply only the exact persisted preview")
+	flags.BoolVar(&options.TransferOnly, "transfer-only", false, "Resume and verify encrypted chunks without business preview or apply")
 	flags.BoolVar(&options.Status, "status", false, "Read the persisted plan or committed receipt")
 	flags.StringVar(&options.PlanID, "plan-id", "", "Exact reviewed plan UUID; optional caller-generated idempotency UUID for preview")
 	flags.StringVar(&options.PlanSHA256, "plan-sha256", "", "Exact reviewed preview SHA-256; required to apply")
