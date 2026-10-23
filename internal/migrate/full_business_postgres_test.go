@@ -328,6 +328,32 @@ func TestFullBusinessPostgres17(t *testing.T) {
 			t.Fatal("core-user receipt contains private user fields")
 		}
 	})
+	t.Run("empty_target_core_users_preview_apply", func(t *testing.T) {
+		exec(target, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`)
+		if _, err := InitializeNative(context.Background(), targetDSN, NativeInitOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, LockTimeout: time.Second, StatementTimeout: time.Minute}); err != nil {
+			t.Fatal(err)
+		}
+		core := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, Preview: true, WritersPaused: true}
+		preview, err := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, core)
+		if err != nil || preview.CoreUsers.Source.Count != 1 || preview.CoreUsers.Target.Count != 0 || preview.TargetWrites || preview.FullBusinessEqual || len(preview.CoreUsersPlanSHA256) != 64 {
+			t.Fatalf("fresh target preview failed: %v", err)
+		}
+		var count int
+		if err = target.QueryRow(`SELECT count(*) FROM users`).Scan(&count); err != nil || count != 0 {
+			t.Fatal("preview wrote target users")
+		}
+		core.Preview = false
+		core.ExpectedPlanSHA256 = preview.CoreUsersPlanSHA256
+		applied, err := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, core)
+		if err != nil || !applied.FullBusinessEqual || applied.CoreUsers.Target.Count != 1 || !applied.TargetWrites {
+			t.Fatalf("fresh target apply failed: %v", err)
+		}
+		core.CompareOnly = true
+		compared, err := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, core)
+		if err != nil || !compared.FullBusinessEqual || compared.TargetWrites {
+			t.Fatalf("fresh target comparison failed: %v", err)
+		}
+	})
 	t.Run("native63_finance_and_late_trigger", func(t *testing.T) {
 		// Explicit synthetic fixture reset, behind the loopback-only test DSN.
 		// No runtime migration function contains DROP or disables a constraint.
