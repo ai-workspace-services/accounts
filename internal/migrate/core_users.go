@@ -211,9 +211,13 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 			return receipt, errors.New("core user email, password hash or Proxy UUID differs after target reconciliation")
 		}
 	}
-	receipt.CoreUsers.Target, err = coreUsersDigest(targetUsers)
-	if err != nil {
-		return receipt, err
+	// An empty fresh target is a valid preview, while the source above must
+	// remain non-empty. Do not weaken the shared source digest contract.
+	if len(targetUsers) > 0 {
+		receipt.CoreUsers.Target, err = coreUsersDigest(targetUsers)
+		if err != nil {
+			return receipt, err
+		}
 	}
 	receipt.FullBusinessEqual = receipt.CoreUsers.Source == receipt.CoreUsers.Target
 	receipt.TargetWrites = !options.CompareOnly && !options.Preview
