@@ -2,7 +2,10 @@ package migrate
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -16,11 +19,12 @@ import (
 // target schema is still required to be the reviewed native checkpoint, but
 // no dynamic business table is read or written.
 type CoreUsersOptions struct {
-	Environment   string
-	SchemaSHA256  string
-	BillingSHA256 string
-	WritersPaused bool
-	CompareOnly   bool
+	Environment        string
+	SchemaSHA256       string
+	Preview            bool
+	ExpectedPlanSHA256 string
+	WritersPaused      bool
+	CompareOnly        bool
 }
 
 // CopyCoreUsers reconciles users by normalized email. Existing target UUIDs are
@@ -36,11 +40,16 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 		return receipt, err
 	}
 	if (options.Environment != "prod" && options.Environment != "uat") || !options.WritersPaused ||
-		options.SchemaSHA256 != manifest.SchemaSHA256 || options.BillingSHA256 != FullBusinessBillingSHA256 {
-		return receipt, errors.New("core-user transfer requires explicit environment, paused writers and both reviewed schema hashes")
+		options.SchemaSHA256 != manifest.SchemaSHA256 {
+		return receipt, errors.New("core-user transfer requires explicit environment, paused writers and the reviewed Accounts schema hash")
+	}
+	if !options.Preview && !options.CompareOnly {
+		decoded, decodeErr := hex.DecodeString(options.ExpectedPlanSHA256)
+		if decodeErr != nil || len(decoded) != 32 {
+			return receipt, errors.New("core-user apply requires exact preview plan SHA256")
+		}
 	}
 	receipt.SchemaSHA256 = manifest.SchemaSHA256
-	receipt.BillingSHA256 = FullBusinessBillingSHA256
 	tables, _, err := fullBusinessContract()
 	if err != nil {
 		return receipt, err
@@ -74,7 +83,7 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if _, err = src.ExecContext(ctx, `SET LOCAL default_transaction_read_only=on; SET LOCAL timezone='UTC'; SET LOCAL datestyle='ISO,YMD'; SET LOCAL statement_timeout='5min'; SET LOCAL lock_timeout='15s'; SET LOCAL idle_in_transaction_session_timeout='5min'`); err != nil {
 		return receipt, errors.New("cannot enforce core-user readonly transaction")
 	}
-	dst, err := target.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: options.CompareOnly})
+	dst, err := target.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: options.CompareOnly || options.Preview})
 	if err != nil {
 		return receipt, errors.New("cannot start core-user target transaction")
 	}
@@ -127,9 +136,13 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 		return receipt, err
 	}
 	var missing []string
-	if options.CompareOnly {
+	if options.CompareOnly || options.Preview {
 		diff := diffCoreUsers(sourceUsers, targetUsers)
 		receipt.CoreUsersDiff = &diff
+		receipt.CoreUsersPlanSHA256, err = coreUsersPlan(ctx, src, dst, sourceDSN, targetDSN, usersTable, manifest.SchemaSHA256, version)
+		if err != nil {
+			return receipt, err
+		}
 	} else {
 		missing, err = coreUserMissing(sourceUsers, targetUsers)
 		if err != nil {
@@ -150,6 +163,13 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 		missing, err = coreUserMissing(sourceUsers, targetUsers)
 		if err != nil {
 			return receipt, err
+		}
+		receipt.CoreUsersPlanSHA256, err = coreUsersPlan(ctx, src, dst, sourceDSN, targetDSN, usersTable, manifest.SchemaSHA256, version)
+		if err != nil {
+			return receipt, err
+		}
+		if options.ExpectedPlanSHA256 != receipt.CoreUsersPlanSHA256 {
+			return receipt, errors.New("core-user plan changed; repeat preview before apply")
 		}
 		for key, targetUser := range targetUsers {
 			sourceUser := sourceUsers[key]
@@ -195,9 +215,11 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if err != nil {
 		return receipt, err
 	}
-	receipt.FullBusinessEqual = !options.CompareOnly || receipt.CoreUsersDiff.Equal
-	receipt.TargetWrites = !options.CompareOnly
-	if options.CompareOnly {
+	receipt.FullBusinessEqual = receipt.CoreUsers.Source == receipt.CoreUsers.Target
+	receipt.TargetWrites = !options.CompareOnly && !options.Preview
+	if options.Preview {
+		receipt.Result = "preview"
+	} else if options.CompareOnly {
 		if receipt.CoreUsersDiff.Equal {
 			receipt.Result = "equal"
 		} else {
@@ -245,4 +267,41 @@ func diffCoreUsers(source, target map[string]businessUser) CoreUsersDiff {
 	diff.Equal = diff.SourceOnlyUsers == 0 && diff.TargetOnlyUsers == 0 && diff.EmailMismatches == 0 &&
 		diff.ProxyUUIDMismatches == 0 && diff.PasswordHashMismatches == 0
 	return diff
+}
+
+// coreUsersPlan binds every source/target users field, including MFA and target
+// metadata, to the reviewed connection pair/checkpoint. No row leaves memory.
+func coreUsersPlan(ctx context.Context, source, target *sql.Tx, sourceDSN, targetDSN string, table businessTable, schema string, version int) (string, error) {
+	identity := []string{"core-users-plan-v1", schema}
+	for _, dsn := range []string{sourceDSN, targetDSN} {
+		value, err := dbruntime.ConnectionIdentity(dsn)
+		if err != nil {
+			return "", errors.New("core-user plan connection identity invalid")
+		}
+		identity = append(identity, value)
+	}
+	for _, tx := range []*sql.Tx{source, target} {
+		digest := sha256.New()
+		err := streamBusiness(ctx, tx, "users", table.PrimaryKey, func(page []rawRow) error {
+			for _, row := range page {
+				data, err := canonicalBusinessJSON(row)
+				if err != nil {
+					return err
+				}
+				digest.Write(data)
+				digest.Write([]byte{10})
+			}
+			return nil
+		})
+		if err != nil {
+			return "", errors.New("cannot fingerprint core-user plan")
+		}
+		identity = append(identity, hex.EncodeToString(digest.Sum(nil)))
+	}
+	data, _ := json.Marshal(struct {
+		Identity []string
+		Version  int
+	}{identity, version})
+	result := sha256.Sum256(data)
+	return hex.EncodeToString(result[:]), nil
 }

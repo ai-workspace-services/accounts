@@ -246,7 +246,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `UPDATE public.users SET email='user@example.invalid',password='stale-core-fixture',proxy_uuid='00000000-0000-0000-0000-000000000333'`)
 		coreOptions := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256,
-			BillingSHA256: FullBusinessBillingSHA256, WritersPaused: true}
+			Preview: true, WritersPaused: true}
 		expectedIdentity, e := dbruntime.ConnectionIdentity(sourceDSN)
 		if e != nil {
 			t.Fatal("fixture source identity unavailable")
@@ -262,12 +262,55 @@ func TestFullBusinessPostgres17(t *testing.T) {
 				t.Fatalf("core-user receipt does not satisfy the execution owner contract: %v", e)
 			}
 		}
+		preview, e := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		if e != nil || preview.TargetWrites || len(preview.CoreUsersPlanSHA256) != 64 || preview.BillingSHA256 != "" {
+			t.Fatal("users preview contract invalid", e)
+		}
+		coreOptions.Preview = false
+		coreOptions.ExpectedPlanSHA256 = strings.Repeat("0", 64)
+		if _, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions); e == nil {
+			t.Fatal("wrong plan accepted")
+		}
+		coreOptions.ExpectedPlanSHA256 = preview.CoreUsersPlanSHA256
+		exec(target, `UPDATE public.users SET mfa_enabled=NOT mfa_enabled`)
+		if _, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions); e == nil {
+			t.Fatal("target MFA drift accepted")
+		}
+		exec(target, `UPDATE public.users SET mfa_enabled=NOT mfa_enabled`)
+		coreOptions.Preview = true
+		preview, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		// Billing schema is outside this users-only operation.
+		exec(target, `ALTER TABLE public.finance_invoices ADD COLUMN users_migration_unrelated_fixture TEXT`)
+		coreOptions.Preview = false
+		coreOptions.ExpectedPlanSHA256 = preview.CoreUsersPlanSHA256
+		exec(sourceAdmin, `UPDATE public.users SET mfa_enabled=NOT mfa_enabled`)
+		if _, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions); e == nil {
+			t.Fatal("source MFA drift accepted")
+		}
+		exec(sourceAdmin, `UPDATE public.users SET mfa_enabled=NOT mfa_enabled`)
+		coreOptions.Preview = true
+		preview, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		coreOptions.Preview = false
+		coreOptions.ExpectedPlanSHA256 = preview.CoreUsersPlanSHA256
 		r, e := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
 		check(r, false, e)
 		var versionBefore, versionAfter int64
 		if e = target.QueryRow(`SELECT version FROM public.users`).Scan(&versionBefore); e != nil {
 			t.Fatal("target version fixture unavailable")
 		}
+		coreOptions.Preview = true
+		preview, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		coreOptions.Preview = false
+		coreOptions.ExpectedPlanSHA256 = preview.CoreUsersPlanSHA256
 		r, e = CopyCoreUsers(context.Background(), sourceDSN, targetDSN, coreOptions)
 		check(r, false, e)
 		if e = target.QueryRow(`SELECT version FROM public.users`).Scan(&versionAfter); e != nil || versionAfter != versionBefore {

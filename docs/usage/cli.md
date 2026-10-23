@@ -51,7 +51,6 @@ migratectl -D -C \
   --target-dsn-env MIGRATECTL_TARGET_DSN \
   --environment prod --writers-paused \
   --schema-sha256 "$ACCOUNTS_SCHEMA_SHA256" \
-  --billing-schema-sha256 "$BILLING_SCHEMA_SHA256" \
   -o markdown
 ```
 
@@ -92,3 +91,25 @@ make account-import
 ```
 
 相关脚本位于 `scripts/`。
+
+
+### Users-only SSH synchronization
+
+`copy-core-users` and `compare-core-users` validate the native Accounts checkpoint
+and exact users column contract. They do not consume a Billing schema hash or
+read/write Billing tables. Source remains `readonly_release` in an enforced
+read-only transaction; the execution owner must pause target writers and retain
+a verified encrypted backup/restore checkpoint before apply.
+
+`copy-core-users` defaults to `--dry-run=true`. Preview emits
+`core_users_plan_sha256`, binding both reviewed connection identities, checkpoint,
+and all source/target users fields (including MFA and target metadata). Apply
+requires `--dry-run=false --plan-sha256 <exact-preview-hash>` and rechecks the plan
+under the target users lock. Changed inputs fail before any row mutation.
+A retry needs a new preview; an already aligned copy does not update user metadata.
+
+Execute the immutable hash-verified CLI over SSH with DSNs in runtime environment
+only; never put passwords or DSNs in arguments/logs. Existing target UUIDs and
+unrelated tables are retained. New users retain reviewed source user fields;
+existing users reconcile email/password hash/Proxy UUID only. This is a users-only
+operation, not identities/recovery-code/subscription/finance migration or cutover.
