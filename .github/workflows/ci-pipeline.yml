@@ -176,7 +176,9 @@ jobs:
         if: matrix.check == 'native_schema_initialization'
         env:
           MIGRATECTL_NATIVE_TEST_DSN: postgres://postgres:postgres@localhost:5432/account?sslmode=disable
-        run: go test -v ./sql ./cmd/migratectl ./internal/migrate
+          MIGRATECTL_API_TEST_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+          MIGRATECTL_API_TEST_REQUIRED: 'true'
+        run: go test -count=1 -v ./sql ./cmd/migratectl ./internal/migrate
 
       - name: Qualify team quota updates without legacy subscription columns
         if: matrix.check == 'native_schema_initialization'

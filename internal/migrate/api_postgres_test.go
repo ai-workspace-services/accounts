@@ -20,6 +20,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -28,6 +29,9 @@ import (
 func TestMigrationAPIPostgres17(t *testing.T) {
 	dsn := os.Getenv("MIGRATECTL_API_TEST_DSN")
 	if dsn == "" {
+		if os.Getenv("MIGRATECTL_API_TEST_REQUIRED") == "true" {
+			t.Fatal("MIGRATECTL_API_TEST_DSN is required for migration API PostgreSQL17 coverage")
+		}
 		t.Skip("dedicated loopback PostgreSQL17 test cluster not configured")
 	}
 	cfg, err := pgx.ParseConfig(dsn)
@@ -52,6 +56,10 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 	}
 	execSQL(admin, `DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='readonly_release') THEN CREATE ROLE readonly_release LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; END IF; END$$`)
+	// Fixture roles need passwords on the CI service's SCRAM-authenticated TCP
+	// listener. Do not rely on the local developer cluster's trust configuration.
+	const fixturePassword = "isolated-readonly-fixture"
+	execSQL(admin, `ALTER ROLE readonly_release PASSWORD 'isolated-readonly-fixture'`)
 	body, _, err := schema.NativeArtifact()
 	if err != nil {
 		t.Fatal(err)
@@ -60,11 +68,9 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		t.Helper()
 		name := "migration_api_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		execSQL(admin, `CREATE DATABASE `+quoteBusiness(name))
-		testDSN := "postgres://" + cfg.User + "@" + cfg.Host + ":" + fmtPort(cfg.Port) + "/" + name + "?sslmode=disable"
-		db, e := sql.Open("pgx", testDSN)
-		if e != nil {
-			t.Fatal(e)
-		}
+		testConfig := cfg.Copy()
+		testConfig.Database = name
+		db := stdlib.OpenDB(*testConfig)
 		t.Cleanup(func() {
 			db.Close()
 			if _, e := admin.Exec(`DROP DATABASE ` + quoteBusiness(name) + ` WITH (FORCE)`); e != nil {
@@ -142,10 +148,9 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 			execSQL(source, `CREATE POLICY release_initialization_readonly ON public.`+quoteBusiness(name)+` FOR SELECT TO readonly_release USING(true)`)
 		}
 	}
-	readonly, err := sql.Open("pgx", "postgres://readonly_release@"+cfg.Host+":"+fmtPort(cfg.Port)+"/"+sourceName+"?sslmode=disable")
-	if err != nil {
-		t.Fatal(err)
-	}
+	readonlyConfig := cfg.Copy()
+	readonlyConfig.User, readonlyConfig.Password, readonlyConfig.Database = "readonly_release", fixturePassword, sourceName
+	readonly := stdlib.OpenDB(*readonlyConfig)
 	defer readonly.Close()
 	if _, err = CaptureMigrationSnapshot(ctx, source, uuid.NewString(), time.Hour, binding); err == nil {
 		t.Fatal("business/superuser source accepted")
@@ -405,7 +410,7 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 	parentTest := t
 	t.Run("dedicated-target-executor", func(t *testing.T) {
 		role := "migration_executor_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-		execSQL(admin, `CREATE ROLE `+quoteBusiness(role)+` LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`)
+		execSQL(admin, `CREATE ROLE `+quoteBusiness(role)+` LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'isolated-readonly-fixture'`)
 		parentTest.Cleanup(func() {
 			if _, e := admin.Exec(`DROP ROLE ` + quoteBusiness(role)); e != nil {
 				parentTest.Error(e)
@@ -421,16 +426,15 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 			t.Fatal(e)
 		}
 		execSQL(db, `GRANT USAGE ON SCHEMA accounts_migration_api TO `+quoteBusiness(role)+`; GRANT SELECT,INSERT ON accounts_migration_api.receipts TO `+quoteBusiness(role))
-		executor, e := sql.Open("pgx", "postgres://"+role+"@"+cfg.Host+":"+fmtPort(cfg.Port)+"/"+name+"?sslmode=disable")
-		if e != nil {
-			t.Fatal(e)
-		}
+		executorConfig := cfg.Copy()
+		executorConfig.User, executorConfig.Password, executorConfig.Database = role, fixturePassword, name
+		executor := stdlib.OpenDB(*executorConfig)
 		defer executor.Close()
 		var privileged bool
 		if executor.QueryRow(`SELECT rolsuper OR rolbypassrls OR rolcreatedb OR rolcreaterole FROM pg_roles WHERE rolname=current_user`).Scan(&privileged) != nil || privileged {
 			t.Fatal("executor unexpectedly privileged")
 		}
-		if _, e = executor.Exec(`CREATE TABLE public.executor_must_not_create(id int)`); e == nil {
+		if _, e := executor.Exec(`CREATE TABLE public.executor_must_not_create(id int)`); e == nil {
 			t.Fatal("executor unexpectedly has public CREATE")
 		}
 		if _, e = executor.Exec(`CREATE SCHEMA executor_must_not_create`); e == nil {
