@@ -36,6 +36,26 @@ func TestNativeInitRefusesInvalidContractBeforeDatabaseAccess(t *testing.T) {
 	}
 }
 
+func TestNativeInitExplicitEnvironments(t *testing.T) {
+	_, manifest, err := schema.NativeArtifact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, env := range []string{"sit", "uat", "prod"} {
+		t.Run(env, func(t *testing.T) {
+			options := NativeInitOptions{Environment: env, SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, LockTimeout: time.Second, StatementTimeout: time.Minute}
+			_, err := InitializeNative(context.Background(), "invalid://fixture", options)
+			if err == nil || !strings.Contains(err.Error(), "database connection failed") {
+				t.Fatalf("explicit environment rejected before DB access: %v", err)
+			}
+			options.WritersPaused = false
+			if _, err = InitializeNative(context.Background(), "invalid://fixture", options); err == nil || strings.Contains(err.Error(), "connection failed") {
+				t.Fatal("paused-writer guard bypassed")
+			}
+		})
+	}
+}
+
 func TestNativeInitPostgres17(t *testing.T) {
 	dsn := os.Getenv("MIGRATECTL_NATIVE_TEST_DSN")
 	if dsn == "" {
@@ -58,7 +78,7 @@ func TestNativeInitPostgres17(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := NativeInitOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, DryRun: true, LockTimeout: time.Second, StatementTimeout: 30 * time.Second}
+	options := NativeInitOptions{Environment: "sit", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, DryRun: true, LockTimeout: time.Second, StatementTimeout: 30 * time.Second}
 	ctx := context.Background()
 	// Qualify broad empty classification before the native SQL can run.
 	if _, err = db.Exec("CREATE SCHEMA native_test_hidden; CREATE TYPE native_test_hidden.example AS ENUM ('fixture')"); err != nil {
@@ -71,7 +91,7 @@ func TestNativeInitPostgres17(t *testing.T) {
 		t.Fatal(err)
 	}
 	receipt, err := InitializeNative(ctx, dsn, options)
-	if err != nil || receipt.Result != "eligible" || receipt.DatabaseCutoverApproved {
+	if err != nil || receipt.Result != "eligible" || receipt.Environment != "sit" || receipt.DatabaseCutoverApproved {
 		t.Fatalf("empty eligibility: %#v %v", receipt, err)
 	}
 	var count int
@@ -80,7 +100,7 @@ func TestNativeInitPostgres17(t *testing.T) {
 	}
 	options.DryRun = false
 	receipt, err = InitializeNative(ctx, dsn, options)
-	if err != nil || receipt.Result != "initialized" || len(receipt.BusinessTables) != manifest.BusinessTableCount || receipt.BusinessRows != 0 || receipt.DatabaseCutoverApproved {
+	if err != nil || receipt.Result != "initialized" || receipt.Environment != "sit" || len(receipt.BusinessTables) != manifest.BusinessTableCount || receipt.BusinessRows != 0 || receipt.DatabaseCutoverApproved {
 		t.Fatalf("native init: %#v %v", receipt, err)
 	}
 	var migrationVersion uint

@@ -40,8 +40,8 @@ func InitializeNative(ctx context.Context, dsn string, options NativeInitOptions
 	if err != nil {
 		return receipt, err
 	}
-	if options.Environment != "uat" && options.Environment != "prod" {
-		return receipt, errors.New("native initialization requires explicit uat or prod environment")
+	if options.Environment != "sit" && options.Environment != "uat" && options.Environment != "prod" {
+		return receipt, errors.New("native initialization requires explicit sit, uat or prod environment")
 	}
 	if !options.WritersPaused || options.SchemaSHA256 != manifest.SchemaSHA256 {
 		return receipt, errors.New("native initialization requires paused writers and the exact reviewed schema hash")

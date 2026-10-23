@@ -88,6 +88,9 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newCheckLateGenerationUsersCmd())
 	cmd.AddCommand(newSyncSingleGenerationUserCmd())
 	cmd.AddCommand(newUsageMergeCmd())
+	cmd.AddCommand(newMigrationServeCmd())
+	cmd.AddCommand(newMigrationTokenCmd())
+	cmd.AddCommand(newMigrationAPICmd())
 
 	return cmd
 }
@@ -162,7 +165,7 @@ func newNativeInitCmd() *cobra.Command {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(receipt)
 		}}
 	cmd.Flags().StringVar(&dsnEnv, "dsn-env", "", "Environment variable containing the target-only PostgreSQL DSN")
-	cmd.Flags().StringVar(&options.Environment, "environment", "", "Explicit uat or prod target")
+	cmd.Flags().StringVar(&options.Environment, "environment", "", "Explicit sit, uat or prod target")
 	cmd.Flags().StringVar(&options.SchemaSHA256, "schema-sha256", "", "Exact reviewed SHA-256 of the compiled native SQL")
 	cmd.Flags().BoolVar(&options.WritersPaused, "writers-paused", false, "Acknowledge the execution owner independently verified paused target writers")
 	cmd.Flags().BoolVar(&options.DryRun, "dry-run", true, "Inspect empty-target eligibility without applying SQL; explicit false is required for initialization")
