@@ -144,6 +144,8 @@ jobs:
           go test -count=1 ./api -run 'TestAgentEventStream|TestRegional|TestPingEndpoint'
           python3 -m unittest discover -s scripts/tests -p validate_deploy_test.py
           python3 scripts/tests/test_snapshot_publish.py -v
+          python3 .github/scripts/tests/release_manifest_test.py
+          bash .github/scripts/tests/publish-release-artifacts_test.sh
 
       - name: Prepare native account fixture
         if: matrix.check == 'native_schema_initialization' || matrix.check == 'managed_database_runtime'
@@ -563,10 +565,6 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           IMAGE_REFS: ${{ needs.build.outputs.service_image_ref }}
-          RELEASE_BUILD_COMMAND: >-
-            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w"
-            -o "$RUNNER_TEMP/release-assets/accounts" ./cmd/accountsvc
-            && zip -j "$RUNNER_TEMP/release-assets/accounts-${{ github.ref_name }}.zip"
-            "$RUNNER_TEMP/release-assets/accounts"
+          RELEASE_BUILD_COMMAND: bash .github/scripts/build-release-binaries.sh
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/publish-release-artifacts.sh
