@@ -6,11 +6,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/XSAM/otelsql"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -20,7 +23,12 @@ import (
 // deployment selects OTLP/gRPC for the private collector; HTTP remains
 // supported for the public ingestion endpoint during migration.
 func Configure(ctx context.Context, defaultService string) (func(context.Context) error, error) {
-	endpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"))
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}))
+
+	endpoint := firstEndpoint(
+		os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
+		os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+	)
 	if endpoint == "" || strings.EqualFold(os.Getenv("OTEL_SDK_DISABLED"), "true") {
 		return func(context.Context) error { return nil }, nil
 	}
@@ -62,7 +70,13 @@ func Configure(ctx context.Context, defaultService string) (func(context.Context
 		return nil, fmt.Errorf("create OTLP trace exporter: %w", err)
 	}
 	provider := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+		sdktrace.WithBatcher(
+			exporter,
+			sdktrace.WithMaxQueueSize(2048),
+			sdktrace.WithMaxExportBatchSize(512),
+			sdktrace.WithBatchTimeout(2*time.Second),
+			sdktrace.WithExportTimeout(3*time.Second),
+		),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))),
 		sdktrace.WithResource(resource.NewWithAttributes("",
 			attribute.String("service.name", serviceName),
@@ -75,6 +89,28 @@ func Configure(ctx context.Context, defaultService string) (func(context.Context
 	)
 	otel.SetTracerProvider(provider)
 	return provider.Shutdown, nil
+}
+
+// SQLOptions returns safe OpenTelemetry SQL instrumentation options that omit
+// raw SQL query text and bind parameters from exported spans.
+func SQLOptions() []otelsql.Option {
+	return []otelsql.Option{
+		otelsql.WithAttributes(attribute.String("db.system", "postgresql")),
+		otelsql.WithSpanOptions(otelsql.SpanOptions{
+			DisableQuery:         true,
+			OmitConnResetSession: true,
+			OmitConnPrepare:      true,
+		}),
+	}
+}
+
+func firstEndpoint(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func firstNonEmpty(values ...string) string {

@@ -8,11 +8,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"account/internal/store"
 )
 
-const accountingDataSource = "postgresql"
+const (
+	accountingDataSource       = "postgresql"
+	usageFreshnessStaleSeconds = 300
+)
 
 type nodeHeartbeatRequest struct {
 	NodeID            string  `json:"nodeId"`
@@ -42,16 +49,37 @@ func parseOptionalTime(value string) (time.Time, error) {
 }
 
 func (h *handler) accountUsageSummary(c *gin.Context) {
+	ctx, span := otel.Tracer("accounts").Start(
+		c.Request.Context(),
+		"accounts.usage.summary",
+		trace.WithAttributes(attribute.String("stage", "usage_summary")),
+	)
+	defer span.End()
+
 	user, ok := h.requireAuthenticatedUser(c)
 	if !ok {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "unauthorized"),
+		)
 		return
 	}
-	if err := h.ensureFreeQuotaPeriod(c.Request.Context(), user, time.Now().UTC()); err != nil {
+	if err := h.ensureFreeQuotaPeriod(ctx, user, time.Now().UTC()); err != nil {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "quota_reconcile_error"),
+		)
+		span.SetStatus(codes.Error, "quota_unavailable")
 		respondError(c, 503, "quota_unavailable", "failed to reconcile quota period")
 		return
 	}
-	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, time.Time{}, time.Time{})
+	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(ctx, user.ID, time.Time{}, time.Time{})
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "db_buckets_error"),
+		)
+		span.SetStatus(codes.Error, "usage_summary_unavailable")
 		respondError(c, http.StatusInternalServerError, "usage_summary_unavailable", "failed to load usage summary")
 		return
 	}
@@ -69,7 +97,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	}
 
 	currentBalance := 0.0
-	currentBalanceUSD, _ := h.store.GetWalletBalance(c.Request.Context(), user.ID, "USD")
+	currentBalanceUSD, _ := h.store.GetWalletBalance(ctx, user.ID, "USD")
 	remainingQuota := int64(0)
 	includedQuota := int64(0)
 	usedBytes := int64(0)
@@ -81,7 +109,17 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	var arrearsSince *time.Time
 	var periodStart, periodEnd *time.Time
 	var billingProfile *store.AccountBillingProfile
-	if quota, err := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); err == nil && quota != nil {
+	quota, err := h.store.GetAccountQuotaState(ctx, user.ID)
+	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "db_quota_error"),
+		)
+		span.SetStatus(codes.Error, "usage_summary_unavailable")
+		respondError(c, http.StatusInternalServerError, "usage_summary_unavailable", "failed to load usage summary")
+		return
+	}
+	if err == nil && quota != nil {
 		currentBalance = quota.CurrentBalance
 		remainingQuota = quota.RemainingIncludedQuota
 		suspendState = quota.SuspendState
@@ -92,7 +130,17 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		periodStart = quota.PeriodStart
 		periodEnd = quota.PeriodEnd
 	}
-	if profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID); err == nil && profile != nil {
+	profile, err := h.store.GetAccountBillingProfile(ctx, user.ID)
+	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "db_profile_error"),
+		)
+		span.SetStatus(codes.Error, "usage_summary_unavailable")
+		respondError(c, http.StatusInternalServerError, "usage_summary_unavailable", "failed to load usage summary")
+		return
+	}
+	if err == nil && profile != nil {
 		billingProfile = profile
 		includedQuota = profile.IncludedQuotaBytes
 		usedBytes = includedQuota - remainingQuota
@@ -103,8 +151,13 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 			usagePercent = float64(usedBytes) / float64(includedQuota) * 100
 		}
 	}
-	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile)
+	planContract, err := h.accountPlanContract(ctx, billingProfile)
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "plan_contract_error"),
+		)
+		span.SetStatus(codes.Error, "billing_plan_unavailable")
 		respondError(c, http.StatusInternalServerError, "billing_plan_unavailable", "failed to resolve the account plan")
 		return
 	}
@@ -130,12 +183,29 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	}
 
 	syncDelaySeconds := 0
+	freshnessState := "no_data"
 	if lastBucketAt != nil {
 		syncDelaySeconds = int(time.Since(*lastBucketAt).Seconds())
 		if syncDelaySeconds < 0 {
 			syncDelaySeconds = 0
 		}
+		if syncDelaySeconds > usageFreshnessStaleSeconds {
+			freshnessState = "stale"
+		} else {
+			freshnessState = "fresh"
+		}
 	}
+
+	outcome := "empty"
+	if len(buckets) > 0 {
+		outcome = "ok"
+	}
+	span.SetAttributes(
+		attribute.Int("bucket_count", len(buckets)),
+		attribute.Bool("has_buckets", len(buckets) > 0),
+		attribute.Int("sync_delay_seconds", syncDelaySeconds),
+		attribute.String("outcome", outcome),
+	)
 
 	c.JSON(http.StatusOK, gin.H{
 		"accountUuid":            user.ID,
@@ -166,6 +236,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		"arrearsSince":         arrearsSince,
 		"lastBucketAt":         lastBucketAt,
 		"syncDelaySeconds":     syncDelaySeconds,
+		"freshnessState":       freshnessState,
 		"billingProfile":       billingProfile,
 		"currentPlan":          planContract.CurrentPlan,
 		"defaultPlan":          planContract.DefaultPlan,
@@ -174,27 +245,64 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 }
 
 func (h *handler) accountUsageBuckets(c *gin.Context) {
+	ctx, span := otel.Tracer("accounts").Start(
+		c.Request.Context(),
+		"accounts.usage.buckets",
+		trace.WithAttributes(attribute.String("stage", "usage_buckets")),
+	)
+	defer span.End()
+
 	user, ok := h.requireAuthenticatedUser(c)
 	if !ok {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "unauthorized"),
+		)
 		return
 	}
 
 	start, err := parseOptionalTime(c.Query("start"))
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "invalid_start"),
+		)
 		respondError(c, http.StatusBadRequest, "invalid_start", "start must be RFC3339")
 		return
 	}
 	end, err := parseOptionalTime(c.Query("end"))
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "invalid_end"),
+		)
 		respondError(c, http.StatusBadRequest, "invalid_end", "end must be RFC3339")
 		return
 	}
 
-	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, start, end)
+	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(ctx, user.ID, start, end)
 	if err != nil {
+		span.SetAttributes(
+			attribute.Bool("has_start", !start.IsZero()),
+			attribute.Bool("has_end", !end.IsZero()),
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "db_buckets_error"),
+		)
+		span.SetStatus(codes.Error, "usage_buckets_unavailable")
 		respondError(c, http.StatusInternalServerError, "usage_buckets_unavailable", "failed to load usage buckets")
 		return
 	}
+
+	outcome := "empty"
+	if len(buckets) > 0 {
+		outcome = "ok"
+	}
+	span.SetAttributes(
+		attribute.Int("bucket_count", len(buckets)),
+		attribute.Bool("has_start", !start.IsZero()),
+		attribute.Bool("has_end", !end.IsZero()),
+		attribute.String("outcome", outcome),
+	)
 
 	c.JSON(http.StatusOK, gin.H{
 		"accountUuid":   user.ID,
@@ -204,29 +312,76 @@ func (h *handler) accountUsageBuckets(c *gin.Context) {
 }
 
 func (h *handler) accountBillingSummary(c *gin.Context) {
+	ctx, span := otel.Tracer("accounts").Start(
+		c.Request.Context(),
+		"accounts.billing.summary",
+		trace.WithAttributes(attribute.String("stage", "billing_summary")),
+	)
+	defer span.End()
+
 	user, ok := h.requireAuthenticatedUser(c)
 	if !ok {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "unauthorized"),
+		)
 		return
 	}
-	ledger, err := h.store.ListBillingLedgerByAccount(c.Request.Context(), user.ID, 20)
+	ledger, err := h.store.ListBillingLedgerByAccount(ctx, user.ID, 20)
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "db_ledger_error"),
+		)
+		span.SetStatus(codes.Error, "billing_summary_unavailable")
 		respondError(c, http.StatusInternalServerError, "billing_summary_unavailable", "failed to load billing summary")
 		return
 	}
 
 	var quota *store.AccountQuotaState
-	if snapshot, err := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); err == nil {
+	snapshot, err := h.store.GetAccountQuotaState(ctx, user.ID)
+	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "db_quota_error"),
+		)
+		span.SetStatus(codes.Error, "billing_summary_unavailable")
+		respondError(c, http.StatusInternalServerError, "billing_summary_unavailable", "failed to load billing summary")
+		return
+	}
+	if err == nil {
 		quota = snapshot
 	}
+
 	var billingProfile *store.AccountBillingProfile
-	if profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID); err == nil {
+	profile, err := h.store.GetAccountBillingProfile(ctx, user.ID)
+	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "db_profile_error"),
+		)
+		span.SetStatus(codes.Error, "billing_summary_unavailable")
+		respondError(c, http.StatusInternalServerError, "billing_summary_unavailable", "failed to load billing summary")
+		return
+	}
+	if err == nil {
 		billingProfile = profile
 	}
-	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile)
+	planContract, err := h.accountPlanContract(ctx, billingProfile)
 	if err != nil {
+		span.SetAttributes(
+			attribute.String("outcome", "error"),
+			attribute.String("error_class", "plan_contract_error"),
+		)
+		span.SetStatus(codes.Error, "billing_plan_unavailable")
 		respondError(c, http.StatusInternalServerError, "billing_plan_unavailable", "failed to resolve the account plan")
 		return
 	}
+
+	span.SetAttributes(
+		attribute.Int("ledger_count", len(ledger)),
+		attribute.String("outcome", "ok"),
+	)
 
 	c.JSON(http.StatusOK, gin.H{
 		"accountUuid":          user.ID,
