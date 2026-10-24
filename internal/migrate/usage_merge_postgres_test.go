@@ -86,7 +86,13 @@ ALTER ROLE readonly_release SET default_transaction_read_only=on;
 GRANT USAGE ON SCHEMA public TO readonly_release;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_release;
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO readonly_release;`)
-	for _, name := range usageMergeTables {
+	snapshotTables := append(append([]string{}, usageMergeTables...), businessAppendTables...)
+	seenSnapshotTables := map[string]bool{}
+	for _, name := range snapshotTables {
+		if seenSnapshotTables[name] {
+			continue
+		}
+		seenSnapshotTables[name] = true
 		var rls bool
 		if err := source.QueryRow(`SELECT relrowsecurity FROM pg_class WHERE oid=$1::regclass`, "public."+name).Scan(&rls); err != nil {
 			t.Fatal(err)
@@ -191,6 +197,132 @@ GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO readonly_release;`)
 		t.Fatal("V3 accounting independence lost")
 	}
 	checkTarget(50, 1004)
+	// Online business append initializes missing profiles/catalog/subscriptions
+	// without replacing target users or target-only accounting facts.
+	exec(source, `UPDATE public.account_quota_states SET remaining_included_quota=50;
+UPDATE public.users SET email='sandbox@svc.plus',proxy_uuid='00000000-0000-0000-0000-000000000299';
+INSERT INTO public.billing_plans(plan_id,display_name,package_name) VALUES('fixture-business','Fixture','free');
+INSERT INTO public.finance_operations(id,idempotency_key,operation_type,status) VALUES('00000000-0000-0000-0000-000000000601','business-fixture','fixture','succeeded');
+INSERT INTO public.finance_operation_events(id,operation_id,attempt,event_type,status) OVERRIDING SYSTEM VALUE VALUES(1001,'00000000-0000-0000-0000-000000000601',1,'fixture','succeeded');
+INSERT INTO public.account_policy_snapshots(account_uuid,policy_version,eligible_node_groups,expires_at) VALUES('`+srcID+`','business-fixture','["shared"]','2030-01-01');
+INSERT INTO public.subscription_records(user_uuid,subscription_type) VALUES('`+srcID+`','month');
+INSERT INTO public.subscription_lifecycle_states(account_uuid,operation_id) VALUES('`+srcID+`','00000000-0000-0000-0000-000000000601');
+INSERT INTO public.subscriptions(uuid,user_uuid,provider,external_id,plan_id,status) VALUES('00000000-0000-0000-0000-000000000501','`+srcID+`','fixture','fixture-subscription','fixture-business','active');`)
+	exec(target, `DELETE FROM public.account_billing_profiles; UPDATE public.users SET email='sandbox@svc.plus'; DROP TABLE public.accounts_controlled_migration_history`)
+	options.AppendBusiness = true
+	options.WritersPaused = false
+	options.Apply = false
+	if _, err := ReconcileUsage(ctx, sourceDSN, dsn, options); err == nil {
+		t.Fatal("unapproved proxy drift was accepted")
+	}
+	options.IgnoreDefaultSandboxProxyDrift = true
+	plan, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err != nil || plan.Tables["account_billing_profiles"].Append != 1 || plan.Tables["subscriptions"].Append != 1 || plan.PreservedProxyDifferences != 1 {
+		t.Fatalf("business preview: %v %+v", err, plan.Tables)
+	}
+	options.Apply = true
+	options.ExpectedPlanSHA256 = plan.PlanSHA256
+	applied, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err != nil || applied.UsersBefore != applied.UsersAfter {
+		t.Fatalf("online business append: %v", err)
+	}
+	for _, name := range []string{"account_policy_snapshots", "subscription_records", "subscription_lifecycle_states"} {
+		if applied.Tables[name].Append != 1 {
+			t.Fatalf("business relationship %s was not appended", name)
+		}
+	}
+	var subscriptionOwner string
+	if target.QueryRow(`SELECT user_uuid::text FROM public.subscriptions WHERE external_id='fixture-subscription'`).Scan(&subscriptionOwner) != nil || subscriptionOwner != dstID {
+		t.Fatal("subscription user reference was not mapped")
+	}
+	var seqCurrent int64
+	if target.QueryRow(`SELECT last_value FROM public.finance_operation_events_id_seq`).Scan(&seqCurrent) != nil || seqCurrent != 1001 || applied.AdvancedSequences != 1 {
+		t.Fatal("appended event identity sequence not advanced")
+	}
+	checkTarget(50, 1004)
+	// A live target writer must finish before append reads the target. Its
+	// committed row invalidates the reviewed plan instead of being lost.
+	options.Apply = false
+	onlineBaseline, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := target.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	if _, err = writer.Exec(`INSERT INTO public.billing_plans(plan_id,display_name) VALUES('target-only-plan','Preserved')`); err != nil {
+		t.Fatal(err)
+	}
+	concurrentOpts := options
+	concurrentOpts.Apply = true
+	concurrentOpts.ExpectedPlanSHA256 = onlineBaseline.PlanSHA256
+	done := make(chan error, 1)
+	go func() { _, err := ReconcileUsage(ctx, sourceDSN, dsn, concurrentOpts); done <- err }()
+	select {
+	case err := <-done:
+		t.Fatalf("online append did not wait for the live writer: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err = writer.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("changed live target accepted stale preview")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("online append failed to release lock wait")
+	}
+	for round := 0; round < 3; round++ {
+		options.Apply = false
+		plan, err = ReconcileUsage(ctx, sourceDSN, dsn, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, stats := range plan.Tables {
+			if stats.Append != 0 || stats.Update != 0 || stats.Conflicts != 0 {
+				t.Fatalf("business replay %d %s changed", round, name)
+			}
+		}
+		options.Apply = true
+		options.ExpectedPlanSHA256 = plan.PlanSHA256
+		noOp, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+		if err != nil || noOp.TargetWrites || noOp.AdvancedSequences != 0 {
+			t.Fatalf("business replay wrote data: %v", err)
+		}
+	}
+	exec(source, `INSERT INTO public.billing_plans(plan_id,display_name) VALUES('fixture-late','Late');
+INSERT INTO public.subscriptions(uuid,user_uuid,provider,external_id,plan_id) VALUES('00000000-0000-0000-0000-000000000502','`+srcID+`','fixture','reject-late','fixture-late');`)
+	exec(target, `ALTER TABLE public.subscriptions ADD CONSTRAINT fixture_late_reject CHECK(external_id!='reject-late')`)
+	options.Apply = false
+	plan, err = ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.Apply = true
+	options.ExpectedPlanSHA256 = plan.PlanSHA256
+	if _, err = ReconcileUsage(ctx, sourceDSN, dsn, options); err == nil {
+		t.Fatal("late subscription failure committed")
+	}
+	var lateRows int
+	if target.QueryRow(`SELECT count(*) FROM public.billing_plans WHERE plan_id='fixture-late'`).Scan(&lateRows) != nil || lateRows != 0 {
+		t.Fatal("catalog escaped transaction rollback")
+	}
+	exec(source, `UPDATE public.subscriptions SET status='cancelled' WHERE external_id='fixture-subscription'`)
+	options.Apply = false
+	collision, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err == nil || collision.Tables["subscriptions"].Conflicts != 1 {
+		t.Fatal("existing subscription was overwritten")
+	}
+	exec(source, `UPDATE public.users SET email='ordinary@example.invalid'`)
+	exec(target, `UPDATE public.users SET email='ordinary@example.invalid'`)
+	rejected, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err == nil || rejected.MissingUsers != 1 {
+		t.Fatal("Sandbox exception accepted another user's proxy drift")
+	}
 	var sourceUsers int
 	if source.QueryRow(`SELECT count(*) FROM public.users WHERE uuid='`+srcID+`'`).Scan(&sourceUsers) != nil || sourceUsers != 1 {
 		t.Fatal("source identity mutated")

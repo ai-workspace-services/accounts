@@ -11,10 +11,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newUsageMergeCmd() *cobra.Command {
+func newUsageMergeCmd() *cobra.Command { return newReconcileCmd(false) }
+
+func newBusinessAppendCmd() *cobra.Command { return newReconcileCmd(true) }
+
+func newReconcileCmd(appendBusiness bool) *cobra.Command {
 	var sourceEnv, targetEnv string
-	options := migrate.UsageMergeOptions{}
-	cmd := &cobra.Command{Use: "reconcile-usage", Args: cobra.NoArgs, Short: "Preview or transactionally reconcile reviewed accounting facts between adjacent generations without schema changes", RunE: func(cmd *cobra.Command, args []string) error {
+	options := migrate.UsageMergeOptions{AppendBusiness: appendBusiness}
+	name := "reconcile-usage"
+	if appendBusiness {
+		name = "reconcile-business"
+	}
+	cmd := &cobra.Command{Use: name, Args: cobra.NoArgs, Short: "Preview or transactionally reconcile reviewed business facts between adjacent generations without schema changes", RunE: func(cmd *cobra.Command, args []string) error {
 		if sourceEnv == "" || targetEnv == "" || sourceEnv == targetEnv {
 			return errors.New("distinct source and target DSN environment names are required")
 		}
@@ -39,7 +47,12 @@ func newUsageMergeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&options.BillingSHA256, "billing-schema-sha256", "", "Exact compiled Billing schema SHA-256")
 	cmd.Flags().UintVar(&options.ExpectedTargetVersion, "expected-target-version", 0, "Exact clean target migration checkpoint")
 	cmd.Flags().BoolVar(&options.Apply, "apply", false, "Commit the reviewed conflict-free plan; default is read-only preview")
-	cmd.Flags().BoolVar(&options.WritersPaused, "writers-paused", false, "Execution owner has quiesced target writers")
+	if appendBusiness {
+		cmd.Flags().BoolVar(&options.IgnoreDefaultSandboxProxyDrift, "ignore-default-sandbox-proxy-drift", false, "Preserve the default Sandbox proxy UUID when email and password hash match; other identity drift remains blocked")
+	}
+	if !appendBusiness {
+		cmd.Flags().BoolVar(&options.WritersPaused, "writers-paused", false, "Execution owner has quiesced target writers")
+	}
 	cmd.Flags().StringVar(&options.ExpectedPlanSHA256, "expected-plan-sha256", "", "SHA-256 from the unchanged read-only preview")
 	return cmd
 }
