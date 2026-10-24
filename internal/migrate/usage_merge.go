@@ -255,6 +255,7 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	}
 	r.UsersBefore = before["users"]
 	expected := map[string]usageMergeIndex{}
+	targetIndexes := map[string]usageMergeIndex{}
 	sourceCols := map[string][]ColumnDefinition{}
 	for _, name := range selectedTables {
 		cols, e := catalogColumns(ctx, src, name)
@@ -273,6 +274,7 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 		if e != nil {
 			return r, e
 		}
+		targetIndexes[name] = targetIndex
 		stats, wanted := usageMergePlan(name, sourceIndex, targetIndex)
 		if opts.AppendBusiness {
 			stats, wanted = businessAppendPlan(sourceIndex, targetIndex)
@@ -318,6 +320,9 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	}
 	if opts.Apply {
 		for _, name := range selectedTables {
+			if opts.AppendBusiness && r.Tables[name].Append == 0 {
+				continue
+			}
 			if name == "account_billing_profiles" && !opts.AppendBusiness {
 				continue
 			}
@@ -328,7 +333,20 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 					}
 				}
 				if opts.AppendBusiness {
-					return insertMissingBusiness(ctx, dst, name, tables[name], page)
+					missing := make([]rawRow, 0, len(page))
+					for _, row := range page {
+						digest := businessDigest{}
+						if err := digest.add(row, tables[name]); err != nil {
+							return err
+						}
+						if _, exists := targetIndexes[name][digest.Leaves[0].Key]; !exists {
+							missing = append(missing, row)
+						}
+					}
+					if len(missing) == 0 {
+						return nil
+					}
+					return insertMissingBusiness(ctx, dst, name, tables[name], missing)
 				}
 				return usageApplyBatch(ctx, dst, name, tables[name], page)
 			})
