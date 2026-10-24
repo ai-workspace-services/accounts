@@ -204,6 +204,9 @@ UPDATE public.users SET email='sandbox@svc.plus',proxy_uuid='00000000-0000-0000-
 INSERT INTO public.billing_plans(plan_id,display_name,package_name) VALUES('fixture-business','Fixture','free');
 INSERT INTO public.finance_operations(id,idempotency_key,operation_type,status) VALUES('00000000-0000-0000-0000-000000000601','business-fixture','fixture','succeeded');
 INSERT INTO public.finance_operation_events(id,operation_id,attempt,event_type,status) OVERRIDING SYSTEM VALUE VALUES(1001,'00000000-0000-0000-0000-000000000601',1,'fixture','succeeded');
+INSERT INTO public.account_policy_snapshots(account_uuid,policy_version,eligible_node_groups,expires_at) VALUES('`+srcID+`','business-fixture','["shared"]','2030-01-01');
+INSERT INTO public.subscription_records(user_uuid,subscription_type) VALUES('`+srcID+`','month');
+INSERT INTO public.subscription_lifecycle_states(account_uuid,operation_id) VALUES('`+srcID+`','00000000-0000-0000-0000-000000000601');
 INSERT INTO public.subscriptions(uuid,user_uuid,provider,external_id,plan_id,status) VALUES('00000000-0000-0000-0000-000000000501','`+srcID+`','fixture','fixture-subscription','fixture-business','active');`)
 	exec(target, `DELETE FROM public.account_billing_profiles; UPDATE public.users SET email='sandbox@svc.plus'; DROP TABLE public.accounts_controlled_migration_history`)
 	options.AppendBusiness = true
@@ -222,6 +225,11 @@ INSERT INTO public.subscriptions(uuid,user_uuid,provider,external_id,plan_id,sta
 	applied, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
 	if err != nil || applied.UsersBefore != applied.UsersAfter {
 		t.Fatalf("online business append: %v", err)
+	}
+	for _, name := range []string{"account_policy_snapshots", "subscription_records", "subscription_lifecycle_states"} {
+		if applied.Tables[name].Append != 1 {
+			t.Fatalf("business relationship %s was not appended", name)
+		}
 	}
 	var subscriptionOwner string
 	if target.QueryRow(`SELECT user_uuid::text FROM public.subscriptions WHERE external_id='fixture-subscription'`).Scan(&subscriptionOwner) != nil || subscriptionOwner != dstID {
@@ -245,8 +253,9 @@ INSERT INTO public.subscriptions(uuid,user_uuid,provider,external_id,plan_id,sta
 		}
 		options.Apply = true
 		options.ExpectedPlanSHA256 = plan.PlanSHA256
-		if _, err = ReconcileUsage(ctx, sourceDSN, dsn, options); err != nil {
-			t.Fatal(err)
+		noOp, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+		if err != nil || noOp.TargetWrites || noOp.AdvancedSequences != 0 {
+			t.Fatalf("business replay wrote data: %v", err)
 		}
 	}
 	exec(source, `INSERT INTO public.billing_plans(plan_id,display_name) VALUES('fixture-late','Late');
@@ -271,6 +280,12 @@ INSERT INTO public.subscriptions(uuid,user_uuid,provider,external_id,plan_id) VA
 	collision, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
 	if err == nil || collision.Tables["subscriptions"].Conflicts != 1 {
 		t.Fatal("existing subscription was overwritten")
+	}
+	exec(source, `UPDATE public.users SET email='ordinary@example.invalid'`)
+	exec(target, `UPDATE public.users SET email='ordinary@example.invalid'`)
+	rejected, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err == nil || rejected.MissingUsers != 1 {
+		t.Fatal("Sandbox exception accepted another user's proxy drift")
 	}
 	var sourceUsers int
 	if source.QueryRow(`SELECT count(*) FROM public.users WHERE uuid='`+srcID+`'`).Scan(&sourceUsers) != nil || sourceUsers != 1 {

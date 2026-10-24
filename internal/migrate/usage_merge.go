@@ -392,6 +392,17 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	}
 	r.CompletedAt = time.Now().UTC()
 	r.TargetWrites = opts.Apply
+	if opts.AppendBusiness {
+		r.TargetWrites = false
+		if opts.Apply {
+			for _, stats := range r.Tables {
+				if stats.Append > 0 {
+					r.TargetWrites = true
+					break
+				}
+			}
+		}
+	}
 	if opts.Apply {
 		r.Result = "merged"
 	}
