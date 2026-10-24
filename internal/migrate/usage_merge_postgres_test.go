@@ -240,6 +240,25 @@ INSERT INTO public.subscriptions(uuid,user_uuid,provider,external_id,plan_id,sta
 		t.Fatal("appended event identity sequence not advanced")
 	}
 	checkTarget(50, 1004)
+	// A non-scope runtime write between preview and apply must survive without
+	// invalidating an otherwise identical business plan.
+	options.Apply = false
+	runtimeBaseline, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec(target, `INSERT INTO public.admin_settings(module_key,role,enabled,version,created_at,updated_at) VALUES('runtime-observation','fixture',true,1,now(),now()); ANALYZE public.billing_plans`)
+	runtimeOptions := options
+	runtimeOptions.Apply = true
+	runtimeOptions.ExpectedPlanSHA256 = runtimeBaseline.PlanSHA256
+	runtimeApplied, err := ReconcileUsage(ctx, sourceDSN, dsn, runtimeOptions)
+	if err != nil || runtimeApplied.TargetWrites {
+		t.Fatalf("unrelated runtime update invalidated business append: %v", err)
+	}
+	var preservedRuntime int
+	if err := target.QueryRow(`SELECT count(*) FROM public.admin_settings WHERE module_key='runtime-observation'`).Scan(&preservedRuntime); err != nil || preservedRuntime != 1 {
+		t.Fatal("runtime observation was not preserved")
+	}
 	// A live target writer must finish before append reads the target. Its
 	// committed row invalidates the reviewed plan instead of being lost.
 	options.Apply = false

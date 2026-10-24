@@ -25,7 +25,7 @@ table and migration locks before reading target data, rebuilds the plan, inserts
 missing rows in FK order, verifies complete row fingerprints and protected
 non-scope tables, and releases locks on commit or rollback. Applications remain
 online; writers may wait briefly while the bounded transaction runs. A changed
-source or target baseline requires a new preview. No `--writers-paused` assertion
+source business data, selected target rows or validated identity mapping requires a new preview. Unrelated runtime heartbeats do not invalidate a reviewed business plan. Schema fingerprints exclude PostgreSQL planner/vacuum statistics, while retaining structural definitions and access policies. No `--writers-paused` assertion
 is needed on this append-only command.
 
 A matching key with any different field is a conflict, including different
