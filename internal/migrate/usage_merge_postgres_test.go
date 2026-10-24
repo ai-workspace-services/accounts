@@ -240,6 +240,42 @@ INSERT INTO public.subscriptions(uuid,user_uuid,provider,external_id,plan_id,sta
 		t.Fatal("appended event identity sequence not advanced")
 	}
 	checkTarget(50, 1004)
+	// A live target writer must finish before append reads the target. Its
+	// committed row invalidates the reviewed plan instead of being lost.
+	options.Apply = false
+	onlineBaseline, err := ReconcileUsage(ctx, sourceDSN, dsn, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := target.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	if _, err = writer.Exec(`INSERT INTO public.billing_plans(plan_id,display_name) VALUES('target-only-plan','Preserved')`); err != nil {
+		t.Fatal(err)
+	}
+	concurrentOpts := options
+	concurrentOpts.Apply = true
+	concurrentOpts.ExpectedPlanSHA256 = onlineBaseline.PlanSHA256
+	done := make(chan error, 1)
+	go func() { _, err := ReconcileUsage(ctx, sourceDSN, dsn, concurrentOpts); done <- err }()
+	select {
+	case err := <-done:
+		t.Fatalf("online append did not wait for the live writer: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	if err = writer.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("changed live target accepted stale preview")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("online append failed to release lock wait")
+	}
 	for round := 0; round < 3; round++ {
 		options.Apply = false
 		plan, err = ReconcileUsage(ctx, sourceDSN, dsn, options)
