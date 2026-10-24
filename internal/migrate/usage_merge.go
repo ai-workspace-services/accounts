@@ -19,15 +19,29 @@ import (
 
 var usageMergeTables = []string{"account_billing_profiles", "account_quota_states", "traffic_minute_buckets", "billing_ledger", "finance_invoices", "finance_payments", "finance_refunds"}
 
+// Reviewed persistent business scope. Runtime credentials, sessions, nodes and
+// user rows stay owned by the live target. All existing rows are immutable.
+// The product default Sandbox identity is the only explicit drift exception.
+const defaultSandboxBusinessEmail = "sandbox@svc.plus"
+
+var businessAppendTables = []string{
+	"billing_plans", "account_billing_profiles", "account_quota_states", "account_policy_snapshots",
+	"subscriptions", "subscription_records", "subscription_lifecycle_states",
+	"traffic_stat_checkpoints", "traffic_minute_buckets", "billing_ledger",
+	"finance_invoices", "finance_payments", "finance_refunds", "finance_operations", "finance_operation_events",
+}
+
 type UsageMergeOptions struct {
-	SourceGeneration      string
-	TargetGeneration      string
-	SchemaSHA256          string
-	BillingSHA256         string
-	Apply                 bool
-	WritersPaused         bool
-	ExpectedPlanSHA256    string
-	ExpectedTargetVersion uint
+	AppendBusiness                 bool
+	IgnoreDefaultSandboxProxyDrift bool
+	SourceGeneration               string
+	TargetGeneration               string
+	SchemaSHA256                   string
+	BillingSHA256                  string
+	Apply                          bool
+	WritersPaused                  bool
+	ExpectedPlanSHA256             string
+	ExpectedTargetVersion          uint
 }
 
 type UsageMergeTable struct {
@@ -43,26 +57,29 @@ type UsageMergeTable struct {
 
 // Receipts contain aggregate hashes and counts, never user keys or row values.
 type UsageMergeReceipt struct {
-	Format               int                        `json:"format"`
-	Result               string                     `json:"result"`
-	SourceGeneration     string                     `json:"source_generation"`
-	TargetGeneration     string                     `json:"target_generation"`
-	SourceIdentitySHA256 string                     `json:"source_identity_sha256"`
-	TargetIdentitySHA256 string                     `json:"target_identity_sha256"`
-	TargetVersion        uint                       `json:"target_version"`
-	SnapshotStartedAt    time.Time                  `json:"snapshot_started_at"`
-	CompletedAt          time.Time                  `json:"completed_at"`
-	PlanSHA256           string                     `json:"plan_sha256"`
-	SchemaBeforeSHA256   string                     `json:"schema_before_sha256"`
-	SchemaAfterSHA256    string                     `json:"schema_after_sha256"`
-	UsersBefore          BusinessEquality           `json:"users_before"`
-	UsersAfter           BusinessEquality           `json:"users_after"`
-	MappedUsers          int                        `json:"mapped_users"`
-	MissingUsers         int                        `json:"missing_users"`
-	Tables               map[string]UsageMergeTable `json:"tables"`
-	Conflicts            int64                      `json:"conflicts"`
-	SourceReadOnly       bool                       `json:"source_read_only"`
-	TargetWrites         bool                       `json:"target_writes"`
+	AdvancedSequences         int                        `json:"advanced_sequences,omitempty"`
+	IdentityMatchPolicy       string                     `json:"identity_match_policy,omitempty"`
+	PreservedProxyDifferences int                        `json:"preserved_proxy_differences,omitempty"`
+	Format                    int                        `json:"format"`
+	Result                    string                     `json:"result"`
+	SourceGeneration          string                     `json:"source_generation"`
+	TargetGeneration          string                     `json:"target_generation"`
+	SourceIdentitySHA256      string                     `json:"source_identity_sha256"`
+	TargetIdentitySHA256      string                     `json:"target_identity_sha256"`
+	TargetVersion             uint                       `json:"target_version"`
+	SnapshotStartedAt         time.Time                  `json:"snapshot_started_at"`
+	CompletedAt               time.Time                  `json:"completed_at"`
+	PlanSHA256                string                     `json:"plan_sha256"`
+	SchemaBeforeSHA256        string                     `json:"schema_before_sha256"`
+	SchemaAfterSHA256         string                     `json:"schema_after_sha256"`
+	UsersBefore               BusinessEquality           `json:"users_before"`
+	UsersAfter                BusinessEquality           `json:"users_after"`
+	MappedUsers               int                        `json:"mapped_users"`
+	MissingUsers              int                        `json:"missing_users"`
+	Tables                    map[string]UsageMergeTable `json:"tables"`
+	Conflicts                 int64                      `json:"conflicts"`
+	SourceReadOnly            bool                       `json:"source_read_only"`
+	TargetWrites              bool                       `json:"target_writes"`
 }
 
 type usageMergeIndex map[[32]byte][32]byte
@@ -79,8 +96,11 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	if !strings.HasPrefix(opts.SourceGeneration, "prod-v") || opts.ExpectedTargetVersion == 0 || opts.SchemaSHA256 != manifest.SchemaSHA256 || opts.BillingSHA256 != FullBusinessBillingSHA256 {
 		return r, errors.New("usage merge requires consecutive PROD generations, target version and compiled schema hashes")
 	}
-	if opts.Apply && (!opts.WritersPaused || !validUsageHash(opts.ExpectedPlanSHA256)) {
-		return r, errors.New("apply requires paused target writers and the reviewed preview SHA-256")
+	if opts.Apply && !validUsageHash(opts.ExpectedPlanSHA256) {
+		return r, errors.New("apply requires the reviewed preview SHA-256")
+	}
+	if opts.Apply && !opts.AppendBusiness && !opts.WritersPaused {
+		return r, errors.New("usage replacement requires paused target writers")
 	}
 	if err = validateBusinessConnections(sourceDSN, targetDSN); err != nil {
 		return r, err
@@ -127,10 +147,26 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	if err != nil {
 		return r, err
 	}
+	selectedTables := usageMergeTables
+	if opts.AppendBusiness {
+		selected := map[string]bool{}
+		for _, name := range businessAppendTables {
+			selected[name] = true
+		}
+		selectedTables = nil
+		for _, name := range order {
+			if selected[name] {
+				selectedTables = append(selectedTables, name)
+			}
+		}
+		if len(selectedTables) != len(businessAppendTables) {
+			return r, errors.New("business append scope differs from reviewed table contract")
+		}
+	}
 	if opts.Apply {
 		// Lock before the first target data snapshot. Keep triggers and all FK,
 		// CHECK and UNIQUE guards active throughout the transaction.
-		locks := []string{"public.schema_migrations", "public.accounts_controlled_migration_history"}
+		locks := []string{"public.schema_migrations"}
 		for _, name := range order {
 			locks = append(locks, "public."+quoteBusiness(name))
 		}
@@ -139,6 +175,15 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 		}
 		if _, err = dst.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1::bigint)`, migrationAdvisoryLockKey); err != nil {
 			return r, errors.New("cannot lock reconciliation")
+		}
+		var historyPresent bool
+		if err = dst.QueryRowContext(ctx, `SELECT to_regclass('public.accounts_controlled_migration_history') IS NOT NULL`).Scan(&historyPresent); err != nil {
+			return r, errors.New("cannot inspect migration history")
+		}
+		if historyPresent {
+			if _, err = dst.ExecContext(ctx, "LOCK TABLE public.accounts_controlled_migration_history IN SHARE ROW EXCLUSIVE MODE"); err != nil {
+				return r, errors.New("cannot lock migration history")
+			}
 		}
 	}
 	var dbName string
@@ -180,11 +225,18 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 		return r, err
 	}
 	mapping := map[string]string{}
+	if opts.AppendBusiness {
+		r.IdentityMatchPolicy = "normalized-email-password-proxy; explicit default-sandbox proxy exception only"
+	}
 	for key, user := range sourceUsers {
 		matched, ok := targetUsers[key]
-		if !ok || user.Proxy != matched.Proxy {
+		sandboxException := opts.AppendBusiness && opts.IgnoreDefaultSandboxProxyDrift && key == defaultSandboxBusinessEmail
+		if !ok || (user.Proxy != matched.Proxy && !sandboxException) || (opts.AppendBusiness && user.PasswordHash != matched.PasswordHash) {
 			r.MissingUsers++
 			continue
+		}
+		if opts.AppendBusiness && user.Proxy != matched.Proxy {
+			r.PreservedProxyDifferences++
 		}
 		mapping[user.ID] = matched.ID
 		r.MappedUsers++
@@ -204,7 +256,7 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	r.UsersBefore = before["users"]
 	expected := map[string]usageMergeIndex{}
 	sourceCols := map[string][]ColumnDefinition{}
-	for _, name := range usageMergeTables {
+	for _, name := range selectedTables {
 		cols, e := catalogColumns(ctx, src, name)
 		if e != nil || validateBusinessSourceColumns(name, cols, tables[name]) != nil {
 			return r, fmt.Errorf("source public.%s schema is not reviewed", name)
@@ -222,6 +274,9 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 			return r, e
 		}
 		stats, wanted := usageMergePlan(name, sourceIndex, targetIndex)
+		if opts.AppendBusiness {
+			stats, wanted = businessAppendPlan(sourceIndex, targetIndex)
+		}
 		stats.Source = sourceDigest
 		stats.Before = targetDigest
 		r.Tables[name] = stats
@@ -239,8 +294,8 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 			}
 		}
 	}
-	// A missing V3 profile cannot safely be initialized from old V2 pricing.
-	// Profiles are comparison-only and all differences are conflicts.
+	// Usage reconciliation keeps pricing comparison-only. Explicit business
+	// append initializes missing profiles but never changes an existing one.
 	plan, err := json.Marshal(struct {
 		Source, Target, Schema string
 		Version                uint
@@ -262,8 +317,8 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 		return r, errors.New("source snapshot or target baseline changed; repeat preview")
 	}
 	if opts.Apply {
-		for _, name := range usageMergeTables {
-			if name == "account_billing_profiles" {
+		for _, name := range selectedTables {
+			if name == "account_billing_profiles" && !opts.AppendBusiness {
 				continue
 			}
 			err = streamBusiness(ctx, src, name, tables[name].PrimaryKey, func(page []rawRow) error {
@@ -271,6 +326,9 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 					if err := projectBusinessRow(name, row, sourceCols[name], tables[name], mapping); err != nil {
 						return err
 					}
+				}
+				if opts.AppendBusiness {
+					return insertMissingBusiness(ctx, dst, name, tables[name], page)
 				}
 				return usageApplyBatch(ctx, dst, name, tables[name], page)
 			})
@@ -304,6 +362,12 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	}
 	if err = src.Commit(); err != nil {
 		return r, errors.New("source snapshot completion failed")
+	}
+	if opts.Apply && opts.AppendBusiness {
+		r.AdvancedSequences, err = advanceAppendFinanceSequence(ctx, dst)
+		if err != nil {
+			return r, err
+		}
 	}
 	if err = dst.Commit(); err != nil {
 		return r, errors.New("target transaction failed; merge not accepted")
@@ -433,9 +497,16 @@ func usageSchemaDigest(ctx context.Context, tx *sql.Tx) (string, error) {
 		`SELECT to_jsonb(p)::text FROM pg_proc p WHERE p.pronamespace='public'::regnamespace ORDER BY p.oid`,
 		`SELECT to_jsonb(s)::text FROM pg_sequence s JOIN pg_class c ON c.oid=s.seqrelid WHERE c.relnamespace='public'::regnamespace ORDER BY s.seqrelid`,
 		`SELECT to_jsonb(s)::text FROM public.schema_migrations s ORDER BY version`,
-		`SELECT to_jsonb(s)::text FROM public.accounts_controlled_migration_history s ORDER BY to_version`,
+	}
+	var historyPresent bool
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.accounts_controlled_migration_history') IS NOT NULL`).Scan(&historyPresent); err != nil {
+		return "", errors.New("cannot inspect native migration history")
+	}
+	if historyPresent {
+		queries = append(queries, `SELECT to_jsonb(s)::text FROM public.accounts_controlled_migration_history s ORDER BY to_version`)
 	}
 	h := sha256.New()
+	fmt.Fprintf(h, "controlled-history-present:%t:", historyPresent)
 	for _, query := range queries {
 		rows, e := tx.QueryContext(ctx, query)
 		if e != nil {
@@ -456,4 +527,74 @@ func usageSchemaDigest(ctx context.Context, tx *sql.Tx) (string, error) {
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Compare complete rows. A primary-key collision with any changed field aborts
+// the transaction; neither monetary facts nor existing policy rows are updated.
+func businessAppendPlan(source, target usageMergeIndex) (UsageMergeTable, usageMergeIndex) {
+	stats := UsageMergeTable{}
+	expected := usageMergeIndex{}
+	for k, v := range target {
+		expected[k] = v
+	}
+	for k, v := range source {
+		if prior, ok := target[k]; !ok {
+			stats.Append++
+			expected[k] = v
+		} else if prior == v {
+			stats.Equal++
+		} else {
+			stats.Conflicts++
+		}
+	}
+	for k := range target {
+		if _, ok := source[k]; !ok {
+			stats.TargetOnly++
+		}
+	}
+	return stats, expected
+}
+
+func insertMissingBusiness(ctx context.Context, tx *sql.Tx, name string, table businessTable, page []rawRow) error {
+	cols := []string{}
+	for _, c := range table.Columns {
+		if !c.Generated {
+			cols = append(cols, c.Name)
+		}
+	}
+	data, err := json.Marshal(page)
+	if err != nil {
+		return errors.New("cannot encode business append batch")
+	}
+	list := businessColumnList(cols)
+	_, err = tx.ExecContext(ctx, "INSERT INTO public."+quoteBusiness(name)+" ("+list+") OVERRIDING SYSTEM VALUE SELECT "+list+" FROM jsonb_populate_recordset(NULL::public."+quoteBusiness(name)+",$1::jsonb) ON CONFLICT ("+businessColumnList(table.PrimaryKey)+") DO NOTHING", string(data))
+	if err != nil {
+		return fmt.Errorf("public.%s append rejected by database constraints; transaction rolled back", name)
+	}
+	return nil
+}
+
+// PostgreSQL sequence state is intentionally monotonic and nontransactional.
+// Advance only after all row/schema checks and source completion. A failed final
+// commit may leave an allocation gap, never a rollback of financial facts.
+func advanceAppendFinanceSequence(ctx context.Context, tx *sql.Tx) (int, error) {
+	var sequence string
+	var maximum, current int64
+	var called bool
+	if err := tx.QueryRowContext(ctx, `SELECT pg_get_serial_sequence('public.finance_operation_events','id')`).Scan(&sequence); err != nil || sequence != "public.finance_operation_events_id_seq" {
+		return 0, errors.New("unreviewed finance event identity sequence")
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(id),0) FROM public.finance_operation_events`).Scan(&maximum); err != nil {
+		return 0, errors.New("cannot inspect finance event maximum")
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT last_value,is_called FROM public.finance_operation_events_id_seq`).Scan(&current, &called); err != nil {
+		return 0, errors.New("cannot inspect finance event sequence")
+	}
+	if maximum > 0 && (maximum > current || (maximum == current && !called)) {
+		if _, err := tx.ExecContext(ctx, `SELECT setval('public.finance_operation_events_id_seq'::regclass,$1,true)`, maximum); err != nil {
+			return 0, errors.New("cannot advance finance event sequence")
+		}
+		return 1, nil
+	}
+	return 0, nil
 }
