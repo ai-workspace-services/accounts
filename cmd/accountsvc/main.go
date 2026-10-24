@@ -216,16 +216,8 @@ func ensureReviewUser(ctx context.Context, st store.Store, cfg config.ReviewAcco
 		return fmt.Errorf("lookup review user: %w", err)
 	}
 
-	if !cfg.Enabled {
-		if reviewUser != nil && reviewUser.Active {
-			reviewUser.Active = false
-			if err := st.UpdateUser(ctx, reviewUser); err != nil {
-				return fmt.Errorf("disable review user: %w", err)
-			}
-			if logger != nil {
-				logger.Info("review account disabled", "email", email)
-			}
-		}
+	// Bootstrap creates missing identities; it never reconciles existing accounts.
+	if reviewUser != nil || !cfg.Enabled {
 		return nil
 	}
 
@@ -260,25 +252,6 @@ func ensureReviewUser(ctx context.Context, st store.Store, cfg config.ReviewAcco
 		return nil
 	}
 
-	reviewUser.Name = name
-	reviewUser.Email = email
-	reviewUser.EmailVerified = true
-	reviewUser.PasswordHash = string(hashed)
-	reviewUser.Role = store.RoleReadOnly
-	reviewUser.Level = store.LevelUser
-	reviewUser.Groups = groups
-	reviewUser.Permissions = permissions
-	reviewUser.Active = true
-	reviewUser.MFATOTPSecret = ""
-	reviewUser.MFAEnabled = false
-	reviewUser.MFASecretIssuedAt = time.Time{}
-	reviewUser.MFAConfirmedAt = time.Time{}
-	if err := st.UpdateUser(ctx, reviewUser); err != nil {
-		return fmt.Errorf("update review user: %w", err)
-	}
-	if logger != nil {
-		logger.Info("review account ensured", "email", email, "created", false)
-	}
 	return nil
 }
 
@@ -377,6 +350,10 @@ func ensureSandboxUser(ctx context.Context, st store.Store, logger *slog.Logger)
 		return fmt.Errorf("lookup sandbox user: %w", err)
 	}
 
+	if sandboxUser != nil {
+		return nil
+	}
+
 	hashed, err := bcrypt.GenerateFromPassword([]byte("Sandbox123!"), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hash sandbox password: %w", err)
@@ -402,70 +379,8 @@ func ensureSandboxUser(ctx context.Context, st store.Store, logger *slog.Logger)
 		if logger != nil {
 			logger.Info("sandbox experience user created", "email", SandboxEmail)
 		}
-	} else {
-		// Ensure sandbox user is active and has properties aligned with experience mode
-		sandboxUser.Name = "Sandbox"
-		sandboxUser.Active = true
-		sandboxUser.Role = store.RoleReadOnly
-		if !containsCaseInsensitive(sandboxUser.Groups, "Sandbox") {
-			sandboxUser.Groups = append(sandboxUser.Groups, "Sandbox")
-		}
-		if !containsCaseInsensitive(sandboxUser.Groups, "ReadOnly Role") {
-			sandboxUser.Groups = append(sandboxUser.Groups, "ReadOnly Role")
-		}
-
-		if sandboxUser.ProxyUUIDExpiresAt == nil {
-			sandboxUser.ProxyUUIDExpiresAt = &expiresAt
-		}
-
-		if err := st.UpdateUser(ctx, sandboxUser); err != nil {
-			return fmt.Errorf("update sandbox user: %w", err)
-		}
-		if logger != nil {
-			logger.Info("sandbox experience user ensured", "email", SandboxEmail)
-		}
 	}
 	return nil
-}
-
-func startSandboxUUIDRotator(ctx context.Context, st store.Store, logger *slog.Logger) {
-	go func() {
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				user, err := st.GetUserByEmail(context.Background(), SandboxEmail)
-				if err != nil {
-					if logger != nil {
-						logger.Warn("sandbox uuid renewal skipped: lookup failed", "err", err)
-					}
-					continue
-				}
-				if user == nil {
-					if err := ensureSandboxUser(context.Background(), st, logger); err != nil && logger != nil {
-						logger.Warn("sandbox uuid renewal failed to recreate user", "err", err)
-					}
-					continue
-				}
-
-				expiresAt := time.Now().UTC().Add(time.Hour)
-				user.ProxyUUIDExpiresAt = &expiresAt
-				if err := st.UpdateUser(context.Background(), user); err != nil {
-					if logger != nil {
-						logger.Warn("sandbox uuid renewal failed", "err", err)
-					}
-					continue
-				}
-				if logger != nil {
-					logger.Info("sandbox proxy access renewed", "userID", user.ID, "expiresAt", expiresAt)
-				}
-			}
-		}
-	}()
 }
 
 func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) error {
@@ -482,6 +397,10 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 			rootUser = &candidate
 			break
 		}
+	}
+
+	if rootUser != nil {
+		return nil
 	}
 
 	bootstrapEmail := strings.ToLower(strings.TrimSpace(os.Getenv("ROOT_BOOTSTRAP_EMAIL")))
@@ -516,44 +435,6 @@ func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) er
 		rootUser = root
 		if logger != nil {
 			logger.Warn("root account bootstrapped from deployment configuration", "email", bootstrapEmail)
-		}
-	}
-
-	if rootUser != nil {
-		updatedRoot := *rootUser
-		rootEmailChanged := !strings.EqualFold(strings.TrimSpace(updatedRoot.Email), bootstrapEmail)
-		if rootEmailChanged {
-			updatedRoot.Email = bootstrapEmail
-		}
-		if rootEmailChanged || enforceRootProfile(&updatedRoot) {
-			if err := st.UpdateUser(ctx, &updatedRoot); err != nil {
-				return fmt.Errorf("enforce root profile: %w", err)
-			}
-			rootUser = &updatedRoot
-			if logger != nil {
-				logger.Info("root profile normalized", "email", rootUser.Email, "userID", rootUser.ID)
-			}
-		}
-	}
-
-	for i := range users {
-		user := users[i]
-		if !store.IsRootRole(user.Role) {
-			continue
-		}
-		updated := user
-		emailChanged := !strings.EqualFold(strings.TrimSpace(updated.Email), bootstrapEmail)
-		if emailChanged {
-			updated.Email = bootstrapEmail
-		}
-		if !emailChanged && !enforceRootProfile(&updated) {
-			continue
-		}
-		if emailChanged {
-			_ = enforceRootProfile(&updated)
-		}
-		if err := st.UpdateUser(ctx, &updated); err != nil {
-			return fmt.Errorf("normalize root user %q: %w", user.Email, err)
 		}
 	}
 
@@ -1261,7 +1142,6 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		if err := ensureSandboxUser(ctx, st, logger); err != nil {
 			logger.Warn("failed to ensure sandbox user", "err", err)
 		}
-		startSandboxUUIDRotator(ctx, st, logger)
 		if err := ensureReviewUser(ctx, st, cfg.ReviewAccount, logger); err != nil {
 			logger.Warn("failed to ensure review user", "err", err)
 		}

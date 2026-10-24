@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -298,5 +300,51 @@ func TestMetricsCountPersistedSubscriptionImports(t *testing.T) {
 		if err != nil || states[user.ID].Active != test.active {
 			t.Fatalf("import subscription not counted correctly: %+v %v", states, err)
 		}
+	}
+}
+
+func TestBootstrapPreservesExistingIdentitiesAcrossRepeatedStartup(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	fixtures := []store.User{
+		{Name: "migrated root", Email: "root@example.invalid", Role: store.RoleRoot},
+		{Name: "migrated sandbox", Email: SandboxEmail, Role: store.RoleReadOnly},
+		{Name: "migrated review", Email: ReviewEmail, Role: store.RoleReadOnly},
+	}
+	for i := range fixtures {
+		u := &fixtures[i]
+		u.PasswordHash = "preserved-hash"
+		u.Groups = []string{"preserved-group"}
+		u.MFAEnabled = true
+		u.MFATOTPSecret = "test-only-existing-secret"
+		if err := st.CreateUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := st.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 3; round++ {
+		if err := ensureRootUser(ctx, st, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := ensureSandboxUser(ctx, st, nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, enabled := range []bool{false, true} {
+			if err := ensureReviewUser(ctx, st, config.ReviewAccount{Enabled: enabled}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	after, err := st.ListUsers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Slice(before, func(i, j int) bool { return before[i].ID < before[j].ID })
+	sort.Slice(after, func(i, j int) bool { return after[i].ID < after[j].ID })
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("bootstrap changed existing identity state")
 	}
 }
