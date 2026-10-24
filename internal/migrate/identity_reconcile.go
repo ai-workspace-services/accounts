@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"account/internal/dbruntime"
 	schema "account/sql"
 )
 
@@ -172,13 +173,15 @@ func ReconcileIdentities(ctx context.Context, sourceDSN, targetDSN string, opt I
 		return receipt, err
 	}
 	// Bind both database identities without storing connection credentials.
-	var srcIdentity, dstIdentity string
-	if err = src.QueryRowContext(ctx, `SELECT current_database()||'@'||inet_server_addr()::text||':'||inet_server_port()::text`).Scan(&srcIdentity); err != nil {
+	srcIdentity, err := dbruntime.ConnectionIdentity(sourceDSN)
+	if err != nil {
 		return receipt, errors.New("cannot bind source identity")
 	}
-	if err = dst.QueryRowContext(ctx, `SELECT current_database()||'@'||inet_server_addr()::text||':'||inet_server_port()::text`).Scan(&dstIdentity); err != nil {
+	dstIdentity, err := dbruntime.ConnectionIdentity(targetDSN)
+	if err != nil {
 		return receipt, errors.New("cannot bind target identity")
 	}
+
 	receipt, err = identityPlan(a, b, fmt.Sprintf("%s:%s:%s:%s:%d", opt.Environment, srcIdentity, dstIdentity, opt.SchemaSHA256, version))
 	if err != nil {
 		return receipt, err
