@@ -32,6 +32,7 @@ var businessAppendTables = []string{
 }
 
 type UsageMergeOptions struct {
+	MigrationMode                  string
 	AppendBusiness                 bool
 	IgnoreDefaultSandboxProxyDrift bool
 	SourceGeneration               string
@@ -57,6 +58,7 @@ type UsageMergeTable struct {
 
 // Receipts contain aggregate hashes and counts, never user keys or row values.
 type UsageMergeReceipt struct {
+	MigrationMode             string                     `json:"migration_mode"`
 	AdvancedSequences         int                        `json:"advanced_sequences,omitempty"`
 	IdentityMatchPolicy       string                     `json:"identity_match_policy,omitempty"`
 	PreservedProxyDifferences int                        `json:"preserved_proxy_differences,omitempty"`
@@ -90,7 +92,11 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	if err != nil {
 		return r, err
 	}
-	if err := validateGenerationPair(opts.SourceGeneration, opts.TargetGeneration); err != nil {
+	if opts.MigrationMode == "" {
+		opts.MigrationMode = "upgrade"
+	}
+	r.MigrationMode = opts.MigrationMode
+	if err := validateBusinessMigrationPair(opts); err != nil {
 		return r, err
 	}
 	if !strings.HasPrefix(opts.SourceGeneration, "prod-v") || opts.ExpectedTargetVersion == 0 || opts.SchemaSHA256 != manifest.SchemaSHA256 || opts.BillingSHA256 != FullBusinessBillingSHA256 {
@@ -316,12 +322,13 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	}
 	plan, err := json.Marshal(struct {
 		Source, Target, Schema string
+		Mode                   string
 		Version                uint
 		Users                  BusinessEquality
 		Before                 map[string]BusinessEquality
 		Tables                 map[string]UsageMergeTable
 		Conflicts              int64
-	}{r.SourceIdentitySHA256, r.TargetIdentitySHA256, r.SchemaBeforeSHA256, version, planUsers, planBefore, r.Tables, r.Conflicts})
+	}{r.SourceIdentitySHA256, r.TargetIdentitySHA256, r.SchemaBeforeSHA256, r.MigrationMode, version, planUsers, planBefore, r.Tables, r.Conflicts})
 	if err != nil {
 		return r, errors.New("cannot bind reconciliation plan")
 	}
@@ -642,4 +649,20 @@ func advanceAppendFinanceSequence(ctx context.Context, tx *sql.Tx) (int, error) 
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// Replatform is explicit and append-only; replacement and upgrade semantics
+// retain the strict consecutive-generation gate.
+func validateBusinessMigrationPair(opts UsageMergeOptions) error {
+	switch opts.MigrationMode {
+	case "", "upgrade":
+		return validateGenerationPair(opts.SourceGeneration, opts.TargetGeneration)
+	case "replatform":
+		if !opts.AppendBusiness || opts.SourceGeneration != opts.TargetGeneration || !generationNamePattern.MatchString(opts.SourceGeneration) || !strings.HasPrefix(opts.SourceGeneration, "prod-v") {
+			return errors.New("replatform requires append-only reconciliation of the same PROD generation")
+		}
+		return nil
+	default:
+		return errors.New("migration-mode must be upgrade or replatform")
+	}
 }

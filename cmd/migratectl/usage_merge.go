@@ -48,6 +48,7 @@ func newReconcileCmd(appendBusiness bool) *cobra.Command {
 	cmd.Flags().UintVar(&options.ExpectedTargetVersion, "expected-target-version", 0, "Exact clean target migration checkpoint")
 	cmd.Flags().BoolVar(&options.Apply, "apply", false, "Commit the reviewed conflict-free plan; default is read-only preview")
 	if appendBusiness {
+		cmd.Flags().StringVar(&options.MigrationMode, "migration-mode", "upgrade", "upgrade for adjacent generations; replatform for distinct databases of the same generation")
 		cmd.Flags().BoolVar(&options.IgnoreDefaultSandboxProxyDrift, "ignore-default-sandbox-proxy-drift", false, "Preserve the default Sandbox proxy UUID when email and password hash match; other identity drift remains blocked")
 	}
 	if !appendBusiness {
