@@ -298,6 +298,22 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 	}
 	// Usage reconciliation keeps pricing comparison-only. Explicit business
 	// append initializes missing profiles but never changes an existing one.
+	planBefore, planUsers := before, r.UsersBefore
+	if opts.AppendBusiness {
+		// Bind only the reviewed business scope and validated identity mapping.
+		// Runtime observations may advance between preview and apply. The full
+		// baseline below still protects every non-scope table within the lock.
+		planBefore = make(map[string]BusinessEquality, len(selectedTables))
+		for _, name := range selectedTables {
+			planBefore[name] = before[name]
+		}
+		identityJSON, err := json.Marshal(mapping)
+		if err != nil {
+			return r, errors.New("cannot bind validated identity mapping")
+		}
+		identitySum := sha256.Sum256(identityJSON)
+		planUsers = BusinessEquality{Rows: int64(len(mapping)), SHA256: hex.EncodeToString(identitySum[:])}
+	}
 	plan, err := json.Marshal(struct {
 		Source, Target, Schema string
 		Version                uint
@@ -305,7 +321,7 @@ func ReconcileUsage(ctx context.Context, sourceDSN, targetDSN string, opts Usage
 		Before                 map[string]BusinessEquality
 		Tables                 map[string]UsageMergeTable
 		Conflicts              int64
-	}{r.SourceIdentitySHA256, r.TargetIdentitySHA256, r.SchemaBeforeSHA256, version, r.UsersBefore, before, r.Tables, r.Conflicts})
+	}{r.SourceIdentitySHA256, r.TargetIdentitySHA256, r.SchemaBeforeSHA256, version, planUsers, planBefore, r.Tables, r.Conflicts})
 	if err != nil {
 		return r, errors.New("cannot bind reconciliation plan")
 	}
@@ -516,7 +532,7 @@ func usageApplyBatch(ctx context.Context, tx *sql.Tx, name string, table busines
 // triggers, indexes, policies, privileges, sequences and public functions.
 func usageSchemaDigest(ctx context.Context, tx *sql.Tx) (string, error) {
 	queries := []string{
-		`SELECT to_jsonb(c)::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY c.oid`,
+		`SELECT (to_jsonb(c) - ARRAY['relpages','reltuples','relallvisible','relallfrozen','relfrozenxid','relminmxid'])::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY c.oid`,
 		`SELECT to_jsonb(a)::text FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY a.attrelid,a.attnum`,
 		`SELECT to_jsonb(d)::text FROM pg_attrdef d JOIN pg_class c ON c.oid=d.adrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY d.oid`,
 		`SELECT to_jsonb(c)::text FROM pg_constraint c WHERE c.connamespace='public'::regnamespace ORDER BY c.oid`,
