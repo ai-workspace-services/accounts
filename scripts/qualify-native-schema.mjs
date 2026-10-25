@@ -20,7 +20,9 @@ const query = sql => JSON.parse(execFileSync(`${bin}/psql`, ['-XAt', '-v', 'ON_E
 const tables = query(`SELECT json_agg(tablename ORDER BY tablename) FROM pg_tables
  WHERE schemaname='public' AND tablename NOT IN ('schema_migrations','accounts_controlled_migration_history')`);
 const old = JSON.parse(readFileSync('sql/init/accounts-native.manifest.json', 'utf8'));
-const expected = [...old.business_tables.filter(x => x !== 'team_agent_enrollments'), 'team_agent_enrollments'].sort();
+// Explicitly reviewed table additions for the configurable referral campaign.
+const expected = [...new Set([...old.business_tables, 'referral_campaign_revisions',
+  'referral_reward_campaign_snapshots', 'referral_verified_invoices'])].sort();
 if (JSON.stringify(tables) !== JSON.stringify(expected)) throw new Error('unreviewed fixture table scope');
 let dump = execFileSync(`${bin}/pg_dump`, ['--schema-only', '--schema=public', '--no-owner', '--no-privileges',
   '--exclude-table=public.schema_migrations', '--exclude-table=public.accounts_controlled_migration_history'], { env, encoding: 'utf8' });

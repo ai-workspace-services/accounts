@@ -1,14 +1,14 @@
 # Latest native Accounts initialization
 
 `accounts-native.sql` is the final PostgreSQL schema for a new empty Accounts
-database: 72 business tables, current GORM columns, task-session control plane,
+database: 77 business tables, current GORM columns, task-session control plane,
 finance/lifecycle/MFA/recovery constraints, indexes, RLS and triggers. It contains
 no users, RBAC/catalog seeds, subscriptions, quota or ledger rows. Full PROD copy
 must supply the business data before a target writer is started.
 
 This is an Accounts artifact. Billing's additional `cloud_vendor_costs` schema
 belongs to the matching Billing release and must also be qualified by the
-execution owner; it is not silently considered part of these 72 tables.
+execution owner; it is not silently considered part of these 77 tables.
 
 ## Contract
 
@@ -80,3 +80,14 @@ empty dry-run, extension objects, hidden schema objects, fresh native init,
 nonempty retry refusal and preservation of generated email verification and
 Proxy UUID. These checks use fictional local/CI fixtures. They do not prove
 PROD initialization, runtime startup or full data consistency.
+
+## Referral campaign revision qualification (2026-10-25)
+
+The native schema now includes `referral_campaign_revisions` and
+`referral_reward_campaign_snapshots` and `referral_verified_invoices`, including their foreign keys, checks,
+append-only triggers and reward snapshot trigger, through migration
+`2026102501`. The incremental migration seeds the original policy for existing
+databases; native initialization remains schema-only and contains no campaign
+revision or other business seed. A full-business copy must include all three new
+tables before starting the target writer. See
+[local qualification evidence](../tasks/xconnect-referral-native-qualification-20261025.md).

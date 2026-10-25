@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -78,7 +79,7 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 			}
 		})
 		execSQL(db, string(body))
-		execSQL(db, `CREATE TABLE public.schema_migrations(version bigint PRIMARY KEY,dirty boolean NOT NULL); INSERT INTO public.schema_migrations VALUES(2026102002,false)`)
+		execSQL(db, `CREATE TABLE public.schema_migrations(version bigint PRIMARY KEY,dirty boolean NOT NULL); INSERT INTO public.schema_migrations VALUES(`+strconv.Itoa(FullBusinessVersion)+`,false)`)
 		return db, name
 	}
 	source, sourceName := newDB()
@@ -128,6 +129,8 @@ func TestMigrationAPIPostgres17(t *testing.T) {
  INSERT INTO public.rbac_roles(role_key) VALUES('fixture-role');
  INSERT INTO public.rbac_permissions(permission_key) VALUES('fixture-permission');
  INSERT INTO public.rbac_role_permissions(role_key,permission_key) VALUES('fixture-role','fixture-permission');
+ INSERT INTO public.referral_verified_invoices(invoice_id,provider_price_id,plan_id) VALUES('`+invoice+`','price_api_verified','PRO-MONTHLY');
+ INSERT INTO public.referral_campaign_revisions(enabled,effective_at,reason) VALUES(true,'1970-01-01Z','explicit API source fixture');
  INSERT INTO public.referral_codes(user_uuid,code) VALUES('`+userB+`','FIXTURE1');
  INSERT INTO public.referrals(id,referrer_uuid,invitee_uuid,referral_code) VALUES('`+referral+`','`+userB+`','`+userA+`','FIXTURE1');
  INSERT INTO public.referral_rewards(id,referral_id,provider_invoice_id,referrer_uuid,invitee_uuid,plan_id,product_slug,paid_minor,reward_minor,currency,paid_at,eligible_at) VALUES('`+reward+`','`+referral+`','fixture-invoice','`+userB+`','`+userA+`','fixture-plan','xconnect',1000,100,'CNY','2026-01-01Z','2026-02-01Z');

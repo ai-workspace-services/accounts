@@ -99,3 +99,62 @@ func TestAnnualQuotaContinuesUntilScheduledCancellationPeriodEnd(t *testing.T) {
 		t.Fatalf("annual monthly grant continued after subscription period end: count=%d err=%v", count, err)
 	}
 }
+
+type annualQuotaVerifiedPeriodStore struct {
+	store.Store
+	end time.Time
+}
+
+func (s annualQuotaVerifiedPeriodStore) ReferralExtensionEnd(context.Context, string) (time.Time, error) {
+	return s.end, nil
+}
+
+func TestAnnualQuotaPastDueUsesVerifiedPaidTail(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name         string
+		paidEnd      time.Time
+		arrearsSince time.Time
+		want         int
+	}{
+		{"earned tail after grace", now.Add(10 * 24 * time.Hour), now.Add(-30 * 24 * time.Hour), 1},
+		{"expired paid tail ignores unpaid renewal snapshot", now, now.Add(-30 * 24 * time.Hour), 0},
+		{"ordinary dunning grace", now.Add(-time.Hour), now.Add(-time.Hour), 1},
+		{"unpaid future snapshot cannot establish paid service", time.Time{}, time.Time{}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			base := store.NewMemoryStore()
+			user := &store.User{Name: "tail", Email: "tail@example.test", Active: true}
+			if err := base.CreateUser(ctx, user); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "PRO-YEARLY", Kind: "subscription", PriceUnit: "year", IncludedQuotaBytes: 20000, Active: true}); err != nil {
+				t.Fatal(err)
+			}
+			if err := base.UpsertSubscription(ctx, &store.Subscription{UserID: user.ID, Provider: "stripe", Kind: "subscription", PlanID: "PRO-YEARLY", ExternalID: "sub_tail", Status: "past_due", Meta: map[string]any{"expiresAt": now.AddDate(1, 0, 0).Format(time.RFC3339)}}); err != nil {
+				t.Fatal(err)
+			}
+			expired := now.Add(-time.Hour)
+			quota := &store.AccountQuotaState{AccountUUID: user.ID, RemainingIncludedQuota: 1, PeriodEnd: &expired}
+			if !tc.arrearsSince.IsZero() {
+				quota.Arrears = true
+				quota.ArrearsSince = &tc.arrearsSince
+			}
+			if err := base.UpsertAccountQuotaState(ctx, quota); err != nil {
+				t.Fatal(err)
+			}
+			st := annualQuotaVerifiedPeriodStore{Store: base, end: tc.paidEnd}
+			count, err := ReconcileAnnualPlanQuotas(ctx, st, now)
+			if err != nil || count != tc.want {
+				t.Fatalf("reset=(%d,%v), want %d", count, err, tc.want)
+			}
+			if tc.want > 0 {
+				count, err = ReconcileAnnualPlanQuotas(ctx, st, now)
+				if err != nil || count != 0 {
+					t.Fatalf("repeat=(%d,%v)", count, err)
+				}
+			}
+		})
+	}
+}

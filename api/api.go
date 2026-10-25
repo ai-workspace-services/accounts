@@ -566,6 +566,11 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.POST("/stripe/subscription/retry", h.stripeSubscriptionRetry)
 	authProtected.POST("/stripe/portal", h.stripePortal)
 	authProtected.GET("/referrals", h.getReferralOverview)
+	authProtected.GET("/admin/referrals/campaign", h.adminGetReferralCampaign)
+	authProtected.POST("/admin/referrals/reconcile", h.adminReconcileReferralInvoices)
+	authProtected.PUT("/admin/referrals/campaign", h.adminConfigureReferralCampaign)
+	authProtected.POST("/admin/referrals/campaign/open", h.adminOpenReferralCampaign)
+	authProtected.POST("/admin/referrals/campaign/close", h.adminCloseReferralCampaign)
 	authProtected.POST("/referrals/settlements", h.requestReferralSettlement)
 	authProtected.POST("/admin/referrals/settlements/:settlementId/complete", h.adminCompleteReferralSettlement)
 	authProtected.POST("/admin/referrals/settlements/:settlementId/reconcile-paid", h.adminReconcileReferralSettlement)
@@ -699,6 +704,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	r.POST("/api/observability/internal/xconnect/identity", xconnectObservabilitySearchAuth(), h.resolveXConnectTelemetryIdentity)
 
 	r.POST("/api/billing/stripe/webhook", h.stripeWebhook)
+	r.GET("/api/referrals/campaign", h.publicReferralCampaign)
 	// Public plan catalog for the pricing page (billing P1).
 	r.GET("/api/billing/plans", h.listPublicBillingPlans)
 	internalGroup.Use(auth.InternalAuthMiddleware())
@@ -939,7 +945,12 @@ func (h *handler) register(c *gin.Context) {
 			respondError(c, http.StatusBadRequest, "invalid_referral_code", "referral code is invalid")
 			return
 		}
-		if !referralCampaignActive(time.Now()) {
+		campaign, campaignErr := h.referralCampaignAt(c.Request.Context(), time.Now().UTC())
+		if campaignErr != nil {
+			respondError(c, http.StatusServiceUnavailable, "campaign_unavailable", "referral campaign configuration is unavailable")
+			return
+		}
+		if campaign == nil || !campaign.Active(time.Now().UTC()) {
 			// Old share links can outlive the campaign. Keep ordinary signup
 			// available while ignoring attribution outside the reward window.
 			referralCode = ""

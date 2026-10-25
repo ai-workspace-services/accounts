@@ -14,14 +14,6 @@ import (
 	"account/internal/store"
 )
 
-var referralCampaignBeijing = time.FixedZone("Asia/Shanghai", 8*60*60)
-var referralCampaignStart = time.Date(2026, 10, 13, 0, 0, 0, 0, referralCampaignBeijing)
-var referralCampaignEndExclusive = time.Date(2027, 1, 1, 0, 0, 0, 0, referralCampaignBeijing)
-
-func referralCampaignActive(at time.Time) bool {
-	return !at.Before(referralCampaignStart) && at.Before(referralCampaignEndExclusive)
-}
-
 func randomReferralCode() (string, error) {
 	raw := make([]byte, 6)
 	if _, err := rand.Read(raw); err != nil {
@@ -41,6 +33,11 @@ func (h *handler) getReferralOverview(c *gin.Context) {
 		return
 	}
 	now := time.Now().UTC()
+	campaign, err := h.referralCampaignAt(c.Request.Context(), now)
+	if err != nil || campaign == nil {
+		respondError(c, http.StatusServiceUnavailable, "campaign_unavailable", "referral campaign configuration is unavailable")
+		return
+	}
 	summary, err := h.store.GetReferralSummary(c.Request.Context(), user.ID, now)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "referrals_unavailable", "failed to load referral summary")
@@ -97,7 +94,7 @@ func (h *handler) getReferralOverview(c *gin.Context) {
 	if extensionsMore {
 		extRows = extRows[:100]
 	}
-	c.JSON(http.StatusOK, gin.H{"code": code.Code, "inviteUrl": "https://xworktech.com/referral?code=" + code.Code, "campaign": gin.H{"startsAt": referralCampaignStart.Format(time.RFC3339), "endsAt": referralCampaignEndExclusive.Add(-time.Second).Format(time.RFC3339), "cashbackBps": 1000, "annualBonusDays": 30}, "stats": summary, "referrals": referrals, "settlements": settlementRows, "extensions": extRows, "historyHasMore": gin.H{"referrals": referralsMore, "settlements": settlementsMore, "extensions": extensionsMore}})
+	c.JSON(http.StatusOK, gin.H{"code": code.Code, "inviteUrl": "https://xworktech.com/referral?code=" + code.Code, "campaign": gin.H{"startsAt": campaign.StartsAt, "endsAt": campaign.EndsAt, "enabled": campaign.Enabled, "active": campaign.Active(now), "revision": campaign.Revision, "cashbackBps": 1000, "annualBonusDays": 30}, "stats": summary, "referrals": referrals, "settlements": settlementRows, "extensions": extRows, "historyHasMore": gin.H{"referrals": referralsMore, "settlements": settlementsMore, "extensions": extensionsMore}})
 }
 
 func (h *handler) ensureReferralCode(c *gin.Context, userUUID string) (*store.ReferralCode, error) {

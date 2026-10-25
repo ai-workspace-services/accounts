@@ -45,24 +45,31 @@ func ReconcileAnnualPlanQuotas(ctx context.Context, st store.Store, now time.Tim
 				continue
 			}
 			quota, err := st.GetAccountQuotaState(ctx, user.ID)
-			if status == "active" || status == "canceling" {
-				periodEnd := subscriptionMetaTime(sub.Meta, "expiresAt")
-				extended, periodErr := st.ReferralExtensionEnd(ctx, sub.ID)
-				if periodErr != nil {
-					return reset, periodErr
-				}
-				if !extended.IsZero() {
-					periodEnd = extended
-				}
-				if periodEnd.IsZero() {
-					if missingStripePeriodRetryExpired(&sub, now) {
-						continue
-					}
-				} else if !now.UTC().Before(periodEnd) {
+			var periodEnd time.Time
+			var periodErr error
+			if status == "past_due" {
+				// A past-due provider snapshot may include an unpaid renewal.
+				// Only local verified payment periods establish paid tail access.
+				periodEnd, periodErr = st.ReferralExtensionEnd(ctx, sub.ID)
+			} else {
+				periodEnd, periodErr = (&handler{store: st}).subscriptionEffectivePeriodEnd(ctx, &sub)
+			}
+			if periodErr != nil {
+				return reset, periodErr
+			}
+			if status == "past_due" {
+				// Earned paid service (including referral days) remains usable
+				// after dunning grace. A failed renewal snapshot cannot extend it.
+				paidServiceActive := !periodEnd.IsZero() && now.UTC().Before(periodEnd)
+				graceActive := quota != nil && quota.Arrears && quota.ArrearsSince != nil && now.UTC().Before(quota.ArrearsSince.Add(subscriptionGracePeriod))
+				if !paidServiceActive && !graceActive {
 					continue
 				}
-			}
-			if status == "past_due" && (quota == nil || !quota.Arrears || quota.ArrearsSince == nil || !now.UTC().Before(quota.ArrearsSince.Add(subscriptionGracePeriod))) {
+			} else if periodEnd.IsZero() {
+				if missingStripePeriodRetryExpired(&sub, now) {
+					continue
+				}
+			} else if !now.UTC().Before(periodEnd) {
 				continue
 			}
 			if err == nil && quota != nil && quota.PeriodEnd != nil && quota.PeriodEnd.After(now.UTC()) {
