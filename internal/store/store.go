@@ -612,6 +612,7 @@ type SchedulerDecision struct {
 
 // Store provides persistence operations for users.
 type Store interface {
+	ReferralInvoiceVerificationStore
 	CreateUser(ctx context.Context, user *User) error
 	CreateUserWithReferral(ctx context.Context, user *User, referralCode string) error
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
@@ -859,6 +860,9 @@ type memoryStore struct {
 	financeInvoiceKeys      map[string]string
 	financePayments         map[string]*FinancePayment
 	subscriptionLifecycles  map[string]SubscriptionLifecycle
+	referralInvoiceProofs   map[string]ReferralInvoiceVerification
+	referralCampaigns       []ReferralCampaign
+	referralRewardCampaigns map[string]ReferralCampaign
 	referralCodes           map[string]*ReferralCode
 	referralCodesByValue    map[string]string
 	referralsByInvitee      map[string]*ReferralAttribution
@@ -975,6 +979,9 @@ func newMemoryStore(allowSuperAdminCounting bool) Store {
 		financeInvoices:         make(map[string]*FinanceInvoice),
 		financeInvoiceKeys:      make(map[string]string),
 		financePayments:         make(map[string]*FinancePayment),
+		referralInvoiceProofs:   make(map[string]ReferralInvoiceVerification),
+		referralCampaigns:       []ReferralCampaign{defaultReferralCampaign()},
+		referralRewardCampaigns: make(map[string]ReferralCampaign),
 		referralCodes:           make(map[string]*ReferralCode),
 		referralCodesByValue:    make(map[string]string),
 		referralsByInvitee:      make(map[string]*ReferralAttribution),

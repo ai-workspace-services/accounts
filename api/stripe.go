@@ -1259,11 +1259,15 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err := h.recordStripePaidInvoice(ctx, &invoice, sub, userID); err != nil {
 			return err
 		}
-		if refunded, err := h.reconcileRefundedLatestInvoice(ctx, sub); err != nil || refunded {
+		if refunded, err := h.reconcileRefundedLatestInvoice(ctx, sub); err != nil {
 			return err
+		} else if refunded {
+			return h.recordReferralPaidInvoice(ctx, &invoice, sub, userID)
 		}
 		if hasPendingUpdate(sub) || customerIDFromAny(sub.LatestInvoice) != invoice.ID {
-			return nil
+			// A historical payment still qualifies independently of today's
+			// subscription projection. Never reset current quota from this invoice.
+			return h.recordReferralPaidInvoice(ctx, &invoice, sub, userID)
 		}
 		// invoice.paid renews the billing period: re-arm quota and clear
 		// arrears from the plan the subscription is on.
@@ -1271,7 +1275,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err != nil {
 			if errors.Is(err, store.ErrBillingPlanNotFound) {
 				slog.Warn("stripe invoice.paid without matching billing plan", "userID", userID, "priceID", subscriptionPriceID(sub))
-				return nil
+				return h.recordReferralPaidInvoice(ctx, &invoice, sub, userID)
 			}
 			return err
 		}
@@ -1461,28 +1465,19 @@ func (h *handler) recordReferralPaidInvoice(ctx context.Context, invoice *stripe
 	if subscriptionUUID == "" {
 		return errors.New("local Stripe subscription is unavailable for verified invoice")
 	}
-	financeInvoices, err := h.store.ListFinanceInvoices(ctx, userID, subscriptionUUID, 500)
+	financeInvoice, err := h.verifiedReferralFinanceInvoice(ctx, invoice, userID, subscriptionUUID, planID, invoice.AmountPaid, periodStart, periodEnd)
 	if err != nil {
 		return err
 	}
-	var financeInvoice *store.FinanceInvoice
-	for i := range financeInvoices {
-		if financeInvoices[i].Provider == "stripe" && financeInvoices[i].ProviderInvoiceID == invoice.ID {
-			financeInvoice = &financeInvoices[i]
-			break
-		}
-	}
-	if financeInvoice == nil {
-		financeInvoice = &store.FinanceInvoice{IdempotencyKey: "stripe-invoice:" + invoice.ID, AccountUUID: userID, SubscriptionUUID: subscriptionUUID, Provider: "stripe", ProviderInvoiceID: invoice.ID, AmountMinor: paidMinor, Currency: currency, Description: "Verified XConnect subscription invoice", IssuedAt: paidAt, ServicePeriodStart: &periodStart, ServicePeriodEnd: &periodEnd}
-		if _, err := h.store.CreateFinanceInvoice(ctx, financeInvoice); err != nil {
-			return err
-		}
-	}
-	financePayment := &store.FinancePayment{IdempotencyKey: "stripe-payment:" + invoice.ID, InvoiceID: financeInvoice.ID, AccountUUID: userID, Provider: "stripe", ProviderPaymentID: paymentID, AmountMinor: paidMinor, Currency: currency, PaidAt: paidAt}
+	financePayment := &store.FinancePayment{IdempotencyKey: "stripe-payment:" + invoice.ID, InvoiceID: financeInvoice.ID, AccountUUID: userID, Provider: "stripe", ProviderPaymentID: paymentID, AmountMinor: financeInvoice.AmountMinor, Currency: currency, PaidAt: paidAt}
 	if _, err := h.store.RecordFinancePayment(ctx, financePayment); err != nil && !errors.Is(err, store.ErrFinanceInvoiceAlreadyPaid) {
 		return err
 	}
-	if !referralCampaignActive(paidAt) {
+	campaign, err := h.referralCampaignAt(ctx, paidAt)
+	if err != nil {
+		return err
+	}
+	if campaign == nil || !campaign.Active(paidAt) {
 		return nil
 	}
 	if isXConnectAnnualPlanID(planID) {
@@ -1504,6 +1499,58 @@ func (h *handler) recordReferralPaidInvoice(ctx context.Context, invoice *stripe
 		return nil
 	}
 	return err
+}
+
+// verifiedReferralFinanceInvoice links immutable provider price evidence to an
+// existing financial fact. created (issuance) and paid_at are distinct facts;
+// proving referral eligibility must never rewrite or compare them as equals.
+// Financial facts keep Stripe provider units; only the reward uses ISO units.
+func (h *handler) verifiedReferralFinanceInvoice(ctx context.Context, source *stripeInvoice, userID, subscriptionID, planID string, providerAmount int64, periodStart, periodEnd time.Time) (*store.FinanceInvoice, error) {
+	if source == nil || len(source.Lines.Data) == 0 || !isXConnectProPlanID(planID) || providerAmount <= 0 || providerAmount != source.AmountPaid || !periodStart.Before(periodEnd) {
+		return nil, errors.New("verified Stripe invoice evidence is incomplete")
+	}
+	invoices, err := h.store.ListFinanceInvoices(ctx, userID, subscriptionID, 500)
+	if err != nil {
+		return nil, err
+	}
+	var invoice *store.FinanceInvoice
+	for i := range invoices {
+		if invoices[i].Provider == "stripe" && invoices[i].ProviderInvoiceID == source.ID {
+			invoice = &invoices[i]
+			break
+		}
+	}
+	currency := strings.ToUpper(strings.TrimSpace(source.Currency))
+	if invoice != nil {
+		if invoice.AccountUUID != userID || invoice.SubscriptionUUID != subscriptionID || invoice.AmountMinor != providerAmount || !strings.EqualFold(invoice.Currency, currency) || (invoice.ServicePeriodStart != nil && !invoice.ServicePeriodStart.Equal(periodStart)) || (invoice.ServicePeriodEnd != nil && !invoice.ServicePeriodEnd.Equal(periodEnd)) {
+			return nil, errors.New("verified Stripe invoice conflicts with immutable local financial facts")
+		}
+		if invoice.ServicePeriodStart == nil && invoice.ServicePeriodEnd == nil {
+			invoice.ServicePeriodStart, invoice.ServicePeriodEnd = &periodStart, &periodEnd
+			if _, err := h.store.CreateFinanceInvoice(ctx, invoice); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		issuedAt := time.Unix(source.StatusTransitions.PaidAt, 0).UTC()
+		if source.Created > 0 {
+			issuedAt = time.Unix(source.Created, 0).UTC()
+		}
+		invoice = &store.FinanceInvoice{IdempotencyKey: "stripe-invoice:" + source.ID, AccountUUID: userID, SubscriptionUUID: subscriptionID, Provider: "stripe", ProviderInvoiceID: source.ID, AmountMinor: providerAmount, Currency: currency, Description: "Verified XConnect subscription invoice", IssuedAt: issuedAt, ServicePeriodStart: &periodStart, ServicePeriodEnd: &periodEnd}
+		if _, err := h.store.CreateFinanceInvoice(ctx, invoice); err != nil {
+			return nil, err
+		}
+	}
+	// All immutable line prices were checked by referralPlanFromInvoice before
+	// reaching here; record their common allowed plan and a provider price key.
+	priceID := customerIDFromAny(source.Lines.Data[0].Price)
+	if priceID == "" {
+		priceID = customerIDFromAny(source.Lines.Data[0].Pricing.PriceDetails.Price)
+	}
+	if err := h.store.VerifyReferralInvoice(ctx, &store.ReferralInvoiceVerification{InvoiceID: invoice.ID, ProviderPriceID: priceID, PlanID: planID, ProductSlug: "xconnect"}); err != nil {
+		return nil, err
+	}
+	return invoice, nil
 }
 
 // ensureReferrerPaidPeriod imports signed provider invoice/payment facts for
@@ -1586,15 +1633,15 @@ func (h *handler) ensureReferrerPaidPeriod(ctx context.Context, inviteeUUID stri
 			if !validReferralCurrency(currency) {
 				return errors.New("Stripe inviter invoice has invalid currency")
 			}
-			amount, amountErr := stripeAmountToCurrencyMinor(currency, verified.AmountPaid)
+			_, amountErr := stripeAmountToCurrencyMinor(currency, verified.AmountPaid)
 			if amountErr != nil {
 				return amountErr
 			}
-			invoice := &store.FinanceInvoice{IdempotencyKey: "stripe-invoice:" + verified.ID, AccountUUID: referrerUUID, SubscriptionUUID: local.ID, Provider: "stripe", ProviderInvoiceID: verified.ID, AmountMinor: amount, Currency: currency, Description: "Verified XConnect inviter subscription invoice", IssuedAt: invoicePaidAt, ServicePeriodStart: &periodStart, ServicePeriodEnd: &periodEnd}
-			if _, err = h.store.CreateFinanceInvoice(ctx, invoice); err != nil {
-				return err
+			invoice, verifyErr := h.verifiedReferralFinanceInvoice(ctx, verified, referrerUUID, local.ID, planID, verified.AmountPaid, periodStart, periodEnd)
+			if verifyErr != nil {
+				return verifyErr
 			}
-			payment := &store.FinancePayment{IdempotencyKey: "stripe-payment:" + verified.ID, InvoiceID: invoice.ID, AccountUUID: referrerUUID, Provider: "stripe", ProviderPaymentID: paymentIntentID, AmountMinor: amount, Currency: currency, PaidAt: invoicePaidAt}
+			payment := &store.FinancePayment{IdempotencyKey: "stripe-payment:" + verified.ID, InvoiceID: invoice.ID, AccountUUID: referrerUUID, Provider: "stripe", ProviderPaymentID: paymentIntentID, AmountMinor: invoice.AmountMinor, Currency: currency, PaidAt: invoicePaidAt}
 			if _, err = h.store.RecordFinancePayment(ctx, payment); err != nil && !errors.Is(err, store.ErrFinanceInvoiceAlreadyPaid) {
 				return err
 			}

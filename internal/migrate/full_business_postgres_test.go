@@ -179,7 +179,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	}
 	exec(target, `ALTER TABLE public.billing_ledger DROP CONSTRAINT fixture_reject`)
 	receipt, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
-	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 75 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
+	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 78 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
 		t.Fatalf("full copy: %#v %v", receipt, e)
 	}
 	var after string
@@ -436,12 +436,14 @@ func TestFullBusinessPostgres17(t *testing.T) {
         INSERT INTO public.password_recovery_challenges(id,user_uuid,email_snapshot,challenge_kind,secret_hash,expires_at) VALUES('00000000-0000-0000-0000-000000000506','`+sourceID+`','Native@example.invalid','token','isolated-hash','2026-11-01T00:00:00Z');
         INSERT INTO public.cloud_vendor_costs(id,provider,account_id,service_name,usage_start_time,usage_end_time,cost_amount) VALUES('00000000-0000-0000-0000-000000000507','gcp','fixture','compute','2026-10-01T00:00:00Z','2026-10-02T00:00:00Z',12.75)`)
 
-		// Preserve the eight referral tables as real business facts, not just
+		exec(native, `INSERT INTO public.referral_verified_invoices(invoice_id,provider_price_id,plan_id) VALUES('00000000-0000-0000-0000-000000000501','price_native_verified','PRO-YEARLY')`)
+		// Preserve the referral tables as real business facts, not just
 		// empty schema declarations. Values are fictional local fixture data.
 		exec(native, `INSERT INTO public.users(uuid,username,password,email,proxy_uuid,email_verified_at)
  VALUES('00000000-0000-0000-0000-000000000801','referral-invitee','isolated-password','invitee@example.invalid','00000000-0000-0000-0000-000000000802','2026-10-13T00:00:00Z');
  INSERT INTO public.subscriptions(uuid,user_uuid,provider,payment_method,kind,plan_id,external_id,status,meta)
  VALUES('00000000-0000-0000-0000-000000000803','`+sourceID+`','stripe','stripe','subscription','PRO-YEARLY','native-referral-sub','active','{"product_slug":"xconnect","startsAt":"2026-10-01T00:00:00Z","expiresAt":"2026-11-01T00:00:00Z"}');
+ INSERT INTO public.referral_campaign_revisions(enabled,effective_at,actor_uuid,reason) VALUES(true,'1970-01-01Z','`+sourceID+`','explicit native source fixture');
  INSERT INTO public.referral_codes(user_uuid,code) VALUES('`+sourceID+`','NATIVE123');
  INSERT INTO public.referrals(id,referrer_uuid,invitee_uuid,referral_code)
  VALUES('00000000-0000-0000-0000-000000000804','`+sourceID+`','00000000-0000-0000-0000-000000000801','NATIVE123');
@@ -491,11 +493,11 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `DROP TRIGGER fixture_late_mutation ON public.users; DROP FUNCTION public.fixture_late_mutation()`)
 		copied, e := CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions)
-		if e != nil || copied.SourceTables != 75 || len(copied.Tables) != 75 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
+		if e != nil || copied.SourceTables != 78 || len(copied.Tables) != 78 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
 			t.Fatalf("native finance copy failed: %v", e)
 		}
 
-		for _, table := range []string{"email_campaigns", "email_onboarding_steps", "email_deliveries", "email_recipient_leases", "email_suppressions", "email_preferences", "email_preference_tokens", "email_preference_events", "email_management_settings", "referral_codes", "referrals", "referral_rewards", "referral_reward_events", "referral_payment_risks", "referral_settlements", "referral_settlement_items", "subscription_extension_ledger"} {
+		for _, table := range []string{"email_campaigns", "email_onboarding_steps", "email_deliveries", "email_recipient_leases", "email_suppressions", "email_preferences", "email_preference_tokens", "email_preference_events", "email_management_settings", "referral_verified_invoices", "referral_campaign_revisions", "referral_reward_campaign_snapshots", "referral_codes", "referrals", "referral_rewards", "referral_reward_events", "referral_payment_risks", "referral_settlements", "referral_settlement_items", "subscription_extension_ledger"} {
 			if copied.Tables[table].Rows != 1 {
 				t.Fatalf("referral business table was not copied exactly: %s", table)
 			}
@@ -503,6 +505,17 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		if e = target.QueryRow(`SELECT reward_minor FROM public.referral_rewards WHERE provider_invoice_id='native-referral-invoice'`).Scan(&minimum); e != nil || minimum != 1000 {
 			t.Fatal("referral financial minor units changed")
 		}
+		// Reward insert guards can create the exact snapshot before its copy
+		// page arrives; conflicting history must still reject the entire copy.
+		snapshotTx, err := target.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = insertBusiness(context.Background(), snapshotTx, "referral_reward_campaign_snapshots", tables["referral_reward_campaign_snapshots"], []rawRow{{"reward_id": json.RawMessage(`"00000000-0000-0000-0000-000000000805"`), "campaign_revision": json.RawMessage(`999`)}}); err == nil {
+			_ = snapshotTx.Rollback()
+			t.Fatal("different pre-existing campaign snapshot accepted")
+		}
+		_ = snapshotTx.Rollback()
 		var days int
 		if e = target.QueryRow(`SELECT days FROM public.subscription_extension_ledger`).Scan(&days); e != nil || days != 30 {
 			t.Fatal("referral entitlement days changed")

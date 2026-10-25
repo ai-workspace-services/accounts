@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
 --
 
 
--- Dumped from database version 17.11
+-- Dumped from database version 17.11 (Debian 17.11-1.pgdg13+2)
 -- Dumped by pg_dump version 17.11 (Homebrew)
 
 SET idle_in_transaction_session_timeout = 0;
@@ -85,6 +85,16 @@ $$;
 
 
 --
+-- Name: reject_referral_campaign_mutation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.reject_referral_campaign_mutation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN RAISE EXCEPTION '% is append-only; % is not permitted',TG_TABLE_NAME,TG_OP; END $$;
+
+
+--
 -- Name: reject_user_hard_delete(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -110,6 +120,22 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+
+--
+-- Name: snapshot_referral_campaign(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.snapshot_referral_campaign() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE selected_revision BIGINT;
+BEGIN
+ SELECT revision INTO STRICT selected_revision FROM public.referral_campaign_revisions
+ WHERE effective_at<=NEW.paid_at ORDER BY effective_at DESC,revision DESC LIMIT 1;
+ INSERT INTO public.referral_reward_campaign_snapshots(reward_id,campaign_revision) VALUES(NEW.id,selected_revision);
+ RETURN NEW;
+END $$;
 
 
 --
@@ -1021,6 +1047,46 @@ CREATE TABLE public.rbac_roles (
 
 
 --
+-- Name: referral_campaign_revisions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_campaign_revisions (
+    revision bigint NOT NULL,
+    enabled boolean NOT NULL,
+    starts_at timestamp with time zone,
+    ends_at timestamp with time zone,
+    effective_at timestamp with time zone NOT NULL,
+    actor_uuid uuid,
+    reason text NOT NULL,
+    cashback_bps integer DEFAULT 1000 NOT NULL,
+    annual_bonus_days integer DEFAULT 30 NOT NULL,
+    CONSTRAINT referral_campaign_revisions_annual_bonus_days_check CHECK ((annual_bonus_days = 30)),
+    CONSTRAINT referral_campaign_revisions_cashback_bps_check CHECK ((cashback_bps = 1000)),
+    CONSTRAINT referral_campaign_revisions_check CHECK (((starts_at IS NULL) OR (ends_at IS NULL) OR (starts_at < ends_at))),
+    CONSTRAINT referral_campaign_revisions_reason_check CHECK (((length(btrim(reason)) >= 1) AND (length(btrim(reason)) <= 500)))
+);
+
+
+--
+-- Name: referral_campaign_revisions_revision_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.referral_campaign_revisions_revision_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: referral_campaign_revisions_revision_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.referral_campaign_revisions_revision_seq OWNED BY public.referral_campaign_revisions.revision;
+
+
+--
 -- Name: referral_codes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1044,6 +1110,16 @@ CREATE TABLE public.referral_payment_risks (
     occurred_at timestamp with time zone DEFAULT now() NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT referral_payment_risks_risk_type_check CHECK ((risk_type = ANY (ARRAY['refund'::text, 'dispute'::text])))
+);
+
+
+--
+-- Name: referral_reward_campaign_snapshots; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_reward_campaign_snapshots (
+    reward_id uuid NOT NULL,
+    campaign_revision bigint NOT NULL
 );
 
 
@@ -1124,6 +1200,22 @@ CREATE TABLE public.referral_settlements (
     CONSTRAINT referral_settlements_amount_minor_check CHECK ((amount_minor > 0)),
     CONSTRAINT referral_settlements_currency_check CHECK ((currency ~ '^[A-Z]{3}$'::text)),
     CONSTRAINT referral_settlements_status_check CHECK ((status = ANY (ARRAY['pending_review'::text, 'paid'::text, 'rejected'::text])))
+);
+
+
+--
+-- Name: referral_verified_invoices; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.referral_verified_invoices (
+    invoice_id uuid NOT NULL,
+    provider_price_id text NOT NULL,
+    plan_id text NOT NULL,
+    product_slug text DEFAULT 'xconnect'::text NOT NULL,
+    verified_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT referral_verified_invoices_plan_id_check CHECK ((plan_id = ANY (ARRAY['PRO-MONTHLY'::text, 'PRO-YEARLY'::text, 'PRO-MONTHLY-V2'::text, 'PRO-YEARLY-V2'::text]))),
+    CONSTRAINT referral_verified_invoices_product_slug_check CHECK ((product_slug = 'xconnect'::text)),
+    CONSTRAINT referral_verified_invoices_provider_price_id_check CHECK ((length(provider_price_id) > 0))
 );
 
 
@@ -1550,6 +1642,13 @@ CREATE TABLE public.xworkmate_profiles (
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL
 );
+
+
+--
+-- Name: referral_campaign_revisions revision; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_campaign_revisions ALTER COLUMN revision SET DEFAULT nextval('public.referral_campaign_revisions_revision_seq'::regclass);
 
 
 --
@@ -2056,6 +2155,14 @@ ALTER TABLE ONLY public.rbac_roles
 
 
 --
+-- Name: referral_campaign_revisions referral_campaign_revisions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_campaign_revisions
+    ADD CONSTRAINT referral_campaign_revisions_pkey PRIMARY KEY (revision);
+
+
+--
 -- Name: referral_codes referral_codes_code_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2077,6 +2184,14 @@ ALTER TABLE ONLY public.referral_codes
 
 ALTER TABLE ONLY public.referral_payment_risks
     ADD CONSTRAINT referral_payment_risks_pkey PRIMARY KEY (source_key);
+
+
+--
+-- Name: referral_reward_campaign_snapshots referral_reward_campaign_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_reward_campaign_snapshots
+    ADD CONSTRAINT referral_reward_campaign_snapshots_pkey PRIMARY KEY (reward_id);
 
 
 --
@@ -2141,6 +2256,14 @@ ALTER TABLE ONLY public.referral_settlement_items
 
 ALTER TABLE ONLY public.referral_settlements
     ADD CONSTRAINT referral_settlements_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: referral_verified_invoices referral_verified_invoices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_verified_invoices
+    ADD CONSTRAINT referral_verified_invoices_pkey PRIMARY KEY (invoice_id);
 
 
 --
@@ -2999,6 +3122,13 @@ CREATE INDEX password_recovery_expiry_idx ON public.password_recovery_challenges
 
 
 --
+-- Name: referral_campaign_effective_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX referral_campaign_effective_idx ON public.referral_campaign_revisions USING btree (effective_at DESC, revision DESC);
+
+
+--
 -- Name: referral_payment_risks_invoice_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3178,6 +3308,34 @@ CREATE TRIGGER finance_refunds_append_only BEFORE DELETE OR UPDATE ON public.fin
 --
 
 CREATE TRIGGER finance_refunds_no_truncate BEFORE TRUNCATE ON public.finance_refunds FOR EACH STATEMENT EXECUTE FUNCTION public.reject_finance_fact_mutation();
+
+
+--
+-- Name: referral_campaign_revisions referral_campaign_revisions_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER referral_campaign_revisions_append_only BEFORE DELETE OR UPDATE ON public.referral_campaign_revisions FOR EACH ROW EXECUTE FUNCTION public.reject_referral_campaign_mutation();
+
+
+--
+-- Name: referral_reward_campaign_snapshots referral_campaign_snapshots_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER referral_campaign_snapshots_append_only BEFORE DELETE OR UPDATE ON public.referral_reward_campaign_snapshots FOR EACH ROW EXECUTE FUNCTION public.reject_referral_campaign_mutation();
+
+
+--
+-- Name: referral_rewards referral_reward_campaign_snapshot; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER referral_reward_campaign_snapshot AFTER INSERT ON public.referral_rewards FOR EACH ROW EXECUTE FUNCTION public.snapshot_referral_campaign();
+
+
+--
+-- Name: referral_verified_invoices referral_verified_invoices_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER referral_verified_invoices_append_only BEFORE DELETE OR UPDATE ON public.referral_verified_invoices FOR EACH ROW EXECUTE FUNCTION public.reject_referral_campaign_mutation();
 
 
 --
@@ -3484,11 +3642,35 @@ ALTER TABLE ONLY public.rbac_role_permissions
 
 
 --
+-- Name: referral_campaign_revisions referral_campaign_revisions_actor_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_campaign_revisions
+    ADD CONSTRAINT referral_campaign_revisions_actor_uuid_fkey FOREIGN KEY (actor_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
 -- Name: referral_codes referral_codes_user_uuid_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.referral_codes
     ADD CONSTRAINT referral_codes_user_uuid_fkey FOREIGN KEY (user_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_reward_campaign_snapshots referral_reward_campaign_snapshots_campaign_revision_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_reward_campaign_snapshots
+    ADD CONSTRAINT referral_reward_campaign_snapshots_campaign_revision_fkey FOREIGN KEY (campaign_revision) REFERENCES public.referral_campaign_revisions(revision) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_reward_campaign_snapshots referral_reward_campaign_snapshots_reward_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_reward_campaign_snapshots
+    ADD CONSTRAINT referral_reward_campaign_snapshots_reward_id_fkey FOREIGN KEY (reward_id) REFERENCES public.referral_rewards(id) ON DELETE RESTRICT;
 
 
 --
@@ -3561,6 +3743,14 @@ ALTER TABLE ONLY public.referral_settlements
 
 ALTER TABLE ONLY public.referral_settlements
     ADD CONSTRAINT referral_settlements_referrer_uuid_fkey FOREIGN KEY (referrer_uuid) REFERENCES public.users(uuid) ON DELETE RESTRICT;
+
+
+--
+-- Name: referral_verified_invoices referral_verified_invoices_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral_verified_invoices
+    ADD CONSTRAINT referral_verified_invoices_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.finance_invoices(id) ON DELETE RESTRICT;
 
 
 --

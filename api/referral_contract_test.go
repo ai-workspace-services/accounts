@@ -363,16 +363,23 @@ func TestReferralInactiveAndExpiredSessionsAreRejected(t *testing.T) {
 }
 
 func TestReferralCampaignWindowBoundaries(t *testing.T) {
-	if !referralCampaignActive(referralCampaignStart) {
+	campaign, err := store.NewMemoryStore().(store.ReferralCampaignStore).GetReferralCampaign(context.Background(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if campaign.StartsAt == nil || campaign.EndsAt == nil {
+		t.Fatal("default campaign requires editable initial dates")
+	}
+	if !campaign.Active(*campaign.StartsAt) {
 		t.Fatal("campaign start instant must be inclusive")
 	}
-	if referralCampaignActive(referralCampaignStart.Add(-time.Nanosecond)) {
+	if campaign.Active(campaign.StartsAt.Add(-time.Nanosecond)) {
 		t.Fatal("instant before campaign start must be inactive")
 	}
-	if !referralCampaignActive(referralCampaignEndExclusive.Add(-time.Nanosecond)) {
-		t.Fatal("instant before the exclusive end must remain active")
+	if !campaign.Active(campaign.EndsAt.Add(-time.Nanosecond)) {
+		t.Fatal("instant before exclusive end must remain active")
 	}
-	if referralCampaignActive(referralCampaignEndExclusive) {
+	if campaign.Active(*campaign.EndsAt) {
 		t.Fatal("campaign end instant must be exclusive")
 	}
 }

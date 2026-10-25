@@ -16,6 +16,10 @@ func (s *postgresStore) EnsureReferralCode(ctx context.Context, userUUID, candid
 	userUUID, candidate = strings.TrimSpace(userUUID), strings.ToUpper(strings.TrimSpace(candidate))
 	_, err := s.db.ExecContext(ctx, `INSERT INTO public.referral_codes(user_uuid, code) VALUES ($1, $2) ON CONFLICT (user_uuid) DO NOTHING`, userUUID, candidate)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "referral_codes_code_key" {
+			return nil, ErrReferralAlreadyAttributed
+		}
 		return nil, err
 	}
 	var result ReferralCode
@@ -127,7 +131,7 @@ func (s *postgresStore) CreateReferralReward(ctx context.Context, reward *Referr
  JOIN public.finance_invoices i ON i.id=p.invoice_id
  WHERE i.account_uuid=$1::uuid AND i.provider='stripe' AND p.provider='stripe'
    AND i.provider_invoice_id <> $2
-   AND i.description IN ('Verified XConnect subscription invoice','Verified XConnect inviter subscription invoice')
+   AND (i.description IN ('Verified XConnect subscription invoice','Verified XConnect inviter subscription invoice') OR EXISTS(SELECT 1 FROM public.referral_verified_invoices proof WHERE proof.invoice_id=i.id))
    AND i.service_period_start IS NOT NULL AND i.service_period_end > i.service_period_start
    AND (p.paid_at < $3 OR (p.paid_at=$3 AND i.provider_invoice_id < $2))
    AND NOT EXISTS(SELECT 1 FROM public.finance_refunds fr WHERE fr.payment_id=p.id)
@@ -164,7 +168,7 @@ func (s *postgresStore) CreateReferralReward(ctx context.Context, reward *Referr
    SELECT MAX(fi.service_period_end) AS base_end
    FROM public.finance_invoices fi JOIN public.finance_payments fp ON fp.invoice_id=fi.id
    WHERE fi.subscription_uuid=s.uuid AND fi.provider='stripe' AND fp.provider='stripe'
-     AND fi.description IN ('Verified XConnect subscription invoice','Verified XConnect inviter subscription invoice')
+     AND (fi.description IN ('Verified XConnect subscription invoice','Verified XConnect inviter subscription invoice') OR EXISTS(SELECT 1 FROM public.referral_verified_invoices proof WHERE proof.invoice_id=fi.id))
      AND fi.service_period_start IS NOT NULL AND fi.service_period_end > fi.service_period_start
      AND fp.paid_at <= $2
      AND NOT EXISTS(SELECT 1 FROM public.finance_refunds fr WHERE fr.payment_id=fp.id)
@@ -179,7 +183,7 @@ func (s *postgresStore) CreateReferralReward(ctx context.Context, reward *Referr
    AND p.base_end IS NOT NULL
    AND (EXISTS(SELECT 1 FROM public.finance_invoices fi JOIN public.finance_payments fp ON fp.invoice_id=fi.id
        WHERE fi.subscription_uuid=s.uuid AND fi.provider='stripe' AND fp.provider='stripe'
-         AND fi.description IN ('Verified XConnect subscription invoice','Verified XConnect inviter subscription invoice')
+         AND (fi.description IN ('Verified XConnect subscription invoice','Verified XConnect inviter subscription invoice') OR EXISTS(SELECT 1 FROM public.referral_verified_invoices proof WHERE proof.invoice_id=fi.id))
          AND fi.service_period_start <= $2 AND fi.service_period_end > $2 AND fp.paid_at <= $2
          AND NOT EXISTS(SELECT 1 FROM public.finance_refunds fr WHERE fr.payment_id=fp.id)
          AND NOT EXISTS(SELECT 1 FROM public.referral_payment_risks rk WHERE rk.provider_invoice_id=fi.provider_invoice_id))
@@ -659,7 +663,7 @@ CROSS JOIN LATERAL (
   SELECT MAX(fi.service_period_end) AS base_end
   FROM public.finance_invoices fi JOIN public.finance_payments fp ON fp.invoice_id=fi.id
   WHERE fi.subscription_uuid=s.uuid AND fi.provider='stripe' AND fp.provider='stripe'
-    AND fi.description IN ('Verified XConnect subscription invoice','Verified XConnect inviter subscription invoice')
+    AND (fi.description IN ('Verified XConnect subscription invoice','Verified XConnect inviter subscription invoice') OR EXISTS(SELECT 1 FROM public.referral_verified_invoices proof WHERE proof.invoice_id=fi.id))
     AND fi.service_period_start IS NOT NULL AND fi.service_period_end > fi.service_period_start
     AND NOT EXISTS(SELECT 1 FROM public.finance_refunds fr WHERE fr.payment_id=fp.id)
     AND NOT EXISTS(SELECT 1 FROM public.referral_payment_risks rk WHERE rk.provider_invoice_id=fi.provider_invoice_id)

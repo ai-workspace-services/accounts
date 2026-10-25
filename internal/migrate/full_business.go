@@ -21,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const FullBusinessVersion = 2026102002
+const FullBusinessVersion = 2026102501
 const FullBusinessBillingSHA256 = "a7133f3ef2ea9013a055cfd1442a7488d2b837f289e0f5d9b61624d4fde9bc53"
 const fullBusinessBatch = 1000
 
@@ -115,7 +115,7 @@ type CoreUsersDiff struct {
 
 func fullBusinessContract() (map[string]businessTable, []string, error) {
 	var tables map[string]businessTable
-	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 75 {
+	if json.Unmarshal(fullBusinessContractJSON, &tables) != nil || len(tables) != 78 {
 		return nil, nil, errors.New("invalid compiled full-business catalog")
 	}
 	_, manifest, err := schema.NativeArtifact()
@@ -175,6 +175,7 @@ func businessColumnList(names []string) string {
 }
 
 var optionalBusinessTables = map[string]bool{
+	"referral_verified_invoices": true, "referral_campaign_revisions": true, "referral_reward_campaign_snapshots": true,
 	"team_agent_enrollments":        true,
 	"subscription_lifecycle_states": true,
 	"email_campaigns":               true,
@@ -919,11 +920,21 @@ func insertBusiness(ctx context.Context, tx *sql.Tx, name string, table business
 	list := businessColumnList(cols)
 	// OVERRIDING handles the native finance event identity, with FK/check/unique
 	// constraints and insert guards left enabled. Never disable ALL triggers.
-	result, err := tx.ExecContext(ctx, "INSERT INTO public."+quoteBusiness(name)+" ("+list+") OVERRIDING SYSTEM VALUE SELECT "+list+" FROM jsonb_populate_recordset(NULL::public."+quoteBusiness(name)+",$1::jsonb)", string(data))
+	query := "INSERT INTO public." + quoteBusiness(name) + " (" + list + ") OVERRIDING SYSTEM VALUE SELECT " + list + " FROM jsonb_populate_recordset(NULL::public." + quoteBusiness(name) + ",$1::jsonb)"
+	if name == "referral_reward_campaign_snapshots" {
+		// The enabled reward INSERT trigger already materializes this fact.
+		// Keep all guards enabled and accept only an identical source snapshot.
+		query += " ON CONFLICT (reward_id) DO NOTHING"
+	}
+	result, err := tx.ExecContext(ctx, query, string(data))
 	if err != nil {
 		return fmt.Errorf("business batch insert rejected for public.%s; target transaction will roll back", name)
 	}
 	n, err := result.RowsAffected()
+	if err == nil && name == "referral_reward_campaign_snapshots" {
+		err = tx.QueryRowContext(ctx, `SELECT count(*) FROM jsonb_populate_recordset(NULL::public.referral_reward_campaign_snapshots,$1::jsonb) source
+ JOIN public.referral_reward_campaign_snapshots target ON target.reward_id=source.reward_id AND target.campaign_revision=source.campaign_revision`, string(data)).Scan(&n)
+	}
 	if err != nil || n != int64(len(page)) {
 		return errors.New("business batch row count differs")
 	}

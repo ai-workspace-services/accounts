@@ -2209,5 +2209,164 @@
       "email"
     ],
     "foreign_keys": []
+  },
+  "referral_campaign_revisions": {
+    "columns": [
+      {
+        "name": "revision",
+        "type": "bigint",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "enabled",
+        "type": "boolean",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "starts_at",
+        "type": "timestamp with time zone",
+        "nullable": true,
+        "generated": false
+      },
+      {
+        "name": "ends_at",
+        "type": "timestamp with time zone",
+        "nullable": true,
+        "generated": false
+      },
+      {
+        "name": "effective_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "actor_uuid",
+        "type": "uuid",
+        "nullable": true,
+        "generated": false
+      },
+      {
+        "name": "reason",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "cashback_bps",
+        "type": "integer",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "annual_bonus_days",
+        "type": "integer",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "revision"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "users",
+        "columns": [
+          "actor_uuid"
+        ],
+        "parent_columns": [
+          "uuid"
+        ]
+      }
+    ]
+  },
+  "referral_reward_campaign_snapshots": {
+    "columns": [
+      {
+        "name": "reward_id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "campaign_revision",
+        "type": "bigint",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "reward_id"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "referral_rewards",
+        "columns": [
+          "reward_id"
+        ],
+        "parent_columns": [
+          "id"
+        ]
+      },
+      {
+        "parent": "referral_campaign_revisions",
+        "columns": [
+          "campaign_revision"
+        ],
+        "parent_columns": [
+          "revision"
+        ]
+      }
+    ]
+  },
+  "referral_verified_invoices": {
+    "columns": [
+      {
+        "name": "invoice_id",
+        "type": "uuid",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "provider_price_id",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "plan_id",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "product_slug",
+        "type": "text",
+        "nullable": false,
+        "generated": false
+      },
+      {
+        "name": "verified_at",
+        "type": "timestamp with time zone",
+        "nullable": false,
+        "generated": false
+      }
+    ],
+    "primary_key": [
+      "invoice_id"
+    ],
+    "foreign_keys": [
+      {
+        "parent": "finance_invoices",
+        "columns": [
+          "invoice_id"
+        ],
+        "parent_columns": [
+          "id"
+        ]
+      }
+    ]
   }
 }

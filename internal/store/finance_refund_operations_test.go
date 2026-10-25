@@ -47,7 +47,7 @@ func TestFinanceRefundOperationsPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Actual checked-in migrations retain constraints and append-only triggers.
-	for _, migration := range []string{"2026092801_local_finance_ledger.up.sql", "2026101301_referral_program.up.sql"} {
+	for _, migration := range []string{"2026092801_local_finance_ledger.up.sql", "2026101301_referral_program.up.sql", "2026102501_referral_campaign_revisions.up.sql"} {
 		body, err := os.ReadFile("../../sql/migrations/" + migration)
 		if err != nil {
 			t.Fatal(err)

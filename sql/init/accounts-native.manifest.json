@@ -1,8 +1,8 @@
 {
   "format": 1,
-  "migration_version": 2026102002,
-  "schema_sha256": "f45db2423f11d9dcc7f3cc58c72b52228a27d7b6ccfc717faf2bbb56fa0498b1",
-  "business_table_count": 74,
+  "migration_version": 2026102501,
+  "schema_sha256": "e223518d156308c1cb2ea6919cfdccf1c0cacc03b55f9b41824ef29e4f632b13",
+  "business_table_count": 77,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
@@ -46,7 +46,7 @@
     },
     {
       "path": "scripts/qualify-native-schema.mjs",
-      "sha256": "9dd63e3342792324f1eaff8af98a29e7f1bba6a14235e6db38e641a8c5a619f2"
+      "sha256": "9ad1d24a8a42add1a4ae23ec2995039b766918b00d5e68dced3ec4e4a643253b"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -137,8 +137,12 @@
       "sha256": "5ae75bdf216f243523abf0c9e26bef37b45cb289a1b7f39993c8e71e6c13d0cc"
     },
     {
+      "path": "sql/migrations/2026102501_referral_campaign_revisions.up.sql",
+      "sha256": "30f67752741b94a62c9fc6a32123401e2ae71195fb285162f394b3f418ed622d"
+    },
+    {
       "path": "sql/schema.sql",
-      "sha256": "ca9b3d5dee8b34246edc1d8ed51779670063b6eb8c52e6459cc0cc41e2188b89"
+      "sha256": "b7cf8aa23d8fb12fe003873b9a9fd458226c57ce332d0818d4a73a04813e11b1"
     }
   ],
   "business_tables": [
@@ -189,12 +193,15 @@
     "rbac_permissions",
     "rbac_role_permissions",
     "rbac_roles",
+    "referral_campaign_revisions",
     "referral_codes",
     "referral_payment_risks",
+    "referral_reward_campaign_snapshots",
     "referral_reward_events",
     "referral_rewards",
     "referral_settlement_items",
     "referral_settlements",
+    "referral_verified_invoices",
     "referrals",
     "sandbox_bindings",
     "scheduler_decisions",

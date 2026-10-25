@@ -116,6 +116,11 @@ func (s *memoryStore) CreateReferralReward(ctx context.Context, reward *Referral
 		copy.Status = "pending"
 	}
 	copy.CreatedAt = time.Now().UTC()
+	campaign := s.referralCampaignAt(copy.PaidAt)
+	if campaign == nil {
+		return false, ErrReferralNotFound
+	}
+	s.referralRewardCampaigns[copy.ID] = *campaign
 	s.referralRewards[copy.ID] = &copy
 	s.referralRewardByInvoice[copy.ProviderInvoiceID] = copy.ID
 	*reward = copy
@@ -401,7 +406,7 @@ func (s *memoryStore) ReferralExtensionEnd(ctx context.Context, subscriptionUUID
 	var base time.Time
 	days := 0
 	for _, invoice := range s.financeInvoices {
-		if invoice.SubscriptionUUID != subscriptionUUID || invoice.Provider != "stripe" || invoice.ServicePeriodStart == nil || invoice.ServicePeriodEnd == nil || !invoice.ServicePeriodStart.Before(*invoice.ServicePeriodEnd) || (invoice.Description != "Verified XConnect subscription invoice" && invoice.Description != "Verified XConnect inviter subscription invoice") {
+		if invoice.SubscriptionUUID != subscriptionUUID || invoice.Provider != "stripe" || invoice.ServicePeriodStart == nil || invoice.ServicePeriodEnd == nil || !invoice.ServicePeriodStart.Before(*invoice.ServicePeriodEnd) || (invoice.Description != "Verified XConnect subscription invoice" && invoice.Description != "Verified XConnect inviter subscription invoice" && s.referralInvoiceProofs[invoice.ID].InvoiceID == "") {
 			continue
 		}
 		paid := false
