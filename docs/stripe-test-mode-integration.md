@@ -155,3 +155,17 @@ POST /api/auth/subscriptions/refund
 - UAT workflow run URL；
 - Accounts 和 Portal 健康检查结果；
 - 运行镜像对应的完整 Git SHA。
+
+## STRIPE_API_BASE_URL (test mode only)
+
+`STRIPE_API_BASE_URL` overrides the Stripe REST base (default `https://api.stripe.com/v1`).
+It is honoured only with `sk_test_`/`rk_test_` keys; a live key combined with any
+non-default value disables Stripe at startup. The value must be an absolute
+http(s) URL without credentials, query or fragment.
+
+For lanes whose NetworkPolicy denies egress to Stripe, run `cmd/stripemock`
+(`go run ./cmd/stripemock -listen :12111 -fixtures fixtures.json`) and set
+`STRIPE_API_BASE_URL=http://<mock-svc>:12111/v1`. Fixtures map a path (optionally
+prefixed by an HTTP method, e.g. `"POST /v1/refunds"`) to the Stripe object JSON.
+The mock refuses non-test keys. Webhooks are still delivered to accounts signed
+with the lane webhook secret.

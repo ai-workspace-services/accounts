@@ -1473,6 +1473,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			AllowedPriceIDs:       api.ParseStripeAllowedPriceIDs(os.Getenv("STRIPE_ALLOWED_PRICE_IDS")),
 			FrontendURL:           strings.TrimSpace(cfg.Auth.OAuth.FrontendURL),
 			PortalConfigurationID: strings.TrimSpace(os.Getenv("STRIPE_PORTAL_CONFIGURATION_ID")),
+			APIBaseURL:            strings.TrimSpace(os.Getenv("STRIPE_API_BASE_URL")),
 		}),
 	}
 	if xworkmateVaultService != nil {
