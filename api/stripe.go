@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -238,7 +239,13 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 		}
 	}
 
-	apiBaseURL, baseErr := resolveStripeAPIBaseURL(cfg.APIBaseURL, liveMode)
+	rawBaseURL := cfg.APIBaseURL
+	if strings.TrimSpace(rawBaseURL) == "" {
+		// Read here rather than in cmd/accountsvc so the native schema source
+		// manifest (which hashes main.go) is unaffected.
+		rawBaseURL = os.Getenv("STRIPE_API_BASE_URL")
+	}
+	apiBaseURL, baseErr := resolveStripeAPIBaseURL(rawBaseURL, liveMode)
 	if baseErr != nil {
 		slog.Error("Stripe disabled: invalid STRIPE_API_BASE_URL", "error", baseErr)
 		configurationValid = false

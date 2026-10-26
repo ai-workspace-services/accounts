@@ -64,3 +64,13 @@ func TestStripeClientUsesConfiguredMock(t *testing.T) {
 		t.Fatalf("mock requests %v", reqs)
 	}
 }
+
+func TestStripeClientBaseURLFromEnvironment(t *testing.T) {
+	t.Setenv("STRIPE_API_BASE_URL", "http://stripemock.lane.svc:12111/v1")
+	if c := newStripeClient(StripeConfig{SecretKey: "sk_test_fixture"}); c.baseURL() != "http://stripemock.lane.svc:12111/v1" || !c.enabled() {
+		t.Fatalf("env base = %q enabled=%v", c.baseURL(), c.enabled())
+	}
+	if c := newStripeClient(StripeConfig{SecretKey: "sk_live_fixture"}); c.enabled() {
+		t.Fatal("live key with env override must disable Stripe")
+	}
+}
