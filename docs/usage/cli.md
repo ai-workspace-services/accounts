@@ -57,6 +57,7 @@ migratectl -D -C \
 根模式 `--diff/-D` 与 `--dry-run/-C` 都是只读核心账号比较入口。`compare-core-users -o raw` 保留现有 JSON receipt（默认）；`-o yaml` 输出同一 receipt 的 YAML；`-o markdown` 输出不含用户标识及摘要值的聚合差异表。比较发现差异时仍返回非零退出码，并先写出所选格式的安全 diff。差异只按数量报告：email、Proxy UUID、密码哈希分别统计不一致数及 source-only / target-only 用户数。
 
 `copy-core-users` 默认只读预览。应用需要 `--dry-run=false --plan-sha256 <预览摘要> --writers-paused`；执行 owner 必须先独立确认目标写者已暂停。应用事务在首次读取目标数据前锁定 users 与 schema checkpoint，锁内重新核对全部用户字段的计划摘要；锁等待最多 15 秒，失败回滚；源端始终只读。只读比较不需要暂停写者。此约定仅针对 users-only 同步，其他迁移命令保留各自的写入保护。
+`migratectl diff` 是 `compare-core-users` 的只读便捷入口，也可以用它替换上述命令的 `-D -C`。必须显式提供目标环境和审核后的 Accounts schema checksum；它沿用 `compare-core-users` 的只读连接、身份校验和脱敏输出，因此活动写者无需暂停。仅接受 `--source-dsn-env` / `--target-dsn-env` 环境变量名称，不接受 `--source-dsn` / `--target-dsn` 连接串参数。邮箱按去首尾空格、忽略大小写后的值匹配，原始邮箱格式差异仍会计入 email mismatch。空邮箱、重复邮箱或重复代理 UUID 会拒绝比较。该命令只比较核心身份；不会同步配额、订阅或账务，不能据此批准数据合并或流量切换。
 
 For one explicitly reviewed database upgrade, use `controlled-migrate`. It
 reads only the checked-in embedded `sql/migrations/*.up.sql` files, selects one
