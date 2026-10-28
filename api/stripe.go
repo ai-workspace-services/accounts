@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,10 @@ type StripeConfig struct {
 	AllowedPriceIDs       []string
 	FrontendURL           string
 	PortalConfigurationID string
+	// APIBaseURL overrides the Stripe REST base (default https://api.stripe.com/v1).
+	// Only honoured for test-mode keys so a live deployment can never be pointed
+	// at a mock; intended for egress-denied lanes and tests (STRIPE_API_BASE_URL).
+	APIBaseURL string
 }
 
 type stripeClient struct {
@@ -234,7 +239,22 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 		}
 	}
 
+	rawBaseURL := cfg.APIBaseURL
+	if strings.TrimSpace(rawBaseURL) == "" {
+		// Read here rather than in cmd/accountsvc so the native schema source
+		// manifest (which hashes main.go) is unaffected.
+		rawBaseURL = os.Getenv("STRIPE_API_BASE_URL")
+	}
+	apiBaseURL, baseErr := resolveStripeAPIBaseURL(rawBaseURL, liveMode)
+	if baseErr != nil {
+		slog.Error("Stripe disabled: invalid STRIPE_API_BASE_URL", "error", baseErr)
+		configurationValid = false
+	} else if apiBaseURL != "" {
+		slog.Warn("Stripe API base URL overridden for test mode", "baseURL", apiBaseURL)
+	}
+
 	return &stripeClient{
+		apiBaseURL:            apiBaseURL,
 		liveMode:              liveMode,
 		configurationValid:    configurationValid,
 		secretKey:             secretKey,
@@ -246,6 +266,23 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 			Timeout: 20 * time.Second,
 		},
 	}
+}
+
+// resolveStripeAPIBaseURL validates an optional Stripe API base override.
+// Empty means the real Stripe API. Live keys refuse any non-default value.
+func resolveStripeAPIBaseURL(raw string, liveMode bool) (string, error) {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if trimmed == "" || trimmed == stripeAPIBaseURL {
+		return "", nil
+	}
+	if liveMode {
+		return "", errors.New("STRIPE_API_BASE_URL override is not allowed with a live Stripe key")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("STRIPE_API_BASE_URL must be an absolute http(s) URL without credentials, query or fragment")
+	}
+	return trimmed, nil
 }
 
 func (c *stripeClient) enabled() bool {
@@ -505,11 +542,7 @@ func (c *stripeClient) doJSON(ctx context.Context, method, path string, out any)
 	if !c.enabled() {
 		return errors.New("Stripe configuration is unavailable")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(c.apiBaseURL), "/")
-	if baseURL == "" {
-		baseURL = stripeAPIBaseURL
-	}
-	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL()+path, nil)
 	if err != nil {
 		return err
 	}
