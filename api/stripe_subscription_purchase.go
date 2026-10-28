@@ -215,8 +215,8 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !user.MFAEnabled || h.isReadOnlyAccount(user) {
-		respondError(c, 403, "mfa_required", "MFA is required before payment")
+	if h.isReadOnlyAccount(user) {
+		respondError(c, 403, "read_only_account", "demo account is read-only")
 		return
 	}
 	if h.stripe == nil || !h.stripe.enabled() {
@@ -307,8 +307,8 @@ func (h *handler) stripeSubscriptionRetry(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !user.MFAEnabled || h.isReadOnlyAccount(user) {
-		respondError(c, 403, "mfa_required", "MFA is required before payment")
+	if h.isReadOnlyAccount(user) {
+		respondError(c, 403, "read_only_account", "demo account is read-only")
 		return
 	}
 	if h.stripe == nil || !h.stripe.enabled() {
