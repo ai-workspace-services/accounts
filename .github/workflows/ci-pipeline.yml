@@ -145,6 +145,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p validate_deploy_test.py
           python3 scripts/tests/test_snapshot_publish.py -v
           python3 .github/scripts/tests/release_manifest_test.py
+          python3 .github/scripts/tests/main_image_build_test.py
           bash .github/scripts/tests/publish-release-artifacts_test.sh
 
       - name: Prepare native account fixture
@@ -528,11 +529,32 @@ jobs:
           GHCR_TAGS: ${{ steps.service_meta.outputs.tags }}
         run: |
           set -euo pipefail
+          : > "${RUNNER_TEMP}/accounts-ghcr-push.log"
           while IFS= read -r tag; do
             [[ -n "$tag" ]] || continue
             docker tag "$SOURCE_IMAGE_REF" "$tag"
-            docker push "$tag"
+            docker push "$tag" 2>&1 | tee -a "${RUNNER_TEMP}/accounts-ghcr-push.log"
           done <<< "$GHCR_TAGS"
+
+      - name: Record immutable main image evidence
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'github' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          SOURCE_IMAGE_REF: ${{ needs.build.outputs.service_image_ref }}
+          CHECKED_OUT_SHA: ${{ steps.source.outputs.commit }}
+        run: |
+          python3 .github/scripts/write-main-image-build.py \
+            --push-log "${RUNNER_TEMP}/accounts-ghcr-push.log" \
+            --image-ref "$SOURCE_IMAGE_REF" --checked-out-sha "$CHECKED_OUT_SHA" \
+            --output "${RUNNER_TEMP}/main-image-build.json"
+
+      - name: Upload run-bound main image evidence
+        if: steps.target.outputs.enabled == 'true' && matrix.target == 'github' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accounts-main-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/main-image-build.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Authenticate to Google Cloud
         id: gcp
