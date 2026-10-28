@@ -39,7 +39,7 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if err != nil {
 		return receipt, err
 	}
-	if (options.Environment != "prod" && options.Environment != "uat") || (!options.CompareOnly && !options.WritersPaused) ||
+	if (options.Environment != "prod" && options.Environment != "uat") || (!options.CompareOnly && !options.Preview && !options.WritersPaused) ||
 		options.SchemaSHA256 != manifest.SchemaSHA256 {
 		return receipt, errors.New("core-user operation requires an explicit environment and the reviewed Accounts schema hash; writes also require paused target writers")
 	}
