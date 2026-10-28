@@ -46,7 +46,7 @@ func TestDiffCommandValidatesBeforeDatabaseAccess(t *testing.T) {
 		{"same name", []string{"--source-dsn-env", "DIFF_TEST_SOURCE", "--target-dsn-env", "DIFF_TEST_SOURCE"}, "distinct --source-dsn-env"},
 		{"empty value", []string{"--source-dsn-env", "DIFF_TEST_SOURCE", "--target-dsn-env", "DIFF_TEST_EMPTY"}, "environment variable is empty"},
 		{"output", []string{"-o", "invalid"}, "-o must be one of"},
-		{"reviewed guards", []string{"--source-dsn-env", "DIFF_TEST_SOURCE", "--target-dsn-env", "DIFF_TEST_TARGET"}, "requires explicit environment, paused writers and both reviewed schema hashes"},
+		{"reviewed guards", []string{"--source-dsn-env", "DIFF_TEST_SOURCE", "--target-dsn-env", "DIFF_TEST_TARGET"}, "reviewed Accounts schema hash"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := newDiffCmd()
