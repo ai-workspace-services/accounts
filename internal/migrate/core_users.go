@@ -47,6 +47,7 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 		decoded, decodeErr := hex.DecodeString(options.ExpectedPlanSHA256)
 		if decodeErr != nil || len(decoded) != 32 {
 			return receipt, errors.New("core-user apply requires exact preview plan SHA256")
+		}
 	}
 	receipt.SchemaSHA256 = manifest.SchemaSHA256
 	tables, _, err := fullBusinessContract()
