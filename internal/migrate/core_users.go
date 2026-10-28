@@ -21,6 +21,7 @@ import (
 type CoreUsersOptions struct {
 	Environment        string
 	SchemaSHA256       string
+	WritersPaused      bool
 	Preview            bool
 	ExpectedPlanSHA256 string
 	CompareOnly        bool
@@ -38,9 +39,9 @@ func CopyCoreUsers(ctx context.Context, sourceDSN, targetDSN string, options Cor
 	if err != nil {
 		return receipt, err
 	}
-	if (options.Environment != "prod" && options.Environment != "uat") ||
+	if (options.Environment != "prod" && options.Environment != "uat") || (!options.CompareOnly && !options.Preview && !options.WritersPaused) ||
 		options.SchemaSHA256 != manifest.SchemaSHA256 {
-		return receipt, errors.New("core-user transfer requires explicit environment and the reviewed Accounts schema hash")
+		return receipt, errors.New("core-user operation requires an explicit environment and the reviewed Accounts schema hash; writes also require paused target writers")
 	}
 	if !options.Preview && !options.CompareOnly {
 		decoded, decodeErr := hex.DecodeString(options.ExpectedPlanSHA256)

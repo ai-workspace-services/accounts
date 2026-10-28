@@ -56,7 +56,7 @@ migratectl -D -C \
 
 根模式 `--diff/-D` 与 `--dry-run/-C` 都是只读核心账号比较入口。`compare-core-users -o raw` 保留现有 JSON receipt（默认）；`-o yaml` 输出同一 receipt 的 YAML；`-o markdown` 输出不含用户标识及摘要值的聚合差异表。比较发现差异时仍返回非零退出码，并先写出所选格式的安全 diff。差异只按数量报告：email、Proxy UUID、密码哈希分别统计不一致数及 source-only / target-only 用户数。
 
-`copy-core-users` 默认只读预览。应用需要 `--dry-run=false --plan-sha256 <预览摘要>`，无需停止目标服务或传入 `--writers-paused`。应用事务在首次读取目标数据前锁定 users 与 schema checkpoint，锁内重新核对全部用户字段的计划摘要；等待期间发生的写入会被看到并使旧计划失效。锁等待最多 15 秒，失败回滚；源端始终只读。此约定仅针对 users-only 同步，其他迁移命令保留各自的写入保护。
+`copy-core-users` 默认只读预览。应用需要 `--dry-run=false --plan-sha256 <预览摘要> --writers-paused`；执行 owner 必须先独立确认目标写者已暂停。应用事务在首次读取目标数据前锁定 users 与 schema checkpoint，锁内重新核对全部用户字段的计划摘要；锁等待最多 15 秒，失败回滚；源端始终只读。只读比较不需要暂停写者。此约定仅针对 users-only 同步，其他迁移命令保留各自的写入保护。
 
 For one explicitly reviewed database upgrade, use `controlled-migrate`. It
 reads only the checked-in embedded `sql/migrations/*.up.sql` files, selects one

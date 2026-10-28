@@ -245,7 +245,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 			t.Fatal("target core fixture unavailable")
 		}
 		exec(target, `UPDATE public.users SET email='user@example.invalid',password='stale-core-fixture',proxy_uuid='00000000-0000-0000-0000-000000000333'`)
-		coreOptions := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256,
+		coreOptions := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true,
 			Preview: true}
 		expectedIdentity, e := dbruntime.ConnectionIdentity(sourceDSN)
 		if e != nil {
@@ -333,7 +333,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		if _, err := InitializeNative(context.Background(), targetDSN, NativeInitOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, WritersPaused: true, LockTimeout: time.Second, StatementTimeout: time.Minute}); err != nil {
 			t.Fatal(err)
 		}
-		core := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, Preview: true}
+		core := CoreUsersOptions{Environment: "prod", SchemaSHA256: manifest.SchemaSHA256, Preview: true, WritersPaused: true}
 		preview, err := CopyCoreUsers(context.Background(), sourceDSN, targetDSN, core)
 		if err != nil || preview.CoreUsers.Source.Count != 1 || preview.CoreUsers.Target.Count != 0 || preview.TargetWrites || preview.FullBusinessEqual || len(preview.CoreUsersPlanSHA256) != 64 {
 			t.Fatalf("fresh target preview failed: %v", err)
