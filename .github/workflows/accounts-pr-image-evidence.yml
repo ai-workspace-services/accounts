@@ -1,0 +1,65 @@
+name: Accounts PR image evidence
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/accounts-pr-image-evidence.yml'
+      - '.github/scripts/accounts-pr-image-evidence.py'
+      - '.github/scripts/tests/accounts_pr_image_evidence_test.py'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open same-repository PR number
+        required: true
+        type: string
+      build_run_id:
+        description: Successful fixed PR image build run ID
+        required: true
+        type: string
+      build_run_attempt:
+        description: Exact producer attempt
+        required: true
+        default: '1'
+        type: string
+permissions:
+  contents: read
+  actions: read
+  packages: read
+  pull-requests: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: python3 .github/scripts/tests/accounts_pr_image_evidence_test.py
+  verify:
+    needs: contract
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Verify fixed PR build and registry manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_RUN_ATTEMPT: ${{ inputs.build_run_attempt }}
+          EVIDENCE_PATH: ${{ runner.temp }}/accounts-pr-image-evidence.json
+        run: python3 .github/scripts/accounts-pr-image-evidence.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: accounts-pr-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/accounts-pr-image-evidence.json
+          if-no-files-found: error
+          retention-days: 30
