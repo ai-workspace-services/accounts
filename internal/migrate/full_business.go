@@ -572,6 +572,12 @@ func businessSourceVisibility(ctx context.Context, tx *sql.Tx, name string) erro
 }
 
 func validateBusinessTarget(ctx context.Context, tx *sql.Tx, name string, table businessTable) error {
+	return validateBusinessTargetCatalog(ctx, tx, name, table, false)
+}
+
+// Runtime catalog verification may use an explicit scoped RLS policy; migration
+// callers retain the stricter full-visibility requirement above.
+func validateBusinessTargetCatalog(ctx context.Context, tx *sql.Tx, name string, table businessTable, runtime bool) error {
 	cols, err := catalogColumns(ctx, tx, name)
 	if err != nil || len(cols) != len(table.Columns) {
 		return fmt.Errorf("native target public.%s column scope differs", name)
@@ -583,8 +589,16 @@ func validateBusinessTarget(ctx context.Context, tx *sql.Tx, name string, table 
 		}
 	}
 	var visible bool
-	if err = tx.QueryRowContext(ctx, `SELECT NOT relrowsecurity OR (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user) OR (relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND NOT relforcerowsecurity) FROM pg_class WHERE oid=to_regclass($1)`, "public."+name).Scan(&visible); err != nil || !visible {
+	if err = tx.QueryRowContext(ctx, `SELECT NOT relrowsecurity OR (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user) OR (relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND NOT relforcerowsecurity) FROM pg_class WHERE oid=to_regclass($1)`, "public."+name).Scan(&visible); err != nil {
 		return errors.New("complete target visibility is not proven")
+	}
+	if !visible {
+		if !runtime {
+			return errors.New("complete target visibility is not proven")
+		}
+		if err = runtimeBusinessVisibility(ctx, tx, name); err != nil {
+			return err
+		}
 	}
 	var actualPK string
 	if err = tx.QueryRowContext(ctx, `SELECT string_agg(a.attname,',' ORDER BY k.ord) FROM pg_constraint c CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY k(num,ord) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.num WHERE c.conrelid=to_regclass($1) AND c.contype='p'`, "public."+name).Scan(&actualPK); err != nil || actualPK != strings.Join(table.PrimaryKey, ",") {
