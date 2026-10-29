@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 )
 
 // VerifyNativeRuntime checks the same compiled 55-table contract used by the
@@ -47,7 +48,7 @@ func VerifiedNativeRuntimeVersion(ctx context.Context, db *sql.DB) (uint, error)
 		return 0, err
 	}
 	for _, name := range order {
-		if err = validateBusinessTarget(ctx, tx, name, tables[name]); err != nil {
+		if err = validateBusinessTargetCatalog(ctx, tx, name, tables[name], true); err != nil {
 			return 0, err
 		}
 		var readable bool
@@ -83,6 +84,26 @@ func verifyCatalogCheckpoint(ctx context.Context, tx *sql.Tx, version uint) erro
 		if err := tx.QueryRowContext(ctx, `SELECT from_version,sql_sha256 FROM public.accounts_controlled_migration_history WHERE to_version=$1`, step.to).Scan(&from, &hash); err != nil || from != step.from || hash != step.hash {
 			return errors.New("native runtime catalog migration receipt differs")
 		}
+	}
+	return nil
+}
+
+// runtimeBusinessVisibility accepts only a reviewed role-specific, permissive
+// ALL policy that exposes the complete table and permits writes. It does not
+// create policies or change privileges. The strict transfer verifier never uses
+// this runtime exception.
+func runtimeBusinessVisibility(ctx context.Context, tx *sql.Tx, name string) error {
+	var valid bool
+	err := tx.QueryRowContext(ctx, `SELECT has_table_privilege(current_user,c.oid,'SELECT') AND (
+ EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND p.polname='accounts_runtime_access'
+ AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[(SELECT oid FROM pg_roles WHERE rolname=current_user)]
+ AND pg_get_expr(p.polqual,p.polrelid)='true' AND pg_get_expr(p.polwithcheck,p.polrelid)='true')
+ AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member=(SELECT oid FROM pg_roles WHERE rolname=current_user))
+ AND NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid AND NOT p.polpermissive
+ AND (0::oid=ANY(p.polroles) OR (SELECT oid FROM pg_roles WHERE rolname=current_user)=ANY(p.polroles))))
+ FROM pg_class c WHERE c.relnamespace='public'::regnamespace AND c.relname=$1 AND c.relkind='r'`, name).Scan(&valid)
+	if err != nil || !valid {
+		return fmt.Errorf("reviewed runtime RLS access not proven for public.%s", name)
 	}
 	return nil
 }
