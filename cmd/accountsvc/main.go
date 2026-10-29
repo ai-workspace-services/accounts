@@ -51,7 +51,7 @@ var (
 const (
 	// SandboxEmail is the canonical email for the sandbox account.
 	SandboxEmail = "sandbox@svc.plus"
-	// ReviewEmail is the canonical email for the readonly App Review account.
+	// ReviewEmail is the canonical email for the App Review account.
 	ReviewEmail = "review@svc.plus"
 )
 
@@ -59,14 +59,6 @@ const (
 	rootUsername             = "admin"
 	rootBootstrapPasswordEnv = "ROOT_BOOTSTRAP_PASSWORD"
 )
-
-var defaultReviewPermissions = []string{
-	"admin.settings.read",
-	"admin.users.metrics.read",
-	"admin.users.list.read",
-	"admin.agents.status.read",
-	"admin.blacklist.read",
-}
 
 type sharedXWorkmateBootstrapConfig struct {
 	BridgeServerURL string
@@ -202,15 +194,6 @@ func ensureReviewUser(ctx context.Context, st store.Store, cfg config.ReviewAcco
 	if name == "" {
 		name = "Review"
 	}
-	groups := cfg.Groups
-	if len(groups) == 0 {
-		groups = []string{"User", "Beta", "Review", "ReadOnly Role"}
-	}
-	permissions := cfg.Permissions
-	if len(permissions) == 0 {
-		permissions = defaultReviewPermissions
-	}
-
 	reviewUser, err := st.GetUserByEmail(ctx, email)
 	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
 		return fmt.Errorf("lookup review user: %w", err)
@@ -238,9 +221,8 @@ func ensureReviewUser(ctx context.Context, st store.Store, cfg config.ReviewAcco
 			EmailVerified: true,
 			PasswordHash:  string(hashed),
 			Level:         store.LevelUser,
-			Role:          store.RoleReadOnly,
-			Groups:        groups,
-			Permissions:   permissions,
+			Role:          store.RoleUser,
+			Groups:        []string{"User"},
 			Active:        true,
 		}
 		if err := st.CreateUser(ctx, user); err != nil {
