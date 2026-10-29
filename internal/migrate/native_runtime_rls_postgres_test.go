@@ -17,7 +17,7 @@ func TestRuntimePolicyVisibilityPostgres(t *testing.T) {
 		t.Skip("disposable RLS fixture not configured")
 	}
 	u, err := url.Parse(dsn)
-	if err != nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") || u.Path != "/account" || u.User.Username() != "postgres" {
+	if err != nil || u.User == nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") || u.Path != "/account" || u.User.Username() != "postgres" {
 		t.Fatal("requires disposable loopback account database")
 	}
 	admin, err := sql.Open("pgx", dsn)
