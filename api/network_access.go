@@ -20,6 +20,7 @@ const (
 	agentResourceFree        = "free"
 	agentResourcePlus        = "plus"
 	agentResourcePro         = "pro"
+	agentResourceCustom      = "custom"
 )
 
 // agentResourceScope resolves the pool entitlement from the enrolled
@@ -42,7 +43,7 @@ func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 			continue
 		}
 		class := strings.TrimPrefix(group, agentResourceGroupPrefix)
-		if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus && class != agentResourcePro {
+		if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus && class != agentResourcePro && class != agentResourceCustom {
 			return agentproto.UserScope{}, false
 		}
 		if seen != "" && seen != class {
@@ -68,6 +69,9 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 		return false
 	}
 	class := effectiveAgentResourceClass(access, user, packageName)
+	if scope.ResourceClass == agentResourceCustom {
+		return class == agentResourcePlus || class == agentResourcePro
+	}
 	return publicAgentResourceClassAllows(scope.ResourceClass, class)
 }
 
@@ -750,8 +754,8 @@ func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Iden
 	if class == "" && teamID == "" {
 		return identity, true
 	}
-	if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus && class != agentResourcePro && class != agentResourceTeam {
-		respondError(c, 400, "agent_scope_invalid", "resource class must be shared, free, plus, pro or team")
+	if class != agentResourceShared && class != agentResourceFree && class != agentResourcePlus && class != agentResourcePro && class != agentResourceCustom && class != agentResourceTeam {
+		respondError(c, 400, "agent_scope_invalid", "resource class must be shared, free, plus, pro, custom or team")
 		return identity, false
 	}
 	if class != agentResourceTeam && teamID != "" || class == agentResourceTeam && teamID == "" {
