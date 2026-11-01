@@ -105,6 +105,47 @@ func TestManagedAgentPublicClassReconcilesStaleRegistration(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		return req
 	}
+	t.Run("custom requires and filters the allowlist", func(t *testing.T) {
+		req := request("deployment-secret", "custom-node", "custom", "", "/users")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 400 {
+			t.Fatalf("missing list status=%d", resp.StatusCode)
+		}
+		req = request("deployment-secret", "custom-node", "custom", "", "/users")
+		req.Header.Set("X-Agent-Allowed-Emails", `["plus@example.invalid","free@example.invalid"]`)
+		resp, err = client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload agentproto.ClientListResponse
+		err = json.NewDecoder(resp.Body).Decode(&payload)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != 200 || payload.Scope == nil || payload.Scope.ResourceClass != "custom" || len(payload.Clients) != 1 || payload.Clients[0].Email != "plus@example.invalid" {
+			t.Fatalf("custom response %d %+v %v", resp.StatusCode, payload, err)
+		}
+		req = request("deployment-secret", "custom-node", "custom", "", "/users/events")
+		req.Header.Set("X-Agent-Allowed-Emails", `["plus@example.invalid","free@example.invalid"]`)
+		resp, err = client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanner := bufio.NewScanner(resp.Body)
+		matched := false
+		for scanner.Scan() {
+			if strings.HasPrefix(scanner.Text(), "data: ") {
+				matched = strings.TrimPrefix(scanner.Text(), "data: ") == payload.Revision
+				break
+			}
+		}
+		resp.Body.Close()
+		if !matched {
+			t.Fatal("custom event revision differs from filtered snapshot")
+		}
+	})
 	for _, tc := range []struct {
 		class string
 		names []string

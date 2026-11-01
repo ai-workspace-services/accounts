@@ -40,6 +40,7 @@ const (
 )
 
 type regionalPool struct {
+	Private       bool                    `json:"private,omitempty"`
 	Code          string                  `json:"code"`
 	Entry         string                  `json:"entry"`
 	DisplayName   string                  `json:"displayName,omitempty"`
