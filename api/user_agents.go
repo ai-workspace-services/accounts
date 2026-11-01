@@ -27,6 +27,7 @@ const (
 )
 
 type VlessNode struct {
+	Private        bool     `json:"private,omitempty"`
 	Name           string   `json:"name"`
 	Region         string   `json:"region,omitempty"`
 	PoolCount      int      `json:"pool_count,omitempty"`
@@ -160,6 +161,7 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 			nodeName = pool.Code
 		}
 		nodes = append(nodes, VlessNode{
+			Private:       pool.Private,
 			Name:          nodeName,
 			Region:        pool.Code,
 			PoolCount:     pool.PoolCount,

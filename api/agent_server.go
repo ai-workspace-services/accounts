@@ -58,6 +58,11 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "list_users_failed"})
 		return
 	}
+	clients, revision, err = filterCustomAgentClients(scope, c.GetHeader("X-Agent-Allowed-Emails"), clients, revision)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "custom_emails_required"})
+		return
+	}
 	approvalStatus := ""
 	if e, ok := teamEnrollment(c); ok {
 		approvalStatus = e.Status
@@ -208,6 +213,32 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 	return clients, hex.EncodeToString(sum[:]), nil
 }
 
+// The node-supplied list can only narrow the credential's authorized client set.
+func filterCustomAgentClients(scope agentproto.UserScope, raw string, clients []xrayconfig.Client, revision string) ([]xrayconfig.Client, string, error) {
+	if scope.ResourceClass != agentResourceCustom {
+		return clients, revision, nil
+	}
+	var allowed []string
+	if err := json.Unmarshal([]byte(raw), &allowed); err != nil || len(allowed) == 0 || len(allowed) > 256 {
+		return nil, "", errors.New("invalid custom emails")
+	}
+	filtered := make([]xrayconfig.Client, 0, len(clients))
+	for _, client := range clients {
+		if agentEmailAllowed(allowed, &store.User{Email: client.Email}) {
+			filtered = append(filtered, client)
+		}
+	}
+	data, err := json.Marshal(struct {
+		Revision string
+		Clients  []xrayconfig.Client
+	}{revision, filtered})
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(data)
+	return filtered, hex.EncodeToString(sum[:]), nil
+}
+
 func (h *handler) watchAgentUsers(c *gin.Context) {
 	if h.agentRegistry == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "agent_registry_unavailable"})
@@ -248,6 +279,16 @@ func (h *handler) watchAgentUsers(c *gin.Context) {
 		return
 	}
 
+	scope, valid := agentResourceScope(identity.Groups)
+	if !valid {
+		respondError(c, 403, "agent_scope_invalid", "invalid agent scope")
+		return
+	}
+	if _, _, err := filterCustomAgentClients(scope, c.GetHeader("X-Agent-Allowed-Emails"), nil, ""); err != nil {
+		respondError(c, 400, "custom_emails_required", "custom emails required")
+		return
+	}
+
 	// The server's finite WriteTimeout protects ordinary API requests, but it
 	// must not expire an authenticated SSE stream while it waits for changes.
 	controller := http.NewResponseController(c.Writer)
@@ -267,7 +308,11 @@ func (h *handler) watchAgentUsers(c *gin.Context) {
 	heartbeats := 0
 
 	for {
-		_, revision, err := h.authorizedAgentClients(c.Request.Context(), identity.Groups)
+		clients, revision, err := h.authorizedAgentClients(c.Request.Context(), identity.Groups)
+		if err != nil {
+			return
+		}
+		_, revision, err = filterCustomAgentClients(scope, c.GetHeader("X-Agent-Allowed-Emails"), clients, revision)
 		if err != nil {
 			return
 		}

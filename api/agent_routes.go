@@ -69,6 +69,9 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 	groups := map[string]*aggregate{}
 	for _, snapshot := range reader.Statuses() {
 		report := snapshot.Report
+		if !agentEmailAllowed(report.Xray.AllowedEmails, user) {
+			continue
+		}
 		if snapshot.UpdatedAt.IsZero() || (report.Role != "" && report.Role != "agent-proxy") || !networkScopeAllows(access, snapshot.Agent.Groups) {
 			continue
 		}
@@ -79,6 +82,9 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		}
 		resourceClass, teamID := reportedResourceClass(snapshot)
 		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass)
+		if resourceClass == agentResourceCustom {
+			classAllowed = len(report.Xray.AllowedEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro)
+		}
 		if resourceClass == agentResourceTeam {
 			classAllowed = wantClass == agentResourceTeam && wantTeam != "" && teamID == wantTeam
 		}
@@ -88,7 +94,7 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		key := region + "\x00" + entry + "\x00" + resourceClass + "\x00" + teamID
 		group := groups[key]
 		if group == nil {
-			group = &aggregate{pool: regionalPool{Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}, ids: map[string]bool{}, reasons: map[regionalClosureReason]bool{}}
+			group = &aggregate{pool: regionalPool{Private: len(report.Xray.AllowedEmails) > 0, Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}, ids: map[string]bool{}, reasons: map[regionalClosureReason]bool{}}
 			groups[key] = group
 		}
 		if group.pool.DisplayName == "" {
@@ -134,4 +140,20 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		return selected[i].Code < selected[j].Code
 	})
 	return selected
+}
+
+// agentEmailAllowed only narrows the existing entitlement scope.
+func agentEmailAllowed(emails []string, user *store.User) bool {
+	if len(emails) == 0 {
+		return true
+	}
+	if user == nil {
+		return false
+	}
+	for _, email := range emails {
+		if strings.EqualFold(strings.TrimSpace(email), strings.TrimSpace(user.Email)) && strings.TrimSpace(email) != "" {
+			return true
+		}
+	}
+	return false
 }
