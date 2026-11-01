@@ -83,9 +83,10 @@ type Session struct {
 
 // Auth defines authentication configuration.
 type Auth struct {
-	Enable bool  `yaml:"enable"`
-	Token  Token `yaml:"token"`
-	OAuth  OAuth `yaml:"oauth"`
+	RegistrationMode string `yaml:"registrationMode"`
+	Enable           bool   `yaml:"enable"`
+	Token            Token  `yaml:"token"`
+	OAuth            OAuth  `yaml:"oauth"`
 }
 
 // OAuth defines OAuth2 configuration for multiple providers.

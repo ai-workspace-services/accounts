@@ -837,7 +837,7 @@ func (h *handler) networkAccessForUser(ctx context.Context, user *store.User) (n
 	if err != nil {
 		return access, err
 	}
-	if !user.Active || (!user.EmailVerified && !strings.EqualFold(user.Email, sandboxUserEmail)) {
+	if !user.Active || (!store.AccountAccessVerified(user) && !strings.EqualFold(user.Email, sandboxUserEmail)) {
 		access.Allowed = false
 		return access, nil
 	}
