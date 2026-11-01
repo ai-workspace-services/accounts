@@ -186,7 +186,7 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		// trial). OAuth users are Active immediately but stay EmailVerified=false
 		// until they complete the email round trip, so they get no xray client
 		// until then. Sandbox is exempt (handled above).
-		if !u.EmailVerified {
+		if !store.AccountAccessVerified(&u) {
 			continue
 		}
 

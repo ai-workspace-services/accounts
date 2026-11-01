@@ -1200,6 +1200,10 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		logger.InfoContext(c.Request.Context(), "request", attrs...)
 	})
 
+	if cfg.Auth.RegistrationMode != "" && cfg.Auth.RegistrationMode != "email" && cfg.Auth.RegistrationMode != "open" {
+		return fmt.Errorf("invalid auth.registrationMode")
+	}
+
 	var emailSender api.EmailSender
 	emailVerificationEnabled := true
 	smtpHost := strings.TrimSpace(cfg.SMTP.Host)
@@ -1463,6 +1467,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		api.WithSessionTTL(cfg.Session.TTL),
 		api.WithEmailSender(emailSender),
 		api.WithEmailVerification(emailVerificationEnabled),
+		api.WithRegistrationMode(cfg.Auth.RegistrationMode),
 		api.WithTokenService(tokenService),
 		api.WithOAuthFrontendURL(cfg.Auth.OAuth.FrontendURL),
 		api.WithServerPublicURL(cfg.Server.PublicURL),
