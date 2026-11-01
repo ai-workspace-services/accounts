@@ -618,6 +618,7 @@ type Store interface {
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	GetUserByName(ctx context.Context, name string) (*User, error)
 	UpdateUser(ctx context.Context, user *User) error
+	SetUserActiveWithAudit(ctx context.Context, id string, active bool, actor string) error
 	CreateAdminPlanGroupPreview(ctx context.Context, preview AdminPlanGroupPreview) ([]AdminPlanGroupChange, error)
 	ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminPlanGroupBatch) (changes []AdminPlanGroupChange, replayed bool, err error)
 

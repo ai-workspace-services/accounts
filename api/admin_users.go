@@ -207,17 +207,9 @@ func (h *handler) resumeUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "vless access resumed"})
 }
 
-// setUserActive is the shared body of activate/deactivate.
-//
-// users.active is what auth.RequireActiveUser reads, so it decides whether an
-// account may use anything beyond login -- login itself does not check it.
-// Until these two endpoints existed the flag could only ever be set when an
-// account was created (registration, OAuth first login, admin create) or by
-// enforceRootProfile on boot for root: an account that ended up inactive for
-// any reason could be deleted and recreated, but never simply switched back
-// on. pause/resume next door look like they would do this and do not -- they
-// move AccountQuotaState.ProxyAccessState (VLESS), a different gate.
-func (h *handler) setUserActive(c *gin.Context, active bool) {
+// setUserActive controls login and every protected endpoint. It does not
+// change the independent proxy-access state, quotas, plans or verification.
+func (h *handler) setUserActive(c *gin.Context, active bool, actor *store.User) {
 	userID := c.Param("userId")
 	user, err := h.store.GetUserByID(c.Request.Context(), userID)
 	if err != nil {
@@ -238,14 +230,12 @@ func (h *handler) setUserActive(c *gin.Context, active bool) {
 		return
 	}
 
-	if user.Active == active {
-		c.JSON(http.StatusOK, gin.H{"message": "user active state unchanged", "active": user.Active})
-		return
-	}
-
-	user.Active = active
-	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
-		respondError(c, http.StatusInternalServerError, "update_failed", "failed to update user active state")
+	if err := h.store.SetUserActiveWithAudit(c.Request.Context(), user.ID, active, actor.ID); err != nil {
+		if errors.Is(err, store.ErrUserAlreadyArchived) {
+			respondError(c, http.StatusConflict, "account_archived", "archived accounts must use reactivation")
+			return
+		}
+		respondError(c, http.StatusInternalServerError, "update_failed", "failed to update user active state and audit")
 		return
 	}
 
@@ -259,21 +249,21 @@ func (h *handler) setUserActive(c *gin.Context, active bool) {
 // activateUser restores an account that cannot use any protected endpoint
 // because users.active is false.
 func (h *handler) activateUser(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminUsersActivate); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminUsersActivate)
+	if !ok {
 		return
 	}
-	h.setUserActive(c, true)
+	h.setUserActive(c, true, actor)
 }
 
 // deactivateUser withdraws an account's access to every protected endpoint
-// while leaving it able to authenticate, which is what makes the state
-// legible in logs (403 account_suspended) rather than looking like a bad
-// password.
+// and blocks new login with account_suspended.
 func (h *handler) deactivateUser(c *gin.Context) {
-	if _, ok := h.requireAdminPermission(c, permissionAdminUsersDeactivate); !ok {
+	actor, ok := h.requireAdminPermission(c, permissionAdminUsersDeactivate)
+	if !ok {
 		return
 	}
-	h.setUserActive(c, false)
+	h.setUserActive(c, false, actor)
 }
 
 func (h *handler) deleteUser(c *gin.Context) {

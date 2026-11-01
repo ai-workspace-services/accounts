@@ -112,6 +112,7 @@ type handler struct {
 	emailSenderConfigured     bool
 	emailWorkerContext        context.Context
 	emailVerificationEnabled  bool
+	registrationMode          string
 	verificationTTL           time.Duration
 	verifications             map[string]emailVerification
 	verificationMu            sync.RWMutex
@@ -259,6 +260,9 @@ func WithEmailVerification(enabled bool) Option {
 		h.emailVerificationEnabled = enabled
 	}
 }
+
+// WithRegistrationMode changes only newly created self-service accounts.
+func WithRegistrationMode(mode string) Option { return func(h *handler) { h.registrationMode = mode } }
 
 // WithEmailVerificationTTL overrides the default TTL for email verification tokens.
 func WithEmailVerificationTTL(ttl time.Duration) Option {
@@ -474,6 +478,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authGroup.POST("/register", h.register)
 	authGroup.POST("/register/verify", h.verifyEmail)
 	authGroup.POST("/register/send", h.sendEmailVerification)
+	authGroup.GET("/registration-policy", h.registrationPolicy)
 
 	// Public password recovery (forgot password): no session required, since a
 	// locked-out user cannot authenticate. requestPasswordReset is
@@ -911,7 +916,7 @@ func (h *handler) register(c *gin.Context) {
 		return
 	}
 
-	if h.emailVerificationEnabled {
+	if h.emailVerificationEnabled && h.registrationMode != "open" {
 		if code == "" {
 			respondError(c, http.StatusBadRequest, "verification_required", "verification code is required")
 			return
@@ -966,7 +971,10 @@ func (h *handler) register(c *gin.Context) {
 		Active: true,
 	}
 
-	if !h.emailVerificationEnabled || code != "" {
+	if h.registrationMode == "open" {
+		user.Groups = append(user.Groups, store.EmailOptionalRegistrationGroup)
+	}
+	if h.registrationMode != "open" && (!h.emailVerificationEnabled || code != "") {
 		user.EmailVerified = true
 	}
 
@@ -997,7 +1005,7 @@ func (h *handler) register(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "account was created but its default plan could not be initialized")
 		return
 	}
-	if h.emailVerificationEnabled {
+	if h.emailVerificationEnabled && h.registrationMode != "open" {
 		h.removeRegistrationVerification(email)
 	}
 
@@ -1080,6 +1088,10 @@ func (h *handler) verifyEmail(c *gin.Context) {
 			return
 		}
 
+		if !user.Active {
+			respondError(c, http.StatusForbidden, "account_suspended", "account is disabled")
+			return
+		}
 		if !strings.EqualFold(strings.TrimSpace(user.Email), verification.email) {
 			h.removeEmailVerification(email)
 			respondError(c, http.StatusBadRequest, "invalid_code", "verification code is invalid or expired")
@@ -1142,6 +1154,10 @@ func (h *handler) verifyEmail(c *gin.Context) {
 }
 
 func (h *handler) sendEmailVerification(c *gin.Context) {
+	if h.registrationMode == "open" {
+		respondError(c, http.StatusConflict, "email_verification_disabled", "registration email verification is temporarily disabled")
+		return
+	}
 	if hasQueryParameter(c, "email") {
 		respondError(c, http.StatusBadRequest, "email_in_query", "email must be sent in the request body")
 		return
@@ -1327,6 +1343,10 @@ func (h *handler) confirmPasswordReset(c *gin.Context) {
 		return
 	}
 
+	if !user.Active {
+		respondError(c, http.StatusForbidden, "account_suspended", "account is disabled")
+		return
+	}
 	if !strings.EqualFold(strings.TrimSpace(user.Email), challenge.Email) {
 		_ = h.store.InvalidatePasswordRecoveryChallenge(c.Request.Context(), challenge.ID, time.Now().UTC())
 		respondError(c, http.StatusBadRequest, "invalid_token", "reset token is invalid or expired")
@@ -1557,7 +1577,11 @@ func (h *handler) login(c *gin.Context) {
 		}
 	}
 
-	if strings.TrimSpace(user.Email) != "" && !user.EmailVerified {
+	if !user.Active {
+		respondError(c, http.StatusForbidden, "account_suspended", "account is disabled")
+		return
+	}
+	if strings.TrimSpace(user.Email) != "" && !store.AccountAccessVerified(user) {
 		respondError(c, http.StatusUnauthorized, "email_not_verified", "email must be verified before login")
 		return
 	}
@@ -1724,6 +1748,10 @@ func (h *handler) verifyMFALogin(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "authentication_failed", "failed to authenticate user")
 		return
 	}
+	if !user.Active {
+		respondError(c, http.StatusForbidden, "account_suspended", "account is disabled")
+		return
+	}
 	if !user.MFAEnabled {
 		respondError(c, http.StatusBadRequest, "mfa_not_enabled", "multi-factor authentication is not enabled")
 		return
@@ -1788,6 +1816,24 @@ func (h *handler) refreshToken(c *gin.Context) {
 		return
 	}
 
+	claims, err := h.tokenService.ValidateAccessToken(accessToken)
+	if err != nil {
+		respondError(c, http.StatusUnauthorized, "invalid_refresh_token", "invalid or expired refresh token")
+		return
+	}
+	user, err := h.store.GetUserByID(c.Request.Context(), claims.UserID)
+	if err != nil {
+		respondError(c, http.StatusUnauthorized, "invalid_refresh_token", "account is unavailable")
+		return
+	}
+	if !user.Active || user.ArchivedAt != nil {
+		respondError(c, http.StatusForbidden, "account_suspended", "account is disabled")
+		return
+	}
+	if h.rejectIfBillingSuspended(c, user.ID) {
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"access_token": accessToken,
 		"token_type":   "Bearer",
@@ -1825,6 +1871,10 @@ func (h *handler) exchangeToken(c *gin.Context) {
 	user, err := h.store.GetUserByID(c.Request.Context(), sess.userID)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "session_user_lookup_failed", "failed to load session user")
+		return
+	}
+	if !user.Active {
+		respondError(c, http.StatusForbidden, "account_suspended", "account is disabled")
 		return
 	}
 	if h.rejectIfBillingSuspended(c, user.ID) {
@@ -1970,7 +2020,7 @@ func (h *handler) requireAuthenticatedUser(c *gin.Context) (*store.User, bool) {
 		return nil, false
 	}
 
-	// Suspended accounts may hold a valid session (they can still log in) but
+	// Accounts disabled after login may still hold a valid session, but
 	// every authenticated feature is locked, matching auth.RequireActiveUser on
 	// the token-middleware groups. This is the single choke point for handlers
 	// that authenticate in-handler (account usage/billing, config sync, etc.).
@@ -3196,6 +3246,7 @@ func sanitizeUser(user *store.User, challenge *mfaChallenge) gin.H {
 		"username":               user.Name,
 		"email":                  user.Email,
 		"emailVerified":          user.EmailVerified,
+		"active":                 user.Active,
 		"passwordSet":            strings.TrimSpace(user.PasswordHash) != "",
 		"mfaEnabled":             user.MFAEnabled,
 		"mfa":                    buildMFAState(user, challenge),
@@ -3439,6 +3490,11 @@ func (h *handler) oauthCallback(c *gin.Context) {
 	// New accounts remain on the catalog FREE plan until they choose Pro or a
 	// custom team arrangement; no trial entitlement is provisioned at signup.
 
+	if !user.Active {
+		respondError(c, http.StatusForbidden, "account_suspended", "account is disabled")
+		return
+	}
+
 	// Always ensure identity record exists (bind OAuth ID to User Email)
 	identity := &store.Identity{
 		UserID:     user.ID,
@@ -3514,6 +3570,15 @@ func (h *handler) listUsers(c *gin.Context) {
 			return
 		}
 		payload := sanitizeUser(&u, nil)
+		quota, err := h.store.GetAccountQuotaState(c.Request.Context(), u.ID)
+		if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+			respondError(c, http.StatusServiceUnavailable, "quota_state_unavailable", "failed to load user proxy state")
+			return
+		}
+		payload["proxyAccessState"] = "active"
+		if quota != nil && quota.ProxyAccessState == "paused" {
+			payload["proxyAccessState"] = "paused"
+		}
 		payload["temporaryUnlimited"] = store.HasSubscriptionUnlimitedOverride(&u, time.Now())
 		if record, exists := recordsByID[u.ID]; exists {
 			payload["subscriptionRecord"] = record
@@ -3629,7 +3694,7 @@ func (h *handler) updateUserGroups(c *gin.Context) {
 			return
 		}
 	}
-	user.Groups = normalizeGroups(req.Groups)
+	user.Groups = store.PreserveRegistrationGroups(user.Groups, normalizeGroups(req.Groups))
 	if currentPlanGroup != "" {
 		user.Groups = replaceMonthlyQuotaGroup(user.Groups, currentPlanGroup)
 	}
