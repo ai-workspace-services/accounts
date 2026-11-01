@@ -173,7 +173,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 					return
 				}
 			}
-			groups := normalizeGroups(*update.Groups)
+			groups := store.PreserveRegistrationGroups(user.Groups, normalizeGroups(*update.Groups))
 			if err := h.validateSubscriptionOverride(ctx, actor, user, groups); err != nil {
 				respondError(c, http.StatusBadRequest, "invalid_subscription_override", err.Error())
 				return
