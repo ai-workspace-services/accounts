@@ -635,8 +635,8 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if _, e = readonly.Exec(`UPDATE public.billing_plans SET display_name='forbidden' WHERE plan_id='fixture-plan'`); e == nil {
 			t.Fatal("source read-only role allowed update")
 		}
-		execSQL(source, `UPDATE public.billing_plans SET display_name='source changed' WHERE plan_id='fixture-plan'; INSERT INTO public.billing_plans(plan_id,display_name) VALUES('catchup-fixture-new','new')`)
-		defer execSQL(source, `UPDATE public.billing_plans SET display_name='fixture' WHERE plan_id='fixture-plan'; DELETE FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`)
+		execSQL(source, `UPDATE public.billing_plans SET display_name='source changed' WHERE plan_id='fixture-plan'; INSERT INTO public.billing_plans(plan_id,display_name) VALUES('catchup-fixture-new','new'); INSERT INTO public.finance_operation_events(id,operation_id,attempt,event_type,status) OVERRIDING SYSTEM VALUE VALUES(100,'`+operation+`',2,'refund','succeeded')`)
+		defer execSQL(source, `SET session_replication_role=replica; UPDATE public.billing_plans SET display_name='fixture' WHERE plan_id='fixture-plan'; DELETE FROM public.billing_plans WHERE plan_id='catchup-fixture-new'; DELETE FROM public.finance_operation_events WHERE id=100; SET session_replication_role=origin`)
 		clientOptions.SnapshotID = uuid.NewString()
 		clientOptions.PlanID = uuid.NewString()
 		newSource, e := RunMigrationCatchupClient(ctx, clientOptions, done.PlanID, done.PlanSHA256)
@@ -645,6 +645,9 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 		if got := newSource.Tables["billing_plans"]; got.Inserts != 1 || got.SourceUpdates != 1 || got.Conflicts != 0 {
 			t.Fatalf("source changes misclassified: %+v", got)
+		}
+		if got := newSource.Tables["finance_operation_events"]; got.Inserts != 1 || got.Conflicts != 0 {
+			t.Fatalf("immutable event insert misclassified: %+v", got)
 		}
 		if got := newSource.Tables["users"]; got.TargetChanges == 0 {
 			t.Fatal("target changes disappeared in new snapshot")
@@ -680,6 +683,44 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 		if e = lockedTx.Rollback(); e != nil {
 			t.Fatal(e)
+		}
+		writeTx, e := migrationBegin(ctx, httpTarget, false)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer writeTx.Rollback()
+		if e = migrationLock(ctx, writeTx, prepared.order); e != nil {
+			t.Fatal(e)
+		}
+		if e = executeCatchupRows(ctx, writeTx, prepared, transferred.Manifest, newSource, baselineServer.chunkReader(migrationDigest("target-admin")), nil); e == nil {
+			t.Fatal("missing backup gate accepted")
+		}
+		gate := func(_ context.Context, report CatchupPreview) error {
+			if report.ReportSHA256 != newSource.ReportSHA256 {
+				return io.ErrUnexpectedEOF
+			}
+			return nil
+		}
+		if e = executeCatchupRows(ctx, writeTx, prepared, transferred.Manifest, newSource, baselineServer.chunkReader(migrationDigest("target-admin")), gate); e != nil {
+			t.Fatal("catchup mutations", e)
+		}
+		var updated string
+		var inserted int
+		if e = writeTx.QueryRowContext(ctx, `SELECT display_name FROM public.billing_plans WHERE plan_id='fixture-plan'`).Scan(&updated); e != nil || updated != "source changed" {
+			t.Fatal("source update missing", e)
+		}
+		if e = writeTx.QueryRowContext(ctx, `SELECT count(*) FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`).Scan(&inserted); e != nil || inserted != 1 {
+			t.Fatal("source insert missing", e)
+		}
+		var sequenceValue int64
+		if e = writeTx.QueryRowContext(ctx, `SELECT last_value FROM public.finance_operation_events_id_seq`).Scan(&sequenceValue); e != nil || sequenceValue <= 100 {
+			t.Fatal("catchup identity sequence not advanced", e)
+		}
+		if e = writeTx.Rollback(); e != nil {
+			t.Fatal(e)
+		}
+		if e = httpTarget.QueryRow(`SELECT count(*) FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`).Scan(&inserted); e != nil || inserted != 0 {
+			t.Fatal("catchup rollback failed", e)
 		}
 		catchupRequest := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: uuid.NewString(), SourceURL: sourceHTTP.URL, SnapshotID: preview.Snapshot.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: done.PlanID, BaselinePlanSHA256: done.PlanSHA256}
 		var throughAPI CatchupPreview
