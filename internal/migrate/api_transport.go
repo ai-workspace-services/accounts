@@ -717,6 +717,7 @@ type MigrationClientOptions struct {
 	SourceURL, TargetURL, SourceToken, TargetToken, SnapshotID, PlanID, PlanSHA256 string
 	Apply, Status, AllowLoopbackHTTP                                               bool
 	TransferOnly                                                                   bool
+	TargetLocalPort                                                                string
 }
 
 func validateRemoteMigrationPlan(plan MigrationPlan, id, hash string) error {
@@ -735,6 +736,28 @@ func validateRemoteMigrationPlan(plan MigrationPlan, id, hash string) error {
 	return nil
 }
 
+// migrationClientTransport optionally reaches only the target through a local
+// port-forward. URL, Host header, TLS SNI and certificate checks stay unchanged.
+func migrationClientTransport(target *url.URL, localPort string) (*http.Transport, error) {
+	transport := &http.Transport{Proxy: nil, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 3 * time.Minute}
+	if localPort == "" {
+		return transport, nil
+	}
+	port, err := strconv.Atoi(localPort)
+	if err != nil || port < 1024 || port > 65535 || strconv.Itoa(port) != localPort || target.Scheme != "https" || target.Port() != "" {
+		return nil, errors.New("target local forward requires HTTPS on the standard port and a loopback port from 1024 to 65535")
+	}
+	expected := net.JoinHostPort(target.Hostname(), "443")
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		if strings.EqualFold(address, expected) {
+			address = net.JoinHostPort("127.0.0.1", localPort)
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
+	return transport, nil
+}
+
 // Credentials are supplied in memory by the CLI's env/Vault references.
 func RunMigrationClient(ctx context.Context, options MigrationClientOptions) (MigrationPlan, error) {
 	var plan MigrationPlan
@@ -742,7 +765,11 @@ func RunMigrationClient(ctx context.Context, options MigrationClientOptions) (Mi
 	if err != nil {
 		return plan, err
 	}
-	client := &http.Client{Transport: &http.Transport{Proxy: nil, TLSHandshakeTimeout: 10 * time.Second, ResponseHeaderTimeout: 3 * time.Minute}, Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	transport, err := migrationClientTransport(target, options.TargetLocalPort)
+	if err != nil {
+		return plan, err
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	if options.TargetToken == "" {
 		return plan, errors.New("target migration credential required")
 	}
@@ -768,7 +795,7 @@ func RunMigrationClient(ctx context.Context, options MigrationClientOptions) (Mi
 	if err != nil {
 		return plan, err
 	}
-	if source.String() == target.String() {
+	if source.String() == target.String() || (options.TargetLocalPort != "" && strings.EqualFold(source.Hostname(), target.Hostname())) {
 		return plan, errors.New("source and target URLs must differ")
 	}
 	if options.SourceToken == "" {
