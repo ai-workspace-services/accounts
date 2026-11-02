@@ -610,6 +610,19 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if e != nil || changed.Tables["users"].TargetChanges == 0 {
 			t.Fatal("target-only changes not reported", e)
 		}
+		catchupRequest := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: uuid.NewString(), SourceURL: sourceHTTP.URL, SnapshotID: preview.Snapshot.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: done.PlanID, BaselinePlanSHA256: done.PlanSHA256}
+		var throughAPI CatchupPreview
+		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &throughAPI); e != nil || throughAPI.Tables["users"].TargetChanges == 0 {
+			t.Fatal("catchup HTTP preview", e)
+		}
+		var retry CatchupPreview
+		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &retry); e != nil || migrationDigest(throughAPI) != migrationDigest(retry) {
+			t.Fatal("catchup HTTP retry", e)
+		}
+		catchupRequest.BaselinePlanSHA256 = strings.Repeat("0", 64)
+		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &retry); e == nil {
+			t.Fatal("catchup request ID reuse accepted")
+		}
 		tampered := preview.Snapshot
 		tampered.SourceIdentitySHA256 = strings.Repeat("0", 64)
 		if _, e = baselineServer.previewCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), tampered); e == nil {

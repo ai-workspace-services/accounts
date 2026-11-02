@@ -398,6 +398,9 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 	} else if s.Role == "target" && path == "/transfers" {
 		scope = "transfer"
 		method = "POST"
+	} else if s.Role == "target" && path == "/catchup/preview" {
+		scope = "catchup"
+		method = "POST"
 	} else if s.Role == "target" && path == "/plans/preview" {
 		scope = "preview"
 		method = "POST"
@@ -449,6 +452,10 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if scope == "preview" {
 		s.preview(w, r, subject)
+		return
+	}
+	if scope == "catchup" {
+		s.catchupPreview(w, r, subject)
 		return
 	}
 	if scope == "transfer" {

@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"os"
+	"time"
 )
 
 // CatchupPreview is read-only evidence, not an apply authorization.
@@ -132,4 +135,60 @@ func (s *migrationServer) previewCommittedCatchup(ctx context.Context, baselineI
 		return CatchupPreview{}, errors.New("catchup snapshot finalization failed")
 	}
 	return report, nil
+}
+
+type catchupPreviewRequest struct {
+	MigrationPreviewRequest
+	BaselinePlanID     string `json:"baseline_plan_id"`
+	BaselinePlanSHA256 string `json:"baseline_plan_sha256"`
+}
+type catchupPreviewStage struct {
+	Binding   string         `json:"binding"`
+	Report    CatchupPreview `json:"report"`
+	ExpiresAt time.Time      `json:"expires_at"`
+}
+
+func (s *migrationServer) catchupPreview(w http.ResponseWriter, r *http.Request, subject string) {
+	var request catchupPreviewRequest
+	if migrationDecode(w, r, &request) != nil || !migrationUUID(request.RequestID) || !migrationUUID(request.SnapshotID) || !migrationUUID(request.BaselinePlanID) || !migrationSHA.MatchString(request.BaselinePlanSHA256) || request.SourceToken == "" || len(request.SourceToken) > 8192 {
+		migrationError(w, 400, "invalid_request")
+		return
+	}
+	if _, _, err := s.Peers.client(request.SourceURL); err != nil {
+		migrationError(w, 403, "source_peer_denied")
+		return
+	}
+	binding := migrationDigest([]string{request.SourceURL, request.SnapshotID, request.BaselinePlanID, request.BaselinePlanSHA256, migrationDigest(s.authorization(subject))})
+	var stage catchupPreviewStage
+	err := s.store.locked(r.Context(), func() error {
+		e := s.store.read("catchup-preview", request.RequestID, subject, &stage)
+		if e == nil {
+			if stage.Binding != binding {
+				return errors.New("catchup request ID reused")
+			}
+			return nil
+		}
+		if !errors.Is(e, os.ErrNotExist) {
+			return e
+		}
+		manifest, e := s.downloadChunks(r.Context(), request.MigrationPreviewRequest, subject)
+		if e != nil {
+			return e
+		}
+		report, e := s.previewCommittedCatchup(r.Context(), request.BaselinePlanID, request.BaselinePlanSHA256, subject, manifest)
+		if e != nil {
+			return e
+		}
+		stage = catchupPreviewStage{Binding: binding, Report: report, ExpiresAt: manifest.ExpiresAt}
+		return s.store.write("catchup-preview", request.RequestID, subject, stage)
+	})
+	if err != nil {
+		migrationError(w, 409, "catchup_preview_unavailable")
+		return
+	}
+	if !time.Now().Before(stage.ExpiresAt) {
+		migrationError(w, 410, "catchup_preview_expired")
+		return
+	}
+	migrationJSON(w, 200, stage.Report)
 }
