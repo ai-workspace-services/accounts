@@ -212,6 +212,10 @@ func PreviewMigrationChunks(ctx context.Context, db *sql.DB, manifest MigrationM
 	if err != nil {
 		return plan, err
 	}
+	mode, err := migrationTargetSchemaMode(ctx, tx)
+	if err != nil {
+		return plan, err
+	}
 	work, err := migrationPrepareChunkWork(ctx, tx, manifest, read)
 	if err != nil {
 		return plan, err
@@ -221,7 +225,7 @@ func PreviewMigrationChunks(ctx context.Context, db *sql.DB, manifest MigrationM
 	if manifest.ExpiresAt.Before(expiry) {
 		expiry = manifest.ExpiresAt
 	}
-	plan = MigrationPlan{ToolSHA256: migrationExecutableSHA256(), PlanID: id, State: "preview", Snapshot: manifest, TargetIdentitySHA256: identity, TargetSchemaSHA256: schema, TargetBaselineSHA256: migrationDigest(work.baseline), InsertRows: work.inserts, MatchingRows: work.matches, ConflictRows: work.conflicts, CreatedAt: now, ExpiresAt: expiry}
+	plan = MigrationPlan{ToolSHA256: migrationExecutableSHA256(), PlanID: id, State: "preview", Snapshot: manifest, TargetIdentitySHA256: identity, TargetSchemaSHA256: schema, TargetSchemaMode: mode, TargetBaselineSHA256: migrationDigest(work.baseline), InsertRows: work.inserts, MatchingRows: work.matches, ConflictRows: work.conflicts, CreatedAt: now, ExpiresAt: expiry}
 	if work.conflicts > 0 {
 		plan.State = "conflict"
 	}

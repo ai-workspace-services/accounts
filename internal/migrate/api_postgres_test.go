@@ -540,6 +540,11 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 		sourceHTTP := httptest.NewServer(handler)
 		defer sourceHTTP.Close()
+		invalidSourceOptions := sourceOptions
+		invalidSourceOptions.AllowUnversionedTarget = true
+		if _, e = NewMigrationHandler(invalidSourceOptions); e == nil {
+			t.Fatal("source listener accepted target-only schema opt-in")
+		}
 		t.Run("nonowner-target-end-to-end", func(t *testing.T) {
 			if os.Getenv("MIGRATECTL_CATCHUP_SCALE_ROWS") != "" {
 				t.Skip("ordinary fixture tests the dedicated role; scale run uses the existing owner fixture")
@@ -577,6 +582,54 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 			}
 			execSQL(targetAdmin, string(triggerSQL))
 			execSQL(targetAdmin, migrationSequenceInstallation)
+			// Model an existing business target that has no application checkpoint.
+			// The source remains versioned and is never modified by the listener.
+			execSQL(targetAdmin, `DROP TABLE public.schema_migrations`)
+			unversionedCtx := context.WithValue(ctx, migrationUnversionedTargetKey{}, true)
+			_, scope, e := migrationCatalog()
+			if e != nil {
+				t.Fatal(e)
+			}
+			checkTx, e := targetAdmin.BeginTx(ctx, nil)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = migrationSchemaForRole(unversionedCtx, checkTx, scope, true); e == nil {
+				t.Fatal("unversioned source accepted under target opt-in")
+			}
+			originalSchema, e := migrationSchemaForRole(unversionedCtx, checkTx, scope, false)
+			if e != nil {
+				t.Fatal("unversioned target fixture schema", e)
+			}
+			if _, e = checkTx.Exec(`CREATE INDEX unreviewed_target_fixture ON public.users(username)`); e != nil {
+				t.Fatal(e)
+			}
+			changedSchema, e := migrationSchemaForRole(unversionedCtx, checkTx, scope, false)
+			if e != nil || changedSchema == originalSchema {
+				t.Fatal("unversioned target index drift was not fingerprinted", e)
+			}
+			if _, e = checkTx.Exec(`ALTER TABLE public.users ADD COLUMN unreviewed_fixture text`); e != nil {
+				t.Fatal(e)
+			}
+			if _, e = migrationSchemaForRole(unversionedCtx, checkTx, scope, false); e == nil {
+				t.Fatal("unversioned target with unreviewed column accepted")
+			}
+			if e = checkTx.Rollback(); e != nil {
+				t.Fatal(e)
+			}
+			checkTx, e = targetAdmin.BeginTx(ctx, nil)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = checkTx.Exec(`CREATE TABLE public.schema_migrations(version bigint PRIMARY KEY,dirty boolean NOT NULL); INSERT INTO public.schema_migrations VALUES(2026102801,false); SET LOCAL ROLE accounts_migration`); e != nil {
+				t.Fatal(e)
+			}
+			if _, e = migrationSchemaForRole(unversionedCtx, checkTx, scope, false); e == nil {
+				t.Fatal("unreadable existing checkpoint was mistaken for an absent one")
+			}
+			if e = checkTx.Rollback(); e != nil {
+				t.Fatal(e)
+			}
 			roleCfg := cfg.Copy()
 			roleCfg.Database, roleCfg.User, roleCfg.Password = targetName, "accounts_migration", fixturePassword
 			roleDB := stdlib.OpenDB(*roleCfg)
@@ -598,10 +651,21 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 				t.Fatal(e)
 			}
 			roleHTTP := httptest.NewServer(roleHandler)
-			defer roleHTTP.Close()
+			defer func() { roleHTTP.Close() }()
 			roleClient := MigrationClientOptions{SourceURL: sourceHTTP.URL, TargetURL: roleHTTP.URL, SourceToken: "existing-source-session", TargetToken: "existing-target-session", SnapshotID: uuid.NewString(), PlanID: uuid.NewString(), AllowLoopbackHTTP: true}
+			if _, e := RunMigrationClient(ctx, roleClient); e == nil {
+				t.Fatal("unversioned target preview accepted without operator opt-in")
+			}
+			roleHTTP.Close()
+			roleOptions.AllowUnversionedTarget = true
+			roleHandler, e = NewMigrationHandler(roleOptions)
+			if e != nil {
+				t.Fatal(e)
+			}
+			roleHTTP = httptest.NewServer(roleHandler)
+			roleClient.TargetURL = roleHTTP.URL
 			first, e := RunMigrationClient(ctx, roleClient)
-			if e != nil || first.State != "preview" {
+			if e != nil || first.State != "preview" || first.TargetSchemaMode != migrationUnversionedTargetMode {
 				t.Fatal("nonowner preview", e)
 			}
 			roleClient.Apply, roleClient.PlanSHA256 = true, first.PlanSHA256
@@ -636,7 +700,7 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 			roleClient.Apply = false
 			roleClient.SnapshotID, roleClient.PlanID = uuid.NewString(), uuid.NewString()
 			catchup, e := RunMigrationCatchupClient(ctx, roleClient, done.PlanID, done.PlanSHA256)
-			if e != nil || catchup.Tables["users"].SourceUpdates != 1 || catchup.Tables["users"].Conflicts != 0 {
+			if e != nil || catchup.TargetSchemaMode != migrationUnversionedTargetMode || catchup.Tables["users"].SourceUpdates != 1 || catchup.Tables["users"].Conflicts != 0 {
 				t.Fatal("nonowner users catchup preview", e)
 			}
 			firstReceipt, e := RunMigrationCatchupApplyClient(ctx, roleClient, catchup.RequestID, catchup.ReportSHA256)

@@ -26,6 +26,7 @@ type CatchupPreview struct {
 	SourceSnapshotSHA256 string                         `json:"source_snapshot_sha256"`
 	TargetIdentitySHA256 string                         `json:"target_identity_sha256"`
 	TargetSchemaSHA256   string                         `json:"target_schema_sha256"`
+	TargetSchemaMode     string                         `json:"target_schema_mode,omitempty"`
 	TargetBaselineSHA256 string                         `json:"target_baseline_sha256"`
 	Tables               map[string]CatchupTableSummary `json:"tables"`
 }
@@ -152,11 +153,15 @@ func compareCatchupTargetTx(ctx context.Context, tx *sql.Tx, old MigrationPlan, 
 	if err != nil {
 		return report, err
 	}
+	mode, err := migrationTargetSchemaMode(ctx, tx)
+	if err != nil {
+		return report, err
+	}
 	targetBaseline, err := migrationStreamingBaseline(ctx, tx, tables, order)
 	if err != nil {
 		return report, err
 	}
-	report = CatchupPreview{BaselinePlanID: baselineID, BaselinePlanSHA256: baselineHash, SourceSnapshotID: manifest.SnapshotID, SourceSnapshotSHA256: manifest.SnapshotSHA256, TargetIdentitySHA256: identity, TargetSchemaSHA256: schema, TargetBaselineSHA256: migrationDigest(targetBaseline), Tables: map[string]CatchupTableSummary{}}
+	report = CatchupPreview{BaselinePlanID: baselineID, BaselinePlanSHA256: baselineHash, SourceSnapshotID: manifest.SnapshotID, SourceSnapshotSHA256: manifest.SnapshotSHA256, TargetIdentitySHA256: identity, TargetSchemaSHA256: schema, TargetSchemaMode: mode, TargetBaselineSHA256: migrationDigest(targetBaseline), Tables: map[string]CatchupTableSummary{}}
 	for _, name := range order {
 		leaves, e := catchupTargetLeaves(ctx, tx, name, tables[name])
 		if e != nil {
@@ -291,7 +296,7 @@ func RunMigrationCatchupClient(ctx context.Context, options MigrationClientOptio
 	if err != nil {
 		return CatchupPreview{}, err
 	}
-	if report.RequestID != options.PlanID || !migrationSHA.MatchString(report.ToolSHA256) || report.ReportSHA256 != catchupPreviewHash(report) || !report.ExpiresAt.After(time.Now()) || !report.ExpiresAt.After(report.CreatedAt) || report.ExpiresAt.After(manifest.ExpiresAt) || report.BaselinePlanID != baselineID || report.BaselinePlanSHA256 != baselineHash || report.SourceSnapshotID != manifest.SnapshotID || report.SourceSnapshotSHA256 != manifest.SnapshotSHA256 || !migrationSHA.MatchString(report.TargetIdentitySHA256) || !migrationSHA.MatchString(report.TargetSchemaSHA256) || !migrationSHA.MatchString(report.TargetBaselineSHA256) || len(report.Tables) != len(order) {
+	if report.RequestID != options.PlanID || !migrationSHA.MatchString(report.ToolSHA256) || report.ReportSHA256 != catchupPreviewHash(report) || !report.ExpiresAt.After(time.Now()) || !report.ExpiresAt.After(report.CreatedAt) || report.ExpiresAt.After(manifest.ExpiresAt) || report.BaselinePlanID != baselineID || report.BaselinePlanSHA256 != baselineHash || report.SourceSnapshotID != manifest.SnapshotID || report.SourceSnapshotSHA256 != manifest.SnapshotSHA256 || !migrationSHA.MatchString(report.TargetIdentitySHA256) || !migrationSHA.MatchString(report.TargetSchemaSHA256) || !migrationSHA.MatchString(report.TargetBaselineSHA256) || (report.TargetSchemaMode != "" && report.TargetSchemaMode != migrationUnversionedTargetMode) || len(report.Tables) != len(order) {
 		return CatchupPreview{}, errors.New("catchup response binding mismatch")
 	}
 	for _, name := range order {
@@ -323,7 +328,7 @@ func RunMigrationCatchupApplyClient(ctx context.Context, options MigrationClient
 	if err != nil {
 		return CatchupReceipt{}, fmt.Errorf("retry exact request %s and report hash: %w", requestID, err)
 	}
-	if receipt.Report.RequestID != requestID || receipt.Report.ReportSHA256 != reportHash || catchupPreviewHash(receipt.Report) != reportHash || receipt.AppliedAt.IsZero() || !migrationSHA.MatchString(receipt.Report.TargetIdentitySHA256) {
+	if receipt.Report.RequestID != requestID || receipt.Report.ReportSHA256 != reportHash || catchupPreviewHash(receipt.Report) != reportHash || receipt.AppliedAt.IsZero() || !migrationSHA.MatchString(receipt.Report.TargetIdentitySHA256) || (receipt.Report.TargetSchemaMode != "" && receipt.Report.TargetSchemaMode != migrationUnversionedTargetMode) {
 		return CatchupReceipt{}, errors.New("catchup receipt binding mismatch")
 	}
 	return receipt, nil
@@ -338,7 +343,7 @@ func verifyCatchupRevalidation(reviewed, current CatchupPreview, now time.Time) 
 	if !migrationUUID(reviewed.BaselinePlanID) || !migrationUUID(reviewed.SourceSnapshotID) || !migrationSHA.MatchString(reviewed.BaselinePlanSHA256) || !migrationSHA.MatchString(reviewed.SourceSnapshotSHA256) || !migrationSHA.MatchString(reviewed.TargetIdentitySHA256) || !migrationSHA.MatchString(reviewed.TargetSchemaSHA256) || !migrationSHA.MatchString(reviewed.TargetBaselineSHA256) || reviewed.CreatedAt.After(now) || reviewed.ExpiresAt.Sub(reviewed.CreatedAt) > 24*time.Hour {
 		return errors.New("catchup report provenance invalid")
 	}
-	if reviewed.BaselinePlanID != current.BaselinePlanID || reviewed.BaselinePlanSHA256 != current.BaselinePlanSHA256 || reviewed.SourceSnapshotID != current.SourceSnapshotID || reviewed.SourceSnapshotSHA256 != current.SourceSnapshotSHA256 || reviewed.TargetIdentitySHA256 != current.TargetIdentitySHA256 || reviewed.TargetSchemaSHA256 != current.TargetSchemaSHA256 || reviewed.TargetBaselineSHA256 != current.TargetBaselineSHA256 || migrationDigest(reviewed.Tables) != migrationDigest(current.Tables) {
+	if (reviewed.TargetSchemaMode != "" && reviewed.TargetSchemaMode != migrationUnversionedTargetMode) || reviewed.TargetSchemaMode != current.TargetSchemaMode || reviewed.BaselinePlanID != current.BaselinePlanID || reviewed.BaselinePlanSHA256 != current.BaselinePlanSHA256 || reviewed.SourceSnapshotID != current.SourceSnapshotID || reviewed.SourceSnapshotSHA256 != current.SourceSnapshotSHA256 || reviewed.TargetIdentitySHA256 != current.TargetIdentitySHA256 || reviewed.TargetSchemaSHA256 != current.TargetSchemaSHA256 || reviewed.TargetBaselineSHA256 != current.TargetBaselineSHA256 || migrationDigest(reviewed.Tables) != migrationDigest(current.Tables) {
 		return errors.New("catchup baseline or target changed")
 	}
 	_, order, err := migrationCatalog()

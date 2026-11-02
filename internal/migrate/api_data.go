@@ -68,6 +68,7 @@ type MigrationPlan struct {
 	Snapshot             MigrationManifest `json:"snapshot"`
 	TargetIdentitySHA256 string            `json:"target_identity_sha256"`
 	TargetSchemaSHA256   string            `json:"target_schema_sha256"`
+	TargetSchemaMode     string            `json:"target_schema_mode,omitempty"`
 	TargetBaselineSHA256 string            `json:"target_baseline_sha256"`
 	InsertRows           int               `json:"insert_rows"`
 	MatchingRows         int               `json:"matching_rows"`
@@ -151,6 +152,25 @@ func migrationSchema(ctx context.Context, tx *sql.Tx, order []string) (string, e
 	return migrationSchemaForRole(ctx, tx, order, false)
 }
 
+type migrationUnversionedTargetKey struct{}
+
+const migrationUnversionedTargetMode = "unversioned-verified-scope"
+
+// Opt-in is set by the target listener configuration, never by an API caller.
+func migrationTargetSchemaMode(ctx context.Context, tx *sql.Tx) (string, error) {
+	var present bool
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&present); err != nil {
+		return "", errors.New("schema checkpoint visibility unavailable")
+	}
+	if present {
+		return "", nil
+	}
+	if enabled, _ := ctx.Value(migrationUnversionedTargetKey{}).(bool); !enabled {
+		return "", errors.New("unversioned target requires explicit listener opt-in")
+	}
+	return migrationUnversionedTargetMode, nil
+}
+
 // An older source is read-only and projected through the compiled per-table
 // contract before a snapshot is published. This does not authorize an older
 // target or bypass column, RLS, constraint, or snapshot fingerprint checks.
@@ -160,13 +180,37 @@ func migrationSchemaForRole(ctx context.Context, tx *sql.Tx, order []string, sou
 	if tx.QueryRowContext(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&pgVersion) != nil || pgVersion < 170000 || pgVersion >= 180000 {
 		return "", errors.New("migration API requires PostgreSQL17")
 	}
-	if tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(min(version),0),COALESCE(bool_or(dirty),true) FROM public.schema_migrations`).Scan(&count, &version, &dirty) != nil || count != 1 || dirty {
+	mode, err := migrationTargetSchemaMode(ctx, tx)
+	if err != nil || (source && mode != "") {
 		return "", errors.New("migration API requires a clean reviewed schema checkpoint")
 	}
-	if err := verifyMigrationAPICheckpoint(ctx, tx, uint(version), source); err != nil {
-		return "", err
+	if mode == "" {
+		if tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(min(version),0),COALESCE(bool_or(dirty),true) FROM public.schema_migrations`).Scan(&count, &version, &dirty) != nil || count != 1 || dirty {
+			return "", errors.New("migration API requires a clean reviewed schema checkpoint")
+		}
+		if err := verifyMigrationAPICheckpoint(ctx, tx, uint(version), source); err != nil {
+			return "", err
+		}
+	} else {
+		// A missing checkpoint does not establish native version. Require every
+		// table's exact migration contract and complete visibility instead.
+		tables, reviewed, e := migrationCatalog()
+		if e != nil || len(order) != len(reviewed) {
+			return "", errors.New("unversioned target scope differs")
+		}
+		for i, name := range reviewed {
+			if order[i] != name {
+				return "", errors.New("unversioned target scope differs")
+			}
+			if e = validateBusinessTargetCatalog(ctx, tx, name, tables[name], false); e != nil {
+				return "", e
+			}
+		}
 	}
 	facts := map[string]any{"tool_contract": migrationDigest(fullBusinessContractJSON), "scope": MigrationAPIScope}
+	if mode != "" {
+		facts["target_schema_mode"] = mode
+	}
 	for _, name := range order {
 		var exists bool
 		if err := tx.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, "public."+name).Scan(&exists); err != nil {
@@ -191,7 +235,9 @@ func migrationSchemaForRole(ctx context.Context, tx *sql.Tx, order []string, sou
 		// across schemas, including helpers referenced by triggers/defaults/RLS.
 		`SELECT jsonb_build_array(n.nspname,p.proname,pg_get_function_identity_arguments(p.oid),pg_get_functiondef(p.oid))::text FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prokind IN ('f','p') ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)`,
 		`SELECT to_jsonb(p)::text FROM pg_policies p WHERE schemaname='public' ORDER BY tablename,policyname`,
-		`SELECT to_jsonb(m)::text FROM public.schema_migrations m ORDER BY version`,
+	}
+	if mode == "" {
+		queries = append(queries, `SELECT to_jsonb(m)::text FROM public.schema_migrations m ORDER BY version`)
 	}
 	for i, query := range queries {
 		rows, err := tx.QueryContext(ctx, query)
@@ -606,6 +652,10 @@ func PreviewMigration(ctx context.Context, db *sql.DB, snapshot MigrationSnapsho
 	if err != nil {
 		return plan, err
 	}
+	mode, err := migrationTargetSchemaMode(ctx, tx)
+	if err != nil {
+		return plan, err
+	}
 	data, digests, err := migrationRows(ctx, tx, false)
 	if err != nil {
 		return plan, err
@@ -624,7 +674,7 @@ func PreviewMigration(ctx context.Context, db *sql.DB, snapshot MigrationSnapsho
 	if snapshot.Manifest.ExpiresAt.Before(expiry) {
 		expiry = snapshot.Manifest.ExpiresAt
 	}
-	plan = MigrationPlan{PlanID: id, State: "preview", Snapshot: snapshot.Manifest, TargetIdentitySHA256: identity, TargetSchemaSHA256: fingerprint, TargetBaselineSHA256: migrationDigest(digests), InsertRows: inserts, MatchingRows: matches, ConflictRows: conflicts, CreatedAt: now, ExpiresAt: expiry}
+	plan = MigrationPlan{PlanID: id, State: "preview", Snapshot: snapshot.Manifest, TargetIdentitySHA256: identity, TargetSchemaSHA256: fingerprint, TargetSchemaMode: mode, TargetBaselineSHA256: migrationDigest(digests), InsertRows: inserts, MatchingRows: matches, ConflictRows: conflicts, CreatedAt: now, ExpiresAt: expiry}
 	plan.ToolSHA256 = migrationExecutableSHA256()
 	if !migrationSHA.MatchString(plan.ToolSHA256) {
 		return MigrationPlan{}, errors.New("migration executable identity unavailable")

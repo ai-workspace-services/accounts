@@ -260,21 +260,22 @@ func (p MigrationPeerPolicy) client(value string) (*http.Client, string, error) 
 type MigrationAuthorizer func(context.Context, string, string) (string, int)
 
 type MigrationServerOptions struct {
-	AccountsAuthorize  MigrationAuthorizer
-	DB                 *sql.DB
-	Role               string
-	Audience           string
-	AuthKey            []byte
-	StagingKey         []byte
-	StagingDirectory   string
-	Lifetime           time.Duration
-	Peers              MigrationPeerPolicy
-	BackupGate         MigrationBackupGate
-	InitializeReceipts bool
-	ReceiptOwnerRole   string
-	SourceAudience     string
-	TargetAudience     string
-	JobID              string
+	AccountsAuthorize      MigrationAuthorizer
+	DB                     *sql.DB
+	Role                   string
+	Audience               string
+	AuthKey                []byte
+	StagingKey             []byte
+	StagingDirectory       string
+	Lifetime               time.Duration
+	Peers                  MigrationPeerPolicy
+	BackupGate             MigrationBackupGate
+	AllowUnversionedTarget bool
+	InitializeReceipts     bool
+	ReceiptOwnerRole       string
+	SourceAudience         string
+	TargetAudience         string
+	JobID                  string
 }
 type migrationServer struct {
 	MigrationServerOptions
@@ -300,6 +301,9 @@ type migrationStreamRecord struct {
 }
 
 func NewMigrationHandler(options MigrationServerOptions) (http.Handler, error) {
+	if options.AllowUnversionedTarget && options.Role != "target" {
+		return nil, errors.New("unversioned schema opt-in applies to target only")
+	}
 	if options.SourceAudience == "" || options.TargetAudience == "" || options.SourceAudience == options.TargetAudience || !migrationUUID(options.JobID) || (options.Role == "source" && options.Audience != options.SourceAudience) || (options.Role == "target" && options.Audience != options.TargetAudience) {
 		return nil, errors.New("listener must bind an explicit source/target audience pair and job UUID")
 	}
@@ -448,6 +452,9 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
+	if s.AllowUnversionedTarget {
+		ctx = context.WithValue(ctx, migrationUnversionedTargetKey{}, true)
+	}
 	r = r.WithContext(ctx)
 	if scope == "source" {
 		s.source(w, r, parts, subject)
@@ -745,6 +752,9 @@ type MigrationClientOptions struct {
 func validateRemoteMigrationPlan(plan MigrationPlan, id, hash string) error {
 	if plan.PlanID != id || (hash != "" && plan.PlanSHA256 != hash) {
 		return errors.New("migration response plan binding mismatch")
+	}
+	if plan.TargetSchemaMode != "" && plan.TargetSchemaMode != migrationUnversionedTargetMode {
+		return errors.New("unknown target schema mode")
 	}
 	preview := plan
 	if plan.State == "applied" {

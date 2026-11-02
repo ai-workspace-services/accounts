@@ -66,6 +66,16 @@ func TestExistingSchemaMigrationCatalogPostgres(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	if _, err = migrationSchema(ctx, tx, order); err == nil {
+		t.Fatal("unversioned fixture accepted without opt-in")
+	}
+	optedIn := context.WithValue(ctx, migrationUnversionedTargetKey{}, true)
+	if fingerprint, e := migrationSchema(optedIn, tx, order); e != nil || !migrationSHA.MatchString(fingerprint) {
+		t.Fatal("unversioned fixture fingerprint unavailable", e)
+	}
+	if mode, e := migrationTargetSchemaMode(optedIn, tx); e != nil || mode != migrationUnversionedTargetMode {
+		t.Fatal("unversioned fixture mode not reported", e)
+	}
 }
 
 func TestTargetColumnOrderPostgres(t *testing.T) {

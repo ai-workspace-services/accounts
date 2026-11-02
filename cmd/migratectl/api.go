@@ -276,6 +276,7 @@ func newMigrationServeCmd() *cobra.Command {
 	f.StringVar(&stageEnv, "staging-key-env", "", "Base64 distinct 32-byte staging encryption-key environment reference")
 	f.StringVar(&options.StagingDirectory, "staging-dir", "", "Absolute persistent private mode-0700 directory")
 	f.StringVar(&backupReceipt, "backup-receipt-file", "", "Protected migration-owner verified backup/restore receipt; enables guarded apply")
+	f.BoolVar(&options.AllowUnversionedTarget, "allow-unversioned-target", false, "Explicitly verify an unversioned target's 42-table migration scope; does not assert a native checkpoint")
 	f.BoolVar(&options.InitializeReceipts, "initialize-receipts", false, "Explicit migration-owner schema initialization for apply (never implicit in preview)")
 	f.StringVar(&options.ReceiptOwnerRole, "receipt-owner-role", "", "Exact migration-owner DB role required by --initialize-receipts")
 	f.DurationVar(&options.Lifetime, "object-ttl", time.Hour, "Snapshot/plan retention validity, at most 24 hours")
