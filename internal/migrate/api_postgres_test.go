@@ -621,6 +621,25 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if e != nil || migrationDigest(clientAgain) != migrationDigest(clientReport) {
 			t.Fatal("catchup client retry", e)
 		}
+		// Only the isolated fixture owner changes the source; the migration
+		// connection remains readonly and can neither update nor insert.
+		if _, e = readonly.Exec(`UPDATE public.billing_plans SET display_name='forbidden' WHERE plan_id='fixture-plan'`); e == nil {
+			t.Fatal("source read-only role allowed update")
+		}
+		execSQL(source, `UPDATE public.billing_plans SET display_name='source changed' WHERE plan_id='fixture-plan'; INSERT INTO public.billing_plans(plan_id,display_name) VALUES('catchup-fixture-new','new')`)
+		defer execSQL(source, `UPDATE public.billing_plans SET display_name='fixture' WHERE plan_id='fixture-plan'; DELETE FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`)
+		clientOptions.SnapshotID = uuid.NewString()
+		clientOptions.PlanID = uuid.NewString()
+		newSource, e := RunMigrationCatchupClient(ctx, clientOptions, done.PlanID, done.PlanSHA256)
+		if e != nil {
+			t.Fatal("changed source catchup", e)
+		}
+		if got := newSource.Tables["billing_plans"]; got.Inserts != 1 || got.SourceUpdates != 1 || got.Conflicts != 0 {
+			t.Fatalf("source changes misclassified: %+v", got)
+		}
+		if got := newSource.Tables["users"]; got.TargetChanges == 0 {
+			t.Fatal("target changes disappeared in new snapshot")
+		}
 		catchupRequest := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: uuid.NewString(), SourceURL: sourceHTTP.URL, SnapshotID: preview.Snapshot.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: done.PlanID, BaselinePlanSHA256: done.PlanSHA256}
 		var throughAPI CatchupPreview
 		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &throughAPI); e != nil || throughAPI.Tables["users"].TargetChanges == 0 {
