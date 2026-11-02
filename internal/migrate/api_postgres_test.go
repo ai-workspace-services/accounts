@@ -639,8 +639,13 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 			if e != nil || catchup.Tables["users"].SourceUpdates != 1 || catchup.Tables["users"].Conflicts != 0 {
 				t.Fatal("nonowner users catchup preview", e)
 			}
-			if _, e = RunMigrationCatchupApplyClient(ctx, roleClient, catchup.RequestID, catchup.ReportSHA256); e != nil {
+			firstReceipt, e := RunMigrationCatchupApplyClient(ctx, roleClient, catchup.RequestID, catchup.ReportSHA256)
+			if e != nil {
 				t.Fatal("nonowner users catchup apply", e)
+			}
+			againReceipt, e := RunMigrationCatchupApplyClient(ctx, roleClient, catchup.RequestID, catchup.ReportSHA256)
+			if e != nil || migrationDigest(firstReceipt) != migrationDigest(againReceipt) {
+				t.Fatal("nonowner exact catchup retry", e)
 			}
 			var sourceDigest, targetDigest string
 			if e = source.QueryRow(`SELECT md5(to_jsonb(u)::text) FROM public.users u WHERE uuid=$1`, userB).Scan(&sourceDigest); e != nil {

@@ -802,24 +802,8 @@ func ApplyMigration(ctx context.Context, db *sql.DB, snapshot MigrationSnapshot,
 	if migrationDigest(expected) != migrationDigest(after) {
 		return MigrationPlan{}, errors.New("post-insert facts changed; transaction rolled back")
 	}
-	// This scope has one identity sequence. ALTER SEQUENCE RESTART is
-	// transactional (setval is not); explicit imported IDs cannot collide later.
-	var sequence sql.NullString
-	var next int64
-	if tx.QueryRowContext(ctx, `SELECT pg_get_serial_sequence('public.finance_operation_events','id'),COALESCE(max(id),0)+1 FROM public.finance_operation_events`).Scan(&sequence, &next) != nil {
-		return MigrationPlan{}, errors.New("finance identity sequence unavailable")
-	}
-	if sequence.Valid {
-		var current int64
-		if tx.QueryRowContext(ctx, `SELECT last_value FROM `+sequence.String).Scan(&current) != nil {
-			return MigrationPlan{}, errors.New("finance identity sequence unreadable")
-		}
-		if next <= current {
-			next = current + 1
-		}
-		if _, err = tx.ExecContext(ctx, `ALTER SEQUENCE `+sequence.String+` RESTART WITH `+fmt.Sprint(next)); err != nil {
-			return MigrationPlan{}, errors.New("finance identity sequence restart failed")
-		}
+	if err = advanceMigrationSequences(ctx, tx, len(missing["finance_operation_events"]) > 0, len(missing["referral_campaign_revisions"]) > 0); err != nil {
+		return MigrationPlan{}, err
 	}
 	finalSchema, err := migrationSchema(ctx, tx, order)
 	if err != nil || finalSchema != plan.TargetSchemaSHA256 {
