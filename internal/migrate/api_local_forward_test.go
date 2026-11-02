@@ -32,6 +32,7 @@ func TestMigrationLocalForwardPreservesTLSHostname(t *testing.T) {
 	roots.AddCert(server.Certificate())
 	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
 	transport.TLSClientConfig.RootCAs = roots
+	transport.TLSClientConfig.InsecureSkipVerify = false
 	client := &http.Client{Transport: transport}
 	resp, err := client.Get(target.String())
 	if err != nil {
