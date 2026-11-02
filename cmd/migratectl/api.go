@@ -171,6 +171,7 @@ func newMigrationServeCmd() *cobra.Command {
 	var dsnEnv, authEnv, stageEnv, address, cert, key, backupReceipt string
 	var peerURLs, peerCIDRs []string
 	var local bool
+	var accountsURL string
 	cmd := &cobra.Command{Use: "serve", Short: "Run a separate opt-in migration API listener", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, args []string) error {
 		var err error
 		if backupReceipt != "" {
@@ -182,7 +183,14 @@ func newMigrationServeCmd() *cobra.Command {
 				return err
 			}
 		}
-		options.AuthKey, err = migrationKeyEnv(authEnv)
+		if accountsURL != "" {
+			if authEnv != "" {
+				return errors.New("accounts-auth-url and auth-key-env are mutually exclusive")
+			}
+			options.AccountsAuthorize, err = migrate.NewAccountsMigrationAuthorizer(accountsURL, local)
+		} else {
+			options.AuthKey, err = migrationKeyEnv(authEnv)
+		}
 		if err != nil {
 			return err
 		}
@@ -262,7 +270,8 @@ func newMigrationServeCmd() *cobra.Command {
 	f.StringVar(&options.TargetAudience, "target-audience", "", "Approved target migration listener audience")
 	f.StringVar(&options.JobID, "job-id", "", "Approved migration job UUID; shared by this exact source/target pair")
 	f.StringVar(&dsnEnv, "dsn-env", "", "Database DSN environment reference")
-	f.StringVar(&authEnv, "auth-key-env", "", "Base64 32-byte dedicated migration signing-key environment reference")
+	f.StringVar(&authEnv, "auth-key-env", "", "Legacy dedicated migration signing-key environment reference")
+	f.StringVar(&accountsURL, "accounts-auth-url", "", "Trusted local Accounts HTTPS origin authorizing existing administrator tokens")
 	f.StringVar(&stageEnv, "staging-key-env", "", "Base64 distinct 32-byte staging encryption-key environment reference")
 	f.StringVar(&options.StagingDirectory, "staging-dir", "", "Absolute persistent private mode-0700 directory")
 	f.StringVar(&backupReceipt, "backup-receipt-file", "", "Protected migration-owner verified backup/restore receipt; enables guarded apply")

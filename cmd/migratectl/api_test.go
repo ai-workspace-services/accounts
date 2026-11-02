@@ -52,3 +52,15 @@ func TestMigrationAPICLIContract(t *testing.T) {
 		t.Fatal("credentials leaked")
 	}
 }
+
+func TestMigrationServeAuthenticationModeSelection(t *testing.T) {
+	cmd := newMigrationServeCmd()
+	cmd.SetArgs([]string{"--accounts-auth-url", "https://accounts.example.invalid", "--auth-key-env", "UNUSED_SIGNING_KEY"})
+	out := new(bytes.Buffer)
+	cmd.SetOut(out)
+	cmd.SetErr(out)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatal("ambiguous auth mode accepted", err)
+	}
+}

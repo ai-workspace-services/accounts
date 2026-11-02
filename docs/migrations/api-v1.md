@@ -1,5 +1,10 @@
 # Migration API v1
 
+For reuse of existing Accounts administrator tokens, see
+[Accounts-authenticated migration](accounts-auth.md). The dedicated migration
+JWT signing/token examples below describe the retained legacy mode; they are
+not required in Accounts-authenticated mode.
+
 Task: accepted migration API/CLI implementation, 2026-10-23.
 
 This is an opt-in, separate `migratectl serve` listener. Existing Accounts API,

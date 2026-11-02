@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -484,6 +485,104 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 	})
 
+	t.Run("accounts-authenticated-http-transfer", func(t *testing.T) {
+		httpTarget, _ := newDB()
+		// Separate Accounts authorities authorize different local administrators.
+		var revoked atomic.Bool
+		accounts := func(token, operator string) *httptest.Server {
+			return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if revoked.Load() || (r.Header.Get("Authorization") != "Bearer "+token && r.Header.Get("Authorization") != "Bearer "+token+"-other") {
+					w.WriteHeader(401)
+					return
+				}
+				var input struct {
+					Scope string `json:"scope"`
+				}
+				if json.NewDecoder(r.Body).Decode(&input) != nil {
+					w.WriteHeader(400)
+					return
+				}
+				actor := operator
+				if r.Header.Get("Authorization") == "Bearer "+token+"-other" {
+					actor += "-other"
+				}
+				json.NewEncoder(w).Encode(map[string]string{"operator_id": migrationDigest(actor), "scope": input.Scope})
+			}))
+		}
+		sourceAccounts := accounts("existing-source-session", "source-admin")
+		defer sourceAccounts.Close()
+		targetAccounts := accounts("existing-target-session", "target-admin")
+		defer targetAccounts.Close()
+		sourceAuthorize, e := NewAccountsMigrationAuthorizer(sourceAccounts.URL, true)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetAuthorize, e := NewAccountsMigrationAuthorizer(targetAccounts.URL, true)
+		if e != nil {
+			t.Fatal(e)
+		}
+		sourceDir, targetDir := t.TempDir(), t.TempDir()
+		os.Chmod(sourceDir, 0700)
+		os.Chmod(targetDir, 0700)
+		sourceOptions := MigrationServerOptions{DB: readonly, Role: "source", Audience: binding.SourceAudience, SourceAudience: binding.SourceAudience, TargetAudience: binding.TargetAudience, JobID: binding.JobID, AccountsAuthorize: sourceAuthorize, StagingKey: bytes.Repeat([]byte{3}, 32), StagingDirectory: sourceDir, Lifetime: time.Hour}
+		handler, e := NewMigrationHandler(sourceOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		sourceHTTP := httptest.NewServer(handler)
+		defer sourceHTTP.Close()
+		targetOptions := MigrationServerOptions{DB: httpTarget, Role: "target", Audience: binding.TargetAudience, SourceAudience: binding.SourceAudience, TargetAudience: binding.TargetAudience, JobID: binding.JobID, AccountsAuthorize: targetAuthorize, StagingKey: bytes.Repeat([]byte{4}, 32), StagingDirectory: targetDir, Lifetime: time.Hour, Peers: MigrationPeerPolicy{URLs: []string{sourceHTTP.URL}, Networks: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, AllowLoopbackHTTP: true}}
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP := httptest.NewServer(handler)
+		defer func() { targetHTTP.Close() }()
+		options := MigrationClientOptions{SourceURL: sourceHTTP.URL, TargetURL: targetHTTP.URL, SourceToken: "existing-source-session", TargetToken: "existing-target-session", SnapshotID: uuid.NewString(), PlanID: uuid.NewString(), AllowLoopbackHTTP: true}
+		preview, e := RunMigrationClient(ctx, options)
+		if e != nil || preview.State != "preview" {
+			t.Fatal("Accounts preview", e)
+		}
+		options.Apply = true
+		options.PlanSHA256 = preview.PlanSHA256
+		if _, e = RunMigrationClient(ctx, options); e == nil {
+			t.Fatal("Accounts admin bypassed backup gate")
+		}
+		targetHTTP.Close()
+		targetOptions.InitializeReceipts = true
+		targetOptions.ReceiptOwnerRole = cfg.User
+		targetOptions.BackupGate = func(_ context.Context, p MigrationPlan) error {
+			if p.TargetBaselineSHA256 != preview.TargetBaselineSHA256 {
+				return io.ErrUnexpectedEOF
+			}
+			return nil
+		}
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		options.TargetURL = targetHTTP.URL
+		done, e := RunMigrationClient(ctx, options)
+		if e != nil || done.State != "applied" {
+			t.Fatal("Accounts apply", e)
+		}
+		again, e := RunMigrationClient(ctx, options)
+		if e != nil || again.PlanSHA256 != done.PlanSHA256 {
+			t.Fatal("Accounts idempotent retry", e)
+		}
+		options.Apply = false
+		options.Status = true
+		options.TargetToken += "-other"
+		if _, e = RunMigrationClient(ctx, options); e == nil {
+			t.Fatal("another valid admin read the plan")
+		}
+		options.TargetToken = "existing-target-session"
+		revoked.Store(true)
+		if _, e = RunMigrationClient(ctx, options); e == nil {
+			t.Fatal("revoked Accounts token accepted")
+		}
+	})
 	t.Run("http-persisted-recovery", func(t *testing.T) {
 		httpTarget, _ := newDB()
 		sourceDir := t.TempDir()
