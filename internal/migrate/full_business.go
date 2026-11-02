@@ -575,18 +575,40 @@ func validateBusinessTarget(ctx context.Context, tx *sql.Tx, name string, table 
 	return validateBusinessTargetCatalog(ctx, tx, name, table, false)
 }
 
+// Migration statements name columns explicitly; PostgreSQL physical column
+// order is not part of the data contract. Keep the exact name and attribute
+// checks so that relaxing order cannot hide missing or incompatible fields.
+func validateBusinessTargetColumns(name string, cols []ColumnDefinition, expected []businessColumn) error {
+	if len(cols) != len(expected) {
+		return fmt.Errorf("native target public.%s column scope differs", name)
+	}
+	actual := make(map[string]ColumnDefinition, len(cols))
+	for _, column := range cols {
+		if _, exists := actual[column.Name]; exists {
+			return fmt.Errorf("native target public.%s duplicate column", name)
+		}
+		actual[column.Name] = column
+	}
+	seen := make(map[string]bool, len(expected))
+	for _, want := range expected {
+		c, ok := actual[want.Name]
+		if seen[want.Name] || !ok || c.Type != want.Type || c.Nullable != want.Nullable || c.Generated != want.Generated {
+			return fmt.Errorf("native target public.%s.%s column definition differs", name, want.Name)
+		}
+		seen[want.Name] = true
+	}
+	return nil
+}
+
 // Runtime catalog verification may use an explicit scoped RLS policy; migration
 // callers retain the stricter full-visibility requirement above.
 func validateBusinessTargetCatalog(ctx context.Context, tx *sql.Tx, name string, table businessTable, runtime bool) error {
 	cols, err := catalogColumns(ctx, tx, name)
-	if err != nil || len(cols) != len(table.Columns) {
+	if err != nil {
 		return fmt.Errorf("native target public.%s column scope differs", name)
 	}
-	for i, c := range cols {
-		expected := table.Columns[i]
-		if c.Name != expected.Name || c.Type != expected.Type || c.Nullable != expected.Nullable || c.Generated != expected.Generated {
-			return fmt.Errorf("native target public.%s.%s column definition differs", name, expected.Name)
-		}
+	if err = validateBusinessTargetColumns(name, cols, table.Columns); err != nil {
+		return err
 	}
 	var visible bool
 	if err = tx.QueryRowContext(ctx, `SELECT NOT relrowsecurity OR (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname=current_user) OR (relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND NOT relforcerowsecurity) FROM pg_class WHERE oid=to_regclass($1)`, "public."+name).Scan(&visible); err != nil {
