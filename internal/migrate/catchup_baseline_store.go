@@ -178,3 +178,69 @@ func (s *migrationServer) captureCommittedBaseline(ctx context.Context, plan Mig
 		return s.store.write("catchup-index", plan.PlanID, subject, index)
 	})
 }
+
+// loadCommittedBaseline accepts only a database-verified receipt and checks the
+// complete source fingerprint again before returning hashes for comparison.
+func (s *migrationServer) loadCommittedBaseline(ctx context.Context, planID, planHash, subject string) (map[string][]businessLeaf, error) {
+	plan, ok, err := ReadMigrationReceipt(ctx, s.DB, planID, planHash, subject)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, errors.New("committed baseline receipt required")
+	}
+	var index catchupBaselineIndex
+	if err = s.store.read("catchup-index", planID, subject, &index); err != nil {
+		return nil, err
+	}
+	if index.PlanID != plan.PlanID || index.PlanSHA256 != plan.PlanSHA256 || index.TargetIdentitySHA256 != plan.TargetIdentitySHA256 || index.SnapshotSHA256 != plan.Snapshot.SnapshotSHA256 {
+		return nil, errors.New("baseline receipt binding mismatch")
+	}
+	_, order, err := migrationCatalog()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]businessLeaf, len(order))
+	ordinal := map[string]int{}
+	for _, name := range order {
+		out[name] = nil
+	}
+	for _, ref := range index.Pages {
+		if err = ctx.Err(); err != nil {
+			return nil, err
+		}
+		if ref.PlanID != planID || ref.Ordinal != ordinal[ref.Table] {
+			return nil, errors.New("baseline page order mismatch")
+		}
+		ordinal[ref.Table]++
+		page, e := s.store.readCatchupBaseline(subject, ref)
+		if e != nil {
+			return nil, e
+		}
+		if _, ok := out[page.Table]; !ok {
+			return nil, errors.New("baseline table unknown")
+		}
+		for _, item := range page.Leaves {
+			key, e := hex.DecodeString(item.KeySHA256)
+			if e != nil {
+				return nil, e
+			}
+			value, e := hex.DecodeString(item.RowSHA256)
+			if e != nil {
+				return nil, e
+			}
+			var leaf businessLeaf
+			copy(leaf.Key[:], key)
+			copy(leaf.Row[:], value)
+			out[page.Table] = append(out[page.Table], leaf)
+		}
+	}
+	for _, name := range order {
+		digest := businessDigest{Leaves: append([]businessLeaf(nil), out[name]...)}
+		got, e := digest.finish()
+		if e != nil || got != plan.Snapshot.Tables[name] {
+			return nil, errors.New("baseline table fingerprint mismatch")
+		}
+	}
+	return out, nil
+}

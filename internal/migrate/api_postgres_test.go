@@ -583,6 +583,18 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if _, e := os.Stat(baselinePath); e != nil {
 			t.Fatal("committed baseline not recovered", e)
 		}
+		baselineStore, e := newMigrationStore(targetDir, targetOptions.StagingKey)
+		if e != nil {
+			t.Fatal(e)
+		}
+		baselineServer := &migrationServer{MigrationServerOptions: targetOptions, store: baselineStore}
+		baseline, e := baselineServer.loadCommittedBaseline(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"))
+		if e != nil || len(baseline) != len(done.Snapshot.Tables) {
+			t.Fatal("verified baseline load", e)
+		}
+		if _, e = baselineServer.loadCommittedBaseline(ctx, done.PlanID, done.PlanSHA256, migrationDigest("other-admin")); e == nil {
+			t.Fatal("baseline loaded for other subject")
+		}
 		options.Apply = false
 		options.Status = true
 		options.TargetToken += "-other"
