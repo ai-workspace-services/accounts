@@ -376,6 +376,8 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_overlay_status"})
 		return
 	}
+	scope, _ := agentResourceScope(identity.Groups)
+	report.Xray.CustomAllowFree = scope.CustomAllowFree
 	// Ensure report uses the resolved agent id.
 	report.AgentID = identity.ID
 	h.agentRegistry.ReportStatus(identity, report)
