@@ -143,7 +143,7 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		if err != nil {
 			return nil, "", err
 		}
-		if !agentResourceScopeAllowsUser(scope, access, &u, packageName) {
+		if !agentResourceScopeAllowsUser(scope, access, &u, packageName) && !(agentproto.PublicResourceClass(scope.ResourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(groups, &u)) {
 			continue
 		}
 		if !u.Active {

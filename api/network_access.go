@@ -27,6 +27,10 @@ const (
 // resource marker selects a public pool. Conflicting markers fail closed.
 func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 	scope := agentproto.UserScope{ResourceClass: agentResourceShared}
+	if hasPublicUnionPolicy(groups) {
+		scope.EmailPolicy = agentproto.PublicEmailUnionPolicy
+		scope.EmailDigest = agentproto.NodeEmailDigest(publicUnionEmails(groups))
+	}
 	seen := ""
 	team, valid := agentNetworkScope(groups)
 	if !valid {
@@ -737,7 +741,7 @@ func (h *handler) networkWriteError(c *gin.Context, err error) {
 // The node's declared class selects a public pool only when its authenticated
 // deployment credential can manage public pools. Team and restricted credentials
 // remain bound to their enrolled scope; pool names never authorize a scope.
-func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
+func (h *handler) resolveScopedAgentLegacy(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
 	if identity, ok, handled := h.resolveManagedTeam(c, credential, requested); handled {
 		return identity, ok
 	}

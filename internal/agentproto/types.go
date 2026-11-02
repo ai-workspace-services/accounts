@@ -20,6 +20,8 @@ type ClientListResponse struct {
 // UserScope is derived from an enrolled credential or an administrator-approved
 // node assignment. Node-supplied team suggestions never grant authorization.
 type UserScope struct {
+	EmailPolicy   string `json:"emailPolicy,omitempty"`
+	EmailDigest   string `json:"emailDigest,omitempty"`
 	ResourceClass string `json:"resourceClass"`
 	TeamID        string `json:"teamId,omitempty"`
 }
