@@ -52,10 +52,19 @@ func TestMigrationHTTPConflictDetailWhitelist(t *testing.T) {
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(tc.body))
 		}))
-		err := migrationHTTP(context.Background(), server.Client(), "GET", server.URL, "synthetic-token", nil, nil)
+		err := migrationHTTP(context.Background(), server.Client(), "POST", server.URL+MigrationAPIBase+"/plans/preview", "synthetic-token", nil, nil)
 		server.Close()
 		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), tc.forbidden) || strings.Contains(err.Error(), "synthetic-token") {
 			t.Fatalf("unsafe HTTP error: %v", err)
 		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"target_unique_conflict","table":"users"}`))
+	}))
+	defer server.Close()
+	err := migrationHTTP(context.Background(), server.Client(), "POST", server.URL+MigrationAPIBase+"/snapshots", "synthetic-token", nil, nil)
+	if err == nil || strings.Contains(err.Error(), "target_unique_conflict") {
+		t.Fatalf("source response was misclassified as target conflict: %v", err)
 	}
 }

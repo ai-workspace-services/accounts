@@ -626,7 +626,7 @@ func migrationHTTPBudget(ctx context.Context, client *http.Client, method, endpo
 			seconds = 5
 		}
 		refusal := &migrationHTTPStatusError{status: response.StatusCode, retryAfter: time.Duration(seconds) * time.Second}
-		if response.StatusCode == http.StatusConflict {
+		if response.StatusCode == http.StatusConflict && method == http.MethodPost && r.URL.Path == MigrationAPIBase+"/plans/preview" {
 			var detail struct {
 				Error string `json:"error"`
 				Table string `json:"table"`
