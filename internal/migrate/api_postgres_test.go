@@ -142,6 +142,7 @@ func TestMigrationAPIPostgres17(t *testing.T) {
  INSERT INTO public.subscription_extension_ledger(reward_id,user_uuid,subscription_uuid,days,effective_from,effective_until) VALUES('`+reward+`','`+userA+`','`+sub+`',30,'2026-01-01Z','2026-01-31Z');
  INSERT INTO public.sessions(token,expires_at,user_uuid) VALUES('fixture-session-secret','2030-01-01Z','`+userA+`');
  INSERT INTO public.oauth_exchange_codes(code,session_token,session_expires_at,expires_at) VALUES('fixture-code','fixture-token','2030-01-01Z','2030-01-01Z')`)
+
 	execSQL(source, `GRANT USAGE ON SCHEMA public TO readonly_release; GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_release; GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO readonly_release`)
 	for _, name := range migrationAPITables {
 		var rls bool
@@ -486,6 +487,14 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 	})
 
 	t.Run("accounts-authenticated-http-transfer", func(t *testing.T) {
+		if os.Getenv("MIGRATECTL_CATCHUP_SCALE_ROWS") == "92143" {
+			// Opt-in isolated scale fixture approximates both large production tables.
+			defer execSQL(source, `SET session_replication_role=replica; DELETE FROM public.billing_ledger WHERE bucket_start >= '2026-01-01Z'::timestamptz+1004*interval '1 minute'; DELETE FROM public.traffic_minute_buckets WHERE node_id='fixture-scale'; SET session_replication_role=origin`)
+			execSQL(source, `INSERT INTO public.billing_ledger(id,account_uuid,bucket_start,bucket_end,entry_type,rated_bytes,amount_delta,balance_after)
+			SELECT md5('scale-ledger-'||g)::uuid,'`+userA+`','2026-01-01Z'::timestamptz+g*interval '1 minute','2026-01-01Z'::timestamptz+(g+1)*interval '1 minute','usage',g,0,0 FROM generate_series(1004,92143) g;
+			INSERT INTO public.traffic_minute_buckets(account_uuid,node_id,bucket_start,total_bytes)
+			SELECT '`+userA+`','fixture-scale','2026-01-01Z'::timestamptz+g*interval '1 minute',g FROM generate_series(1,92140) g`)
+		}
 		httpTarget, _ := newDB()
 		// Separate Accounts authorities authorize different local administrators.
 		var revoked atomic.Bool
