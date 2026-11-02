@@ -172,7 +172,7 @@ func newMigrationServeCmd() *cobra.Command {
 	var dsnEnv, authEnv, stageEnv, address, cert, key, backupReceipt string
 	var peerURLs, peerCIDRs []string
 	var local bool
-	var accountsURL string
+	var accountsURL, internalTokenEnv string
 	cmd := &cobra.Command{Use: "serve", Short: "Run a separate opt-in migration API listener", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, args []string) error {
 		var err error
 		if backupReceipt != "" {
@@ -184,7 +184,16 @@ func newMigrationServeCmd() *cobra.Command {
 				return err
 			}
 		}
-		if accountsURL != "" {
+		if internalTokenEnv != "" {
+			if accountsURL != "" || authEnv != "" {
+				return errors.New("internal-service-token-env is exclusive with other authentication modes")
+			}
+			token, readErr := migrationEnv(internalTokenEnv)
+			if readErr != nil {
+				return readErr
+			}
+			options.AccountsAuthorize, err = migrate.NewInternalServiceMigrationAuthorizer(token)
+		} else if accountsURL != "" {
 			if authEnv != "" {
 				return errors.New("accounts-auth-url and auth-key-env are mutually exclusive")
 			}
@@ -279,6 +288,7 @@ func newMigrationServeCmd() *cobra.Command {
 	f.BoolVar(&options.AllowUnversionedTarget, "allow-unversioned-target", false, "Explicitly verify an unversioned target's 42-table migration scope; does not assert a native checkpoint")
 	f.BoolVar(&options.InitializeReceipts, "initialize-receipts", false, "Explicit migration-owner schema initialization for apply (never implicit in preview)")
 	f.StringVar(&options.ReceiptOwnerRole, "receipt-owner-role", "", "Exact migration-owner DB role required by --initialize-receipts")
+	f.StringVar(&internalTokenEnv, "internal-service-token-env", "", "Environment variable containing the explicitly authorized internal service credential")
 	f.DurationVar(&options.Lifetime, "object-ttl", time.Hour, "Snapshot/plan retention validity, at most 24 hours")
 	f.StringVar(&address, "listen", "127.0.0.1:9097", "Separate listener bind address")
 	f.StringVar(&cert, "tls-cert", "", "TLS certificate file")
