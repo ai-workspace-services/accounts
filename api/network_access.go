@@ -28,6 +28,11 @@ const (
 // resource marker selects a public pool. Conflicting markers fail closed.
 func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 	scope := agentproto.UserScope{ResourceClass: agentResourceShared}
+	for _, group := range groups {
+		if group == "custom:allow-free" {
+			scope.CustomAllowFree = true
+		}
+	}
 	seen := ""
 	team, valid := agentNetworkScope(groups)
 	if !valid {
@@ -52,6 +57,9 @@ func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 		seen = class
 		scope.ResourceClass = class
 	}
+	if scope.CustomAllowFree && scope.ResourceClass != agentResourceCustom {
+		return agentproto.UserScope{}, false
+	}
 	if scope.ResourceClass == "team" && seen != "team" {
 		return agentproto.UserScope{}, false
 	}
@@ -70,7 +78,7 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 	}
 	class := effectiveAgentResourceClass(access, user, packageName)
 	if scope.ResourceClass == agentResourceCustom {
-		return class == agentResourcePlus || class == agentResourcePro
+		return class == agentResourcePlus || class == agentResourcePro || (scope.CustomAllowFree && class == agentResourceFree)
 	}
 	return publicAgentResourceClassAllows(scope.ResourceClass, class)
 }
@@ -741,7 +749,45 @@ func (h *handler) networkWriteError(c *gin.Context, err error) {
 // The node's declared class selects a public pool only when its authenticated
 // deployment credential can manage public pools. Team and restricted credentials
 // remain bound to their enrolled scope; pool names never authorize a scope.
+// resolveScopedAgent admits the optional Free audience only to public-pool managers.
 func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
+	identity, ok := h.resolveScopedAgentBase(c, credential, requested)
+	if !ok {
+		return identity, false
+	}
+	raw := c.GetHeader("X-Agent-Custom-Allow-Free")
+	if raw != "" && raw != "true" && raw != "false" {
+		respondError(c, 400, "agent_scope_invalid", "custom allow free must be true or false")
+		return identity, false
+	}
+	// Never retain an old opt-in when the flag is turned off or omitted.
+	groups := make([]string, 0, len(identity.Groups))
+	for _, g := range identity.Groups {
+		if g != "custom:allow-free" {
+			groups = append(groups, g)
+		}
+	}
+	identity.Groups = groups
+	if raw != "true" {
+		return identity, true
+	}
+	scope, valid := agentResourceScope(groups)
+	cs, cv := agentResourceScope(credential.Groups)
+	manager := false
+	for _, g := range credential.Groups {
+		if g == "agent:configure-public" || (g == "internal" && credential.ID == "*" && cs.ResourceClass == agentResourceShared) {
+			manager = true
+		}
+	}
+	if !valid || !cv || scope.ResourceClass != agentResourceCustom || cs.ResourceClass == "team" || !manager || (credential.ID != "*" && credential.ID != identity.ID) {
+		respondError(c, 403, "agent_scope_mismatch", "custom Free audience requires public pool management permission")
+		return identity, false
+	}
+	identity.Groups = append(groups, "custom:allow-free")
+	return identity, true
+}
+
+func (h *handler) resolveScopedAgentBase(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
 	if identity, ok, handled := h.resolveManagedTeam(c, credential, requested); handled {
 		return identity, ok
 	}

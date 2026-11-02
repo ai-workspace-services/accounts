@@ -146,6 +146,51 @@ func TestManagedAgentPublicClassReconcilesStaleRegistration(t *testing.T) {
 			t.Fatal("custom event revision differs from filtered snapshot")
 		}
 	})
+	t.Run("custom Free opt-in and opt-out preserve allowlist and pauses", func(t *testing.T) {
+		for _, enabled := range []string{"true", "false", "true", ""} {
+			req := request("deployment-secret", "custom-free-node", "custom", "", "/users")
+			req.Header.Set("X-Agent-Allowed-Emails", `["free@example.invalid","free-blocked@example.invalid","plus@example.invalid"]`)
+			if enabled != "" {
+				req.Header.Set("X-Agent-Custom-Allow-Free", enabled)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got agentproto.ClientListResponse
+			err = json.NewDecoder(resp.Body).Decode(&got)
+			resp.Body.Close()
+			want := 1
+			if enabled == "true" {
+				want = 2
+			}
+			if err != nil || resp.StatusCode != 200 || got.Scope == nil || got.Scope.CustomAllowFree != (enabled == "true") || len(got.Clients) != want {
+				t.Fatalf("flag=%q status=%d response=%+v err=%v", enabled, resp.StatusCode, got, err)
+			}
+		}
+		for _, tc := range []struct {
+			token, id, class, flag string
+			status                 int
+		}{
+			{"restricted-secret", "restricted", "free", "true", 403},
+			{"team-secret", "team-agent", "team", "true", 403},
+			{"deployment-secret", "custom-free-node", "custom", "yes", 400},
+		} {
+			req := request(tc.token, tc.id, tc.class, "", "/users")
+			if tc.class == "team" {
+				req.Header.Set("X-Agent-Team-ID", "acme")
+			}
+			req.Header.Set("X-Agent-Custom-Allow-Free", tc.flag)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != tc.status {
+				t.Fatalf("%+v status=%d", tc, resp.StatusCode)
+			}
+		}
+	})
 	for _, tc := range []struct {
 		class string
 		names []string
