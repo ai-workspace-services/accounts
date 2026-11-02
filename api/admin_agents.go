@@ -69,7 +69,7 @@ func (h *handler) adminAgentStatus(c *gin.Context) {
 		entry := agentStatusEntry{
 			ID:           snapshot.Agent.ID,
 			Name:         snapshot.Agent.Name,
-			Groups:       append([]string(nil), snapshot.Agent.Groups...),
+			Groups:       publicAgentDisplayGroups(snapshot.Agent.Groups),
 			Healthy:      snapshot.Report.Healthy,
 			Message:      snapshot.Report.Message,
 			Users:        snapshot.Report.Users,
