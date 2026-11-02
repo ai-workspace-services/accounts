@@ -210,6 +210,7 @@ func (h *handler) resolveSessionToken(c *gin.Context) string {
 
 func registerAdminRoutes(group *gin.RouterGroup, h *handler) {
 	admin := group.Group("/admin")
+	admin.POST("/migration/authorize", h.authorizeMigration)
 	admin.GET("/users/metrics", h.adminUsersMetrics)
 	admin.GET("/agents/status", h.adminAgentStatus)
 	admin.GET("/traffic/nodes", h.adminTrafficNodes)
