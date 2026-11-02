@@ -61,61 +61,16 @@ func catchupTargetLeaves(ctx context.Context, tx *sql.Tx, name string, table bus
 // request and ensure new source chunks are staged under the same subject.
 func (s *migrationServer) previewCommittedCatchup(ctx context.Context, baselineID, baselineHash, subject string, manifest MigrationManifest) (CatchupPreview, error) {
 	var report CatchupPreview
-	old, ok, err := ReadMigrationReceipt(ctx, s.DB, baselineID, baselineHash, subject)
+	prepared, err := s.prepareCommittedCatchup(ctx, baselineID, baselineHash, subject, manifest)
 	if err != nil {
 		return report, err
-	}
-	if !ok {
-		return report, errors.New("committed baseline required")
-	}
-	if err = validateMigrationChunkManifest(manifest); err != nil {
-		return report, err
-	}
-	if !s.matchesSourceAuthorization(manifest.Authorization, subject) || manifest.SourceIdentitySHA256 != old.Snapshot.SourceIdentitySHA256 {
-		return report, errors.New("catchup source identity mismatch")
-	}
-	base, err := s.loadCommittedBaseline(ctx, baselineID, baselineHash, subject)
-	if err != nil {
-		return report, err
-	}
-	tables, order, err := migrationCatalog()
-	if err != nil {
-		return report, err
-	}
-	source := map[string]*businessDigest{}
-	for _, name := range order {
-		source[name] = &businessDigest{}
-	}
-	for _, chunk := range manifest.Chunks {
-		if err = ctx.Err(); err != nil {
-			return report, err
-		}
-		page, e := s.chunkReader(subject)(chunk)
-		if e != nil {
-			return report, e
-		}
-		if e = validateMigrationChunk(manifest.SnapshotID, chunk, page); e != nil {
-			return report, e
-		}
-		for _, row := range page.Rows {
-			if e = source[chunk.Table].add(row, tables[chunk.Table]); e != nil {
-				return report, e
-			}
-		}
-	}
-	for _, name := range order {
-		check := businessDigest{Leaves: append([]businessLeaf(nil), source[name].Leaves...)}
-		got, e := check.finish()
-		if e != nil || got != manifest.Tables[name] {
-			return report, errors.New("catchup source fingerprint mismatch")
-		}
 	}
 	tx, err := migrationBegin(ctx, s.DB, true)
 	if err != nil {
 		return report, err
 	}
 	defer tx.Rollback()
-	report, err = compareCatchupTargetTx(ctx, tx, old, manifest, base, source, tables, order, baselineID, baselineHash)
+	report, err = compareCatchupTargetTx(ctx, tx, prepared.old, manifest, prepared.base, prepared.source, prepared.tables, prepared.order, baselineID, baselineHash)
 	if err != nil {
 		return CatchupPreview{}, err
 	}
@@ -123,6 +78,69 @@ func (s *migrationServer) previewCommittedCatchup(ctx context.Context, baselineI
 		return CatchupPreview{}, errors.New("catchup snapshot finalization failed")
 	}
 	return report, nil
+}
+
+type preparedCatchup struct {
+	old    MigrationPlan
+	base   map[string][]businessLeaf
+	source map[string]*businessDigest
+	tables map[string]businessTable
+	order  []string
+}
+
+// prepareCommittedCatchup validates the receipt, source identity, every staged
+// chunk and table fingerprint before any target write transaction begins.
+func (s *migrationServer) prepareCommittedCatchup(ctx context.Context, baselineID, baselineHash, subject string, manifest MigrationManifest) (preparedCatchup, error) {
+	old, ok, err := ReadMigrationReceipt(ctx, s.DB, baselineID, baselineHash, subject)
+	if err != nil {
+		return preparedCatchup{}, err
+	}
+	if !ok {
+		return preparedCatchup{}, errors.New("committed baseline required")
+	}
+	if err = validateMigrationChunkManifest(manifest); err != nil {
+		return preparedCatchup{}, err
+	}
+	if !s.matchesSourceAuthorization(manifest.Authorization, subject) || manifest.SourceIdentitySHA256 != old.Snapshot.SourceIdentitySHA256 {
+		return preparedCatchup{}, errors.New("catchup source identity mismatch")
+	}
+	base, err := s.loadCommittedBaseline(ctx, baselineID, baselineHash, subject)
+	if err != nil {
+		return preparedCatchup{}, err
+	}
+	tables, order, err := migrationCatalog()
+	if err != nil {
+		return preparedCatchup{}, err
+	}
+	source := map[string]*businessDigest{}
+	for _, name := range order {
+		source[name] = &businessDigest{}
+	}
+	for _, chunk := range manifest.Chunks {
+		if err = ctx.Err(); err != nil {
+			return preparedCatchup{}, err
+		}
+		page, e := s.chunkReader(subject)(chunk)
+		if e != nil {
+			return preparedCatchup{}, e
+		}
+		if e = validateMigrationChunk(manifest.SnapshotID, chunk, page); e != nil {
+			return preparedCatchup{}, e
+		}
+		for _, row := range page.Rows {
+			if e = source[chunk.Table].add(row, tables[chunk.Table]); e != nil {
+				return preparedCatchup{}, e
+			}
+		}
+	}
+	for _, name := range order {
+		check := businessDigest{Leaves: append([]businessLeaf(nil), source[name].Leaves...)}
+		got, e := check.finish()
+		if e != nil || got != manifest.Tables[name] {
+			return preparedCatchup{}, errors.New("catchup source fingerprint mismatch")
+		}
+	}
+	return preparedCatchup{old: old, base: base, source: source, tables: tables, order: order}, nil
 }
 
 // compareCatchupTargetTx must be called inside the transaction whose target
