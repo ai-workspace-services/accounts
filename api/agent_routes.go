@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"account/internal/agentproto"
 	"account/internal/store"
 )
 
@@ -78,7 +79,7 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 			continue
 		}
 		resourceClass, teamID := reportedResourceClass(snapshot)
-		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass)
+		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass) || (agentproto.PublicResourceClass(resourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(snapshot.Agent.Groups, user))
 		if resourceClass == agentResourceTeam {
 			classAllowed = wantClass == agentResourceTeam && wantTeam != "" && teamID == wantTeam
 		}
