@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"net/mail"
 	"sort"
 	"strings"
 	"sync"
@@ -16,10 +17,13 @@ import (
 
 // Credential defines the authentication material assigned to a managed agent.
 type Credential struct {
-	ID     string   `yaml:"id"`
-	Name   string   `yaml:"name"`
-	Token  string   `yaml:"token"`
-	Groups []string `yaml:"groups"`
+	// NodeID opts into a dedicated logical node credential. No aliases are allowed.
+	NodeID        string   `yaml:"nodeId"`
+	AllowedEmails []string `yaml:"allowedEmails"`
+	ID            string   `yaml:"id"`
+	Name          string   `yaml:"name"`
+	Token         string   `yaml:"token"`
+	Groups        []string `yaml:"groups"`
 }
 
 // Config groups the credential set exposed through configuration.
@@ -29,9 +33,11 @@ type Config struct {
 
 // Identity represents an authenticated agent instance.
 type Identity struct {
-	ID     string
-	Name   string
-	Groups []string
+	NodeID        string
+	AllowedEmails []string
+	ID            string
+	Name          string
+	Groups        []string
 }
 
 // StatusSnapshot captures the last reported status for an agent.
@@ -63,6 +69,7 @@ func NewRegistry(cfg Config) (*Registry, error) {
 		logger:        slog.Default().With("component", "agent-registry"),
 	}
 
+	nodes := make(map[string]bool)
 	for _, cred := range cfg.Credentials {
 		id := strings.TrimSpace(cred.ID)
 		token := strings.TrimSpace(cred.Token)
@@ -76,15 +83,68 @@ func NewRegistry(cfg Config) (*Registry, error) {
 			return nil, errors.New("duplicate agent credential id: " + id)
 		}
 
+		nodeID := strings.TrimSpace(cred.NodeID)
+		if nodeID != "" {
+			if id == "*" || nodes[nodeID] {
+				return nil, errors.New("node-bound credentials require a unique nodeId and dedicated id")
+			}
+			nodes[nodeID] = true
+			scope := ""
+			allowFree := false
+			for _, group := range normalizeStrings(cred.Groups) {
+				if group == "custom:allow-free" {
+					allowFree = true
+				}
+				next := ""
+				if strings.HasPrefix(group, "resource:") {
+					next = strings.TrimPrefix(group, "resource:")
+					switch next {
+					case "shared", "free", "plus", "pro", "custom":
+					default:
+						return nil, errors.New("invalid node credential resource class")
+					}
+				}
+				if strings.HasPrefix(group, "team:") && strings.TrimPrefix(group, "team:") != "" {
+					next = "team"
+				}
+				if next != "" {
+					if scope != "" && scope != next {
+						return nil, errors.New("conflicting node credential scopes")
+					}
+					scope = next
+				}
+			}
+			if scope == "" {
+				return nil, errors.New("node credential requires an explicit resource or team scope")
+			}
+			if allowFree && scope != "custom" {
+				return nil, errors.New("custom Free audience requires custom scope")
+			}
+			if (scope == "custom") != (len(cred.AllowedEmails) > 0) {
+				return nil, errors.New("custom node credential requires an enrolled audience; other classes forbid it")
+			}
+			for _, email := range cred.AllowedEmails {
+				parsed, err := mail.ParseAddress(email)
+				if err != nil || parsed.Address != email {
+					return nil, errors.New("invalid enrolled node audience email")
+				}
+			}
+
+		}
+		if len(cred.AllowedEmails) > 0 && nodeID == "" {
+			return nil, errors.New("credential allowedEmails requires nodeId")
+		}
 		digest := sha256.Sum256([]byte(token))
 		if _, exists := r.credentials[digest]; exists {
 			return nil, errors.New("duplicate agent credential token")
 		}
 
 		identity := Identity{
-			ID:     id,
-			Name:   strings.TrimSpace(cred.Name),
-			Groups: normalizeStrings(cred.Groups),
+			NodeID:        nodeID,
+			AllowedEmails: append([]string(nil), cred.AllowedEmails...),
+			ID:            id,
+			Name:          strings.TrimSpace(cred.Name),
+			Groups:        normalizeStrings(cred.Groups),
 		}
 		r.credentials[digest] = identity
 		r.byID[id] = identity

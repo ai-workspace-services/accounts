@@ -38,6 +38,9 @@ func publicUnionEmailMatches(groups []string, user *store.User) bool {
 }
 
 func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
+	if credential.NodeID != "" {
+		return h.resolveNodeBoundAgent(c, credential, requested)
+	}
 	identity, ok := h.resolveScopedAgentLegacy(c, credential, requested)
 	if !ok {
 		return identity, false

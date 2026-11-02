@@ -103,7 +103,7 @@ func (h *handler) resolveManagedTeam(c *gin.Context, credential agentserver.Iden
 		for _, a := range inspector.Agents() {
 			if a.ID == requested && !managedTeam(a.Groups) {
 				team, valid := agentNetworkScope(a.Groups)
-				if !valid || team != "" {
+				if !valid || team != "" || a.NodeID != "" {
 					respondError(c, 403, "agent_scope_mismatch", "agent identity is bound to its credential")
 					return credential, false, true
 				}
