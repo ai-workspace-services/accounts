@@ -126,12 +126,20 @@ func executeCatchupRows(ctx context.Context, tx *sql.Tx, prepared preparedCatchu
 					query = `UPDATE ` + target + ` AS t SET ` + strings.Join(assignments, ",") + ` FROM jsonb_populate_recordset(NULL::` + target + `,$1::jsonb) AS s WHERE ` + migrationPKJoin(table, "s", "t")
 				} else {
 					query = `INSERT INTO ` + target + ` (` + list + `) OVERRIDING SYSTEM VALUE SELECT ` + list + ` FROM jsonb_populate_recordset(NULL::` + target + `,$1::jsonb) AS s`
+					if name == "referral_reward_campaign_snapshots" {
+						// The reward insert trigger can already create this row. Never
+						// overwrite it; below we require it to match the source exactly.
+						query += ` ON CONFLICT (reward_id) DO NOTHING`
+					}
 				}
 				result, e := tx.ExecContext(ctx, query, string(data))
 				if e != nil {
 					return errors.New("catchup business mutation rejected")
 				}
 				n, e := result.RowsAffected()
+				if e == nil && !batch.update && name == "referral_reward_campaign_snapshots" {
+					e = tx.QueryRowContext(ctx, `SELECT count(*) FROM jsonb_populate_recordset(NULL::public.referral_reward_campaign_snapshots,$1::jsonb) AS s JOIN public.referral_reward_campaign_snapshots AS t ON t.reward_id=s.reward_id AND to_jsonb(t)=to_jsonb(s)`, string(data)).Scan(&n)
+				}
 				if e != nil || n != int64(len(batch.rows)) {
 					return errors.New("catchup mutation count differs")
 				}

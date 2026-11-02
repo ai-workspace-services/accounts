@@ -635,8 +635,11 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if _, e = readonly.Exec(`UPDATE public.billing_plans SET display_name='forbidden' WHERE plan_id='fixture-plan'`); e == nil {
 			t.Fatal("source read-only role allowed update")
 		}
-		execSQL(source, `UPDATE public.billing_plans SET display_name='source changed' WHERE plan_id='fixture-plan'; INSERT INTO public.billing_plans(plan_id,display_name) VALUES('catchup-fixture-new','new'); INSERT INTO public.finance_operation_events(id,operation_id,attempt,event_type,status) OVERRIDING SYSTEM VALUE VALUES(100,'`+operation+`',2,'refund','succeeded')`)
-		defer execSQL(source, `SET session_replication_role=replica; UPDATE public.billing_plans SET display_name='fixture' WHERE plan_id='fixture-plan'; DELETE FROM public.billing_plans WHERE plan_id='catchup-fixture-new'; DELETE FROM public.finance_operation_events WHERE id=100; SET session_replication_role=origin`)
+		execSQL(source, `UPDATE public.billing_plans SET display_name='source changed' WHERE plan_id='fixture-plan'; INSERT INTO public.billing_plans(plan_id,display_name) VALUES('catchup-fixture-new','new'); INSERT INTO public.finance_operation_events(id,operation_id,attempt,event_type,status) OVERRIDING SYSTEM VALUE VALUES(100,'`+operation+`',2,'refund','succeeded');
+INSERT INTO public.referral_codes(user_uuid,code) VALUES('`+userA+`','CATCHUP2');
+INSERT INTO public.referrals(id,referrer_uuid,invitee_uuid,referral_code) VALUES('00000000-0000-0000-0000-000000000702','`+userA+`','`+userB+`','CATCHUP2');
+INSERT INTO public.referral_rewards(id,referral_id,provider_invoice_id,referrer_uuid,invitee_uuid,plan_id,product_slug,paid_minor,reward_minor,currency,paid_at,eligible_at) VALUES('00000000-0000-0000-0000-000000000802','00000000-0000-0000-0000-000000000702','catchup-invoice','`+userA+`','`+userB+`','fixture-plan','xconnect',1000,100,'CNY','2026-01-01Z','2026-02-01Z')`)
+		defer execSQL(source, `SET session_replication_role=replica; UPDATE public.billing_plans SET display_name='fixture' WHERE plan_id='fixture-plan'; DELETE FROM public.billing_plans WHERE plan_id='catchup-fixture-new'; DELETE FROM public.finance_operation_events WHERE id=100; DELETE FROM public.referral_reward_campaign_snapshots WHERE reward_id='00000000-0000-0000-0000-000000000802'; DELETE FROM public.referral_rewards WHERE id='00000000-0000-0000-0000-000000000802'; DELETE FROM public.referrals WHERE id='00000000-0000-0000-0000-000000000702'; DELETE FROM public.referral_codes WHERE code='CATCHUP2'; SET session_replication_role=origin`)
 		clientOptions.SnapshotID = uuid.NewString()
 		clientOptions.PlanID = uuid.NewString()
 		newSource, e := RunMigrationCatchupClient(ctx, clientOptions, done.PlanID, done.PlanSHA256)
@@ -648,6 +651,9 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 		if got := newSource.Tables["finance_operation_events"]; got.Inserts != 1 || got.Conflicts != 0 {
 			t.Fatalf("immutable event insert misclassified: %+v", got)
+		}
+		if newSource.Tables["referral_rewards"].Inserts != 1 || newSource.Tables["referral_reward_campaign_snapshots"].Inserts != 1 {
+			t.Fatal("referral reward and triggered snapshot must both be classified as inserts")
 		}
 		if got := newSource.Tables["users"]; got.TargetChanges == 0 {
 			t.Fatal("target changes disappeared in new snapshot")
