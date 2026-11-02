@@ -593,10 +593,11 @@ func validateBusinessTargetCatalog(ctx context.Context, tx *sql.Tx, name string,
 		return errors.New("complete target visibility is not proven")
 	}
 	if !visible {
-		if !runtime {
-			return errors.New("complete target visibility is not proven")
-		}
-		if err = runtimeBusinessVisibility(ctx, tx, name); err != nil {
+		if runtime {
+			if err = runtimeBusinessVisibility(ctx, tx, name); err != nil {
+				return err
+			}
+		} else if err = migrationCandidateVisibility(ctx, tx, name); err != nil {
 			return err
 		}
 	}
