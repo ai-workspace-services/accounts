@@ -756,6 +756,9 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 			t.Fatal("catchup HTTP apply bypassed backup gate")
 		}
 		targetHTTP.Close()
+		// Permit the backup gate in this isolated authorization subtest so that
+		// denial can only be attributed to the missing target.apply scope.
+		targetOptions.BackupGate = func(context.Context, MigrationPlan) error { return nil }
 		targetOptions.AccountsAuthorize = func(ctx context.Context, token, scope string) (string, int) {
 			if scope == "target.apply" {
 				return "", http.StatusForbidden
@@ -791,6 +794,11 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if _, e = RunMigrationCatchupApplyClient(ctx, wrongActor, newSource.RequestID, newSource.ReportSHA256); e == nil {
 			t.Fatal("catchup HTTP accepted a different operator")
 		}
+		execSQL(httpTarget, `UPDATE public.billing_plans SET display_name='target drift' WHERE plan_id='fixture-plan'`)
+		if _, e = RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256); e == nil {
+			t.Fatal("catchup HTTP accepted post-preview target drift")
+		}
+		execSQL(httpTarget, `UPDATE public.billing_plans SET display_name='fixture' WHERE plan_id='fixture-plan'`)
 		committed, e := RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256)
 		if e != nil {
 			t.Fatal("catchup HTTP commit", e)
