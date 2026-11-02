@@ -9,6 +9,8 @@ import (
 // ClientListResponse represents the payload returned by the controller when an
 // agent requests the latest set of Xray clients.
 type ClientListResponse struct {
+	AgentID          string              `json:"agentId,omitempty"`
+	NodeID           string              `json:"nodeId,omitempty"`
 	EnrollmentStatus string              `json:"enrollmentStatus,omitempty"`
 	Scope            *UserScope          `json:"scope,omitempty"`
 	Clients          []xrayconfig.Client `json:"clients"`
@@ -20,6 +22,8 @@ type ClientListResponse struct {
 // UserScope is derived from an enrolled credential or an administrator-approved
 // node assignment. Node-supplied team suggestions never grant authorization.
 type UserScope struct {
+	EmailPolicy     string `json:"emailPolicy,omitempty"`
+	EmailDigest     string `json:"emailDigest,omitempty"`
 	CustomAllowFree bool   `json:"customAllowFree,omitempty"`
 	ResourceClass   string `json:"resourceClass"`
 	TeamID          string `json:"teamId,omitempty"`

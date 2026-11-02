@@ -28,6 +28,10 @@ const (
 // resource marker selects a public pool. Conflicting markers fail closed.
 func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 	scope := agentproto.UserScope{ResourceClass: agentResourceShared}
+	if hasPublicUnionPolicy(groups) {
+		scope.EmailPolicy = agentproto.PublicEmailUnionPolicy
+		scope.EmailDigest = agentproto.NodeEmailDigest(publicUnionEmails(groups))
+	}
 	for _, group := range groups {
 		if group == "custom:allow-free" {
 			scope.CustomAllowFree = true
@@ -750,7 +754,7 @@ func (h *handler) networkWriteError(c *gin.Context, err error) {
 // deployment credential can manage public pools. Team and restricted credentials
 // remain bound to their enrolled scope; pool names never authorize a scope.
 // resolveScopedAgent admits the optional Free audience only to public-pool managers.
-func (h *handler) resolveScopedAgent(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
+func (h *handler) resolveScopedAgentLegacy(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
 	identity, ok := h.resolveScopedAgentBase(c, credential, requested)
 	if !ok {
 		return identity, false

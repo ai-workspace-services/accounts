@@ -148,7 +148,7 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		if err != nil {
 			return nil, "", err
 		}
-		if !agentResourceScopeAllowsUser(scope, access, &u, packageName) {
+		if !agentResourceScopeAllowsUser(scope, access, &u, packageName) && !(agentproto.PublicResourceClass(scope.ResourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(groups, &u)) {
 			continue
 		}
 		if !u.Active {
@@ -378,6 +378,9 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 	}
 	scope, _ := agentResourceScope(identity.Groups)
 	report.Xray.CustomAllowFree = scope.CustomAllowFree
+	if agentproto.PublicResourceClass(scope.ResourceClass) {
+		report.Xray.AllowedEmails = publicUnionEmails(identity.Groups)
+	}
 	// Ensure report uses the resolved agent id.
 	report.AgentID = identity.ID
 	h.agentRegistry.ReportStatus(identity, report)
