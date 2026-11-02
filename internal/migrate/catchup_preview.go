@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/google/uuid"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -191,4 +194,63 @@ func (s *migrationServer) catchupPreview(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	migrationJSON(w, 200, stage.Report)
+}
+
+// RunMigrationCatchupClient only produces read-only comparison evidence. It
+// never applies differences and keeps both credentials in memory.
+func RunMigrationCatchupClient(ctx context.Context, options MigrationClientOptions, baselineID, baselineHash string) (CatchupPreview, error) {
+	var report CatchupPreview
+	if !migrationUUID(baselineID) || !migrationSHA.MatchString(baselineHash) || options.SourceToken == "" || options.TargetToken == "" {
+		return report, errors.New("committed baseline and source/target credentials required")
+	}
+	source, err := migrationURL(options.SourceURL, options.AllowLoopbackHTTP)
+	if err != nil {
+		return report, err
+	}
+	target, err := migrationURL(options.TargetURL, options.AllowLoopbackHTTP)
+	if err != nil {
+		return report, err
+	}
+	if source.String() == target.String() || (options.TargetLocalPort != "" && strings.EqualFold(source.Hostname(), target.Hostname())) {
+		return report, errors.New("source and target URLs must differ")
+	}
+	if options.SnapshotID == "" {
+		options.SnapshotID = uuid.NewString()
+	}
+	if options.PlanID == "" {
+		options.PlanID = uuid.NewString()
+	}
+	if !migrationUUID(options.SnapshotID) || !migrationUUID(options.PlanID) {
+		return report, errors.New("invalid request IDs")
+	}
+	transport, err := migrationClientTransport(target, options.TargetLocalPort)
+	if err != nil {
+		return report, err
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	var manifest MigrationManifest
+	if err = migrationHTTP(ctx, client, "POST", source.String()+MigrationAPIBase+"/snapshots", options.SourceToken, map[string]string{"request_id": options.SnapshotID}, &manifest); err != nil {
+		return report, err
+	}
+	if manifest.SnapshotID != options.SnapshotID || manifest.SnapshotSHA256 != migrationSnapshotHash(manifest) {
+		return report, errors.New("source manifest binding mismatch")
+	}
+	request := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: options.PlanID, SourceURL: source.String(), SnapshotID: options.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: baselineID, BaselinePlanSHA256: baselineHash}
+	if err = migrationHTTP(ctx, client, "POST", target.String()+MigrationAPIBase+"/catchup/preview", options.TargetToken, request, &report); err != nil {
+		return CatchupPreview{}, fmt.Errorf("retry --snapshot-id %s --request-id %s: %w", options.SnapshotID, options.PlanID, err)
+	}
+	_, order, err := migrationCatalog()
+	if err != nil {
+		return CatchupPreview{}, err
+	}
+	if report.BaselinePlanID != baselineID || report.BaselinePlanSHA256 != baselineHash || report.SourceSnapshotID != manifest.SnapshotID || report.SourceSnapshotSHA256 != manifest.SnapshotSHA256 || !migrationSHA.MatchString(report.TargetIdentitySHA256) || !migrationSHA.MatchString(report.TargetSchemaSHA256) || !migrationSHA.MatchString(report.TargetBaselineSHA256) || len(report.Tables) != len(order) {
+		return CatchupPreview{}, errors.New("catchup response binding mismatch")
+	}
+	for _, name := range order {
+		v, ok := report.Tables[name]
+		if !ok || v.Inserts < 0 || v.SourceUpdates < 0 || v.Matches < 0 || v.TargetChanges < 0 || v.SourceDeletions < 0 || v.Conflicts < 0 {
+			return CatchupPreview{}, errors.New("catchup response table coverage mismatch")
+		}
+	}
+	return report, nil
 }

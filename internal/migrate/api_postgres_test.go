@@ -610,6 +610,17 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if e != nil || changed.Tables["users"].TargetChanges == 0 {
 			t.Fatal("target-only changes not reported", e)
 		}
+		clientOptions := options
+		clientOptions.SnapshotID = uuid.NewString()
+		clientOptions.PlanID = uuid.NewString()
+		clientReport, e := RunMigrationCatchupClient(ctx, clientOptions, done.PlanID, done.PlanSHA256)
+		if e != nil || clientReport.Tables["users"].TargetChanges == 0 {
+			t.Fatal("catchup client preview", e)
+		}
+		clientAgain, e := RunMigrationCatchupClient(ctx, clientOptions, done.PlanID, done.PlanSHA256)
+		if e != nil || migrationDigest(clientAgain) != migrationDigest(clientReport) {
+			t.Fatal("catchup client retry", e)
+		}
 		catchupRequest := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: uuid.NewString(), SourceURL: sourceHTTP.URL, SnapshotID: preview.Snapshot.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: done.PlanID, BaselinePlanSHA256: done.PlanSHA256}
 		var throughAPI CatchupPreview
 		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &throughAPI); e != nil || throughAPI.Tables["users"].TargetChanges == 0 {

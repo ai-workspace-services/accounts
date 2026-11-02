@@ -92,6 +92,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newMigrationServeCmd())
 	cmd.AddCommand(newMigrationTokenCmd())
 	cmd.AddCommand(newMigrationAPICmd())
+	cmd.AddCommand(newMigrationCatchupCmd())
 
 	return cmd
 }
