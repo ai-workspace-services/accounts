@@ -1,10 +1,13 @@
 package migrate
 
 import (
+	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
 	"os"
+	"sort"
 )
 
 // catchupBaselinePage stores only canonical primary-key and row digests. The
@@ -87,4 +90,91 @@ func (s *migrationStore) readCatchupBaseline(subject string, ref catchupBaseline
 		return catchupBaselinePage{}, errors.New("baseline reference mismatch")
 	}
 	return page, nil
+}
+
+// catchupBaselineIndex becomes visible only after every encrypted page is
+// validated. The caller must first verify the database's transactional receipt.
+type catchupBaselineIndex struct {
+	PlanID               string               `json:"plan_id"`
+	PlanSHA256           string               `json:"plan_sha256"`
+	TargetIdentitySHA256 string               `json:"target_identity_sha256"`
+	SnapshotSHA256       string               `json:"snapshot_sha256"`
+	Pages                []catchupBaselineRef `json:"pages"`
+}
+
+func (s *migrationServer) captureCommittedBaseline(ctx context.Context, plan MigrationPlan, subject string) error {
+	preview := plan
+	preview.State = "preview"
+	if plan.State != "applied" || !migrationUUID(plan.PlanID) || migrationPlanHash(preview) != plan.PlanSHA256 || migrationSnapshotHash(plan.Snapshot) != plan.Snapshot.SnapshotSHA256 || !migrationSHA.MatchString(plan.TargetIdentitySHA256) {
+		return errors.New("committed baseline plan binding invalid")
+	}
+	tables, order, err := migrationCatalog()
+	if err != nil {
+		return err
+	}
+	if len(plan.Snapshot.Tables) != len(order) {
+		return errors.New("baseline table coverage differs")
+	}
+	return s.store.locked(ctx, func() error {
+		index := catchupBaselineIndex{PlanID: plan.PlanID, PlanSHA256: plan.PlanSHA256, TargetIdentitySHA256: plan.TargetIdentitySHA256, SnapshotSHA256: plan.Snapshot.SnapshotSHA256}
+		digests := map[string]*businessDigest{}
+		ordinals := map[string]int{}
+		for _, name := range order {
+			digests[name] = &businessDigest{}
+		}
+		for _, chunk := range plan.Snapshot.Chunks {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			table, ok := tables[chunk.Table]
+			if !ok || chunk.Ordinal != ordinals[chunk.Table] {
+				return errors.New("baseline chunk order invalid")
+			}
+			ordinals[chunk.Table]++
+			page, err := s.chunkReader(subject)(chunk)
+			if err != nil {
+				return err
+			}
+			if err = validateMigrationChunk(plan.Snapshot.SnapshotID, chunk, page); err != nil {
+				return err
+			}
+			pageDigest := businessDigest{}
+			for _, row := range page.Rows {
+				if err = pageDigest.add(row, table); err != nil {
+					return err
+				}
+				if err = digests[chunk.Table].add(row, table); err != nil {
+					return err
+				}
+			}
+			leaves := make([]catchupBaselineLeaf, 0, len(pageDigest.Leaves))
+			for _, leaf := range pageDigest.Leaves {
+				leaves = append(leaves, catchupBaselineLeaf{KeySHA256: hex.EncodeToString(leaf.Key[:]), RowSHA256: hex.EncodeToString(leaf.Row[:])})
+			}
+			sort.Slice(leaves, func(i, j int) bool { return leaves[i].KeySHA256 < leaves[j].KeySHA256 })
+			ref, err := s.store.writeCatchupBaseline(subject, catchupBaselinePage{PlanID: plan.PlanID, Table: chunk.Table, Ordinal: chunk.Ordinal, Leaves: leaves})
+			if err != nil {
+				return err
+			}
+			index.Pages = append(index.Pages, ref)
+		}
+		for _, name := range order {
+			got, err := digests[name].finish()
+			if err != nil || got != plan.Snapshot.Tables[name] {
+				return errors.New("baseline source fingerprint mismatch")
+			}
+		}
+		var existing catchupBaselineIndex
+		err := s.store.read("catchup-index", plan.PlanID, subject, &existing)
+		if err == nil {
+			if migrationDigest(existing) != migrationDigest(index) {
+				return errors.New("baseline index differs")
+			}
+			return nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return s.store.write("catchup-index", plan.PlanID, subject, index)
+	})
 }

@@ -694,6 +694,10 @@ func (s *migrationServer) target(w http.ResponseWriter, r *http.Request, parts [
 		migrationError(w, 409, "receipt_unavailable")
 		return
 	} else if ok {
+		if err := s.captureCommittedBaseline(r.Context(), done, subject); err != nil {
+			migrationError(w, 409, "committed_baseline_unavailable")
+			return
+		}
 		migrationJSON(w, 200, done)
 		return
 	}
@@ -708,6 +712,10 @@ func (s *migrationServer) target(w http.ResponseWriter, r *http.Request, parts [
 	plan, err := ApplyMigrationChunks(r.Context(), s.DB, stage.Plan, request.PlanSHA256, subject, s.chunkReader(subject), s.BackupGate)
 	if err != nil {
 		migrationError(w, 409, "apply_conflicted_or_unavailable")
+		return
+	}
+	if err := s.captureCommittedBaseline(r.Context(), plan, subject); err != nil {
+		migrationError(w, 409, "committed_baseline_unavailable")
 		return
 	}
 	migrationJSON(w, 200, plan)

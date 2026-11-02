@@ -567,9 +567,21 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if e != nil || done.State != "applied" {
 			t.Fatal("Accounts apply", e)
 		}
+		baselinePath := filepath.Join(targetDir, "catchup-index-"+done.PlanID+".gcm")
+		if _, e := os.Stat(baselinePath); e != nil {
+			t.Fatal("committed baseline missing", e)
+		}
+		// Simulate a response/marker failure after DB commit; retry must recover
+		// from the verified transactional receipt and existing encrypted chunks.
+		if e := os.Remove(baselinePath); e != nil {
+			t.Fatal(e)
+		}
 		again, e := RunMigrationClient(ctx, options)
 		if e != nil || again.PlanSHA256 != done.PlanSHA256 {
 			t.Fatal("Accounts idempotent retry", e)
+		}
+		if _, e := os.Stat(baselinePath); e != nil {
+			t.Fatal("committed baseline not recovered", e)
 		}
 		options.Apply = false
 		options.Status = true
