@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 )
 
@@ -149,38 +148,8 @@ func executeCatchupRows(ctx context.Context, tx *sql.Tx, prepared preparedCatchu
 			return errors.New("catchup source action missing")
 		}
 	}
-	// Explicitly inserted identity/serial keys must not be reused by normal
-	// application writes. ALTER SEQUENCE RESTART is transactional in PostgreSQL.
-	for _, name := range prepared.order {
-		if reviewed.Tables[name].Inserts == 0 {
-			continue
-		}
-		for _, pk := range prepared.tables[name].PrimaryKey {
-			var sequence sql.NullString
-			if err = tx.QueryRowContext(ctx, `SELECT pg_get_serial_sequence($1,$2)`, "public."+quoteBusiness(name), pk).Scan(&sequence); err != nil {
-				return errors.New("catchup sequence discovery failed")
-			}
-			if !sequence.Valid {
-				continue
-			}
-			var quoted string
-			if err = tx.QueryRowContext(ctx, `SELECT format('%I.%I', n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.oid=$1::regclass AND c.relkind='S'`, sequence.String).Scan(&quoted); err != nil {
-				return errors.New("catchup sequence unavailable")
-			}
-			var next, current int64
-			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(max(`+quoteBusiness(pk)+`),0)+1 FROM public.`+quoteBusiness(name)).Scan(&next); err != nil {
-				return errors.New("catchup sequence bound unavailable")
-			}
-			if err = tx.QueryRowContext(ctx, `SELECT last_value FROM `+quoted).Scan(&current); err != nil {
-				return errors.New("catchup sequence unreadable")
-			}
-			if next <= current {
-				next = current + 1
-			}
-			if _, err = tx.ExecContext(ctx, `ALTER SEQUENCE `+quoted+` RESTART WITH `+fmt.Sprint(next)); err != nil {
-				return errors.New("catchup sequence update failed")
-			}
-		}
+	if err = advanceMigrationSequences(ctx, tx, reviewed.Tables["finance_operation_events"].Inserts > 0, reviewed.Tables["referral_campaign_revisions"].Inserts > 0); err != nil {
+		return err
 	}
 	for _, name := range prepared.order {
 		got, e := migrationQueryDigest(ctx, tx, `SELECT to_jsonb(t)::text FROM public.`+quoteBusiness(name)+` t`, prepared.tables[name])

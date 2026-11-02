@@ -540,6 +540,120 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 		sourceHTTP := httptest.NewServer(handler)
 		defer sourceHTTP.Close()
+		t.Run("nonowner-target-end-to-end", func(t *testing.T) {
+			if os.Getenv("MIGRATECTL_CATCHUP_SCALE_ROWS") != "" {
+				t.Skip("ordinary fixture tests the dedicated role; scale run uses the existing owner fixture")
+			}
+			var exists bool
+			if e := admin.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='accounts_migration')`).Scan(&exists); e != nil || exists {
+				t.Fatal("existing migration role on fixture; refusing to modify it")
+			}
+			execSQL(admin, `CREATE ROLE accounts_migration LOGIN PASSWORD 'isolated-readonly-fixture' NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`)
+			parentTest.Cleanup(func() {
+				if _, e := admin.Exec(`DROP ROLE accounts_migration`); e != nil {
+					parentTest.Error(e)
+				}
+			})
+			targetAdmin, targetName := newDB()
+			targetAdmin.SetMaxOpenConns(1)
+			if e := InitializeMigrationReceipts(ctx, targetAdmin); e != nil {
+				t.Fatal(e)
+			}
+			execSQL(targetAdmin, `GRANT USAGE ON SCHEMA public,accounts_migration_api TO accounts_migration; GRANT SELECT ON public.schema_migrations TO accounts_migration; GRANT SELECT,INSERT ON accounts_migration_api.receipts,accounts_migration_api.catchup_receipts TO accounts_migration; GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO accounts_migration; GRANT TEMPORARY ON DATABASE `+quoteBusiness(targetName)+` TO accounts_migration`)
+			for _, name := range migrationAPITables {
+				execSQL(targetAdmin, `GRANT SELECT,INSERT,UPDATE ON public.`+quoteBusiness(name)+` TO accounts_migration`)
+				var rls bool
+				if e := targetAdmin.QueryRow(`SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass($1)`, "public."+name).Scan(&rls); e != nil {
+					t.Fatal(e)
+				}
+				if rls {
+					execSQL(targetAdmin, `CREATE POLICY migration_candidate_access ON public.`+quoteBusiness(name)+` FOR ALL TO accounts_migration USING(true) WITH CHECK(true)`)
+				}
+			}
+			execSQL(targetAdmin, `SELECT set_config('accounts_migration_guard.system_identifier',(SELECT system_identifier::text FROM pg_control_system()),false),set_config('accounts_migration_guard.database_oid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),false)`)
+			triggerSQL, e := os.ReadFile(filepath.Join("..", "..", "sql", "compat", "migration-trigger-guards.sql"))
+			if e != nil {
+				t.Fatal(e)
+			}
+			execSQL(targetAdmin, string(triggerSQL))
+			execSQL(targetAdmin, migrationSequenceInstallation)
+			roleCfg := cfg.Copy()
+			roleCfg.Database, roleCfg.User, roleCfg.Password = targetName, "accounts_migration", fixturePassword
+			roleDB := stdlib.OpenDB(*roleCfg)
+			defer roleDB.Close()
+			var safeRole bool
+			if e := roleDB.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=current_user AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND NOT rolinherit) AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)) AND NOT has_table_privilege(current_user,'public.users','DELETE') AND NOT has_schema_privilege(current_user,'public','CREATE')`).Scan(&safeRole); e != nil || !safeRole {
+				t.Fatal("target migration login is not a restricted nonowner", e)
+			}
+			if _, e := roleDB.Exec(`ALTER SEQUENCE public.finance_operation_events_id_seq RESTART WITH 1`); e == nil {
+				t.Fatal("nonowner could alter sequence directly")
+			}
+			roleDir := t.TempDir()
+			if e := os.Chmod(roleDir, 0700); e != nil {
+				t.Fatal(e)
+			}
+			roleOptions := MigrationServerOptions{DB: roleDB, Role: "target", Audience: binding.TargetAudience, SourceAudience: binding.SourceAudience, TargetAudience: binding.TargetAudience, JobID: binding.JobID, AccountsAuthorize: targetAuthorize, StagingKey: bytes.Repeat([]byte{8}, 32), StagingDirectory: roleDir, Lifetime: time.Hour, Peers: MigrationPeerPolicy{URLs: []string{sourceHTTP.URL}, Networks: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, AllowLoopbackHTTP: true}, BackupGate: func(context.Context, MigrationPlan) error { return nil }}
+			roleHandler, e := NewMigrationHandler(roleOptions)
+			if e != nil {
+				t.Fatal(e)
+			}
+			roleHTTP := httptest.NewServer(roleHandler)
+			defer roleHTTP.Close()
+			roleClient := MigrationClientOptions{SourceURL: sourceHTTP.URL, TargetURL: roleHTTP.URL, SourceToken: "existing-source-session", TargetToken: "existing-target-session", SnapshotID: uuid.NewString(), PlanID: uuid.NewString(), AllowLoopbackHTTP: true}
+			first, e := RunMigrationClient(ctx, roleClient)
+			if e != nil || first.State != "preview" {
+				t.Fatal("nonowner preview", e)
+			}
+			roleClient.Apply, roleClient.PlanSHA256 = true, first.PlanSHA256
+			done, e := RunMigrationClient(ctx, roleClient)
+			if e != nil || done.State != "applied" {
+				t.Fatal("nonowner initial transfer", e)
+			}
+			var originalName string
+			var originalVersion int64
+			var originalUpdated time.Time
+			if e = source.QueryRow(`SELECT username,version,updated_at FROM public.users WHERE uuid=$1`, userB).Scan(&originalName, &originalVersion, &originalUpdated); e != nil {
+				t.Fatal(e)
+			}
+			defer func() {
+				tx, err := source.Begin()
+				if err == nil {
+					_, err = tx.Exec(`SET LOCAL session_replication_role=replica`)
+				}
+				if err == nil {
+					_, err = tx.Exec(`UPDATE public.users SET username=$1,version=$2,updated_at=$3 WHERE uuid=$4`, originalName, originalVersion, originalUpdated, userB)
+				}
+				if err == nil {
+					err = tx.Commit()
+				} else if tx != nil {
+					_ = tx.Rollback()
+				}
+				if err != nil {
+					t.Errorf("restore synthetic source fixture: %v", err)
+				}
+			}()
+			execSQL(source, `UPDATE public.users SET username='bob-catchup' WHERE uuid=$1`, userB)
+			roleClient.Apply = false
+			roleClient.SnapshotID, roleClient.PlanID = uuid.NewString(), uuid.NewString()
+			catchup, e := RunMigrationCatchupClient(ctx, roleClient, done.PlanID, done.PlanSHA256)
+			if e != nil || catchup.Tables["users"].SourceUpdates != 1 || catchup.Tables["users"].Conflicts != 0 {
+				t.Fatal("nonowner users catchup preview", e)
+			}
+			if _, e = RunMigrationCatchupApplyClient(ctx, roleClient, catchup.RequestID, catchup.ReportSHA256); e != nil {
+				t.Fatal("nonowner users catchup apply", e)
+			}
+			var sourceDigest, targetDigest string
+			if e = source.QueryRow(`SELECT md5(to_jsonb(u)::text) FROM public.users u WHERE uuid=$1`, userB).Scan(&sourceDigest); e != nil {
+				t.Fatal(e)
+			}
+			if e = targetAdmin.QueryRow(`SELECT md5(to_jsonb(u)::text) FROM public.users u WHERE uuid=$1`, userB).Scan(&targetDigest); e != nil || sourceDigest != targetDigest {
+				t.Fatal("nonowner users catchup row differs", e)
+			}
+			var financeNext, referralNext int64
+			if e = targetAdmin.QueryRow(`SELECT nextval('public.finance_operation_events_id_seq'),nextval('public.referral_campaign_revisions_revision_seq')`).Scan(&financeNext, &referralNext); e != nil || financeNext <= 99 || referralNext <= 1 {
+				t.Fatal("nonowner sequence advancement", e)
+			}
+		})
 		targetOptions := MigrationServerOptions{DB: httpTarget, Role: "target", Audience: binding.TargetAudience, SourceAudience: binding.SourceAudience, TargetAudience: binding.TargetAudience, JobID: binding.JobID, AccountsAuthorize: targetAuthorize, StagingKey: bytes.Repeat([]byte{4}, 32), StagingDirectory: targetDir, Lifetime: time.Hour, Peers: MigrationPeerPolicy{URLs: []string{sourceHTTP.URL}, Networks: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, AllowLoopbackHTTP: true}}
 		handler, e = NewMigrationHandler(targetOptions)
 		if e != nil {

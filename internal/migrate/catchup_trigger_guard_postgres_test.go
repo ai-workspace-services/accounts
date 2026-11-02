@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -93,6 +94,14 @@ GRANT SELECT, UPDATE ON public.guard_fixture TO accounts_migration, ` + quoteBus
 			t.Fatalf("guard install or idempotent retry: %v", err)
 		}
 	}
+	if err = InitializeMigrationReceipts(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err = db.Exec(migrationSequenceInstallation); err != nil {
+			t.Fatalf("sequence helper install or idempotent retry: %v", err)
+		}
+	}
 	connect := func(user, password string) *sql.DB {
 		t.Helper()
 		roleCfg := dbCfg.Copy()
@@ -107,6 +116,120 @@ GRANT SELECT, UPDATE ON public.guard_fixture TO accounts_migration, ` + quoteBus
 	executor := connect("accounts_migration", "fixture-executor")
 	app := connect(business, "fixture-business")
 	app.SetMaxOpenConns(1)
+	if _, err = app.Exec(`SELECT accounts_migration_api.advance_sequences()`); err == nil {
+		t.Fatal("business login could invoke migration sequence helper")
+	}
+	if _, err = db.Exec(`INSERT INTO public.finance_operations(id,idempotency_key,operation_type,target_type,target_id,status) VALUES('00000000-0000-4000-8000-000000000073','guard-operation','refund','payment','00000000-0000-4000-8000-000000000074','succeeded');
+INSERT INTO public.finance_operation_events(id,operation_id,attempt,event_type,status) OVERRIDING SYSTEM VALUE VALUES(100,'00000000-0000-4000-8000-000000000073',1,'refund','succeeded');
+INSERT INTO public.referral_campaign_revisions(revision,enabled,effective_at,reason) VALUES(73,true,'1970-01-01Z','guard-fixture')`); err != nil {
+		t.Fatal(err)
+	}
+	var firstFinance, firstReferral int64
+	if err = db.QueryRow(`SELECT (SELECT last_value FROM public.finance_operation_events_id_seq),(SELECT last_value FROM public.referral_campaign_revisions_revision_seq)`).Scan(&firstFinance, &firstReferral); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := executor.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = advanceMigrationSequences(context.Background(), tx, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var rollbackFinance, rollbackReferral int64
+	if err = db.QueryRow(`SELECT (SELECT last_value FROM public.finance_operation_events_id_seq),(SELECT last_value FROM public.referral_campaign_revisions_revision_seq)`).Scan(&rollbackFinance, &rollbackReferral); err != nil || rollbackFinance != firstFinance || rollbackReferral != firstReferral {
+		t.Fatalf("sequence changes survived rollback: %v", err)
+	}
+	tx, err = executor.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = advanceMigrationSequences(context.Background(), tx, true, true); err != nil {
+		t.Fatal(err)
+	}
+	nextvalResult := make(chan error, 1)
+	go func() {
+		var value int64
+		nextvalResult <- db.QueryRow(`SELECT nextval('public.finance_operation_events_id_seq')`).Scan(&value)
+	}()
+	select {
+	case err = <-nextvalResult:
+		t.Fatalf("concurrent nextval escaped the transaction sequence lock: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-nextvalResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent nextval did not resume after rollback")
+	}
+	tx, err = executor.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = advanceMigrationSequences(context.Background(), tx, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var nextFinance, nextReferral int64
+	if err = db.QueryRow(`SELECT nextval('public.finance_operation_events_id_seq'),nextval('public.referral_campaign_revisions_revision_seq')`).Scan(&nextFinance, &nextReferral); err != nil || nextFinance <= 100 || nextReferral <= 73 {
+		t.Fatalf("imported sequence values could be reused: %v", err)
+	}
+	if _, err = db.Exec(`GRANT EXECUTE ON FUNCTION accounts_migration_api.advance_sequences() TO ` + quoteBusiness(business)); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = executor.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = advanceMigrationSequences(context.Background(), tx, true, true); err == nil {
+		t.Fatal("sequence helper accepted an extra execute grant")
+	}
+	_ = tx.Rollback()
+	if _, err = db.Exec(`REVOKE EXECUTE ON FUNCTION accounts_migration_api.advance_sequences() FROM ` + quoteBusiness(business)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`ALTER FUNCTION accounts_migration_api.advance_sequences() SET search_path='public'`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = executor.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = advanceMigrationSequences(context.Background(), tx, true, true); err == nil {
+		t.Fatal("sequence helper accepted unreviewed execution settings")
+	}
+	_ = tx.Rollback()
+	if _, err = db.Exec(`ALTER FUNCTION accounts_migration_api.advance_sequences() SET search_path=pg_catalog`); err != nil {
+		t.Fatal(err)
+	}
+	var reviewedDefinition string
+	if err = db.QueryRow(`SELECT pg_get_functiondef('accounts_migration_api.advance_sequences()'::regprocedure)`).Scan(&reviewedDefinition); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`CREATE OR REPLACE FUNCTION accounts_migration_api.advance_sequences() RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN NULL; END; $$`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = executor.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = advanceMigrationSequences(context.Background(), tx, true, true); err == nil {
+		t.Fatal("sequence helper accepted an altered function body")
+	}
+	_ = tx.Rollback()
+	if _, err = db.Exec(reviewedDefinition); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = app.Exec(`SET ROLE accounts_migration`); err == nil {
 		t.Fatal("business login could assume migration role")
 	}
@@ -134,6 +257,9 @@ GRANT SELECT, UPDATE ON public.guard_fixture TO accounts_migration, ` + quoteBus
 	}
 	if _, err = app.Exec(`SET ROLE accounts_migration`); err != nil {
 		t.Fatal(err)
+	}
+	if _, err = app.Exec(`SELECT accounts_migration_api.advance_sequences()`); err == nil {
+		t.Fatal("sequence helper accepted an assumed migration identity")
 	}
 	if _, err = app.Exec(`UPDATE public.guard_fixture SET version=900 WHERE id=1`); err == nil {
 		t.Fatal("trigger accepted an assumable migration identity")
