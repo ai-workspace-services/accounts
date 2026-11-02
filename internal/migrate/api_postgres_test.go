@@ -595,6 +595,26 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if _, e = baselineServer.loadCommittedBaseline(ctx, done.PlanID, done.PlanSHA256, migrationDigest("other-admin")); e == nil {
 			t.Fatal("baseline loaded for other subject")
 		}
+		catchup, e := baselineServer.previewCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), preview.Snapshot)
+		if e != nil || len(catchup.Tables) != len(done.Snapshot.Tables) {
+			t.Fatal("catchup preview", e)
+		}
+		for name, counts := range catchup.Tables {
+			if counts.Inserts != 0 || counts.SourceUpdates != 0 || counts.Conflicts != 0 {
+				t.Fatalf("unexpected replay changes %s: %+v", name, counts)
+			}
+		}
+		// A target-only change after the baseline must be preserved and reported.
+		execSQL(httpTarget, `UPDATE public.users SET updated_at=updated_at+interval '1 second'`)
+		changed, e := baselineServer.previewCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), preview.Snapshot)
+		if e != nil || changed.Tables["users"].TargetChanges == 0 {
+			t.Fatal("target-only changes not reported", e)
+		}
+		tampered := preview.Snapshot
+		tampered.SourceIdentitySHA256 = strings.Repeat("0", 64)
+		if _, e = baselineServer.previewCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), tampered); e == nil {
+			t.Fatal("tampered catchup source accepted")
+		}
 		options.Apply = false
 		options.Status = true
 		options.TargetToken += "-other"
