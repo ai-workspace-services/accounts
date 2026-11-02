@@ -109,3 +109,19 @@ func MigrationBackupFileGate(path string) (MigrationBackupGate, error) {
 		return nil
 	}, nil
 }
+
+// migrationCatchupBackupFileGate reuses the owner-controlled populated-restore
+// receipt. It checks the exact pre-write target identity, schema and data
+// fingerprint from the reviewed catch-up preview on every invocation.
+func migrationCatchupBackupFileGate(path string) (catchupBackupGate, error) {
+	gate, err := MigrationBackupFileGate(path)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, report CatchupPreview) error {
+		if !migrationSHA.MatchString(report.TargetIdentitySHA256) || !migrationSHA.MatchString(report.TargetSchemaSHA256) || !migrationSHA.MatchString(report.TargetBaselineSHA256) {
+			return errors.New("catchup backup binding invalid")
+		}
+		return gate(ctx, MigrationPlan{TargetIdentitySHA256: report.TargetIdentitySHA256, TargetSchemaSHA256: report.TargetSchemaSHA256, TargetBaselineSHA256: report.TargetBaselineSHA256})
+	}, nil
+}

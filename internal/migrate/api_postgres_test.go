@@ -142,6 +142,7 @@ func TestMigrationAPIPostgres17(t *testing.T) {
  INSERT INTO public.subscription_extension_ledger(reward_id,user_uuid,subscription_uuid,days,effective_from,effective_until) VALUES('`+reward+`','`+userA+`','`+sub+`',30,'2026-01-01Z','2026-01-31Z');
  INSERT INTO public.sessions(token,expires_at,user_uuid) VALUES('fixture-session-secret','2030-01-01Z','`+userA+`');
  INSERT INTO public.oauth_exchange_codes(code,session_token,session_expires_at,expires_at) VALUES('fixture-code','fixture-token','2030-01-01Z','2030-01-01Z')`)
+
 	execSQL(source, `GRANT USAGE ON SCHEMA public TO readonly_release; GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_release; GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO readonly_release`)
 	for _, name := range migrationAPITables {
 		var rls bool
@@ -486,6 +487,14 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 	})
 
 	t.Run("accounts-authenticated-http-transfer", func(t *testing.T) {
+		if os.Getenv("MIGRATECTL_CATCHUP_SCALE_ROWS") == "92143" {
+			// Opt-in isolated scale fixture approximates both large production tables.
+			defer execSQL(source, `SET session_replication_role=replica; DELETE FROM public.billing_ledger WHERE bucket_start >= '2026-01-01Z'::timestamptz+1004*interval '1 minute'; DELETE FROM public.traffic_minute_buckets WHERE node_id='fixture-scale'; SET session_replication_role=origin`)
+			execSQL(source, `INSERT INTO public.billing_ledger(id,account_uuid,bucket_start,bucket_end,entry_type,rated_bytes,amount_delta,balance_after)
+			SELECT md5('scale-ledger-'||g)::uuid,'`+userA+`','2026-01-01Z'::timestamptz+g*interval '1 minute','2026-01-01Z'::timestamptz+(g+1)*interval '1 minute','usage',g,0,0 FROM generate_series(1004,92143) g;
+			INSERT INTO public.traffic_minute_buckets(account_uuid,node_id,bucket_start,total_bytes)
+			SELECT '`+userA+`','fixture-scale','2026-01-01Z'::timestamptz+g*interval '1 minute',g FROM generate_series(1,92140) g`)
+		}
 		httpTarget, _ := newDB()
 		// Separate Accounts authorities authorize different local administrators.
 		var revoked atomic.Bool
@@ -531,6 +540,189 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		}
 		sourceHTTP := httptest.NewServer(handler)
 		defer sourceHTTP.Close()
+		invalidSourceOptions := sourceOptions
+		invalidSourceOptions.AllowUnversionedTarget = true
+		if _, e = NewMigrationHandler(invalidSourceOptions); e == nil {
+			t.Fatal("source listener accepted target-only schema opt-in")
+		}
+		t.Run("nonowner-target-end-to-end", func(t *testing.T) {
+			if os.Getenv("MIGRATECTL_CATCHUP_SCALE_ROWS") != "" {
+				t.Skip("ordinary fixture tests the dedicated role; scale run uses the existing owner fixture")
+			}
+			var exists bool
+			if e := admin.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='accounts_migration')`).Scan(&exists); e != nil || exists {
+				t.Fatal("existing migration role on fixture; refusing to modify it")
+			}
+			execSQL(admin, `CREATE ROLE accounts_migration LOGIN PASSWORD 'isolated-readonly-fixture' NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`)
+			parentTest.Cleanup(func() {
+				if _, e := admin.Exec(`DROP ROLE accounts_migration`); e != nil {
+					parentTest.Error(e)
+				}
+			})
+			targetAdmin, targetName := newDB()
+			targetAdmin.SetMaxOpenConns(1)
+			if e := InitializeMigrationReceipts(ctx, targetAdmin); e != nil {
+				t.Fatal(e)
+			}
+			execSQL(targetAdmin, `GRANT USAGE ON SCHEMA public,accounts_migration_api TO accounts_migration; GRANT SELECT ON public.schema_migrations TO accounts_migration; GRANT SELECT,INSERT ON accounts_migration_api.receipts,accounts_migration_api.catchup_receipts TO accounts_migration; GRANT EXECUTE ON FUNCTION pg_catalog.pg_control_system() TO accounts_migration; GRANT TEMPORARY ON DATABASE `+quoteBusiness(targetName)+` TO accounts_migration`)
+			for _, name := range migrationAPITables {
+				execSQL(targetAdmin, `GRANT SELECT,INSERT,UPDATE ON public.`+quoteBusiness(name)+` TO accounts_migration`)
+				var rls bool
+				if e := targetAdmin.QueryRow(`SELECT relrowsecurity FROM pg_class WHERE oid=to_regclass($1)`, "public."+name).Scan(&rls); e != nil {
+					t.Fatal(e)
+				}
+				if rls {
+					execSQL(targetAdmin, `CREATE POLICY migration_candidate_access ON public.`+quoteBusiness(name)+` FOR ALL TO accounts_migration USING(true) WITH CHECK(true)`)
+				}
+			}
+			execSQL(targetAdmin, `SELECT set_config('accounts_migration_guard.system_identifier',(SELECT system_identifier::text FROM pg_control_system()),false),set_config('accounts_migration_guard.database_oid',(SELECT oid::text FROM pg_database WHERE datname=current_database()),false)`)
+			triggerSQL, e := os.ReadFile(filepath.Join("..", "..", "sql", "compat", "migration-trigger-guards.sql"))
+			if e != nil {
+				t.Fatal(e)
+			}
+			execSQL(targetAdmin, string(triggerSQL))
+			execSQL(targetAdmin, migrationSequenceInstallation)
+			// Model an existing business target that has no application checkpoint.
+			// The source remains versioned and is never modified by the listener.
+			execSQL(targetAdmin, `DROP TABLE public.schema_migrations`)
+			unversionedCtx := context.WithValue(ctx, migrationUnversionedTargetKey{}, true)
+			_, scope, e := migrationCatalog()
+			if e != nil {
+				t.Fatal(e)
+			}
+			checkTx, e := targetAdmin.BeginTx(ctx, nil)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = migrationSchemaForRole(unversionedCtx, checkTx, scope, true); e == nil {
+				t.Fatal("unversioned source accepted under target opt-in")
+			}
+			originalSchema, e := migrationSchemaForRole(unversionedCtx, checkTx, scope, false)
+			if e != nil {
+				t.Fatal("unversioned target fixture schema", e)
+			}
+			if _, e = checkTx.Exec(`CREATE INDEX unreviewed_target_fixture ON public.users(username)`); e != nil {
+				t.Fatal(e)
+			}
+			changedSchema, e := migrationSchemaForRole(unversionedCtx, checkTx, scope, false)
+			if e != nil || changedSchema == originalSchema {
+				t.Fatal("unversioned target index drift was not fingerprinted", e)
+			}
+			if _, e = checkTx.Exec(`ALTER TABLE public.users ADD COLUMN unreviewed_fixture text`); e != nil {
+				t.Fatal(e)
+			}
+			if _, e = migrationSchemaForRole(unversionedCtx, checkTx, scope, false); e == nil {
+				t.Fatal("unversioned target with unreviewed column accepted")
+			}
+			if e = checkTx.Rollback(); e != nil {
+				t.Fatal(e)
+			}
+			checkTx, e = targetAdmin.BeginTx(ctx, nil)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if _, e = checkTx.Exec(`CREATE TABLE public.schema_migrations(version bigint PRIMARY KEY,dirty boolean NOT NULL); INSERT INTO public.schema_migrations VALUES(2026102801,false); SET LOCAL ROLE accounts_migration`); e != nil {
+				t.Fatal(e)
+			}
+			if _, e = migrationSchemaForRole(unversionedCtx, checkTx, scope, false); e == nil {
+				t.Fatal("unreadable existing checkpoint was mistaken for an absent one")
+			}
+			if e = checkTx.Rollback(); e != nil {
+				t.Fatal(e)
+			}
+			roleCfg := cfg.Copy()
+			roleCfg.Database, roleCfg.User, roleCfg.Password = targetName, "accounts_migration", fixturePassword
+			roleDB := stdlib.OpenDB(*roleCfg)
+			defer roleDB.Close()
+			var safeRole bool
+			if e := roleDB.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=current_user AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls AND NOT rolinherit) AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p') AND c.relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)) AND NOT has_table_privilege(current_user,'public.users','DELETE') AND NOT has_schema_privilege(current_user,'public','CREATE')`).Scan(&safeRole); e != nil || !safeRole {
+				t.Fatal("target migration login is not a restricted nonowner", e)
+			}
+			if _, e := roleDB.Exec(`ALTER SEQUENCE public.finance_operation_events_id_seq RESTART WITH 1`); e == nil {
+				t.Fatal("nonowner could alter sequence directly")
+			}
+			roleDir := t.TempDir()
+			if e := os.Chmod(roleDir, 0700); e != nil {
+				t.Fatal(e)
+			}
+			roleOptions := MigrationServerOptions{DB: roleDB, Role: "target", Audience: binding.TargetAudience, SourceAudience: binding.SourceAudience, TargetAudience: binding.TargetAudience, JobID: binding.JobID, AccountsAuthorize: targetAuthorize, StagingKey: bytes.Repeat([]byte{8}, 32), StagingDirectory: roleDir, Lifetime: time.Hour, Peers: MigrationPeerPolicy{URLs: []string{sourceHTTP.URL}, Networks: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, AllowLoopbackHTTP: true}, BackupGate: func(context.Context, MigrationPlan) error { return nil }}
+			roleHandler, e := NewMigrationHandler(roleOptions)
+			if e != nil {
+				t.Fatal(e)
+			}
+			roleHTTP := httptest.NewServer(roleHandler)
+			defer func() { roleHTTP.Close() }()
+			roleClient := MigrationClientOptions{SourceURL: sourceHTTP.URL, TargetURL: roleHTTP.URL, SourceToken: "existing-source-session", TargetToken: "existing-target-session", SnapshotID: uuid.NewString(), PlanID: uuid.NewString(), AllowLoopbackHTTP: true}
+			if _, e := RunMigrationClient(ctx, roleClient); e == nil {
+				t.Fatal("unversioned target preview accepted without operator opt-in")
+			}
+			roleHTTP.Close()
+			roleOptions.AllowUnversionedTarget = true
+			roleHandler, e = NewMigrationHandler(roleOptions)
+			if e != nil {
+				t.Fatal(e)
+			}
+			roleHTTP = httptest.NewServer(roleHandler)
+			roleClient.TargetURL = roleHTTP.URL
+			first, e := RunMigrationClient(ctx, roleClient)
+			if e != nil || first.State != "preview" || first.TargetSchemaMode != migrationUnversionedTargetMode {
+				t.Fatal("nonowner preview", e)
+			}
+			roleClient.Apply, roleClient.PlanSHA256 = true, first.PlanSHA256
+			done, e := RunMigrationClient(ctx, roleClient)
+			if e != nil || done.State != "applied" {
+				t.Fatal("nonowner initial transfer", e)
+			}
+			var originalName string
+			var originalVersion int64
+			var originalUpdated time.Time
+			if e = source.QueryRow(`SELECT username,version,updated_at FROM public.users WHERE uuid=$1`, userB).Scan(&originalName, &originalVersion, &originalUpdated); e != nil {
+				t.Fatal(e)
+			}
+			defer func() {
+				tx, err := source.Begin()
+				if err == nil {
+					_, err = tx.Exec(`SET LOCAL session_replication_role=replica`)
+				}
+				if err == nil {
+					_, err = tx.Exec(`UPDATE public.users SET username=$1,version=$2,updated_at=$3 WHERE uuid=$4`, originalName, originalVersion, originalUpdated, userB)
+				}
+				if err == nil {
+					err = tx.Commit()
+				} else if tx != nil {
+					_ = tx.Rollback()
+				}
+				if err != nil {
+					t.Errorf("restore synthetic source fixture: %v", err)
+				}
+			}()
+			execSQL(source, `UPDATE public.users SET username='bob-catchup' WHERE uuid=$1`, userB)
+			roleClient.Apply = false
+			roleClient.SnapshotID, roleClient.PlanID = uuid.NewString(), uuid.NewString()
+			catchup, e := RunMigrationCatchupClient(ctx, roleClient, done.PlanID, done.PlanSHA256)
+			if e != nil || catchup.TargetSchemaMode != migrationUnversionedTargetMode || catchup.Tables["users"].SourceUpdates != 1 || catchup.Tables["users"].Conflicts != 0 {
+				t.Fatal("nonowner users catchup preview", e)
+			}
+			firstReceipt, e := RunMigrationCatchupApplyClient(ctx, roleClient, catchup.RequestID, catchup.ReportSHA256)
+			if e != nil {
+				t.Fatal("nonowner users catchup apply", e)
+			}
+			againReceipt, e := RunMigrationCatchupApplyClient(ctx, roleClient, catchup.RequestID, catchup.ReportSHA256)
+			if e != nil || migrationDigest(firstReceipt) != migrationDigest(againReceipt) {
+				t.Fatal("nonowner exact catchup retry", e)
+			}
+			var sourceDigest, targetDigest string
+			if e = source.QueryRow(`SELECT md5(to_jsonb(u)::text) FROM public.users u WHERE uuid=$1`, userB).Scan(&sourceDigest); e != nil {
+				t.Fatal(e)
+			}
+			if e = targetAdmin.QueryRow(`SELECT md5(to_jsonb(u)::text) FROM public.users u WHERE uuid=$1`, userB).Scan(&targetDigest); e != nil || sourceDigest != targetDigest {
+				t.Fatal("nonowner users catchup row differs", e)
+			}
+			var financeNext, referralNext int64
+			if e = targetAdmin.QueryRow(`SELECT nextval('public.finance_operation_events_id_seq'),nextval('public.referral_campaign_revisions_revision_seq')`).Scan(&financeNext, &referralNext); e != nil || financeNext <= 99 || referralNext <= 1 {
+				t.Fatal("nonowner sequence advancement", e)
+			}
+		})
 		targetOptions := MigrationServerOptions{DB: httpTarget, Role: "target", Audience: binding.TargetAudience, SourceAudience: binding.SourceAudience, TargetAudience: binding.TargetAudience, JobID: binding.JobID, AccountsAuthorize: targetAuthorize, StagingKey: bytes.Repeat([]byte{4}, 32), StagingDirectory: targetDir, Lifetime: time.Hour, Peers: MigrationPeerPolicy{URLs: []string{sourceHTTP.URL}, Networks: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}, AllowLoopbackHTTP: true}}
 		handler, e = NewMigrationHandler(targetOptions)
 		if e != nil {
@@ -567,9 +759,305 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if e != nil || done.State != "applied" {
 			t.Fatal("Accounts apply", e)
 		}
+		baselinePath := filepath.Join(targetDir, "catchup-index-"+done.PlanID+".gcm")
+		if _, e := os.Stat(baselinePath); e != nil {
+			t.Fatal("committed baseline missing", e)
+		}
+		// Simulate a response/marker failure after DB commit; retry must recover
+		// from the verified transactional receipt and existing encrypted chunks.
+		if e := os.Remove(baselinePath); e != nil {
+			t.Fatal(e)
+		}
 		again, e := RunMigrationClient(ctx, options)
 		if e != nil || again.PlanSHA256 != done.PlanSHA256 {
 			t.Fatal("Accounts idempotent retry", e)
+		}
+		if _, e := os.Stat(baselinePath); e != nil {
+			t.Fatal("committed baseline not recovered", e)
+		}
+		baselineStore, e := newMigrationStore(targetDir, targetOptions.StagingKey)
+		if e != nil {
+			t.Fatal(e)
+		}
+		baselineServer := &migrationServer{MigrationServerOptions: targetOptions, store: baselineStore}
+		baseline, e := baselineServer.loadCommittedBaseline(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"))
+		if e != nil || len(baseline) != len(done.Snapshot.Tables) {
+			t.Fatal("verified baseline load", e)
+		}
+		if _, e = baselineServer.loadCommittedBaseline(ctx, done.PlanID, done.PlanSHA256, migrationDigest("other-admin")); e == nil {
+			t.Fatal("baseline loaded for other subject")
+		}
+		catchup, e := baselineServer.previewCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), preview.Snapshot)
+		if e != nil || len(catchup.Tables) != len(done.Snapshot.Tables) {
+			t.Fatal("catchup preview", e)
+		}
+		for name, counts := range catchup.Tables {
+			if counts.Inserts != 0 || counts.SourceUpdates != 0 || counts.Conflicts != 0 {
+				t.Fatalf("unexpected replay changes %s: %+v", name, counts)
+			}
+		}
+		// A target-only change after the baseline must be preserved and reported.
+		execSQL(httpTarget, `UPDATE public.users SET updated_at=updated_at+interval '1 second'`)
+		changed, e := baselineServer.previewCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), preview.Snapshot)
+		if e != nil || changed.Tables["users"].TargetChanges == 0 {
+			t.Fatal("target-only changes not reported", e)
+		}
+		clientOptions := options
+		clientOptions.SnapshotID = uuid.NewString()
+		clientOptions.PlanID = uuid.NewString()
+		clientReport, e := RunMigrationCatchupClient(ctx, clientOptions, done.PlanID, done.PlanSHA256)
+		if e != nil || clientReport.Tables["users"].TargetChanges == 0 {
+			t.Fatal("catchup client preview", e)
+		}
+		clientAgain, e := RunMigrationCatchupClient(ctx, clientOptions, done.PlanID, done.PlanSHA256)
+		if e != nil || migrationDigest(clientAgain) != migrationDigest(clientReport) {
+			t.Fatal("catchup client retry", e)
+		}
+		// Only the isolated fixture owner changes the source; the migration
+		// connection remains readonly and can neither update nor insert.
+		if _, e = readonly.Exec(`UPDATE public.billing_plans SET display_name='forbidden' WHERE plan_id='fixture-plan'`); e == nil {
+			t.Fatal("source read-only role allowed update")
+		}
+		execSQL(source, `UPDATE public.billing_plans SET display_name='source changed' WHERE plan_id='fixture-plan'; INSERT INTO public.billing_plans(plan_id,display_name) VALUES('catchup-fixture-new','new'); INSERT INTO public.finance_operation_events(id,operation_id,attempt,event_type,status) OVERRIDING SYSTEM VALUE VALUES(100,'`+operation+`',2,'refund','succeeded');
+INSERT INTO public.referral_codes(user_uuid,code) VALUES('`+userA+`','CATCHUP2');
+INSERT INTO public.referrals(id,referrer_uuid,invitee_uuid,referral_code) VALUES('00000000-0000-0000-0000-000000000702','`+userA+`','`+userB+`','CATCHUP2');
+INSERT INTO public.referral_rewards(id,referral_id,provider_invoice_id,referrer_uuid,invitee_uuid,plan_id,product_slug,paid_minor,reward_minor,currency,paid_at,eligible_at) VALUES('00000000-0000-0000-0000-000000000802','00000000-0000-0000-0000-000000000702','catchup-invoice','`+userA+`','`+userB+`','fixture-plan','xconnect',1000,100,'CNY','2026-01-01Z','2026-02-01Z')`)
+		defer execSQL(source, `SET session_replication_role=replica; UPDATE public.billing_plans SET display_name='fixture' WHERE plan_id='fixture-plan'; DELETE FROM public.billing_plans WHERE plan_id='catchup-fixture-new'; DELETE FROM public.finance_operation_events WHERE id=100; DELETE FROM public.referral_reward_campaign_snapshots WHERE reward_id='00000000-0000-0000-0000-000000000802'; DELETE FROM public.referral_rewards WHERE id='00000000-0000-0000-0000-000000000802'; DELETE FROM public.referrals WHERE id='00000000-0000-0000-0000-000000000702'; DELETE FROM public.referral_codes WHERE code='CATCHUP2'; SET session_replication_role=origin`)
+		clientOptions.SnapshotID = uuid.NewString()
+		clientOptions.PlanID = uuid.NewString()
+		newSource, e := RunMigrationCatchupClient(ctx, clientOptions, done.PlanID, done.PlanSHA256)
+		if e != nil {
+			t.Fatal("changed source catchup", e)
+		}
+		if got := newSource.Tables["billing_plans"]; got.Inserts != 1 || got.SourceUpdates != 1 || got.Conflicts != 0 {
+			t.Fatalf("source changes misclassified: %+v", got)
+		}
+		if got := newSource.Tables["finance_operation_events"]; got.Inserts != 1 || got.Conflicts != 0 {
+			t.Fatalf("immutable event insert misclassified: %+v", got)
+		}
+		if newSource.Tables["referral_rewards"].Inserts != 1 || newSource.Tables["referral_reward_campaign_snapshots"].Inserts != 1 {
+			t.Fatal("referral reward and triggered snapshot must both be classified as inserts")
+		}
+		if got := newSource.Tables["users"]; got.TargetChanges == 0 {
+			t.Fatal("target changes disappeared in new snapshot")
+		}
+		var transferred migrationTransferIndex
+		if e = baselineStore.read("transfer", clientOptions.PlanID, migrationDigest("target-admin"), &transferred); e != nil {
+			t.Fatal("catchup transfer unavailable", e)
+		}
+		prepared, e := baselineServer.prepareCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), transferred.Manifest)
+		if e != nil {
+			t.Fatal("catchup preparation", e)
+		}
+		lockedTx, e := migrationBegin(ctx, httpTarget, false)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer lockedTx.Rollback()
+		if _, e = selectReviewedCatchupActions(ctx, lockedTx, prepared, transferred.Manifest, newSource); e == nil {
+			t.Fatal("unlocked selection accepted")
+		}
+		if e = migrationLock(ctx, lockedTx, prepared.order); e != nil {
+			t.Fatal(e)
+		}
+		selected, e := selectReviewedCatchupActions(ctx, lockedTx, prepared, transferred.Manifest, newSource)
+		if e != nil || len(selected["billing_plans"]) != 2 || len(selected["users"]) != 0 {
+			t.Fatal("invalid locked action selection", e)
+		}
+		if _, e = lockedTx.ExecContext(ctx, `UPDATE public.billing_plans SET display_name='fixture drift' WHERE plan_id='fixture-plan'`); e != nil {
+			t.Fatal(e)
+		}
+		if _, e = selectReviewedCatchupActions(ctx, lockedTx, prepared, transferred.Manifest, newSource); e == nil {
+			t.Fatal("target drift accepted")
+		}
+		if e = lockedTx.Rollback(); e != nil {
+			t.Fatal(e)
+		}
+		writeTx, e := migrationBegin(ctx, httpTarget, false)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer writeTx.Rollback()
+		if e = migrationLock(ctx, writeTx, prepared.order); e != nil {
+			t.Fatal(e)
+		}
+		if e = executeCatchupRows(ctx, writeTx, prepared, transferred.Manifest, newSource, baselineServer.chunkReader(migrationDigest("target-admin")), nil); e == nil {
+			t.Fatal("missing backup gate accepted")
+		}
+		proofDir, e := filepath.EvalSymlinks(t.TempDir())
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.Chmod(proofDir, 0700); e != nil {
+			t.Fatal(e)
+		}
+		now := time.Now().UTC()
+		proof := MigrationBackupReceipt{Format: 1, BackupID: "isolated-catchup-fixture", BackupSHA256: strings.Repeat("a", 64), TargetIdentitySHA256: newSource.TargetIdentitySHA256, TargetSchemaSHA256: newSource.TargetSchemaSHA256, TargetBaselineSHA256: newSource.TargetBaselineSHA256, RestoredBaselineSHA256: newSource.TargetBaselineSHA256, RestoreVerified: true, VerifiedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
+		proofBody, e := json.Marshal(proof)
+		if e != nil {
+			t.Fatal(e)
+		}
+		proofPath := filepath.Join(proofDir, "backup-proof.json")
+		if e = os.WriteFile(proofPath, proofBody, 0600); e != nil {
+			t.Fatal(e)
+		}
+		gate, e := migrationCatchupBackupFileGate(proofPath)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = executeCatchupRows(ctx, writeTx, prepared, transferred.Manifest, newSource, baselineServer.chunkReader(migrationDigest("target-admin")), gate); e != nil {
+			t.Fatal("catchup mutations", e)
+		}
+		var updated string
+		var inserted int
+		if e = writeTx.QueryRowContext(ctx, `SELECT display_name FROM public.billing_plans WHERE plan_id='fixture-plan'`).Scan(&updated); e != nil || updated != "source changed" {
+			t.Fatal("source update missing", e)
+		}
+		if e = writeTx.QueryRowContext(ctx, `SELECT count(*) FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`).Scan(&inserted); e != nil || inserted != 1 {
+			t.Fatal("source insert missing", e)
+		}
+		var sequenceValue int64
+		if e = writeTx.QueryRowContext(ctx, `SELECT last_value FROM public.finance_operation_events_id_seq`).Scan(&sequenceValue); e != nil || sequenceValue <= 100 {
+			t.Fatal("catchup identity sequence not advanced", e)
+		}
+		if e = writeTx.Rollback(); e != nil {
+			t.Fatal(e)
+		}
+		if e = httpTarget.QueryRow(`SELECT count(*) FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`).Scan(&inserted); e != nil || inserted != 0 {
+			t.Fatal("catchup rollback failed", e)
+		}
+		catchupSubject := migrationDigest("target-admin")
+		if _, e = baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, nil); e == nil {
+			t.Fatal("catchup committed without backup gate")
+		}
+		// The HTTP write route must require the reviewed hash, same operator and
+		// the owner-issued backup proof. This fixture receipt is synthetic.
+		targetHTTP.Close()
+		targetOptions.InitializeReceipts = false
+		targetOptions.BackupGate = nil
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		clientOptions.TargetURL = targetHTTP.URL
+		if _, e = RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256); e == nil {
+			t.Fatal("catchup HTTP apply bypassed backup gate")
+		}
+		targetHTTP.Close()
+		// Permit the backup gate in this isolated authorization subtest so that
+		// denial can only be attributed to the missing target.apply scope.
+		targetOptions.BackupGate = func(context.Context, MigrationPlan) error { return nil }
+		targetOptions.AccountsAuthorize = func(ctx context.Context, token, scope string) (string, int) {
+			if scope == "target.apply" {
+				return "", http.StatusForbidden
+			}
+			return targetAuthorize(ctx, token, scope)
+		}
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		clientOptions.TargetURL = targetHTTP.URL
+		if _, e = RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256); e == nil {
+			t.Fatal("catchup HTTP allowed missing target.apply scope")
+		}
+		targetHTTP.Close()
+		targetOptions.AccountsAuthorize = targetAuthorize
+		targetOptions.BackupGate, e = MigrationBackupFileGate(proofPath)
+		if e != nil {
+			t.Fatal(e)
+		}
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		clientOptions.TargetURL = targetHTTP.URL
+		if _, e = RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, strings.Repeat("0", 64)); e == nil {
+			t.Fatal("catchup HTTP accepted wrong report hash")
+		}
+		wrongActor := clientOptions
+		wrongActor.TargetToken += "-other"
+		if _, e = RunMigrationCatchupApplyClient(ctx, wrongActor, newSource.RequestID, newSource.ReportSHA256); e == nil {
+			t.Fatal("catchup HTTP accepted a different operator")
+		}
+		execSQL(httpTarget, `UPDATE public.billing_plans SET display_name='target drift' WHERE plan_id='fixture-plan'`)
+		if _, e = RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256); e == nil {
+			t.Fatal("catchup HTTP accepted post-preview target drift")
+		}
+		execSQL(httpTarget, `UPDATE public.billing_plans SET display_name='fixture' WHERE plan_id='fixture-plan'`)
+		committed, e := RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256)
+		if e != nil {
+			t.Fatal("catchup HTTP commit", e)
+		}
+		// Simulate a lost response: an exact retry reads the committed receipt and
+		// does not require a still-live backup gate or write the rows again.
+		targetHTTP.Close()
+		targetOptions.BackupGate = nil
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		clientOptions.TargetURL = targetHTTP.URL
+		options.TargetURL = targetHTTP.URL
+		againCommitted, e := RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256)
+		if e != nil || migrationDigest(committed) != migrationDigest(againCommitted) {
+			t.Fatal("catchup receipt retry", e)
+		}
+		if _, e = baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, migrationDigest("other-admin"), nil); e == nil {
+			t.Fatal("catchup receipt leaked across actors")
+		}
+		var receiptCount int
+		if e = httpTarget.QueryRow(`SELECT count(*) FROM accounts_migration_api.catchup_receipts`).Scan(&receiptCount); e != nil || receiptCount != 1 {
+			t.Fatal("catchup receipt duplicated", e)
+		}
+		if e = httpTarget.QueryRow(`SELECT count(*) FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`).Scan(&inserted); e != nil || inserted != 1 {
+			t.Fatal("catchup row missing after commit", e)
+		}
+		// If the committed follow-up baseline marker was lost, exact retry must
+		// recover it from the database receipt and durable staged chunks.
+		followupPath := filepath.Join(targetDir, "catchup-index-"+newSource.RequestID+".gcm")
+		if e = os.Remove(followupPath); e != nil {
+			t.Fatal("remove fixture follow-up baseline", e)
+		}
+		if _, e = baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, nil); e != nil {
+			t.Fatal("recover follow-up baseline", e)
+		}
+		if _, e = os.Stat(followupPath); e != nil {
+			t.Fatal("follow-up baseline absent", e)
+		}
+		clientOptions.SnapshotID = uuid.NewString()
+		clientOptions.PlanID = uuid.NewString()
+		nextRound, e := RunMigrationCatchupClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256)
+		if e != nil {
+			t.Fatal("next-round catchup", e)
+		}
+		if nextRound.Tables["billing_plans"].Inserts != 0 || nextRound.Tables["billing_plans"].SourceUpdates != 0 || nextRound.Tables["billing_plans"].Conflicts != 0 {
+			t.Fatalf("replayed billing changes: %+v", nextRound.Tables["billing_plans"])
+		}
+		if nextRound.Tables["users"].TargetChanges == 0 {
+			t.Fatal("target-only fact was lost in next baseline")
+		}
+		catchupRequest := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: uuid.NewString(), SourceURL: sourceHTTP.URL, SnapshotID: preview.Snapshot.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: done.PlanID, BaselinePlanSHA256: done.PlanSHA256}
+		var throughAPI CatchupPreview
+		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &throughAPI); e != nil || throughAPI.Tables["users"].TargetChanges == 0 {
+			t.Fatal("catchup HTTP preview", e)
+		}
+		var retry CatchupPreview
+		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &retry); e != nil || migrationDigest(throughAPI) != migrationDigest(retry) {
+			t.Fatal("catchup HTTP retry", e)
+		}
+		catchupRequest.BaselinePlanSHA256 = strings.Repeat("0", 64)
+		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &retry); e == nil {
+			t.Fatal("catchup request ID reuse accepted")
+		}
+		tampered := preview.Snapshot
+		tampered.SourceIdentitySHA256 = strings.Repeat("0", 64)
+		if _, e = baselineServer.previewCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), tampered); e == nil {
+			t.Fatal("tampered catchup source accepted")
 		}
 		options.Apply = false
 		options.Status = true

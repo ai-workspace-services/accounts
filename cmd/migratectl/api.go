@@ -276,6 +276,7 @@ func newMigrationServeCmd() *cobra.Command {
 	f.StringVar(&stageEnv, "staging-key-env", "", "Base64 distinct 32-byte staging encryption-key environment reference")
 	f.StringVar(&options.StagingDirectory, "staging-dir", "", "Absolute persistent private mode-0700 directory")
 	f.StringVar(&backupReceipt, "backup-receipt-file", "", "Protected migration-owner verified backup/restore receipt; enables guarded apply")
+	f.BoolVar(&options.AllowUnversionedTarget, "allow-unversioned-target", false, "Explicitly verify an unversioned target's 42-table migration scope; does not assert a native checkpoint")
 	f.BoolVar(&options.InitializeReceipts, "initialize-receipts", false, "Explicit migration-owner schema initialization for apply (never implicit in preview)")
 	f.StringVar(&options.ReceiptOwnerRole, "receipt-owner-role", "", "Exact migration-owner DB role required by --initialize-receipts")
 	f.DurationVar(&options.Lifetime, "object-ttl", time.Hour, "Snapshot/plan retention validity, at most 24 hours")
@@ -285,5 +286,64 @@ func newMigrationServeCmd() *cobra.Command {
 	f.StringSliceVar(&peerURLs, "allowed-source-url", nil, "Exact allowed source origins")
 	f.StringSliceVar(&peerCIDRs, "allowed-peer-cidr", nil, "Explicit allowed source network CIDRs (DNS pinned)")
 	f.BoolVar(&local, "allow-loopback-http", false, "Explicit loopback HTTP for local proxy/development")
+	return cmd
+}
+
+func newMigrationCatchupCmd() *cobra.Command {
+	var options migrate.MigrationClientOptions
+	var sourceEnv, targetEnv, sourceKV, targetKV, baselineID, baselineHash, reportHash string
+	var apply bool
+	cmd := &cobra.Command{Use: "catchup-api", Short: "Preview or apply reviewed changes against a committed migration baseline", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, args []string) error {
+		var err error
+		options.TargetLocalPort = strings.TrimSpace(os.Getenv("MIGRATION_TARGET_LOCAL_PORT"))
+		options.TargetToken, err = migrationCredential(cmd.Context(), targetEnv, targetKV)
+		if err != nil {
+			return err
+		}
+		if apply {
+			if sourceEnv != "" || sourceKV != "" || baselineID != "" || baselineHash != "" {
+				return errors.New("apply uses the persisted preview; omit source credentials and baseline options")
+			}
+			receipt, err := migrate.RunMigrationCatchupApplyClient(cmd.Context(), options, options.PlanID, reportHash)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(receipt)
+		}
+		if reportHash != "" {
+			return errors.New("--report-sha256 requires --apply")
+		}
+		options.SourceToken, err = migrationCredential(cmd.Context(), sourceEnv, sourceKV)
+		if err != nil {
+			return err
+		}
+		report, err := migrate.RunMigrationCatchupClient(cmd.Context(), options, baselineID, baselineHash)
+		if err != nil {
+			return err
+		}
+		if err = json.NewEncoder(cmd.OutOrStdout()).Encode(report); err != nil {
+			return err
+		}
+		for _, table := range report.Tables {
+			if table.Conflicts > 0 {
+				return errors.New("catchup preview contains conflicts; no writes performed")
+			}
+		}
+		return nil
+	}}
+	f := cmd.Flags()
+	f.StringVar(&options.SourceURL, "source-url", "", "HTTPS source Accounts migration origin")
+	f.StringVar(&options.TargetURL, "target-url", "", "HTTPS target Accounts migration origin")
+	f.StringVar(&sourceEnv, "source-token-env", "", "Source token environment variable")
+	f.StringVar(&targetEnv, "target-token-env", "", "Target token environment variable")
+	f.StringVar(&sourceKV, "source-auth-kv", "", "Vault source token reference")
+	f.StringVar(&targetKV, "target-auth-kv", "", "Vault target token reference")
+	f.StringVar(&baselineID, "baseline-plan-id", "", "Committed baseline plan UUID")
+	f.StringVar(&baselineHash, "baseline-plan-sha256", "", "Committed baseline plan SHA-256")
+	f.StringVar(&options.SnapshotID, "snapshot-id", strings.TrimSpace(os.Getenv("MIGRATION_SNAPSHOT_ID")), "Source snapshot UUID for retry")
+	f.StringVar(&options.PlanID, "request-id", strings.TrimSpace(os.Getenv("MIGRATION_PLAN_ID")), "Catch-up preview request UUID for retry")
+	f.BoolVar(&apply, "apply", false, "Apply only an exact previously reviewed catch-up report")
+	f.StringVar(&reportHash, "report-sha256", "", "Exact reviewed catch-up report SHA-256; required with --apply")
+	f.BoolVar(&options.AllowLoopbackHTTP, "allow-loopback-http", false, "Explicit local-only HTTP development transport")
 	return cmd
 }

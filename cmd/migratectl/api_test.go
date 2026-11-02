@@ -64,3 +64,25 @@ func TestMigrationServeAuthenticationModeSelection(t *testing.T) {
 		t.Fatal("ambiguous auth mode accepted", err)
 	}
 }
+
+func TestCatchupApplyRequiresExactReviewAndNoSourceCredential(t *testing.T) {
+	t.Setenv("FIXTURE_TARGET", "synthetic-target-token")
+	t.Setenv("FIXTURE_SOURCE", "synthetic-source-token")
+	for _, args := range [][]string{
+		{"--apply", "--target-token-env", "FIXTURE_TARGET"},
+		{"--apply", "--target-token-env", "FIXTURE_TARGET", "--request-id", "11111111-1111-4111-8111-111111111111", "--report-sha256", strings.Repeat("a", 64), "--source-token-env", "FIXTURE_SOURCE"},
+		{"--target-token-env", "FIXTURE_TARGET", "--report-sha256", strings.Repeat("a", 64)},
+	} {
+		cmd := newMigrationCatchupCmd()
+		out := new(bytes.Buffer)
+		cmd.SetOut(out)
+		cmd.SetErr(out)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("invalid catchup arguments accepted: %v", args)
+		}
+		if strings.Contains(out.String(), "synthetic-target-token") || strings.Contains(out.String(), "synthetic-source-token") {
+			t.Fatal("catchup credential leaked")
+		}
+	}
+}

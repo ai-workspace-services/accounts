@@ -212,6 +212,10 @@ func PreviewMigrationChunks(ctx context.Context, db *sql.DB, manifest MigrationM
 	if err != nil {
 		return plan, err
 	}
+	mode, err := migrationTargetSchemaMode(ctx, tx)
+	if err != nil {
+		return plan, err
+	}
 	work, err := migrationPrepareChunkWork(ctx, tx, manifest, read)
 	if err != nil {
 		return plan, err
@@ -221,7 +225,7 @@ func PreviewMigrationChunks(ctx context.Context, db *sql.DB, manifest MigrationM
 	if manifest.ExpiresAt.Before(expiry) {
 		expiry = manifest.ExpiresAt
 	}
-	plan = MigrationPlan{ToolSHA256: migrationExecutableSHA256(), PlanID: id, State: "preview", Snapshot: manifest, TargetIdentitySHA256: identity, TargetSchemaSHA256: schema, TargetBaselineSHA256: migrationDigest(work.baseline), InsertRows: work.inserts, MatchingRows: work.matches, ConflictRows: work.conflicts, CreatedAt: now, ExpiresAt: expiry}
+	plan = MigrationPlan{ToolSHA256: migrationExecutableSHA256(), PlanID: id, State: "preview", Snapshot: manifest, TargetIdentitySHA256: identity, TargetSchemaSHA256: schema, TargetSchemaMode: mode, TargetBaselineSHA256: migrationDigest(work.baseline), InsertRows: work.inserts, MatchingRows: work.matches, ConflictRows: work.conflicts, CreatedAt: now, ExpiresAt: expiry}
 	if work.conflicts > 0 {
 		plan.State = "conflict"
 	}
@@ -303,36 +307,29 @@ func ApplyMigrationChunks(ctx context.Context, db *sql.DB, plan MigrationPlan, h
 	if migrationDigest(work.baseline) != plan.TargetBaselineSHA256 || work.inserts != plan.InsertRows || work.matches != plan.MatchingRows || work.conflicts != 0 {
 		return MigrationPlan{}, errors.New("chunk target baseline or plan changed")
 	}
+	financeInserted, referralInserted := false, false
 	for _, name := range order {
 		table := work.tables[name]
 		list := businessColumnList(migrationWritableColumns(table))
 		target := `public.` + quoteBusiness(name)
 		join := migrationPKJoin(table, "s", "t")
-		if _, err = tx.ExecContext(ctx, `INSERT INTO `+target+` (`+list+`) OVERRIDING SYSTEM VALUE SELECT `+list+` FROM `+work.source[name]+` s WHERE NOT EXISTS(SELECT 1 FROM `+target+` t WHERE `+join+`)`); err != nil {
+		result, e := tx.ExecContext(ctx, `INSERT INTO `+target+` (`+list+`) OVERRIDING SYSTEM VALUE SELECT `+list+` FROM `+work.source[name]+` s WHERE NOT EXISTS(SELECT 1 FROM `+target+` t WHERE `+join+`)`)
+		if e != nil {
 			return MigrationPlan{}, errors.New("chunk business insert rejected; transaction rolled back")
 		}
+		count, e := result.RowsAffected()
+		if e != nil {
+			return MigrationPlan{}, errors.New("chunk insert count unavailable")
+		}
+		financeInserted = financeInserted || (name == "finance_operation_events" && count > 0)
+		referralInserted = referralInserted || (name == "referral_campaign_revisions" && count > 0)
 	}
 	actual, err := migrationStreamingBaseline(ctx, tx, work.tables, order)
 	if err != nil || migrationDigest(actual) != migrationDigest(work.expected) {
 		return MigrationPlan{}, errors.New("chunk post-apply union fingerprint differs")
 	}
-	// Native finance event IDs are the sole selected identity sequence. Its
-	// transactional RESTART preserves rollback safety and avoids copied-ID reuse.
-	var sequence sql.NullString
-	var next, current int64
-	if tx.QueryRowContext(ctx, `SELECT pg_get_serial_sequence('public.finance_operation_events','id'),COALESCE(max(id),0)+1 FROM public.finance_operation_events`).Scan(&sequence, &next) != nil {
-		return MigrationPlan{}, errors.New("chunk finance sequence unavailable")
-	}
-	if sequence.Valid && plan.InsertRows > 0 {
-		if tx.QueryRowContext(ctx, `SELECT last_value FROM `+sequence.String).Scan(&current) != nil {
-			return MigrationPlan{}, errors.New("chunk finance sequence unreadable")
-		}
-		if next <= current {
-			next = current + 1
-		}
-		if _, err = tx.ExecContext(ctx, `ALTER SEQUENCE `+sequence.String+` RESTART WITH `+fmt.Sprint(next)); err != nil {
-			return MigrationPlan{}, errors.New("chunk finance sequence update failed")
-		}
+	if err = advanceMigrationSequences(ctx, tx, financeInserted, referralInserted); err != nil {
+		return MigrationPlan{}, err
 	}
 	finalSchema, err := migrationSchema(ctx, tx, order)
 	if err != nil || finalSchema != schema {
