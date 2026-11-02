@@ -46,3 +46,28 @@ func TestPrivateRegionalPoolVisibility(t *testing.T) {
 		}
 	}
 }
+
+func TestCustomFreePoolOptIn(t *testing.T) {
+	now := time.Now().UTC()
+	u := &store.User{Email: "alice@example.com", Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
+	access := networkAccess{Mode: "personal", Allowed: true}
+	for _, enabled := range []bool{false, true} {
+		groups := []string{"resource:custom"}
+		if enabled {
+			groups = append(groups, "custom:allow-free")
+		}
+		reader := stubAgentStatusReader{statuses: []agentserver.StatusSnapshot{{Agent: agentserver.Identity{ID: "private", Groups: groups}, UpdatedAt: now, Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "us", EntryPoint: "private.example", AllowedEmails: []string{"alice@example.com"}, CustomAllowFree: enabled}}}}}
+		want := 0
+		if enabled {
+			want = 1
+		}
+		if got := regionalPoolsForUser(reader, access, u, "", now); len(got) != want {
+			t.Fatalf("enabled=%v pools=%+v", enabled, got)
+		}
+		u.Email = "outsider@example.com"
+		if got := regionalPoolsForUser(reader, access, u, "", now); len(got) != 0 {
+			t.Fatal("non-allowlisted user admitted")
+		}
+		u.Email = "alice@example.com"
+	}
+}
