@@ -257,7 +257,10 @@ func (p MigrationPeerPolicy) client(value string) (*http.Client, string, error) 
 	return &http.Client{Transport: transport, Timeout: 3 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, u.String(), nil
 }
 
+type MigrationAuthorizer func(context.Context, string, string) (string, int)
+
 type MigrationServerOptions struct {
+	AccountsAuthorize  MigrationAuthorizer
 	DB                 *sql.DB
 	Role               string
 	Audience           string
@@ -300,7 +303,9 @@ func NewMigrationHandler(options MigrationServerOptions) (http.Handler, error) {
 	if options.SourceAudience == "" || options.TargetAudience == "" || options.SourceAudience == options.TargetAudience || !migrationUUID(options.JobID) || (options.Role == "source" && options.Audience != options.SourceAudience) || (options.Role == "target" && options.Audience != options.TargetAudience) {
 		return nil, errors.New("listener must bind an explicit source/target audience pair and job UUID")
 	}
-	if options.DB == nil || (options.Role != "source" && options.Role != "target") || options.Audience == "" || len(options.AuthKey) != 32 || bytes.Equal(options.AuthKey, options.StagingKey) || options.Lifetime <= 0 || options.Lifetime > 24*time.Hour {
+	validAuth := (options.AccountsAuthorize != nil && len(options.AuthKey) == 0) ||
+		(options.AccountsAuthorize == nil && len(options.AuthKey) == 32)
+	if options.DB == nil || (options.Role != "source" && options.Role != "target") || options.Audience == "" || !validAuth || (len(options.AuthKey) != 0 && bytes.Equal(options.AuthKey, options.StagingKey)) || options.Lifetime <= 0 || options.Lifetime > 24*time.Hour {
 		return nil, errors.New("invalid migration listener configuration")
 	}
 	store, err := newMigrationStore(options.StagingDirectory, options.StagingKey)
@@ -329,6 +334,9 @@ func (s *migrationServer) authenticate(r *http.Request, scope string) (string, i
 	value := r.Header.Get("Authorization")
 	if !strings.HasPrefix(value, "Bearer ") || len(value) > 8192 {
 		return "", 401
+	}
+	if s.AccountsAuthorize != nil {
+		return s.AccountsAuthorize(r.Context(), strings.TrimPrefix(value, "Bearer "), scope)
 	}
 	claims := &MigrationClaims{}
 	_, err := jwt.ParseWithClaims(strings.TrimPrefix(value, "Bearer "), claims, func(token *jwt.Token) (any, error) { return s.AuthKey, nil }, jwt.WithValidMethods([]string{"HS256"}), jwt.WithAudience(s.Audience), jwt.WithIssuer(migrationTokenUse), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
@@ -633,7 +641,7 @@ func (s *migrationServer) preview(w http.ResponseWriter, r *http.Request, subjec
 		migrationError(w, 409, "preview_conflicted_or_unavailable")
 		return
 	}
-	if stage.Plan.Snapshot.Authorization != s.authorization(subject) {
+	if !s.matchesSourceAuthorization(stage.Plan.Snapshot.Authorization, subject) {
 		migrationError(w, 403, "plan_peer_binding_mismatch")
 		return
 	}
@@ -650,7 +658,7 @@ func (s *migrationServer) target(w http.ResponseWriter, r *http.Request, parts [
 		migrationError(w, 409, "plan_unavailable")
 		return
 	}
-	if stage.Plan.Snapshot.Authorization != s.authorization(subject) {
+	if !s.matchesSourceAuthorization(stage.Plan.Snapshot.Authorization, subject) {
 		migrationError(w, 403, "plan_peer_binding_mismatch")
 		return
 	}
@@ -798,4 +806,16 @@ func RunMigrationClient(ctx context.Context, options MigrationClientOptions) (Mi
 		err = validateRemoteMigrationPlan(plan, options.PlanID, "")
 	}
 	return plan, err
+}
+
+// Source and target Accounts authorities may authorize distinct administrators.
+// Source artifacts retain the actual source actor; target staging and receipts
+// are still encrypted/bound to the authenticated target actor. Legacy dedicated
+// JWT mode retains its same-subject requirement.
+func (s *migrationServer) matchesSourceAuthorization(actual MigrationAuthorization, targetSubject string) bool {
+	expected := s.authorization(targetSubject)
+	if s.AccountsAuthorize == nil {
+		return actual == expected
+	}
+	return actual.SourceAudience == expected.SourceAudience && actual.TargetAudience == expected.TargetAudience && actual.JobID == expected.JobID && migrationSHA.MatchString(actual.SubjectSHA256)
 }

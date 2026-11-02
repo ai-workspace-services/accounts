@@ -198,7 +198,7 @@ func (s *migrationServer) downloadChunks(ctx context.Context, request MigrationP
 	if err = migrationHTTP(ctx, client, "GET", base+MigrationAPIBase+"/snapshots/"+request.SnapshotID+"/manifest", request.SourceToken, nil, &manifest); err != nil {
 		return manifest, err
 	}
-	if manifest.SnapshotID != request.SnapshotID || manifest.Authorization != s.authorization(subject) {
+	if manifest.SnapshotID != request.SnapshotID || !s.matchesSourceAuthorization(manifest.Authorization, subject) {
 		return manifest, errors.New("chunk manifest peer binding mismatch")
 	}
 	if err = validateMigrationChunkManifest(manifest); err != nil {
