@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"account/internal/agentproto"
 	"account/internal/store"
 )
 
@@ -69,7 +70,7 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 	groups := map[string]*aggregate{}
 	for _, snapshot := range reader.Statuses() {
 		report := snapshot.Report
-		if !agentEmailAllowed(report.Xray.AllowedEmails, user) {
+		if resourceClass, _ := reportedResourceClass(snapshot); resourceClass == agentResourceCustom && !agentEmailAllowed(report.Xray.AllowedEmails, user) {
 			continue
 		}
 		if snapshot.UpdatedAt.IsZero() || (report.Role != "" && report.Role != "agent-proxy") || !networkScopeAllows(access, snapshot.Agent.Groups) {
@@ -81,7 +82,7 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 			continue
 		}
 		resourceClass, teamID := reportedResourceClass(snapshot)
-		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass)
+		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass) || (agentproto.PublicResourceClass(resourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(snapshot.Agent.Groups, user))
 		if resourceClass == agentResourceCustom {
 			scope, valid := agentResourceScope(snapshot.Agent.Groups)
 			classAllowed = valid && len(report.Xray.AllowedEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree))
@@ -95,7 +96,7 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		key := region + "\x00" + entry + "\x00" + resourceClass + "\x00" + teamID
 		group := groups[key]
 		if group == nil {
-			group = &aggregate{pool: regionalPool{Private: len(report.Xray.AllowedEmails) > 0, Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}, ids: map[string]bool{}, reasons: map[regionalClosureReason]bool{}}
+			group = &aggregate{pool: regionalPool{Private: resourceClass == agentResourceCustom && len(report.Xray.AllowedEmails) > 0, Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}, ids: map[string]bool{}, reasons: map[regionalClosureReason]bool{}}
 			groups[key] = group
 		}
 		if group.pool.DisplayName == "" {
