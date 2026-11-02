@@ -83,7 +83,8 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		resourceClass, teamID := reportedResourceClass(snapshot)
 		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass)
 		if resourceClass == agentResourceCustom {
-			classAllowed = len(report.Xray.AllowedEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro)
+			scope, valid := agentResourceScope(snapshot.Agent.Groups)
+			classAllowed = valid && len(report.Xray.AllowedEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree))
 		}
 		if resourceClass == agentResourceTeam {
 			classAllowed = wantClass == agentResourceTeam && wantTeam != "" && teamID == wantTeam

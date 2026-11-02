@@ -20,8 +20,9 @@ type ClientListResponse struct {
 // UserScope is derived from an enrolled credential or an administrator-approved
 // node assignment. Node-supplied team suggestions never grant authorization.
 type UserScope struct {
-	ResourceClass string `json:"resourceClass"`
-	TeamID        string `json:"teamId,omitempty"`
+	CustomAllowFree bool   `json:"customAllowFree,omitempty"`
+	ResourceClass   string `json:"resourceClass"`
+	TeamID          string `json:"teamId,omitempty"`
 }
 
 // StatusReport captures the runtime state of an agent and the managed Xray
@@ -39,21 +40,22 @@ type StatusReport struct {
 
 // XrayStatus describes the synchronisation state of the managed Xray process.
 type XrayStatus struct {
-	AllowedEmails []string   `json:"allowedEmails,omitempty"`
-	Running       bool       `json:"running"`
-	Clients       int        `json:"clients"`
-	LastSync      *time.Time `json:"lastSync,omitempty"`
-	ConfigHash    string     `json:"configHash,omitempty"`
-	NodeID        string     `json:"nodeId,omitempty"`
-	NetworkID     string     `json:"networkId,omitempty"`
-	Region        string     `json:"region,omitempty"`
-	Pool          string     `json:"pool,omitempty"`
-	EntryPoint    string     `json:"entryPoint,omitempty"`
-	OpenToUsers   *bool      `json:"openToUsers,omitempty"`
-	LineCode      string     `json:"lineCode,omitempty"`
-	PricingGroup  string     `json:"pricingGroup,omitempty"`
-	StatsEnabled  bool       `json:"statsEnabled"`
-	XrayRevision  string     `json:"xrayRevision,omitempty"`
+	CustomAllowFree bool       `json:"customAllowFree,omitempty"`
+	AllowedEmails   []string   `json:"allowedEmails,omitempty"`
+	Running         bool       `json:"running"`
+	Clients         int        `json:"clients"`
+	LastSync        *time.Time `json:"lastSync,omitempty"`
+	ConfigHash      string     `json:"configHash,omitempty"`
+	NodeID          string     `json:"nodeId,omitempty"`
+	NetworkID       string     `json:"networkId,omitempty"`
+	Region          string     `json:"region,omitempty"`
+	Pool            string     `json:"pool,omitempty"`
+	EntryPoint      string     `json:"entryPoint,omitempty"`
+	OpenToUsers     *bool      `json:"openToUsers,omitempty"`
+	LineCode        string     `json:"lineCode,omitempty"`
+	PricingGroup    string     `json:"pricingGroup,omitempty"`
+	StatsEnabled    bool       `json:"statsEnabled"`
+	XrayRevision    string     `json:"xrayRevision,omitempty"`
 }
 
 // OverlayStatus is non-secret telemetry, never enrollment or routing authority.
