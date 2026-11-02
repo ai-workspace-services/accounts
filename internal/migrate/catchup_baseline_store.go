@@ -111,7 +111,7 @@ func (s *migrationServer) captureCommittedBaseline(ctx context.Context, plan Mig
 	return s.captureBaseline(ctx, plan.PlanID, plan.PlanSHA256, plan.TargetIdentitySHA256, plan.Snapshot, subject)
 }
 
-func (s *migrationServer) captureCatchupCommittedBaseline(ctx context.Context, receipt catchupReceipt, snapshot MigrationManifest, subject string) error {
+func (s *migrationServer) captureCatchupCommittedBaseline(ctx context.Context, receipt CatchupReceipt, snapshot MigrationManifest, subject string) error {
 	verified, ok, err := readCatchupReceipt(ctx, s.DB, receipt.Report.RequestID, receipt.Report.ReportSHA256, subject)
 	if err != nil {
 		return err

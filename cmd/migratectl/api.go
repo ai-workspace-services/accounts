@@ -290,15 +290,29 @@ func newMigrationServeCmd() *cobra.Command {
 
 func newMigrationCatchupCmd() *cobra.Command {
 	var options migrate.MigrationClientOptions
-	var sourceEnv, targetEnv, sourceKV, targetKV, baselineID, baselineHash string
-	cmd := &cobra.Command{Use: "catchup-api", Short: "Preview source-to-target changes against a committed migration baseline", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, args []string) error {
+	var sourceEnv, targetEnv, sourceKV, targetKV, baselineID, baselineHash, reportHash string
+	var apply bool
+	cmd := &cobra.Command{Use: "catchup-api", Short: "Preview or apply reviewed changes against a committed migration baseline", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, args []string) error {
 		var err error
 		options.TargetLocalPort = strings.TrimSpace(os.Getenv("MIGRATION_TARGET_LOCAL_PORT"))
-		options.SourceToken, err = migrationCredential(cmd.Context(), sourceEnv, sourceKV)
+		options.TargetToken, err = migrationCredential(cmd.Context(), targetEnv, targetKV)
 		if err != nil {
 			return err
 		}
-		options.TargetToken, err = migrationCredential(cmd.Context(), targetEnv, targetKV)
+		if apply {
+			if sourceEnv != "" || sourceKV != "" || baselineID != "" || baselineHash != "" {
+				return errors.New("apply uses the persisted preview; omit source credentials and baseline options")
+			}
+			receipt, err := migrate.RunMigrationCatchupApplyClient(cmd.Context(), options, options.PlanID, reportHash)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(receipt)
+		}
+		if reportHash != "" {
+			return errors.New("--report-sha256 requires --apply")
+		}
+		options.SourceToken, err = migrationCredential(cmd.Context(), sourceEnv, sourceKV)
 		if err != nil {
 			return err
 		}
@@ -327,6 +341,8 @@ func newMigrationCatchupCmd() *cobra.Command {
 	f.StringVar(&baselineHash, "baseline-plan-sha256", "", "Committed baseline plan SHA-256")
 	f.StringVar(&options.SnapshotID, "snapshot-id", strings.TrimSpace(os.Getenv("MIGRATION_SNAPSHOT_ID")), "Source snapshot UUID for retry")
 	f.StringVar(&options.PlanID, "request-id", strings.TrimSpace(os.Getenv("MIGRATION_PLAN_ID")), "Catch-up preview request UUID for retry")
+	f.BoolVar(&apply, "apply", false, "Apply only an exact previously reviewed catch-up report")
+	f.StringVar(&reportHash, "report-sha256", "", "Exact reviewed catch-up report SHA-256; required with --apply")
 	f.BoolVar(&options.AllowLoopbackHTTP, "allow-loopback-http", false, "Explicit local-only HTTP development transport")
 	return cmd
 }

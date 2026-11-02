@@ -13,7 +13,8 @@ type catchupBackupGate func(context.Context, CatchupPreview) error
 
 // executeCatchupRows is deliberately internal: its caller must hold the
 // transaction open, persist a transactional receipt and commit or roll back.
-// No network API exposes it until receipt, recovery and apply gates are wired.
+// Network callers reach it only through the authenticated, receipt-bound apply
+// path; a target backup gate and revalidation are mandatory for new writes.
 func executeCatchupRows(ctx context.Context, tx *sql.Tx, prepared preparedCatchup, manifest MigrationManifest, reviewed CatchupPreview, read migrationChunkReader, gate catchupBackupGate) error {
 	if gate == nil {
 		return errors.New("catchup backup proof required")

@@ -741,13 +741,72 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if _, e = baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, nil); e == nil {
 			t.Fatal("catchup committed without backup gate")
 		}
-		committed, e := baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, gate)
+		// The HTTP write route must require the reviewed hash, same operator and
+		// the owner-issued backup proof. This fixture receipt is synthetic.
+		targetHTTP.Close()
+		targetOptions.InitializeReceipts = false
+		targetOptions.BackupGate = nil
+		handler, e = NewMigrationHandler(targetOptions)
 		if e != nil {
-			t.Fatal("catchup commit", e)
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		clientOptions.TargetURL = targetHTTP.URL
+		if _, e = RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256); e == nil {
+			t.Fatal("catchup HTTP apply bypassed backup gate")
+		}
+		targetHTTP.Close()
+		targetOptions.AccountsAuthorize = func(ctx context.Context, token, scope string) (string, int) {
+			if scope == "target.apply" {
+				return "", http.StatusForbidden
+			}
+			return targetAuthorize(ctx, token, scope)
+		}
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		clientOptions.TargetURL = targetHTTP.URL
+		if _, e = RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256); e == nil {
+			t.Fatal("catchup HTTP allowed missing target.apply scope")
+		}
+		targetHTTP.Close()
+		targetOptions.AccountsAuthorize = targetAuthorize
+		targetOptions.BackupGate, e = MigrationBackupFileGate(proofPath)
+		if e != nil {
+			t.Fatal(e)
+		}
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		clientOptions.TargetURL = targetHTTP.URL
+		if _, e = RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, strings.Repeat("0", 64)); e == nil {
+			t.Fatal("catchup HTTP accepted wrong report hash")
+		}
+		wrongActor := clientOptions
+		wrongActor.TargetToken += "-other"
+		if _, e = RunMigrationCatchupApplyClient(ctx, wrongActor, newSource.RequestID, newSource.ReportSHA256); e == nil {
+			t.Fatal("catchup HTTP accepted a different operator")
+		}
+		committed, e := RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256)
+		if e != nil {
+			t.Fatal("catchup HTTP commit", e)
 		}
 		// Simulate a lost response: an exact retry reads the committed receipt and
 		// does not require a still-live backup gate or write the rows again.
-		againCommitted, e := baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, nil)
+		targetHTTP.Close()
+		targetOptions.BackupGate = nil
+		handler, e = NewMigrationHandler(targetOptions)
+		if e != nil {
+			t.Fatal(e)
+		}
+		targetHTTP = httptest.NewServer(handler)
+		clientOptions.TargetURL = targetHTTP.URL
+		options.TargetURL = targetHTTP.URL
+		againCommitted, e := RunMigrationCatchupApplyClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256)
 		if e != nil || migrationDigest(committed) != migrationDigest(againCommitted) {
 			t.Fatal("catchup receipt retry", e)
 		}

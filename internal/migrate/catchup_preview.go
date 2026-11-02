@@ -303,6 +303,32 @@ func RunMigrationCatchupClient(ctx context.Context, options MigrationClientOptio
 	return report, nil
 }
 
+// RunMigrationCatchupApplyClient applies an exact previously reviewed report.
+// Reusing the same request ID and hash retrieves its transactional receipt.
+func RunMigrationCatchupApplyClient(ctx context.Context, options MigrationClientOptions, requestID, reportHash string) (CatchupReceipt, error) {
+	var receipt CatchupReceipt
+	if !migrationUUID(requestID) || !migrationSHA.MatchString(reportHash) || options.TargetToken == "" {
+		return receipt, errors.New("target credential and exact reviewed catchup ID and hash required")
+	}
+	target, err := migrationURL(options.TargetURL, options.AllowLoopbackHTTP)
+	if err != nil {
+		return receipt, err
+	}
+	transport, err := migrationClientTransport(target, options.TargetLocalPort)
+	if err != nil {
+		return receipt, err
+	}
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	err = migrationHTTP(ctx, client, "POST", target.String()+MigrationAPIBase+"/catchup/"+requestID+"/apply", options.TargetToken, map[string]string{"report_sha256": reportHash}, &receipt)
+	if err != nil {
+		return CatchupReceipt{}, fmt.Errorf("retry exact request %s and report hash: %w", requestID, err)
+	}
+	if receipt.Report.RequestID != requestID || receipt.Report.ReportSHA256 != reportHash || catchupPreviewHash(receipt.Report) != reportHash || receipt.AppliedAt.IsZero() || !migrationSHA.MatchString(receipt.Report.TargetIdentitySHA256) {
+		return CatchupReceipt{}, errors.New("catchup receipt binding mismatch")
+	}
+	return receipt, nil
+}
+
 // verifyCatchupRevalidation must be run inside the same writer-locked
 // transaction as any future apply. It permits no changes by itself.
 func verifyCatchupRevalidation(reviewed, current CatchupPreview, now time.Time) error {

@@ -401,6 +401,9 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 	} else if s.Role == "target" && path == "/catchup/preview" {
 		scope = "catchup"
 		method = "POST"
+	} else if s.Role == "target" && len(parts) == 3 && parts[0] == "catchup" && migrationUUID(parts[1]) && parts[2] == "apply" {
+		scope = "catchup-apply"
+		method = "POST"
 	} else if s.Role == "target" && path == "/plans/preview" {
 		scope = "preview"
 		method = "POST"
@@ -423,7 +426,7 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 	claimScope := "target.plan"
 	if scope == "source" {
 		claimScope = "source.read"
-	} else if scope == "apply" {
+	} else if scope == "apply" || scope == "catchup-apply" {
 		claimScope = "target.apply"
 	}
 	subject, status := s.authenticate(r, claimScope)
@@ -456,6 +459,10 @@ func (s *migrationServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if scope == "catchup" {
 		s.catchupPreview(w, r, subject)
+		return
+	}
+	if scope == "catchup-apply" {
+		s.catchupApply(w, r, parts[1], subject)
 		return
 	}
 	if scope == "transfer" {
