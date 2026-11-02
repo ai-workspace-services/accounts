@@ -38,6 +38,8 @@ func TestNodeBoundCredentialsIsolateSameHost(t *testing.T) {
 		{"b status", "test-b", "b", "node-b", "custom", "status", 204},
 		{"cross node", "test-a", "a", "node-b", "plus", "status", 403},
 		{"cross agent", "test-a", "b", "node-a", "plus", "status", 403},
+		{"event identity", "test-a", "b", "node-a", "plus", "users/events", 403},
+		{"event scope", "test-a", "a", "node-a", "free", "users/events", 403},
 		{"cross scope", "test-a", "a", "node-a", "free", "users", 403},
 		{"legacy team takeover", "test-legacy", "a", "node-a", "team", "users", 403},
 		{"legacy takeover", "test-legacy", "a", "node-a", "plus", "status", 403},
@@ -77,6 +79,25 @@ func TestNodeBoundCredentialsIsolateSameHost(t *testing.T) {
 				}
 			}
 		})
+	}
+	for _, selector := range []struct{ path, header, body string }{
+		{"/status", "b", `{"agentId":"a","xray":{"nodeId":"node-a"}}`},
+		{"/status?agentId=b", "a", `{"agentId":"a","xray":{"nodeId":"node-a"}}`},
+		{"/users?agentId=b", "a", ""},
+	} {
+		method := http.MethodGet
+		if selector.body != "" {
+			method = http.MethodPost
+		}
+		req := httptest.NewRequest(method, "/api/agent-server/v1"+selector.path, strings.NewReader(selector.body))
+		req.Header.Set("Authorization", "Bearer test-a")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Agent-ID", selector.header)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != 403 {
+			t.Fatalf("conflicting selector accepted: %s HTTP %d", selector.path, w.Code)
+		}
 	}
 	statuses := registry.Statuses()
 	count := 0
