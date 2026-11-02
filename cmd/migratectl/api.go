@@ -96,6 +96,7 @@ func newMigrationAPICmd() *cobra.Command {
 			return errors.New("source-url and target-url required for preview; target-url required for apply/status")
 		}
 		var err error
+		options.TargetLocalPort = strings.TrimSpace(os.Getenv("MIGRATION_TARGET_LOCAL_PORT"))
 		options.TargetToken, err = migrationCredential(cmd.Context(), targetEnv, targetKV)
 		if err != nil {
 			return err
@@ -130,9 +131,9 @@ func newMigrationAPICmd() *cobra.Command {
 	flags.BoolVar(&options.Apply, "apply", false, "Apply only the exact persisted preview")
 	flags.BoolVar(&options.TransferOnly, "transfer-only", false, "Resume and verify encrypted chunks without business preview or apply")
 	flags.BoolVar(&options.Status, "status", false, "Read the persisted plan or committed receipt")
-	flags.StringVar(&options.PlanID, "plan-id", "", "Exact reviewed plan UUID; optional caller-generated idempotency UUID for preview")
+	flags.StringVar(&options.PlanID, "plan-id", strings.TrimSpace(os.Getenv("MIGRATION_PLAN_ID")), "Exact reviewed plan UUID; defaults to MIGRATION_PLAN_ID when set")
 	flags.StringVar(&options.PlanSHA256, "plan-sha256", "", "Exact reviewed preview SHA-256; required to apply")
-	flags.StringVar(&options.SnapshotID, "snapshot-id", "", "Optional caller-generated snapshot UUID for recovery")
+	flags.StringVar(&options.SnapshotID, "snapshot-id", strings.TrimSpace(os.Getenv("MIGRATION_SNAPSHOT_ID")), "Snapshot UUID for recovery; defaults to MIGRATION_SNAPSHOT_ID when set")
 	flags.BoolVar(&options.AllowLoopbackHTTP, "allow-loopback-http", false, "Explicit local-only HTTP development transport")
 	return cmd
 }
