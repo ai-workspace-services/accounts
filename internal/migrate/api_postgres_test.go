@@ -158,6 +158,35 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 	if _, err = CaptureMigrationSnapshot(ctx, source, uuid.NewString(), time.Hour, binding); err == nil {
 		t.Fatal("business/superuser source accepted")
 	}
+	t.Run("reviewed-predecessor-source-only", func(t *testing.T) {
+		execSQL(source, `UPDATE public.schema_migrations SET version=2026102002`)
+		defer execSQL(source, `UPDATE public.schema_migrations SET version=`+strconv.Itoa(FullBusinessVersion))
+		legacy, e := CaptureMigrationSnapshot(ctx, readonly, uuid.NewString(), time.Hour, binding)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(legacy.Manifest.Tables) != len(migrationAPITables) {
+			t.Fatal("legacy source scope incomplete")
+		}
+		execSQL(target, `UPDATE public.schema_migrations SET version=2026102002`)
+		if _, e = PreviewMigration(ctx, target, legacy, uuid.NewString(), time.Hour); e == nil {
+			t.Fatal("legacy target checkpoint accepted")
+		}
+		execSQL(target, `UPDATE public.schema_migrations SET version=`+strconv.Itoa(FullBusinessVersion))
+		execSQL(source, `ALTER TABLE public.users ADD COLUMN fixture_unreviewed text`)
+		if _, e = CaptureMigrationSnapshot(ctx, readonly, uuid.NewString(), time.Hour, binding); e == nil {
+			t.Fatal("legacy unknown user column accepted")
+		}
+		execSQL(source, `ALTER TABLE public.users DROP COLUMN fixture_unreviewed`)
+		execSQL(source, `UPDATE public.schema_migrations SET dirty=true`)
+		if _, e = CaptureMigrationSnapshot(ctx, readonly, uuid.NewString(), time.Hour, binding); e == nil {
+			t.Fatal("dirty legacy source accepted")
+		}
+		execSQL(source, `UPDATE public.schema_migrations SET dirty=false,version=2026102003`)
+		if _, e = CaptureMigrationSnapshot(ctx, readonly, uuid.NewString(), time.Hour, binding); e == nil {
+			t.Fatal("unreviewed source checkpoint accepted")
+		}
+	})
 	snapshot, err := CaptureMigrationSnapshot(ctx, readonly, uuid.NewString(), time.Hour, binding)
 	if err != nil {
 		t.Fatal(err)

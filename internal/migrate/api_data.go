@@ -148,6 +148,13 @@ func migrationIdentity(ctx context.Context, tx *sql.Tx) (string, error) {
 // Bind actual defaults, constraints, indexes, policies, triggers and function
 // bodies as well as migration history. A checked-in SQL checksum is insufficient.
 func migrationSchema(ctx context.Context, tx *sql.Tx, order []string) (string, error) {
+	return migrationSchemaForRole(ctx, tx, order, false)
+}
+
+// An older source is read-only and projected through the compiled per-table
+// contract before a snapshot is published. This does not authorize an older
+// target or bypass column, RLS, constraint, or snapshot fingerprint checks.
+func migrationSchemaForRole(ctx context.Context, tx *sql.Tx, order []string, source bool) (string, error) {
 	var pgVersion, count, version int
 	var dirty bool
 	if tx.QueryRowContext(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&pgVersion) != nil || pgVersion < 170000 || pgVersion >= 180000 {
@@ -156,7 +163,7 @@ func migrationSchema(ctx context.Context, tx *sql.Tx, order []string) (string, e
 	if tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(min(version),0),COALESCE(bool_or(dirty),true) FROM public.schema_migrations`).Scan(&count, &version, &dirty) != nil || count != 1 || dirty {
 		return "", errors.New("migration API requires a clean reviewed schema checkpoint")
 	}
-	if err := verifyCatalogCheckpoint(ctx, tx, uint(version)); err != nil {
+	if err := verifyMigrationAPICheckpoint(ctx, tx, uint(version), source); err != nil {
 		return "", err
 	}
 	facts := map[string]any{"tool_contract": migrationDigest(fullBusinessContractJSON), "scope": MigrationAPIScope}
@@ -342,7 +349,7 @@ func captureMigrationPages(ctx context.Context, db *sql.DB, id string, lifetime 
 	if err != nil {
 		return result, err
 	}
-	fingerprint, err := migrationSchema(ctx, tx, order)
+	fingerprint, err := migrationSchemaForRole(ctx, tx, order, true)
 	if err != nil {
 		return result, err
 	}
@@ -832,4 +839,14 @@ func ApplyMigration(ctx context.Context, db *sql.DB, snapshot MigrationSnapshot,
 		return MigrationPlan{}, errors.New("migration commit uncertain; retry exact plan")
 	}
 	return plan, nil
+}
+
+// 2026102002 is the reviewed predecessor before referral campaign extensions.
+// Source projection rejects unknown or incompatible columns and only supplies
+// empty datasets for the explicitly reviewed optional extension tables.
+func verifyMigrationAPICheckpoint(ctx context.Context, tx *sql.Tx, version uint, source bool) error {
+	if source && version == 2026102002 {
+		return nil
+	}
+	return verifyCatalogCheckpoint(ctx, tx, version)
 }
