@@ -108,21 +108,39 @@ func (s *migrationServer) captureCommittedBaseline(ctx context.Context, plan Mig
 	if plan.State != "applied" || !migrationUUID(plan.PlanID) || migrationPlanHash(preview) != plan.PlanSHA256 || migrationSnapshotHash(plan.Snapshot) != plan.Snapshot.SnapshotSHA256 || !migrationSHA.MatchString(plan.TargetIdentitySHA256) {
 		return errors.New("committed baseline plan binding invalid")
 	}
+	return s.captureBaseline(ctx, plan.PlanID, plan.PlanSHA256, plan.TargetIdentitySHA256, plan.Snapshot, subject)
+}
+
+func (s *migrationServer) captureCatchupCommittedBaseline(ctx context.Context, receipt catchupReceipt, snapshot MigrationManifest, subject string) error {
+	verified, ok, err := readCatchupReceipt(ctx, s.DB, receipt.Report.RequestID, receipt.Report.ReportSHA256, subject)
+	if err != nil {
+		return err
+	}
+	if !ok || migrationDigest(verified) != migrationDigest(receipt) {
+		return errors.New("catchup committed receipt required")
+	}
+	if snapshot.SnapshotID != receipt.Report.SourceSnapshotID || snapshot.SnapshotSHA256 != receipt.Report.SourceSnapshotSHA256 || migrationSnapshotHash(snapshot) != snapshot.SnapshotSHA256 || !s.matchesSourceAuthorization(snapshot.Authorization, subject) {
+		return errors.New("catchup baseline snapshot binding mismatch")
+	}
+	return s.captureBaseline(ctx, receipt.Report.RequestID, receipt.Report.ReportSHA256, receipt.Report.TargetIdentitySHA256, snapshot, subject)
+}
+
+func (s *migrationServer) captureBaseline(ctx context.Context, planID, planHash, targetIdentity string, snapshot MigrationManifest, subject string) error {
 	tables, order, err := migrationCatalog()
 	if err != nil {
 		return err
 	}
-	if len(plan.Snapshot.Tables) != len(order) {
+	if len(snapshot.Tables) != len(order) {
 		return errors.New("baseline table coverage differs")
 	}
 	return s.store.locked(ctx, func() error {
-		index := catchupBaselineIndex{PlanID: plan.PlanID, PlanSHA256: plan.PlanSHA256, TargetIdentitySHA256: plan.TargetIdentitySHA256, SnapshotSHA256: plan.Snapshot.SnapshotSHA256}
+		index := catchupBaselineIndex{PlanID: planID, PlanSHA256: planHash, TargetIdentitySHA256: targetIdentity, SnapshotSHA256: snapshot.SnapshotSHA256}
 		digests := map[string]*businessDigest{}
 		ordinals := map[string]int{}
 		for _, name := range order {
 			digests[name] = &businessDigest{}
 		}
-		for _, chunk := range plan.Snapshot.Chunks {
+		for _, chunk := range snapshot.Chunks {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -135,7 +153,7 @@ func (s *migrationServer) captureCommittedBaseline(ctx context.Context, plan Mig
 			if err != nil {
 				return err
 			}
-			if err = validateMigrationChunk(plan.Snapshot.SnapshotID, chunk, page); err != nil {
+			if err = validateMigrationChunk(snapshot.SnapshotID, chunk, page); err != nil {
 				return err
 			}
 			pageDigest := businessDigest{}
@@ -152,7 +170,7 @@ func (s *migrationServer) captureCommittedBaseline(ctx context.Context, plan Mig
 				leaves = append(leaves, catchupBaselineLeaf{KeySHA256: hex.EncodeToString(leaf.Key[:]), RowSHA256: hex.EncodeToString(leaf.Row[:])})
 			}
 			sort.Slice(leaves, func(i, j int) bool { return leaves[i].KeySHA256 < leaves[j].KeySHA256 })
-			ref, err := s.store.writeCatchupBaseline(subject, catchupBaselinePage{PlanID: plan.PlanID, Table: chunk.Table, Ordinal: chunk.Ordinal, Leaves: leaves})
+			ref, err := s.store.writeCatchupBaseline(subject, catchupBaselinePage{PlanID: planID, Table: chunk.Table, Ordinal: chunk.Ordinal, Leaves: leaves})
 			if err != nil {
 				return err
 			}
@@ -160,12 +178,12 @@ func (s *migrationServer) captureCommittedBaseline(ctx context.Context, plan Mig
 		}
 		for _, name := range order {
 			got, err := digests[name].finish()
-			if err != nil || got != plan.Snapshot.Tables[name] {
+			if err != nil || got != snapshot.Tables[name] {
 				return errors.New("baseline source fingerprint mismatch")
 			}
 		}
 		var existing catchupBaselineIndex
-		err := s.store.read("catchup-index", plan.PlanID, subject, &existing)
+		err := s.store.read("catchup-index", planID, subject, &existing)
 		if err == nil {
 			if migrationDigest(existing) != migrationDigest(index) {
 				return errors.New("baseline index differs")
@@ -175,19 +193,44 @@ func (s *migrationServer) captureCommittedBaseline(ctx context.Context, plan Mig
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		return s.store.write("catchup-index", plan.PlanID, subject, index)
+		return s.store.write("catchup-index", planID, subject, index)
 	})
+}
+
+// resolveCommittedBaselinePlan supports the first transfer receipt and each
+// subsequent catch-up receipt. No preview or uncommitted staging is accepted.
+func (s *migrationServer) resolveCommittedBaselinePlan(ctx context.Context, id, hash, subject string) (MigrationPlan, error) {
+	plan, ok, err := ReadMigrationReceipt(ctx, s.DB, id, hash, subject)
+	if err != nil {
+		return MigrationPlan{}, err
+	}
+	if ok {
+		return plan, nil
+	}
+	receipt, ok, err := readCatchupReceipt(ctx, s.DB, id, hash, subject)
+	if err != nil {
+		return MigrationPlan{}, err
+	}
+	if !ok {
+		return MigrationPlan{}, errors.New("committed baseline receipt required")
+	}
+	var transfer migrationTransferIndex
+	if err = s.store.read("transfer", id, subject, &transfer); err != nil {
+		return MigrationPlan{}, err
+	}
+	snapshot := transfer.Manifest
+	if snapshot.SnapshotID != receipt.Report.SourceSnapshotID || snapshot.SnapshotSHA256 != receipt.Report.SourceSnapshotSHA256 || migrationSnapshotHash(snapshot) != snapshot.SnapshotSHA256 || !s.matchesSourceAuthorization(snapshot.Authorization, subject) {
+		return MigrationPlan{}, errors.New("committed catchup snapshot binding mismatch")
+	}
+	return MigrationPlan{PlanID: id, PlanSHA256: hash, TargetIdentitySHA256: receipt.Report.TargetIdentitySHA256, Snapshot: snapshot}, nil
 }
 
 // loadCommittedBaseline accepts only a database-verified receipt and checks the
 // complete source fingerprint again before returning hashes for comparison.
 func (s *migrationServer) loadCommittedBaseline(ctx context.Context, planID, planHash, subject string) (map[string][]businessLeaf, error) {
-	plan, ok, err := ReadMigrationReceipt(ctx, s.DB, planID, planHash, subject)
+	plan, err := s.resolveCommittedBaselinePlan(ctx, planID, planHash, subject)
 	if err != nil {
 		return nil, err
-	}
-	if !ok {
-		return nil, errors.New("committed baseline receipt required")
 	}
 	var index catchupBaselineIndex
 	if err = s.store.read("catchup-index", planID, subject, &index); err != nil {

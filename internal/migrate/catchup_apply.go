@@ -55,6 +55,9 @@ func (s *migrationServer) applyCatchup(ctx context.Context, reviewed CatchupPrev
 		return empty, err
 	}
 	if ok {
+		if err = s.captureCatchupCommittedBaseline(ctx, done, manifest, subject); err != nil {
+			return empty, err
+		}
 		return done, nil
 	}
 	if gate == nil {
@@ -80,6 +83,12 @@ func (s *migrationServer) applyCatchup(ctx context.Context, reviewed CatchupPrev
 		return empty, err
 	}
 	if ok {
+		if err = tx.Rollback(); err != nil {
+			return empty, err
+		}
+		if err = s.captureCatchupCommittedBaseline(ctx, done, manifest, subject); err != nil {
+			return empty, err
+		}
 		return done, nil
 	}
 	if err = executeCatchupRows(ctx, tx, prepared, manifest, reviewed, s.chunkReader(subject), gate); err != nil {
@@ -105,6 +114,9 @@ func (s *migrationServer) applyCatchup(ctx context.Context, reviewed CatchupPrev
 	}
 	if err = tx.Commit(); err != nil {
 		return empty, errors.New("catchup commit uncertain; retry exact request")
+	}
+	if err = s.captureCatchupCommittedBaseline(ctx, done, manifest, subject); err != nil {
+		return empty, errors.New("catchup committed but baseline unavailable; retry exact request")
 	}
 	return done, nil
 }

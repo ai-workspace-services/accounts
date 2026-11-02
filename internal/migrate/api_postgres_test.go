@@ -761,6 +761,30 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if e = httpTarget.QueryRow(`SELECT count(*) FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`).Scan(&inserted); e != nil || inserted != 1 {
 			t.Fatal("catchup row missing after commit", e)
 		}
+		// If the committed follow-up baseline marker was lost, exact retry must
+		// recover it from the database receipt and durable staged chunks.
+		followupPath := filepath.Join(targetDir, "catchup-index-"+newSource.RequestID+".gcm")
+		if e = os.Remove(followupPath); e != nil {
+			t.Fatal("remove fixture follow-up baseline", e)
+		}
+		if _, e = baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, nil); e != nil {
+			t.Fatal("recover follow-up baseline", e)
+		}
+		if _, e = os.Stat(followupPath); e != nil {
+			t.Fatal("follow-up baseline absent", e)
+		}
+		clientOptions.SnapshotID = uuid.NewString()
+		clientOptions.PlanID = uuid.NewString()
+		nextRound, e := RunMigrationCatchupClient(ctx, clientOptions, newSource.RequestID, newSource.ReportSHA256)
+		if e != nil {
+			t.Fatal("next-round catchup", e)
+		}
+		if nextRound.Tables["billing_plans"].Inserts != 0 || nextRound.Tables["billing_plans"].SourceUpdates != 0 || nextRound.Tables["billing_plans"].Conflicts != 0 {
+			t.Fatalf("replayed billing changes: %+v", nextRound.Tables["billing_plans"])
+		}
+		if nextRound.Tables["users"].TargetChanges == 0 {
+			t.Fatal("target-only fact was lost in next baseline")
+		}
 		catchupRequest := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: uuid.NewString(), SourceURL: sourceHTTP.URL, SnapshotID: preview.Snapshot.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: done.PlanID, BaselinePlanSHA256: done.PlanSHA256}
 		var throughAPI CatchupPreview
 		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &throughAPI); e != nil || throughAPI.Tables["users"].TargetChanges == 0 {

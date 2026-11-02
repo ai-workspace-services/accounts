@@ -91,12 +91,9 @@ type preparedCatchup struct {
 // prepareCommittedCatchup validates the receipt, source identity, every staged
 // chunk and table fingerprint before any target write transaction begins.
 func (s *migrationServer) prepareCommittedCatchup(ctx context.Context, baselineID, baselineHash, subject string, manifest MigrationManifest) (preparedCatchup, error) {
-	old, ok, err := ReadMigrationReceipt(ctx, s.DB, baselineID, baselineHash, subject)
+	old, err := s.resolveCommittedBaselinePlan(ctx, baselineID, baselineHash, subject)
 	if err != nil {
 		return preparedCatchup{}, err
-	}
-	if !ok {
-		return preparedCatchup{}, errors.New("committed baseline required")
 	}
 	if err = validateMigrationChunkManifest(manifest); err != nil {
 		return preparedCatchup{}, err
