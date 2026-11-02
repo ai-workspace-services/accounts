@@ -1,6 +1,9 @@
 package migrate
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func TestCatchupSummaryAndImmutableFacts(t *testing.T) {
 	leaf := func(key, value byte) businessLeaf { var x businessLeaf; x.Key[0] = key; x.Row[0] = value; return x }
@@ -26,5 +29,21 @@ func TestCatchupSummaryAndImmutableFacts(t *testing.T) {
 	}
 	if _, err = compareCatchupTable("not_a_table", nil, nil, nil); err == nil {
 		t.Fatal("unknown table accepted")
+	}
+}
+
+func BenchmarkCatchupLedger92143(b *testing.B) {
+	const n = 92143
+	leaves := make([]businessLeaf, n)
+	for i := range leaves {
+		binary.BigEndian.PutUint64(leaves[i].Key[:8], uint64(i))
+		binary.BigEndian.PutUint64(leaves[i].Row[:8], uint64(i+1))
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		out, err := compareCatchupTable("billing_ledger", leaves, leaves, leaves)
+		if err != nil || out.Matches != n {
+			b.Fatalf("comparison failed: %v %#v", err, out)
+		}
 	}
 }

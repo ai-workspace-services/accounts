@@ -1,7 +1,6 @@
 package migrate
 
 import (
-	"encoding/hex"
 	"errors"
 )
 
@@ -34,36 +33,34 @@ func compareCatchupTable(table string, baseline, source, target []businessLeaf) 
 	if _, ok := tables[table]; !ok {
 		return out, errors.New("unknown catchup table")
 	}
-	type states struct{ base, src, dst CatchupRow }
-	all := make(map[[32]byte]*states)
+	type states struct{ base, src, dst catchupFingerprint }
+	all := make(map[[32]byte]states)
 	for i, leaves := range [][]businessLeaf{baseline, source, target} {
-		seen := make(map[[32]byte]struct{}, len(leaves))
 		for _, leaf := range leaves {
-			if _, ok := seen[leaf.Key]; ok {
-				return CatchupTableSummary{}, errors.New("duplicate catchup primary-key fingerprint")
-			}
-			seen[leaf.Key] = struct{}{}
 			state := all[leaf.Key]
-			if state == nil {
-				state = &states{}
-				all[leaf.Key] = state
-			}
-			row := CatchupRow{Present: true, SHA256: hex.EncodeToString(leaf.Row[:])}
+			row := catchupFingerprint{present: true, digest: leaf.Row}
 			switch i {
 			case 0:
+				if state.base.present {
+					return CatchupTableSummary{}, errors.New("duplicate catchup primary-key fingerprint")
+				}
 				state.base = row
 			case 1:
+				if state.src.present {
+					return CatchupTableSummary{}, errors.New("duplicate catchup primary-key fingerprint")
+				}
 				state.src = row
 			case 2:
+				if state.dst.present {
+					return CatchupTableSummary{}, errors.New("duplicate catchup primary-key fingerprint")
+				}
 				state.dst = row
 			}
+			all[leaf.Key] = state
 		}
 	}
 	for _, state := range all {
-		action, e := ClassifyCatchup(state.base, state.src, state.dst, catchupImmutableFacts[table])
-		if e != nil {
-			return CatchupTableSummary{}, e
-		}
+		action := classifyCatchupFingerprints(state.base, state.src, state.dst, catchupImmutableFacts[table])
 		switch action {
 		case CatchupInsert:
 			out.Inserts++
