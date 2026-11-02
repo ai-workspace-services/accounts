@@ -714,6 +714,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		internalGroup.POST("/overlay/gateways/reconcile-stable-owner", h.overlayInternalReconcileStableGateway)
 	}
 
+	r.POST("/api/admin/migration/authorize", h.authorizeMigration)
+
 	// Public /api routes for admin/management (expected by frontend at /api/admin/...)
 	apiGroup := r.Group("/api")
 	if h.tokenService != nil {
