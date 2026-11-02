@@ -562,12 +562,34 @@ func migrationHTTP(ctx context.Context, client *http.Client, method, endpoint, t
 }
 
 type migrationHTTPStatusError struct {
-	status     int
-	retryAfter time.Duration
+	status        int
+	retryAfter    time.Duration
+	conflictTable string
 }
 
 func (e *migrationHTTPStatusError) Error() string {
+	if e.conflictTable != "" {
+		return fmt.Sprintf("migration endpoint refused request (HTTP %d; target_unique_conflict table=%s)", e.status, e.conflictTable)
+	}
 	return fmt.Sprintf("migration endpoint refused request (HTTP %d)", e.status)
+}
+
+func migrationReviewedTable(name string) bool {
+	tables, _, err := migrationCatalog()
+	if err != nil {
+		return false
+	}
+	_, ok := tables[name]
+	return ok
+}
+
+func migrationWritePreviewError(w http.ResponseWriter, err error) {
+	var conflict *migrationUniqueConflict
+	if errors.As(err, &conflict) && migrationReviewedTable(conflict.table) {
+		migrationJSON(w, http.StatusConflict, map[string]string{"error": "target_unique_conflict", "table": conflict.table})
+		return
+	}
+	migrationError(w, http.StatusConflict, "preview_conflicted_or_unavailable")
 }
 
 func migrationHTTPBudget(ctx context.Context, client *http.Client, method, endpoint, token string, input, output any, budget int64) error {
@@ -603,7 +625,18 @@ func migrationHTTPBudget(ctx context.Context, client *http.Client, method, endpo
 		if seconds > 5 {
 			seconds = 5
 		}
-		return &migrationHTTPStatusError{status: response.StatusCode, retryAfter: time.Duration(seconds) * time.Second}
+		refusal := &migrationHTTPStatusError{status: response.StatusCode, retryAfter: time.Duration(seconds) * time.Second}
+		if response.StatusCode == http.StatusConflict && method == http.MethodPost && r.URL.Path == MigrationAPIBase+"/plans/preview" {
+			var detail struct {
+				Error string `json:"error"`
+				Table string `json:"table"`
+			}
+			b, readErr := io.ReadAll(io.LimitReader(response.Body, 4097))
+			if readErr == nil && len(b) <= 4096 && json.Unmarshal(b, &detail) == nil && detail.Error == "target_unique_conflict" && migrationReviewedTable(detail.Table) {
+				refusal.conflictTable = detail.Table
+			}
+		}
+		return refusal
 	}
 	if output == nil {
 		return nil
@@ -659,7 +692,7 @@ func (s *migrationServer) preview(w http.ResponseWriter, r *http.Request, subjec
 		return s.store.write("plan", request.RequestID, subject, stage)
 	})
 	if err != nil {
-		migrationError(w, 409, "preview_conflicted_or_unavailable")
+		migrationWritePreviewError(w, err)
 		return
 	}
 	if !s.matchesSourceAuthorization(stage.Plan.Snapshot.Authorization, subject) {
