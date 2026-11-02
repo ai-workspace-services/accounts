@@ -108,3 +108,48 @@ func TestMigrationAPIBackupGate(t *testing.T) {
 		t.Fatal("symlink proof accepted")
 	}
 }
+
+func TestCatchupBackupGateBindsTargetAndRechecksProof(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "verified-backup.json")
+	hash := strings.Repeat("a", 64)
+	now := time.Now().UTC()
+	receipt := MigrationBackupReceipt{Format: 1, BackupID: "isolated-fixture", BackupSHA256: hash, TargetIdentitySHA256: hash, TargetSchemaSHA256: hash, TargetBaselineSHA256: hash, RestoredBaselineSHA256: hash, RestoreVerified: true, VerifiedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
+	write := func() {
+		t.Helper()
+		body, e := json.Marshal(receipt)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.WriteFile(path, body, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	write()
+	gate, err := migrationCatchupBackupFileGate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := CatchupPreview{TargetIdentitySHA256: hash, TargetSchemaSHA256: hash, TargetBaselineSHA256: hash}
+	if err = gate(context.Background(), report); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*CatchupPreview){func(r *CatchupPreview) { r.TargetIdentitySHA256 = strings.Repeat("b", 64) }, func(r *CatchupPreview) { r.TargetSchemaSHA256 = strings.Repeat("b", 64) }, func(r *CatchupPreview) { r.TargetBaselineSHA256 = strings.Repeat("b", 64) }} {
+		other := report
+		change(&other)
+		if gate(context.Background(), other) == nil {
+			t.Fatal("wrong target backup accepted")
+		}
+	}
+	receipt.ExpiresAt = now.Add(-time.Second)
+	write()
+	if gate(context.Background(), report) == nil {
+		t.Fatal("expired proof accepted")
+	}
+}

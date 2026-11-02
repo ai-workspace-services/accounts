@@ -695,11 +695,26 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if e = executeCatchupRows(ctx, writeTx, prepared, transferred.Manifest, newSource, baselineServer.chunkReader(migrationDigest("target-admin")), nil); e == nil {
 			t.Fatal("missing backup gate accepted")
 		}
-		gate := func(_ context.Context, report CatchupPreview) error {
-			if report.ReportSHA256 != newSource.ReportSHA256 {
-				return io.ErrUnexpectedEOF
-			}
-			return nil
+		proofDir, e := filepath.EvalSymlinks(t.TempDir())
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = os.Chmod(proofDir, 0700); e != nil {
+			t.Fatal(e)
+		}
+		now := time.Now().UTC()
+		proof := MigrationBackupReceipt{Format: 1, BackupID: "isolated-catchup-fixture", BackupSHA256: strings.Repeat("a", 64), TargetIdentitySHA256: newSource.TargetIdentitySHA256, TargetSchemaSHA256: newSource.TargetSchemaSHA256, TargetBaselineSHA256: newSource.TargetBaselineSHA256, RestoredBaselineSHA256: newSource.TargetBaselineSHA256, RestoreVerified: true, VerifiedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)}
+		proofBody, e := json.Marshal(proof)
+		if e != nil {
+			t.Fatal(e)
+		}
+		proofPath := filepath.Join(proofDir, "backup-proof.json")
+		if e = os.WriteFile(proofPath, proofBody, 0600); e != nil {
+			t.Fatal(e)
+		}
+		gate, e := migrationCatchupBackupFileGate(proofPath)
+		if e != nil {
+			t.Fatal(e)
 		}
 		if e = executeCatchupRows(ctx, writeTx, prepared, transferred.Manifest, newSource, baselineServer.chunkReader(migrationDigest("target-admin")), gate); e != nil {
 			t.Fatal("catchup mutations", e)
