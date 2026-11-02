@@ -34,6 +34,9 @@ func ClassifyCatchup(baseline, source, target CatchupRow, immutable bool) (Catch
 	}
 	if !source.Present {
 		if baseline.Present {
+			if target.Present && target.SHA256 != baseline.SHA256 {
+				return CatchupConflict, nil
+			}
 			return CatchupSourceDeleted, nil
 		}
 		if target.Present {

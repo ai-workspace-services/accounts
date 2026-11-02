@@ -24,6 +24,8 @@ func TestClassifyCatchup(t *testing.T) {
 		{"both edited differently", a, b, c, false, CatchupConflict},
 		{"both converged", a, b, b, false, CatchupMatch},
 		{"source deleted", a, CatchupRow{}, a, false, CatchupSourceDeleted},
+		{"source deleted target edited", a, CatchupRow{}, b, false, CatchupConflict},
+		{"both deleted", a, CatchupRow{}, CatchupRow{}, false, CatchupSourceDeleted},
 		{"target deleted", a, a, CatchupRow{}, false, CatchupConflict},
 		{"all absent", CatchupRow{}, CatchupRow{}, CatchupRow{}, false, CatchupAbsent},
 	}
