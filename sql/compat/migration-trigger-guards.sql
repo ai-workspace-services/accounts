@@ -30,9 +30,11 @@ BEGIN
     RAISE EXCEPTION 'dedicated migration login absent, privileged, assumable, or owns business tables';
   END IF;
   FOREACH fname IN ARRAY ARRAY['set_updated_at', 'bump_version'] LOOP
-    SELECT p.prosrc INTO body FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+    SELECT p.prosrc INTO body FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang
       WHERE n.nspname='public' AND p.proname=fname AND p.pronargs=0
         AND p.prorettype='pg_catalog.trigger'::regtype AND NOT p.prosecdef
+        AND l.lanname='plpgsql' AND p.prokind='f' AND p.provolatile='v' AND p.proparallel='u'
+        AND NOT p.proisstrict AND NOT p.proleakproof AND p.proconfig IS NULL
         AND p.proowner <> executor_oid;
     IF fname = 'set_updated_at' THEN
       original := 'BEGIN NEW.updated_at := now(); RETURN NEW; END;';

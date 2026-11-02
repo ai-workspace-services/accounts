@@ -161,6 +161,16 @@ GRANT SELECT, UPDATE ON public.guard_fixture TO accounts_migration, ` + quoteBus
 	if _, err = db.Exec(`ALTER TABLE public.guard_fixture OWNER TO postgres`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = db.Exec(`ALTER FUNCTION public.bump_version() SET search_path='pg_catalog'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(string(script)); err == nil {
+		t.Fatal("guard replaced a function with unreviewed execution settings")
+	}
+	_, _ = db.Exec(`ROLLBACK`)
+	if _, err = db.Exec(`ALTER FUNCTION public.bump_version() RESET search_path`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = db.Exec(`CREATE OR REPLACE FUNCTION public.set_updated_at() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$`); err != nil {
 		t.Fatal(err)
 	}
