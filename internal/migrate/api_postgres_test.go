@@ -722,6 +722,30 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if e = httpTarget.QueryRow(`SELECT count(*) FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`).Scan(&inserted); e != nil || inserted != 0 {
 			t.Fatal("catchup rollback failed", e)
 		}
+		catchupSubject := migrationDigest("target-admin")
+		if _, e = baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, nil); e == nil {
+			t.Fatal("catchup committed without backup gate")
+		}
+		committed, e := baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, gate)
+		if e != nil {
+			t.Fatal("catchup commit", e)
+		}
+		// Simulate a lost response: an exact retry reads the committed receipt and
+		// does not require a still-live backup gate or write the rows again.
+		againCommitted, e := baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, catchupSubject, nil)
+		if e != nil || migrationDigest(committed) != migrationDigest(againCommitted) {
+			t.Fatal("catchup receipt retry", e)
+		}
+		if _, e = baselineServer.applyCatchup(ctx, newSource, transferred.Manifest, migrationDigest("other-admin"), nil); e == nil {
+			t.Fatal("catchup receipt leaked across actors")
+		}
+		var receiptCount int
+		if e = httpTarget.QueryRow(`SELECT count(*) FROM accounts_migration_api.catchup_receipts`).Scan(&receiptCount); e != nil || receiptCount != 1 {
+			t.Fatal("catchup receipt duplicated", e)
+		}
+		if e = httpTarget.QueryRow(`SELECT count(*) FROM public.billing_plans WHERE plan_id='catchup-fixture-new'`).Scan(&inserted); e != nil || inserted != 1 {
+			t.Fatal("catchup row missing after commit", e)
+		}
 		catchupRequest := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: uuid.NewString(), SourceURL: sourceHTTP.URL, SnapshotID: preview.Snapshot.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: done.PlanID, BaselinePlanSHA256: done.PlanSHA256}
 		var throughAPI CatchupPreview
 		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &throughAPI); e != nil || throughAPI.Tables["users"].TargetChanges == 0 {

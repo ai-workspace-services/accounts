@@ -471,6 +471,9 @@ func InitializeMigrationReceipts(ctx context.Context, db *sql.DB) error {
  CREATE TABLE IF NOT EXISTS accounts_migration_api.receipts (
  plan_id uuid PRIMARY KEY, plan_sha256 text NOT NULL, subject text NOT NULL,
  receipt jsonb NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());
+ CREATE TABLE IF NOT EXISTS accounts_migration_api.catchup_receipts (
+ request_id uuid PRIMARY KEY, report_sha256 text NOT NULL, subject text NOT NULL,
+ receipt jsonb NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());
  REVOKE ALL ON SCHEMA accounts_migration_api FROM PUBLIC;
  REVOKE ALL ON ALL TABLES IN SCHEMA accounts_migration_api FROM PUBLIC`)
 	if err != nil {
