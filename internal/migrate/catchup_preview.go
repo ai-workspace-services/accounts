@@ -15,6 +15,11 @@ import (
 
 // CatchupPreview is read-only evidence, not an apply authorization.
 type CatchupPreview struct {
+	RequestID            string                         `json:"request_id"`
+	ReportSHA256         string                         `json:"report_sha256"`
+	ToolSHA256           string                         `json:"tool_sha256"`
+	CreatedAt            time.Time                      `json:"created_at"`
+	ExpiresAt            time.Time                      `json:"expires_at"`
 	BaselinePlanID       string                         `json:"baseline_plan_id"`
 	BaselinePlanSHA256   string                         `json:"baseline_plan_sha256"`
 	SourceSnapshotID     string                         `json:"source_snapshot_id"`
@@ -140,6 +145,11 @@ func (s *migrationServer) previewCommittedCatchup(ctx context.Context, baselineI
 	return report, nil
 }
 
+func catchupPreviewHash(report CatchupPreview) string {
+	report.ReportSHA256 = ""
+	return migrationDigest(report)
+}
+
 type catchupPreviewRequest struct {
 	MigrationPreviewRequest
 	BaselinePlanID     string `json:"baseline_plan_id"`
@@ -182,11 +192,23 @@ func (s *migrationServer) catchupPreview(w http.ResponseWriter, r *http.Request,
 		if e != nil {
 			return e
 		}
-		stage = catchupPreviewStage{Binding: binding, Report: report, ExpiresAt: manifest.ExpiresAt}
+		report.RequestID = request.RequestID
+		report.ToolSHA256 = migrationExecutableSHA256()
+		report.CreatedAt = time.Now().UTC()
+		report.ExpiresAt = report.CreatedAt.Add(s.Lifetime)
+		if manifest.ExpiresAt.Before(report.ExpiresAt) {
+			report.ExpiresAt = manifest.ExpiresAt
+		}
+		report.ReportSHA256 = catchupPreviewHash(report)
+		stage = catchupPreviewStage{Binding: binding, Report: report, ExpiresAt: report.ExpiresAt}
 		return s.store.write("catchup-preview", request.RequestID, subject, stage)
 	})
 	if err != nil {
 		migrationError(w, 409, "catchup_preview_unavailable")
+		return
+	}
+	if stage.Report.RequestID != request.RequestID || stage.Report.ReportSHA256 != catchupPreviewHash(stage.Report) || !stage.Report.ExpiresAt.Equal(stage.ExpiresAt) {
+		migrationError(w, 409, "catchup_preview_binding_invalid")
 		return
 	}
 	if !time.Now().Before(stage.ExpiresAt) {
@@ -243,7 +265,7 @@ func RunMigrationCatchupClient(ctx context.Context, options MigrationClientOptio
 	if err != nil {
 		return CatchupPreview{}, err
 	}
-	if report.BaselinePlanID != baselineID || report.BaselinePlanSHA256 != baselineHash || report.SourceSnapshotID != manifest.SnapshotID || report.SourceSnapshotSHA256 != manifest.SnapshotSHA256 || !migrationSHA.MatchString(report.TargetIdentitySHA256) || !migrationSHA.MatchString(report.TargetSchemaSHA256) || !migrationSHA.MatchString(report.TargetBaselineSHA256) || len(report.Tables) != len(order) {
+	if report.RequestID != options.PlanID || !migrationSHA.MatchString(report.ToolSHA256) || report.ReportSHA256 != catchupPreviewHash(report) || !report.ExpiresAt.After(time.Now()) || !report.ExpiresAt.After(report.CreatedAt) || report.ExpiresAt.After(manifest.ExpiresAt) || report.BaselinePlanID != baselineID || report.BaselinePlanSHA256 != baselineHash || report.SourceSnapshotID != manifest.SnapshotID || report.SourceSnapshotSHA256 != manifest.SnapshotSHA256 || !migrationSHA.MatchString(report.TargetIdentitySHA256) || !migrationSHA.MatchString(report.TargetSchemaSHA256) || !migrationSHA.MatchString(report.TargetBaselineSHA256) || len(report.Tables) != len(order) {
 		return CatchupPreview{}, errors.New("catchup response binding mismatch")
 	}
 	for _, name := range order {
