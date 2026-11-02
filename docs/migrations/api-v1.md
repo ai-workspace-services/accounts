@@ -58,6 +58,12 @@ primary-key content conflicts return a persisted HTTP 200 preview with
 `state=conflict`, nonzero `conflict_rows` and no apply eligibility. No identifying
 values or driver errors are returned. Authentication errors are 401/403, expired
 objects 410, malformed/oversized JSON requests 400, unsupported endpoints 404/405.
+For a PostgreSQL unique-key collision while comparing source and target facts,
+preview returns HTTP 409 with `target_unique_conflict` and the reviewed table
+name. It does not return the conflicting values, keys or raw database error.
+Other preview failures keep the generic refusal; neither response is an approved
+plan or authorizes a write. The client accepts this detail only for a reviewed
+table and otherwise reports the HTTP status without echoing the response body.
 A busy listener returns 503; retry the same request IDs. Only missing chunk
 downloads have a bounded automatic retry (at most two attempts); mutation requests
 are not automatically retried. Authenticated requests are also rate limited per

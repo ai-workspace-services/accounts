@@ -8,7 +8,21 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+type migrationUniqueConflict struct{ table string }
+
+func (e *migrationUniqueConflict) Error() string { return "source and target unique facts conflict" }
+
+func migrationUnionError(table string, err error) error {
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) && postgresError.Code == "23505" {
+		return &migrationUniqueConflict{table: table}
+	}
+	return errors.New("target union insert unavailable")
+}
 
 type migrationChunkReader func(MigrationChunk) (migrationChunkPage, error)
 type migrationChunkWork struct {
@@ -176,7 +190,7 @@ func migrationPrepareChunkWork(ctx context.Context, tx *sql.Tx, manifest Migrati
 		// Same-key complete matches are skipped; secondary/expression/partial unique
 		// collisions reject the union transaction, without touching business rows.
 		if _, err = tx.ExecContext(ctx, `INSERT INTO `+work.union[name]+` (`+list+`) SELECT `+list+` FROM `+source+` s WHERE NOT EXISTS(SELECT 1 FROM `+target+` t WHERE `+join+`)`); err != nil {
-			return work, errors.New("source and target unique facts conflict")
+			return work, migrationUnionError(name, err)
 		}
 		work.expected[name], err = migrationQueryDigest(ctx, tx, `SELECT to_jsonb(t)::text FROM `+work.union[name]+` t`, table)
 		if err != nil {
