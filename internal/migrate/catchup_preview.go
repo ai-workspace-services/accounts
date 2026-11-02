@@ -115,6 +115,20 @@ func (s *migrationServer) previewCommittedCatchup(ctx context.Context, baselineI
 		return report, err
 	}
 	defer tx.Rollback()
+	report, err = compareCatchupTargetTx(ctx, tx, old, manifest, base, source, tables, order, baselineID, baselineHash)
+	if err != nil {
+		return CatchupPreview{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return CatchupPreview{}, errors.New("catchup snapshot finalization failed")
+	}
+	return report, nil
+}
+
+// compareCatchupTargetTx must be called inside the transaction whose target
+// snapshot is to be reviewed or revalidated; it never commits or writes rows.
+func compareCatchupTargetTx(ctx context.Context, tx *sql.Tx, old MigrationPlan, manifest MigrationManifest, base map[string][]businessLeaf, source map[string]*businessDigest, tables map[string]businessTable, order []string, baselineID, baselineHash string) (CatchupPreview, error) {
+	var report CatchupPreview
 	identity, err := migrationIdentity(ctx, tx)
 	if err != nil || identity != old.TargetIdentitySHA256 || identity == manifest.SourceIdentitySHA256 {
 		return report, errors.New("catchup target identity mismatch")
@@ -138,9 +152,6 @@ func (s *migrationServer) previewCommittedCatchup(ctx context.Context, baselineI
 			return CatchupPreview{}, e
 		}
 		report.Tables[name] = summary
-	}
-	if err = tx.Commit(); err != nil {
-		return CatchupPreview{}, errors.New("catchup snapshot finalization failed")
 	}
 	return report, nil
 }
@@ -275,4 +286,32 @@ func RunMigrationCatchupClient(ctx context.Context, options MigrationClientOptio
 		}
 	}
 	return report, nil
+}
+
+// verifyCatchupRevalidation must be run inside the same writer-locked
+// transaction as any future apply. It permits no changes by itself.
+func verifyCatchupRevalidation(reviewed, current CatchupPreview, now time.Time) error {
+	if !migrationUUID(reviewed.RequestID) || !migrationSHA.MatchString(reviewed.ReportSHA256) || reviewed.ReportSHA256 != catchupPreviewHash(reviewed) || !migrationSHA.MatchString(reviewed.ToolSHA256) || reviewed.ToolSHA256 != migrationExecutableSHA256() || !now.Before(reviewed.ExpiresAt) || !reviewed.ExpiresAt.After(reviewed.CreatedAt) {
+		return errors.New("reviewed catchup report invalid or expired")
+	}
+	if !migrationUUID(reviewed.BaselinePlanID) || !migrationUUID(reviewed.SourceSnapshotID) || !migrationSHA.MatchString(reviewed.BaselinePlanSHA256) || !migrationSHA.MatchString(reviewed.SourceSnapshotSHA256) || !migrationSHA.MatchString(reviewed.TargetIdentitySHA256) || !migrationSHA.MatchString(reviewed.TargetSchemaSHA256) || !migrationSHA.MatchString(reviewed.TargetBaselineSHA256) || reviewed.CreatedAt.After(now) || reviewed.ExpiresAt.Sub(reviewed.CreatedAt) > 24*time.Hour {
+		return errors.New("catchup report provenance invalid")
+	}
+	if reviewed.BaselinePlanID != current.BaselinePlanID || reviewed.BaselinePlanSHA256 != current.BaselinePlanSHA256 || reviewed.SourceSnapshotID != current.SourceSnapshotID || reviewed.SourceSnapshotSHA256 != current.SourceSnapshotSHA256 || reviewed.TargetIdentitySHA256 != current.TargetIdentitySHA256 || reviewed.TargetSchemaSHA256 != current.TargetSchemaSHA256 || reviewed.TargetBaselineSHA256 != current.TargetBaselineSHA256 || migrationDigest(reviewed.Tables) != migrationDigest(current.Tables) {
+		return errors.New("catchup baseline or target changed")
+	}
+	_, order, err := migrationCatalog()
+	if err != nil {
+		return err
+	}
+	if len(reviewed.Tables) != len(order) {
+		return errors.New("catchup table coverage differs")
+	}
+	for _, name := range order {
+		table, ok := reviewed.Tables[name]
+		if !ok || table.Conflicts != 0 || table.Inserts < 0 || table.SourceUpdates < 0 || table.Matches < 0 || table.TargetChanges < 0 || table.SourceDeletions < 0 {
+			return errors.New("catchup conflicts or invalid table counts")
+		}
+	}
+	return nil
 }
