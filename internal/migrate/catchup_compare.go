@@ -25,13 +25,25 @@ var catchupImmutableFacts = map[string]bool{
 // compareCatchupTable consumes already-verified canonical fingerprints. It
 // detects duplicate keys independently in each stream and never writes rows.
 func compareCatchupTable(table string, baseline, source, target []businessLeaf) (CatchupTableSummary, error) {
+	out, _, err := classifyCatchupTable(table, baseline, source, target, false)
+	return out, err
+}
+
+// classifyCatchupTable may retain hashes for eligible writes in memory. A
+// conflict suppresses the entire action set; callers must still revalidate the
+// review and hold the target write lock before using it.
+func classifyCatchupTable(table string, baseline, source, target []businessLeaf, collect bool) (CatchupTableSummary, map[[32]byte]CatchupAction, error) {
 	var out CatchupTableSummary
+	var actions map[[32]byte]CatchupAction
+	if collect {
+		actions = make(map[[32]byte]CatchupAction)
+	}
 	tables, _, err := migrationCatalog()
 	if err != nil {
-		return out, err
+		return out, nil, err
 	}
 	if _, ok := tables[table]; !ok {
-		return out, errors.New("unknown catchup table")
+		return out, nil, errors.New("unknown catchup table")
 	}
 	type states struct{ base, src, dst catchupFingerprint }
 	all := make(map[[32]byte]states)
@@ -42,25 +54,28 @@ func compareCatchupTable(table string, baseline, source, target []businessLeaf) 
 			switch i {
 			case 0:
 				if state.base.present {
-					return CatchupTableSummary{}, errors.New("duplicate catchup primary-key fingerprint")
+					return CatchupTableSummary{}, nil, errors.New("duplicate catchup primary-key fingerprint")
 				}
 				state.base = row
 			case 1:
 				if state.src.present {
-					return CatchupTableSummary{}, errors.New("duplicate catchup primary-key fingerprint")
+					return CatchupTableSummary{}, nil, errors.New("duplicate catchup primary-key fingerprint")
 				}
 				state.src = row
 			case 2:
 				if state.dst.present {
-					return CatchupTableSummary{}, errors.New("duplicate catchup primary-key fingerprint")
+					return CatchupTableSummary{}, nil, errors.New("duplicate catchup primary-key fingerprint")
 				}
 				state.dst = row
 			}
 			all[leaf.Key] = state
 		}
 	}
-	for _, state := range all {
+	for key, state := range all {
 		action := classifyCatchupFingerprints(state.base, state.src, state.dst, catchupImmutableFacts[table])
+		if collect && (action == CatchupInsert || action == CatchupUpdate) {
+			actions[key] = action
+		}
 		switch action {
 		case CatchupInsert:
 			out.Inserts++
@@ -75,8 +90,11 @@ func compareCatchupTable(table string, baseline, source, target []businessLeaf) 
 		case CatchupConflict:
 			out.Conflicts++
 		case CatchupAbsent:
-			return CatchupTableSummary{}, errors.New("unexpected absent key")
+			return CatchupTableSummary{}, nil, errors.New("unexpected absent key")
 		}
 	}
-	return out, nil
+	if out.Conflicts > 0 {
+		actions = nil
+	}
+	return out, actions, nil
 }

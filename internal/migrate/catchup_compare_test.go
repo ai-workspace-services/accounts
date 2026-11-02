@@ -47,3 +47,29 @@ func BenchmarkCatchupLedger92143(b *testing.B) {
 		}
 	}
 }
+
+func TestCatchupActionSelectionNeverOverwritesConflict(t *testing.T) {
+	leaf := func(key, value byte) businessLeaf { var l businessLeaf; l.Key[0] = key; l.Row[0] = value; return l }
+	base := []businessLeaf{leaf(1, 1), leaf(2, 1), leaf(3, 1)}
+	src := []businessLeaf{leaf(1, 2), leaf(2, 1), leaf(4, 1)}
+	dst := []businessLeaf{leaf(1, 1), leaf(2, 2), leaf(3, 1), leaf(5, 1)}
+	summary, actions, err := classifyCatchupTable("users", base, src, dst, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Inserts != 1 || summary.SourceUpdates != 1 || summary.TargetChanges != 2 || summary.SourceDeletions != 1 || len(actions) != 2 {
+		t.Fatalf("selection: %+v %d", summary, len(actions))
+	}
+	if actions[leaf(1, 1).Key] != CatchupUpdate || actions[leaf(4, 1).Key] != CatchupInsert {
+		t.Fatal("missing allowed actions")
+	}
+	dst[0] = leaf(1, 3)
+	summary, actions, err = classifyCatchupTable("users", base, src, dst, true)
+	if err != nil || summary.Conflicts != 1 || actions != nil {
+		t.Fatal("conflicting selection must be withheld")
+	}
+	summary, actions, err = classifyCatchupTable("billing_ledger", base, src, []businessLeaf{leaf(1, 1)}, true)
+	if err != nil || summary.Conflicts == 0 || actions != nil {
+		t.Fatal("immutable update must be withheld")
+	}
+}
