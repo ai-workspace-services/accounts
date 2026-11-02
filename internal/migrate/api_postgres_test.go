@@ -649,6 +649,38 @@ func TestMigrationAPIPostgres17(t *testing.T) {
 		if got := newSource.Tables["users"]; got.TargetChanges == 0 {
 			t.Fatal("target changes disappeared in new snapshot")
 		}
+		var transferred migrationTransferIndex
+		if e = baselineStore.read("transfer", clientOptions.PlanID, migrationDigest("target-admin"), &transferred); e != nil {
+			t.Fatal("catchup transfer unavailable", e)
+		}
+		prepared, e := baselineServer.prepareCommittedCatchup(ctx, done.PlanID, done.PlanSHA256, migrationDigest("target-admin"), transferred.Manifest)
+		if e != nil {
+			t.Fatal("catchup preparation", e)
+		}
+		lockedTx, e := migrationBegin(ctx, httpTarget, false)
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer lockedTx.Rollback()
+		if _, e = selectReviewedCatchupActions(ctx, lockedTx, prepared, transferred.Manifest, newSource); e == nil {
+			t.Fatal("unlocked selection accepted")
+		}
+		if e = migrationLock(ctx, lockedTx, prepared.order); e != nil {
+			t.Fatal(e)
+		}
+		selected, e := selectReviewedCatchupActions(ctx, lockedTx, prepared, transferred.Manifest, newSource)
+		if e != nil || len(selected["billing_plans"]) != 2 || len(selected["users"]) != 0 {
+			t.Fatal("invalid locked action selection", e)
+		}
+		if _, e = lockedTx.ExecContext(ctx, `UPDATE public.billing_plans SET display_name='fixture drift' WHERE plan_id='fixture-plan'`); e != nil {
+			t.Fatal(e)
+		}
+		if _, e = selectReviewedCatchupActions(ctx, lockedTx, prepared, transferred.Manifest, newSource); e == nil {
+			t.Fatal("target drift accepted")
+		}
+		if e = lockedTx.Rollback(); e != nil {
+			t.Fatal(e)
+		}
 		catchupRequest := catchupPreviewRequest{MigrationPreviewRequest: MigrationPreviewRequest{RequestID: uuid.NewString(), SourceURL: sourceHTTP.URL, SnapshotID: preview.Snapshot.SnapshotID, SourceToken: options.SourceToken}, BaselinePlanID: done.PlanID, BaselinePlanSHA256: done.PlanSHA256}
 		var throughAPI CatchupPreview
 		if e = migrationHTTP(ctx, targetHTTP.Client(), "POST", targetHTTP.URL+MigrationAPIBase+"/catchup/preview", "existing-target-session", catchupRequest, &throughAPI); e != nil || throughAPI.Tables["users"].TargetChanges == 0 {
