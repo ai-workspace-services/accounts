@@ -96,6 +96,7 @@ func newMigrationAPICmd() *cobra.Command {
 			return errors.New("source-url and target-url required for preview; target-url required for apply/status")
 		}
 		var err error
+		options.TargetLocalPort = strings.TrimSpace(os.Getenv("MIGRATION_TARGET_LOCAL_PORT"))
 		options.TargetToken, err = migrationCredential(cmd.Context(), targetEnv, targetKV)
 		if err != nil {
 			return err
