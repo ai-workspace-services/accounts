@@ -55,6 +55,15 @@ func TestTargetScopeUpgradePostgres(t *testing.T) {
 		}
 	}
 	if _, err = db.Exec(`DROP FUNCTION public.bump_version() CASCADE; DROP FUNCTION public.reject_finance_fact_mutation() CASCADE; DROP FUNCTION public.reject_referral_campaign_mutation() CASCADE; DROP FUNCTION public.snapshot_referral_campaign() CASCADE; DROP FUNCTION public.validate_finance_invoice_subscription() CASCADE;
+-- The observed existing business target does not have these native triggers.
+DROP TRIGGER account_lifecycle_events_immutable_trg ON public.account_lifecycle_events;
+DROP TRIGGER account_lifecycle_events_no_truncate_trg ON public.account_lifecycle_events;
+DROP TRIGGER trg_rbac_permissions_set_updated_at ON public.rbac_permissions;
+DROP TRIGGER trg_rbac_role_permissions_set_updated_at ON public.rbac_role_permissions;
+DROP TRIGGER trg_rbac_roles_set_updated_at ON public.rbac_roles;
+DROP TRIGGER trg_users_set_updated_at ON public.users;
+DROP TRIGGER users_no_delete_trg ON public.users;
+DROP TRIGGER users_no_truncate_trg ON public.users;
 ALTER TABLE public.users ALTER COLUMN email SET NOT NULL;
 ALTER TABLE public.tenant_domains DROP CONSTRAINT tenant_domains_tenant_id_fkey;
 ALTER TABLE public.tenant_memberships DROP CONSTRAINT tenant_memberships_tenant_id_fkey;
@@ -107,6 +116,10 @@ INSERT INTO public.users(uuid,username,password,email,proxy_uuid) VALUES('000000
 	var checkpoint bool
 	if err = db.QueryRow(`SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&checkpoint); err != nil || checkpoint {
 		t.Fatal("script created an application migration checkpoint", err)
+	}
+	var existingScopeTriggers int
+	if err = db.QueryRow(`SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND c.relname IN ('account_lifecycle_events','rbac_permissions','rbac_role_permissions','rbac_roles','users')`).Scan(&existingScopeTriggers); err != nil || existingScopeTriggers != 0 {
+		t.Fatalf("compatibility operation unexpectedly changed existing target trigger behavior: count=%d err=%v", existingScopeTriggers, err)
 	}
 	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {

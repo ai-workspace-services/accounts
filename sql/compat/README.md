@@ -38,6 +38,18 @@ artifact by nine triggers on existing lifecycle, RBAC and user tables. Their
 business behavior requires review before release. The current API still requires a clean
 reviewed schema checkpoint; this file intentionally does not fabricate one.
 
+The observed V6 gap has three distinct effects: two lifecycle triggers enforce
+append-only audit events; two user triggers reject hard deletion or truncation;
+and five triggers update timestamps or user versions on ordinary updates. The
+catch-up classifier treats lifecycle events as immutable facts and checks full
+row fingerprints, but that protects its own transfer path only; it does not
+provide the missing database enforcement for other V6 writers. Conversely,
+installing the five update triggers changes ordinary business write semantics
+and migration-row fingerprints; do not silently add them in this compatibility
+operation. The fixture explicitly models all nine as absent and asserts they
+remain absent after this SQL. This is a documented compatibility limitation,
+not an assertion that the target is equivalent to the native schema.
+
 `TestTargetScopeUpgradePostgres` builds and destroys only a newly named
 synthetic database in an explicitly supplied loopback PostgreSQL 17 fixture. It
 tests target-identity rejection, data preservation, the 42-table catalog,
