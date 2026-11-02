@@ -2,23 +2,28 @@ package api
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
-	"time"
 
-	"account/internal/auth"
-	"account/internal/store"
 	"github.com/gin-gonic/gin"
 )
 
-// Authorize through the same Accounts authentication service and current user
-// state. A service token, cookie-only request or unprivileged login is insufficient.
+// Migration authorization uses the configured internal service credential.
 func (h *handler) authorizeMigration(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
-	if !strings.HasPrefix(c.GetHeader("Authorization"), "Bearer ") || strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")) == "" {
+	header := c.GetHeader("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		c.Status(http.StatusUnauthorized)
+		return
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	expected := strings.TrimSpace(os.Getenv("INTERNAL_SERVICE_TOKEN"))
+	if token == "" || expected == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 		c.Status(http.StatusUnauthorized)
 		return
 	}
@@ -32,33 +37,6 @@ func (h *handler) authorizeMigration(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
-	var userID string
-	if h.tokenService != nil {
-		h.tokenService.AuthMiddleware()(c)
-		if c.IsAborted() {
-			return
-		}
-		userID = auth.GetUserID(c)
-	} else {
-		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
-		id, expires, err := h.store.GetSession(c.Request.Context(), token)
-		if err != nil || !time.Now().Before(expires) {
-			c.Status(http.StatusUnauthorized)
-			return
-		}
-		userID = id
-	}
-	user, err := h.store.GetUserByID(c.Request.Context(), userID)
-	if err != nil {
-		c.Status(http.StatusUnauthorized)
-		return
-	}
-	if !user.Active || h.isReadOnlyAccount(user) || (!store.IsRootRole(user.Role) && !strings.EqualFold(strings.TrimSpace(user.Role), store.RoleAdmin)) {
-		c.Status(http.StatusForbidden)
-		return
-	}
-	// Audit ownership is local to each Accounts authority. Source and target
-	// may authorize different administrators; the target plan keeps its owner.
-	operator := fmt.Sprintf("%x", sha256.Sum256([]byte("accounts-migration-admin:"+user.ID)))
+	operator := fmt.Sprintf("%x", sha256.Sum256([]byte("accounts-migration-internal-service")))
 	c.JSON(http.StatusOK, gin.H{"operator_id": operator, "scope": request.Scope})
 }
