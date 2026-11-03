@@ -29,7 +29,7 @@ func (h *handler) prepareSubscriptionImport(ctx context.Context, source string) 
 	if strings.Contains(first, "\t") {
 		reader.Comma = '\t'
 	}
-	reader.TrimLeadingSpace = true
+	reader.TrimLeadingSpace = reader.Comma != '\t'
 	rows, err := reader.ReadAll()
 	if err != nil || len(rows) < 2 || len(rows) > maxAdminPlanGroupBatch+1 {
 		return "", nil, errors.New("import requires a header and 1 to 500 rows")
