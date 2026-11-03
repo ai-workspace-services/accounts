@@ -81,9 +81,6 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 	if scope.ResourceClass == agentResourceCustom {
 		return class == agentResourcePlus || class == agentResourcePro || (scope.CustomAllowFree && class == agentResourceFree)
 	}
-	if scope.CustomAllowFree && class == agentResourceFree {
-		return true
-	}
 	return publicAgentResourceClassAllows(scope.ResourceClass, class)
 }
 
