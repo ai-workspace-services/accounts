@@ -430,6 +430,18 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 }
 
 func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error) {
+	// Expire only a recorded manual reset; preserve financial and suspension state.
+	if _, err := s.db.ExecContext(ctx, `UPDATE account_quota_states q SET
+ remaining_included_quota=GREATEST(0,p.included_quota_bytes-COALESCE((SELECT SUM(GREATEST(total_bytes,0)) FROM traffic_minute_buckets b WHERE b.account_uuid=q.account_uuid AND b.bucket_start >= date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'),0)),
+ period_start=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
+ period_end=(date_trunc('month',now() AT TIME ZONE 'UTC')+interval '1 month') AT TIME ZONE 'UTC',effective_at=now(),updated_at=now()
+ FROM account_billing_profiles p WHERE q.account_uuid=$1 AND p.account_uuid=q.account_uuid
+ AND q.period_end<=now() AND EXISTS(SELECT 1 FROM audit_logs a WHERE a.action='admin.monthly_usage.reset' AND a.details->>'target_uuid'=$1
+ AND (CASE WHEN a.action='admin.monthly_usage.reset' THEN (a.details->'after'->>'period_start')::timestamptz END)=q.period_start
+ AND (CASE WHEN a.action='admin.monthly_usage.reset' THEN (a.details->'after'->>'period_end')::timestamptz END)=q.period_end)`, accountUUID); err != nil {
+		return nil, err
+	}
+
 	const query = `
 		SELECT account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, proxy_access_state, last_rated_bucket_at, period_start, period_end, effective_at, updated_at
 		FROM account_quota_states

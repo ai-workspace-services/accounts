@@ -627,6 +627,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.PUT("/admin/users/plan-groups/batch", h.adminAssignPlanGroupsBatch)
 	authProtected.GET("/admin/users/subscription-records", h.adminListSubscriptionRecords)
 	authProtected.POST("/admin/billing/accounts/:accountUUID/quota", h.adminAdjustQuota)
+	authProtected.POST("/admin/billing/accounts/:accountUUID/reset-monthly-usage", h.adminResetMonthlyUsage)
 	authProtected.POST("/admin/billing/accounts/:accountUUID/balance", h.adminAdjustBalance)
 	authProtected.GET("/admin/audit", h.adminListAuditLogs)
 

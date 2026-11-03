@@ -37,7 +37,8 @@ func (s *memoryStore) changeSubscriptionQuota(id string, previous, target int64,
 	if target <= previous || !end.After(start) || p.IncludedQuotaBytes != previous || q == nil || q.RemainingIncludedQuota > previous {
 		return ErrSubscriptionQuotaConflict
 	}
-	if !activation && (q.PeriodStart == nil || q.PeriodEnd == nil || ((!q.PeriodStart.Equal(start) || !q.PeriodEnd.Equal(end)) && !restoringFree)) {
+	resetPeriod := q.PeriodStart != nil && q.PeriodEnd != nil && start.Equal(month) && end.Equal(month.AddDate(0, 1, 0)) && q.PeriodStart.After(start) && q.PeriodStart.Before(end) && q.PeriodEnd.Equal(end)
+	if !activation && !resetPeriod && (q.PeriodStart == nil || q.PeriodEnd == nil || ((!q.PeriodStart.Equal(start) || !q.PeriodEnd.Equal(end)) && !restoringFree)) {
 		return ErrSubscriptionQuotaConflict
 	}
 	q.RemainingIncludedQuota += target - previous
@@ -45,6 +46,9 @@ func (s *memoryStore) changeSubscriptionQuota(id string, previous, target int64,
 		q.RemainingIncludedQuota = target
 		q.Arrears, q.ArrearsSince = false, nil
 		q.ThrottleState, q.SuspendState = "normal", "active"
+	}
+	if !activation && q.PeriodStart != nil && !q.PeriodStart.Before(start) && q.PeriodStart.Before(end) && q.PeriodEnd != nil && q.PeriodEnd.Equal(end) {
+		start = *q.PeriodStart
 	}
 	q.PeriodStart, q.PeriodEnd = &start, &end
 	q.UpdatedAt = time.Now().UTC()
@@ -89,8 +93,8 @@ func (s *postgresStore) changeSubscriptionQuota(ctx context.Context, id string, 
 	 arrears_since=CASE WHEN $9 THEN NULL ELSE arrears_since END,
 	 throttle_state=CASE WHEN $9 THEN 'normal' ELSE throttle_state END,
 	 suspend_state=CASE WHEN $9 THEN 'active' ELSE suspend_state END,
-	 period_start=$3,period_end=$4,effective_at=now(),updated_at=now()
-	 WHERE account_uuid=$1 AND ($9 OR (period_start=$3 AND period_end=$4) OR ($6 AND period_start=$7 AND period_end=$8)) AND remaining_included_quota<=$5`, id, target-previous, start.UTC(), end.UTC(), previous, rule == "plan:FREE", month, month.AddDate(0, 1, 0), activation, target)
+	 period_start=CASE WHEN NOT $9 AND period_start >= $3 AND period_start < $4 AND period_end=$4 THEN period_start ELSE $3 END,period_end=$4,effective_at=now(),updated_at=now()
+	 WHERE account_uuid=$1 AND ($9 OR ((period_start=$3 AND period_end=$4) OR ($3=$7 AND $4=$8 AND period_start>$3 AND period_start<$4 AND period_end=$4)) OR ($6 AND period_start=$7 AND period_end=$8)) AND remaining_included_quota<=$5`, id, target-previous, start.UTC(), end.UTC(), previous, rule == "plan:FREE", month, month.AddDate(0, 1, 0), activation, target)
 	if err != nil {
 		return err
 	}
