@@ -485,29 +485,13 @@ jobs:
           SOURCE_IMAGE_REF: ${{ needs.build.outputs.service_image_ref }}
         run: docker image inspect "$SOURCE_IMAGE_REF" >/dev/null
 
-      - name: Load Vault Secrets for GHCR
-        id: vault
-        if: steps.target.outputs.enabled == 'true' && matrix.target == 'github'
-        uses: hashicorp/vault-action@v4
-        with:
-          url: https://vault.svc.plus
-          method: jwt
-          role: github-actions-accounts-${{ needs.pre_check.outputs.deploy_env }}
-          jwtGithubAudience: vault
-          exportEnv: false
-          # GHCR 推送凭据在 kv/data/CICD(第 ① 层公共服务 secret, 三个环境
-          # role 共读)。kv/data/github-actions 这个路径不存在, 返回 403 ——
-          # 而 403 与"role 没建"、"绑定不匹配"完全同形, 日志里看不出区别。
-          secrets: |
-            kv/data/CICD GHCR_TOKEN | GHCR_TOKEN ;
-
       - name: Log In To GHCR
         if: steps.target.outputs.enabled == 'true' && matrix.target == 'github'
         uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           registry: ghcr.io
-          username: ${{ vars.GHCR_USERNAME || github.repository_owner }}
-          password: ${{ steps.vault.outputs.GHCR_TOKEN || github.token }}
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Compute GHCR image tags
         id: service_meta
