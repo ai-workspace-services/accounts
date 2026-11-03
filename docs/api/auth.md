@@ -137,9 +137,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 认证 | 当前 session token，优先从 `Authorization` 读取，也接受 query `token`。 |
+| 认证 | 当前 session token，优先从 `Authorization` 读取，也接受 query `token`；JSON body 还必须提供当前 6 位 `code`。 |
 | 成功返回 | `{"message":"mfa_disabled","user":...}` |
-| 失败返回 | `session_token_required`、`invalid_session`、`mfa_disable_failed`、`mfa_not_enabled`、`read_only_account`。 |
+| 失败返回 | `session_token_required`、`invalid_session`、`mfa_code_required`、`invalid_mfa_code`、`rate_limited`、`mfa_disable_failed`、`mfa_not_enabled`、`read_only_account`。 |
 
 ### OAuth 与 exchange code
 
@@ -412,9 +412,9 @@ The following flows mint a new session token:
 
 | Item | Details |
 | --- | --- |
-| Auth | Current session token, preferably from `Authorization`; also accepts query `token`. |
+| Auth | Current session token, preferably from `Authorization`; also accepts query `token`. The JSON body must also contain the current 6-digit `code`. |
 | Success | `{"message":"mfa_disabled","user":...}` |
-| Failures | `session_token_required`, `invalid_session`, `mfa_disable_failed`, `mfa_not_enabled`, `read_only_account`. |
+| Failures | `session_token_required`, `invalid_session`, `mfa_code_required`, `invalid_mfa_code`, `rate_limited`, `mfa_disable_failed`, `mfa_not_enabled`, `read_only_account`. |
 
 ### OAuth And Exchange Code
 

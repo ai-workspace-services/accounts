@@ -2465,9 +2465,42 @@ func TestDisableMFA(t *testing.T) {
 		t.Fatalf("expected session token after verification")
 	}
 
-	disableReq := httptest.NewRequest(http.MethodPost, "/api/auth/mfa/disable", nil)
+	disableReq := httptest.NewRequest(http.MethodPost, "/api/auth/mfa/disable", bytes.NewReader([]byte(`{}`)))
 	disableReq.Header.Set("Authorization", "Bearer "+verifyResp.Token)
 	disableRec := httptest.NewRecorder()
+	router.ServeHTTP(disableRec, disableReq)
+	if disableRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing disable code to be rejected, got %d: %s", disableRec.Code, disableRec.Body.String())
+	}
+	if disableResp := decodeResponse(t, disableRec); disableResp.Error != "mfa_code_required" {
+		t.Fatalf("expected mfa_code_required, got %q", disableResp.Error)
+	}
+
+	disableReq = httptest.NewRequest(http.MethodPost, "/api/auth/mfa/disable", bytes.NewReader([]byte(`{"code":"000000"}`)))
+	disableReq.Header.Set("Authorization", "Bearer "+verifyResp.Token)
+	disableReq.Header.Set("Content-Type", "application/json")
+	disableRec = httptest.NewRecorder()
+	router.ServeHTTP(disableRec, disableReq)
+	if disableRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected invalid disable code to be rejected, got %d: %s", disableRec.Code, disableRec.Body.String())
+	}
+	if disableResp := decodeResponse(t, disableRec); disableResp.Error != "invalid_mfa_code" {
+		t.Fatalf("expected invalid_mfa_code, got %q", disableResp.Error)
+	}
+
+	disableCode, err := totp.GenerateCodeCustom(provisionResp.Secret, time.Now().UTC(), totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("failed to generate disable code: %v", err)
+	}
+	disableReq = httptest.NewRequest(http.MethodPost, "/api/auth/mfa/disable", bytes.NewReader([]byte(`{"code":"`+disableCode+`"}`)))
+	disableReq.Header.Set("Authorization", "Bearer "+verifyResp.Token)
+	disableReq.Header.Set("Content-Type", "application/json")
+	disableRec = httptest.NewRecorder()
 	router.ServeHTTP(disableRec, disableReq)
 	if disableRec.Code != http.StatusOK {
 		t.Fatalf("expected disable success, got %d: %s", disableRec.Code, disableRec.Body.String())
