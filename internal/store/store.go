@@ -716,6 +716,7 @@ type Store interface {
 	ListBillingLedgerByAccount(ctx context.Context, accountUUID string, limit int) ([]BillingLedgerEntry, error)
 	UpsertAccountQuotaState(ctx context.Context, state *AccountQuotaState) error
 	GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error)
+	ResetMonthlyUsage(ctx context.Context, id, actor, email, reason string, now time.Time) (*AccountQuotaState, error)
 	ResetFreeQuotaPeriod(ctx context.Context, accountUUID string, start, end, now time.Time) error
 	// ListSuspendedAccountUUIDs returns the set of accounts currently
 	// suspend_state='suspended', so agent/xray sync endpoints can drop them

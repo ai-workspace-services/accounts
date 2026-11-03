@@ -353,13 +353,14 @@ func (s *memoryStore) UpsertAccountQuotaState(ctx context.Context, state *Accoun
 
 func (s *memoryStore) GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error) {
 	_ = ctx
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	record, ok := s.accountQuotaStates[strings.TrimSpace(accountUUID)]
 	if !ok {
 		return nil, ErrUserNotFound
 	}
+	s.expireMonthlyUsageResetLocked(accountUUID, time.Now().UTC())
 	return cloneQuotaState(record), nil
 }
 

@@ -164,7 +164,7 @@ func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *st
 // Stripe retries an invoice event or emits more than one event for a plan
 // change. A genuinely new period still receives its allowance.
 func (h *handler) resetQuotaForPlanOnce(ctx context.Context, userID string, plan *store.BillingPlan, start, end time.Time) error {
-	if state, err := h.store.GetAccountQuotaState(ctx, userID); err == nil && state != nil && state.PeriodStart != nil && state.PeriodEnd != nil && state.PeriodStart.Equal(start.UTC()) && state.PeriodEnd.Equal(end.UTC()) {
+	if state, err := h.store.GetAccountQuotaState(ctx, userID); err == nil && state != nil && state.PeriodStart != nil && state.PeriodEnd != nil && !state.PeriodStart.Before(start.UTC()) && state.PeriodStart.Before(end.UTC()) && state.PeriodEnd.Equal(end.UTC()) {
 		if !state.Arrears && state.ArrearsSince == nil && state.ThrottleState == "normal" && state.SuspendState == "active" {
 			return nil
 		}
