@@ -6,6 +6,6 @@ The deployment credential must have public-node configuration permission. Reques
 
 The same authenticated policy supplies user snapshots, revision/SSE events and regional node discovery used by user nodes/config and subscription exports. Status reports cannot independently grant emails: public-node email metadata comes from the resolved request policy. Removing the list revokes the exception after reconciliation/status refresh. Session termination continues to follow existing data-plane revocation behavior.
 
-Custom nodes retain allowlist restriction and default-off customAllowFree. Team nodes reject email extensions. No SQL schema change or user migration is required. Deploy Accounts before Agent; remove public-node exceptions and reconcile before rollback.
+Custom nodes retain allowlist restriction and default-off customAllowFree. For public nodes, a listed email can access that node regardless of tier without changing plan or quota. Team nodes reject email extensions and retain strict membership isolation. `customAllowFree` may be set on team nodes but never grants cross-team access. No SQL schema change or user migration is required. Deploy Accounts before Agent; remove public-node exceptions and reconcile before rollback.
 
 Related Agent task: https://github.com/ai-workspace-xstream/xconnect-edge-agent/issues/132

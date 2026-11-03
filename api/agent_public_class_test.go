@@ -173,7 +173,7 @@ func TestManagedAgentPublicClassReconcilesStaleRegistration(t *testing.T) {
 			status                 int
 		}{
 			{"restricted-secret", "restricted", "free", "true", 403},
-			{"team-secret", "team-agent", "team", "true", 403},
+			{"team-secret", "team-agent", "team", "true", 200},
 			{"deployment-secret", "custom-free-node", "custom", "yes", 400},
 		} {
 			req := request(tc.token, tc.id, tc.class, "", "/users")
