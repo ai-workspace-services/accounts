@@ -77,6 +77,20 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 	if err != nil || quota.RemainingIncludedQuota != 16*gib {
 		t.Fatalf("quota=%+v err=%v", quota, err)
 	}
+
+	// Exercise the reset using native UUID keys and audit JSON without adding schema.
+	reset, err := st.ResetMonthlyUsage(ctx, id, id, user.Email, "native reset regression", time.Now().UTC())
+	if err != nil || reset.RemainingIncludedQuota != 20*gib {
+		t.Fatalf("native reset=%+v err=%v", reset, err)
+	}
+	var auditCount int
+	if err = db.QueryRowContext(ctx, "SELECT count(*) FROM audit_logs WHERE action=$1", AuditActionMonthlyUsageReset).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("reset audit: %d %v", auditCount, err)
+	}
+	// Restore the quota snapshot needed by the original replay/rollback checks.
+	if err = st.UpsertAccountQuotaState(ctx, quota); err != nil {
+		t.Fatal(err)
+	}
 	// The same request replays without creating another row or granting quota.
 	if _, replayed, err := st.ApplyAdminPlanGroupBatch(ctx, batch); err != nil || !replayed {
 		t.Fatalf("idempotent replay failed: %v %v", replayed, err)
