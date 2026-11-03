@@ -3346,6 +3346,14 @@ func buildMFAState(user *store.User, challenge *mfaChallenge) gin.H {
 }
 
 func (h *handler) disableMFA(c *gin.Context) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
+		return
+	}
+
 	token := extractToken(c.GetHeader("Authorization"))
 	if token == "" {
 		token = strings.TrimSpace(c.Query("token"))
@@ -3375,6 +3383,23 @@ func (h *handler) disableMFA(c *gin.Context) {
 	hasSecret := strings.TrimSpace(user.MFATOTPSecret) != ""
 	if !user.MFAEnabled && !hasSecret {
 		respondError(c, http.StatusBadRequest, "mfa_not_enabled", "multi-factor authentication is not enabled")
+		return
+	}
+	if !hasSecret {
+		respondError(c, http.StatusBadRequest, "mfa_secret_missing", "mfa secret has not been provisioned")
+		return
+	}
+
+	code := strings.TrimSpace(req.Code)
+	if code == "" {
+		respondError(c, http.StatusBadRequest, "mfa_code_required", "totp code is required")
+		return
+	}
+	if !allowAuthProbe(c, h.mfaRecoveryByIP, h.mfaRecoveryByUser, user.ID) {
+		return
+	}
+	if !verifyTOTPCode(user.MFATOTPSecret, code, time.Now().UTC()) {
+		respondError(c, http.StatusUnauthorized, "invalid_mfa_code", "invalid totp code")
 		return
 	}
 
