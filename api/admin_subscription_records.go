@@ -18,6 +18,65 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// prepareSubscriptionImport accepts spreadsheet TSV or CSV and skips unknown emails.
+// Existing validation and the transactional preview remain authoritative.
+func (h *handler) prepareSubscriptionImport(ctx context.Context, source string) (string, []gin.H, error) {
+	if len(source) > 2*1024*1024 {
+		return "", nil, errors.New("import exceeds 2 MiB")
+	}
+	reader := csv.NewReader(strings.NewReader(strings.TrimPrefix(source, "\uFEFF")))
+	first := strings.SplitN(source, "\n", 2)[0]
+	if strings.Contains(first, "\t") {
+		reader.Comma = '\t'
+	}
+	reader.TrimLeadingSpace = true
+	rows, err := reader.ReadAll()
+	if err != nil || len(rows) < 2 || len(rows) > maxAdminPlanGroupBatch+1 {
+		return "", nil, errors.New("import requires a header and 1 to 500 rows")
+	}
+	emailCol := -1
+	for i, header := range rows[0] {
+		key := strings.TrimSpace(header)
+		if strings.EqualFold(key, "email") || key == "邮箱" {
+			emailCol = i
+		}
+		if key == "" && i > 0 && strings.TrimSpace(rows[0][i-1]) == "订阅结束" {
+			rows[0][i] = "套餐"
+		}
+	}
+	if emailCol < 0 {
+		return "", nil, errors.New("import requires an email/邮箱 column")
+	}
+	users, err := h.store.ListUsers(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	known := map[string]bool{}
+	for _, u := range users {
+		known[strings.ToLower(strings.TrimSpace(u.Email))] = true
+	}
+	kept := [][]string{rows[0]}
+	skipped := []gin.H{}
+	for i, row := range rows[1:] {
+		email := strings.ToLower(strings.TrimSpace(row[emailCol]))
+		if email != "" && !known[email] {
+			skipped = append(skipped, gin.H{"row": i + 2, "email": email, "reason": "user_not_found"})
+			continue
+		}
+		kept = append(kept, row)
+	}
+	if len(kept) == 1 {
+		return "", skipped, errors.New("import has no matching existing accounts")
+	}
+	var body bytes.Buffer
+	writer := csv.NewWriter(&body)
+	writer.WriteAll(kept)
+	if err := writer.Error(); err != nil {
+		return "", skipped, err
+	}
+	return body.String(), skipped, nil
+}
+
 // Commercial subscription facts are stored in PostgreSQL; the browser only
 // submits CSV and displays the preview. Entitlements and records commit together.
 func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, reconcile bool) ([]adminPlanGroupUpdate, error) {
