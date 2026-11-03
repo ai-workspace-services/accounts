@@ -61,9 +61,6 @@ func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 		seen = class
 		scope.ResourceClass = class
 	}
-	if scope.CustomAllowFree && scope.ResourceClass != agentResourceCustom {
-		return agentproto.UserScope{}, false
-	}
 	if scope.ResourceClass == "team" && seen != "team" {
 		return agentproto.UserScope{}, false
 	}
@@ -83,6 +80,9 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 	class := effectiveAgentResourceClass(access, user, packageName)
 	if scope.ResourceClass == agentResourceCustom {
 		return class == agentResourcePlus || class == agentResourcePro || (scope.CustomAllowFree && class == agentResourceFree)
+	}
+	if scope.CustomAllowFree && class == agentResourceFree {
+		return true
 	}
 	return publicAgentResourceClassAllows(scope.ResourceClass, class)
 }
@@ -783,8 +783,10 @@ func (h *handler) resolveScopedAgentLegacy(c *gin.Context, credential agentserve
 			manager = true
 		}
 	}
-	if !valid || !cv || scope.ResourceClass != agentResourceCustom || cs.ResourceClass == "team" || !manager || (credential.ID != "*" && credential.ID != identity.ID) {
-		respondError(c, 403, "agent_scope_mismatch", "custom Free audience requires public pool management permission")
+	teamManager := valid && cv && scope.ResourceClass == "team" && cs.ResourceClass == "team" && scope.TeamID == cs.TeamID && credential.ID == identity.ID
+	publicManager := valid && cv && scope.ResourceClass != "team" && cs.ResourceClass != "team" && manager && (credential.ID == "*" || credential.ID == identity.ID)
+	if !valid || !cv || (!teamManager && !publicManager) {
+		respondError(c, 403, "agent_scope_mismatch", "Free audience requires public pool management or matching team scope")
 		return identity, false
 	}
 	identity.Groups = append(groups, "custom:allow-free")

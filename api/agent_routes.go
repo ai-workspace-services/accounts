@@ -82,10 +82,12 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 			continue
 		}
 		resourceClass, teamID := reportedResourceClass(snapshot)
-		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass) || (agentproto.PublicResourceClass(resourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(snapshot.Agent.Groups, user))
+		scope, scopeValid := agentResourceScope(snapshot.Agent.Groups)
+		publicEmailOverride := agentproto.PublicResourceClass(resourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(snapshot.Agent.Groups, user)
+		publicFreeOverride := scopeValid && scope.CustomAllowFree && agentproto.PublicResourceClass(resourceClass) && access.Mode != "dedicated" && wantClass == agentResourceFree
+		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass) || publicEmailOverride || publicFreeOverride
 		if resourceClass == agentResourceCustom {
-			scope, valid := agentResourceScope(snapshot.Agent.Groups)
-			classAllowed = valid && len(report.Xray.AllowedEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree))
+			classAllowed = scopeValid && len(report.Xray.AllowedEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree))
 		}
 		if resourceClass == agentResourceTeam {
 			classAllowed = wantClass == agentResourceTeam && wantTeam != "" && teamID == wantTeam
