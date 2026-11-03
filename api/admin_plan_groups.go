@@ -103,12 +103,19 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 		h.applyAdminPlanGroupPreview(c, actor.ID, reason, requestID, strings.TrimSpace(req.PreviewToken), expectedIDs)
 		return
 	}
+	var skipped []gin.H
 	if req.CSV != nil {
 		if !store.IsRootRole(actor.Role) || len(pathUserIDs) > 0 || len(req.Updates) > 0 {
 			respondError(c, 403, "root_required", "CSV reconciliation requires root and the batch endpoint")
 			return
 		}
-		updates, err := h.subscriptionCSVUpdates(c.Request.Context(), *req.CSV, req.Reconcile)
+		source, skippedRows, prepareErr := h.prepareSubscriptionImport(c.Request.Context(), *req.CSV)
+		if prepareErr != nil {
+			respondError(c, 400, "invalid_csv", prepareErr.Error())
+			return
+		}
+		skipped = skippedRows
+		updates, err := h.subscriptionCSVUpdates(c.Request.Context(), source, false)
 		if err != nil {
 			respondError(c, 400, "invalid_csv", err.Error())
 			return
@@ -320,7 +327,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"mode": "preview", "requestId": requestID, "previewToken": previewToken,
-		"expiresAt": expiresAt, "changes": rows})
+		"expiresAt": expiresAt, "changes": rows, "skipped": skipped})
 }
 
 func (h *handler) applyAdminPlanGroupPreview(c *gin.Context, actorID, reason, requestID, token string, expectedIDs []string) {
