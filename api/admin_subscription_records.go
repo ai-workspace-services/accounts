@@ -357,8 +357,8 @@ func (h *handler) adminListSubscriptionRecords(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !store.IsRootRole(actor.Role) {
-		respondError(c, 403, "root_required", "only root can export subscription records")
+	if !subscriptionImportRoleAllowed(actor) {
+		respondError(c, 403, "forbidden", "subscription export requires an operations role")
 		return
 	}
 	records, err := h.store.ListSubscriptionRecords(c.Request.Context())
@@ -429,4 +429,8 @@ func subscriptionCSVDate(value *time.Time) string {
 		return ""
 	}
 	return value.UTC().Format("2006-01-02")
+}
+
+func subscriptionImportRoleAllowed(user *store.User) bool {
+	return user != nil && (store.IsRootRole(user.Role) || store.IsOperatorRole(user.Role) || strings.EqualFold(strings.TrimSpace(user.Role), store.RoleAdmin))
 }

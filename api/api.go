@@ -620,6 +620,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	// with a mandatory reason; see api/audit.go.
 	authProtected.GET("/admin/billing/overview", h.adminBillingOverview)
 	authProtected.GET("/admin/billing/ledger", h.adminBillingLedger)
+	authProtected.GET("/admin/billing/accounts", h.listUsers)
 	authProtected.GET("/admin/billing/accounts/:accountUUID", h.adminGetBillingAccount)
 	authProtected.POST("/admin/billing/accounts/:accountUUID/plan", h.adminAssignPlan)
 	authProtected.PUT("/admin/users/:userId/plan-group", h.adminAssignPlanGroup)

@@ -105,7 +105,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 	}
 	var skipped []gin.H
 	if req.CSV != nil {
-		if !store.IsRootRole(actor.Role) || len(pathUserIDs) > 0 || len(req.Updates) > 0 {
+		if !subscriptionImportRoleAllowed(actor) || len(pathUserIDs) > 0 || len(req.Updates) > 0 {
 			respondError(c, 403, "root_required", "CSV reconciliation requires root and the batch endpoint")
 			return
 		}
@@ -210,8 +210,8 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 
 		if update.SubscriptionRecord != nil {
 			record := update.SubscriptionRecord
-			if !store.IsRootRole(actor.Role) {
-				respondError(c, 403, "root_required", "only root can import subscription records")
+			if !subscriptionImportRoleAllowed(actor) {
+				respondError(c, 403, "forbidden", "subscription import requires an operations role")
 				return
 			}
 			if record.MonthlyQuotaBytes < 0 || record.AnnualQuotaBytes < 0 || record.FeeMinor < 0 || len(record.Note) > 10000 || len(record.PaymentStatus) > 100 || len(record.SubscriptionType) > 100 {
