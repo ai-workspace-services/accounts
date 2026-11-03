@@ -44,6 +44,17 @@ func (h *handler) prepareSubscriptionImport(ctx context.Context, source string) 
 			rows[0][i] = "套餐"
 		}
 	}
+	headerNames := map[string]bool{}
+	for i, h := range rows[0] {
+		key := canonicalSubscriptionHeader(h)
+		if key == "" {
+			return "", nil, fmt.Errorf("missing header in column %d", i+1)
+		}
+		if headerNames[key] {
+			return "", nil, fmt.Errorf("duplicate CSV column: %s", key)
+		}
+		headerNames[key] = true
+	}
 	if emailCol < 0 {
 		return "", nil, errors.New("import requires an email/邮箱 column")
 	}
@@ -51,6 +62,12 @@ func (h *handler) prepareSubscriptionImport(ctx context.Context, source string) 
 	if err != nil {
 		return "", nil, err
 	}
+	for _, h := range rows[0] {
+		if strings.TrimSpace(h) == "__source_row" {
+			return "", nil, errors.New("reserved import column")
+		}
+	}
+	rows[0] = append(rows[0], "__source_row")
 	known := map[string]bool{}
 	for _, u := range users {
 		known[strings.ToLower(strings.TrimSpace(u.Email))] = true
@@ -63,11 +80,9 @@ func (h *handler) prepareSubscriptionImport(ctx context.Context, source string) 
 			skipped = append(skipped, gin.H{"row": i + 2, "email": email, "reason": "user_not_found"})
 			continue
 		}
-		kept = append(kept, row)
+		kept = append(kept, append(row, strconv.Itoa(i+2)))
 	}
-	if len(kept) == 1 {
-		return "", skipped, errors.New("import has no matching existing accounts")
-	}
+
 	var body bytes.Buffer
 	writer := csv.NewWriter(&body)
 	writer.WriteAll(kept)
@@ -99,19 +114,41 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 		}
 	}
 	for i, row := range rows[1:] {
+		sourceRow := i + 2
+		sourceCol := -1
+		for j, h := range rows[0] {
+			if h == "__source_row" {
+				sourceCol = j
+			}
+		}
+		if sourceCol >= 0 && sourceCol < len(row) {
+			if n, e := strconv.Atoi(row[sourceCol]); e == nil {
+				sourceRow = n
+			}
+		}
+		header := append([]string{}, rows[0]...)
+		data := append([]string{}, row...)
+		if sourceCol < 0 {
+			header = append(header, "__source_row")
+			data = append(data, strconv.Itoa(sourceRow))
+		}
 		var body bytes.Buffer
 		writer := csv.NewWriter(&body)
-		_ = writer.WriteAll([][]string{rows[0], row})
+		_ = writer.WriteAll([][]string{header, data})
 		if emailColumn >= 0 && emailColumn < len(row) {
 			email := strings.ToLower(strings.TrimSpace(row[emailColumn]))
 			if seen[email] {
-				issues = append(issues, fmt.Sprintf("row %d: duplicate email %s", i+2, email))
+				issues = append(issues, fmt.Sprintf("row %d: duplicate email %s", sourceRow, email))
 				continue
 			}
 			seen[email] = true
 		}
 		if _, rowErr := h.subscriptionCSVUpdatesValidated(ctx, body.String(), false); rowErr != nil {
-			issues = append(issues, fmt.Sprintf("row %d: %s", i+2, strings.TrimPrefix(rowErr.Error(), "row 2: ")))
+			if strings.HasPrefix(rowErr.Error(), "row ") {
+				issues = append(issues, rowErr.Error())
+			} else {
+				issues = append(issues, fmt.Sprintf("row %d: %s", i+2, rowErr.Error()))
+			}
 		}
 	}
 	if len(issues) > 0 {
@@ -175,34 +212,38 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 	updates := make([]adminPlanGroupUpdate, 0, len(rows)-1)
 	now := time.Now().UTC()
 	for line, row := range rows[1:] {
+		sourceRow := line + 2
+		if n, e := strconv.Atoi(cell(row, "__source_row")); e == nil && n >= 2 {
+			sourceRow = n
+		}
 		if len(updates) >= maxAdminPlanGroupBatch {
 			return nil, errors.New("CSV contains more than 500 users")
 		}
 		email := strings.ToLower(cell(row, "邮箱", "email"))
 		if email == "" {
-			return nil, fmt.Errorf("row %d: email is required", line+2)
+			return nil, fmt.Errorf("row %d: email is required", sourceRow)
 		}
 		user, ok := byEmail[email]
 		if !ok {
-			return nil, fmt.Errorf("row %d: existing user was not found", line+2)
+			return nil, fmt.Errorf("row %d: existing user was not found", sourceRow)
 		}
 		if h.isRootAccount(&user) {
-			return nil, fmt.Errorf("row %d: root account cannot be imported", line+2)
+			return nil, fmt.Errorf("row %d: root account cannot be imported", sourceRow)
 		}
 		if seen[user.ID] {
-			return nil, fmt.Errorf("row %d: duplicate user", line+2)
+			return nil, fmt.Errorf("row %d: duplicate user", sourceRow)
 		}
 		seen[user.ID] = true
-		if isTeamSubscriptionUser(user.Groups) {
-			return nil, fmt.Errorf("row %d: team users require team management", line+2)
+		if isTeamSubscriptionUser(user.Groups) && !(strings.EqualFold(cell(row, "plan", "套餐"), "custom") && !hasActualTeamMembership(user.Groups)) {
+			return nil, fmt.Errorf("row %d: team users require team management", sourceRow)
 		}
 		from, err := subscriptionImportDate(cell(row, "订阅开始", "subscription start", "valid_from"))
 		if err != nil {
-			return nil, fmt.Errorf("row %d: invalid start date", line+2)
+			return nil, fmt.Errorf("row %d: invalid start date", sourceRow)
 		}
 		until, err := subscriptionImportDate(cell(row, "订阅结束", "subscription end", "valid_until"))
 		if err != nil || from != nil && until != nil && until.Before(*from) {
-			return nil, fmt.Errorf("row %d: invalid end date", line+2)
+			return nil, fmt.Errorf("row %d: invalid end date", sourceRow)
 		}
 		existing, recordErr := h.store.GetSubscriptionRecord(ctx, user.ID)
 		if recordErr != nil && !errors.Is(recordErr, store.ErrUserNotFound) {
@@ -221,15 +262,15 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 			}
 		}
 		if from != nil && until != nil && until.Before(*from) {
-			return nil, fmt.Errorf("row %d: invalid merged validity", line+2)
+			return nil, fmt.Errorf("row %d: invalid merged validity", sourceRow)
 		}
 		monthly, err := subscriptionImportBytes(cell(row, "月配额", "monthly quota", "monthly_quota_bytes"))
 		if err != nil {
-			return nil, fmt.Errorf("row %d: invalid monthly quota", line+2)
+			return nil, fmt.Errorf("row %d: invalid monthly quota", sourceRow)
 		}
 		annual, err := subscriptionImportBytes(cell(row, "年配额", "annual quota", "annual_quota_bytes"))
 		if err != nil {
-			return nil, fmt.Errorf("row %d: invalid annual quota", line+2)
+			return nil, fmt.Errorf("row %d: invalid annual quota", sourceRow)
 		}
 		feeText := cell(row, "费用", "fee", "fee_minor")
 		factor := float64(100)
@@ -238,10 +279,10 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 		}
 		fee, err := subscriptionImportNumber(strings.TrimSuffix(strings.TrimPrefix(feeText, "¥"), "元"), factor)
 		if err != nil {
-			return nil, fmt.Errorf("row %d: invalid fee", line+2)
+			return nil, fmt.Errorf("row %d: invalid fee", sourceRow)
 		}
 		payment := strings.ToLower(cell(row, "付费状态", "paid status", "payment_status"))
-		kind := strings.ToLower(cell(row, "订阅类型", "subscription type", "subscription_type"))
+		kind := strings.ToLower(cell(row, "订阅类型", "订阅周期", "subscription type", "subscription_type"))
 		note := cell(row, "备注", "note")
 		if existing != nil {
 			if kind == "" {
@@ -264,9 +305,12 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 			}
 		}
 		if kind != "" && kind != "month" && kind != "year" && kind != "payg" {
-			return nil, fmt.Errorf("row %d: invalid subscription type", line+2)
+			return nil, fmt.Errorf("row %d: invalid subscription type", sourceRow)
 		}
 		plan := strings.ToUpper(cell(row, "plan", "套餐"))
+		if plan == "" && existing != nil {
+			plan = existing.PlanCode
+		}
 		paid := payment == "已付费" || payment == "paid" || payment == "已支付"
 		if plan == "" {
 			if paid {
@@ -275,14 +319,34 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 				plan = store.BillingPlanFree
 			}
 		}
-		if _, err := planIDToQuotaGroup(plan); err != nil {
-			return nil, fmt.Errorf("row %d: invalid plan", line+2)
+		if plan != "CUSTOM" {
+			if _, err := planIDToQuotaGroup(plan); err != nil {
+				return nil, fmt.Errorf("row %d: invalid plan %q (allowed: free, plus, pro, custom)", sourceRow, plan)
+			}
+		}
+		sourcePlan := plan
+		if sourcePlan == "PRO" {
+			if monthly == 0 {
+				monthly = 50 << 30
+			}
+			if monthly != 50<<30 {
+				return nil, fmt.Errorf("row %d: pro requires 50GB monthly quota", sourceRow)
+			}
+		}
+		if sourcePlan == "CUSTOM" && monthly <= 0 {
+			return nil, fmt.Errorf("row %d: custom requires a positive monthly quota", sourceRow)
+		}
+		if payment != "" && payment != "paid" && payment != "已付费" && payment != "已支付" && payment != "unpaid" && payment != "未付费" && payment != "refunded" && payment != "已退款" {
+			return nil, fmt.Errorf("row %d: invalid payment status", sourceRow)
+		}
+		if payment != "" && !paid {
+			plan = store.BillingPlanFree
 		}
 		// An expired or not-yet-started commercial subscription grants no paid access.
 		if until != nil && until.Before(now.Truncate(24*time.Hour)) || from != nil && from.After(now) {
 			plan = store.BillingPlanFree
 		}
-		record := &store.SubscriptionRecord{UserID: user.ID, SubscriptionType: kind, MonthlyQuotaBytes: monthly, AnnualQuotaBytes: annual, FeeMinor: fee, PaymentStatus: payment, Note: note, ValidFrom: from, ValidUntil: until}
+		record := &store.SubscriptionRecord{PlanCode: sourcePlan, UserID: user.ID, SubscriptionType: kind, MonthlyQuotaBytes: monthly, AnnualQuotaBytes: annual, FeeMinor: fee, PaymentStatus: payment, Note: note, ValidFrom: from, ValidUntil: until}
 		start, _ := json.Marshal(adminPlanDateString(from))
 		end, _ := json.Marshal(adminPlanDateString(until))
 		if from == nil {
@@ -385,7 +449,7 @@ func (h *handler) adminListSubscriptionRecords(c *gin.Context) {
 	writer := csv.NewWriter(&body)
 	_ = writer.Write([]string{"email", "username", "plan", "subscription_type", "monthly_quota_bytes", "annual_quota_bytes", "fee_minor", "payment_status", "valid_from", "valid_until", "note", "temporary_unlimited"})
 	for _, user := range users {
-		if h.isRootAccount(&user) || isTeamSubscriptionUser(user.Groups) {
+		if h.isRootAccount(&user) || (isTeamSubscriptionUser(user.Groups) && (hasActualTeamMembership(user.Groups) || byID[user.ID].PlanCode != "CUSTOM")) {
 			continue
 		}
 		record, exists := byID[user.ID]
@@ -400,11 +464,14 @@ func (h *handler) adminListSubscriptionRecords(c *gin.Context) {
 			respondError(c, 500, "billing_profile_unavailable", "failed to load account plan")
 			return
 		}
-		plan := existingPlanID(profile)
+		plan := record.PlanCode
+		if plan == "" {
+			plan = existingPlanID(profile)
+		}
 		if plan == "" {
 			plan = store.BillingPlanFree
 		}
-		_ = writer.Write([]string{exportCSVCell(user.Email), exportCSVCell(user.Name), plan, exportCSVCell(record.SubscriptionType), strconv.FormatInt(record.MonthlyQuotaBytes, 10), strconv.FormatInt(record.AnnualQuotaBytes, 10), strconv.FormatInt(record.FeeMinor, 10), exportCSVCell(record.PaymentStatus), subscriptionCSVDate(record.ValidFrom), subscriptionCSVDate(record.ValidUntil), exportCSVCell(record.Note), strconv.FormatBool(store.HasSubscriptionUnlimitedOverride(&user, time.Now()))})
+		_ = writer.Write([]string{exportCSVCell(user.Email), exportCSVCell(user.Name), strings.ToLower(plan), exportCSVCell(record.SubscriptionType), strconv.FormatInt(record.MonthlyQuotaBytes, 10), strconv.FormatInt(record.AnnualQuotaBytes, 10), strconv.FormatInt(record.FeeMinor, 10), exportCSVCell(record.PaymentStatus), subscriptionCSVDate(record.ValidFrom), subscriptionCSVDate(record.ValidUntil), exportCSVCell(record.Note), strconv.FormatBool(store.HasSubscriptionUnlimitedOverride(&user, time.Now()))})
 	}
 	writer.Flush()
 	if writer.Error() != nil {
@@ -433,4 +500,27 @@ func subscriptionCSVDate(value *time.Time) string {
 
 func subscriptionImportRoleAllowed(user *store.User) bool {
 	return user != nil && (store.IsRootRole(user.Role) || store.IsOperatorRole(user.Role) || strings.EqualFold(strings.TrimSpace(user.Role), store.RoleAdmin))
+}
+
+func hasActualTeamMembership(groups []string) bool {
+	for _, g := range groups {
+		if strings.HasPrefix(g, "team:") || strings.HasPrefix(g, "team-admin:") {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalSubscriptionHeader(h string) string {
+	key := strings.ToLower(strings.TrimSpace(h))
+	for canonical, names := range map[string][]string{
+		"email": {"email", "邮箱"}, "username": {"username", "用户名"}, "plan": {"plan", "套餐"}, "cycle": {"订阅类型", "订阅周期", "subscription type", "subscription_type"}, "monthly": {"月配额", "monthly quota", "monthly_quota_bytes"}, "annual": {"年配额", "annual quota", "annual_quota_bytes"}, "fee": {"费用", "fee", "fee_minor"}, "payment": {"付费状态", "paid status", "payment_status"}, "start": {"订阅开始", "subscription start", "valid_from"}, "end": {"订阅结束", "subscription end", "valid_until"}, "note": {"备注", "note"},
+	} {
+		for _, alias := range names {
+			if key == alias {
+				return canonical
+			}
+		}
+	}
+	return key
 }

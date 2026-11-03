@@ -134,6 +134,7 @@ type Subscription struct {
 // It stores source-of-truth fields used by the admin console independently of
 // the computed quota entitlement groups.
 type SubscriptionRecord struct {
+	PlanCode          string     `json:"planCode,omitempty"`
 	UserID            string     `json:"userId"`
 	SubscriptionType  string     `json:"subscriptionType"`
 	MonthlyQuotaBytes int64      `json:"monthlyQuotaBytes"`
@@ -1414,6 +1415,11 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 
 	now := time.Now().UTC()
 	for _, item := range prepared {
+		recordBefore, recordExisted := s.subscriptionRecords[item.user.ID]
+		var previousRecord any
+		if recordExisted {
+			previousRecord = recordBefore
+		}
 		item.user.Groups = cloneStringSlice(normalizeStringSlice(item.change.Groups))
 		if item.change.SetValidFrom {
 			item.user.SubscriptionValidFrom = cloneTimePointer(item.change.ValidFrom)
@@ -1436,7 +1442,7 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 			s.accountBillingProfiles[item.user.ID] = item.profile
 			s.accountQuotaStates[item.user.ID] = item.quota
 		}
-		before := map[string]any{"groups": item.change.ExpectedGroups, "valid_from": item.change.ExpectedValidFrom, "valid_until": item.change.ExpectedValidUntil,
+		before := map[string]any{"subscription_record": previousRecord, "groups": item.change.ExpectedGroups, "valid_from": item.change.ExpectedValidFrom, "valid_until": item.change.ExpectedValidUntil,
 			"included_quota_bytes": item.change.ExpectedProfileIncludedQuota, "remaining_included_quota": item.change.ExpectedQuotaRemaining}
 		after := map[string]any{"groups": item.change.Groups, "valid_from": item.user.SubscriptionValidFrom, "valid_until": item.user.SubscriptionValidUntil,
 			"subscription_record": item.change.SubscriptionRecord, "plan_id": item.change.PlanID, "included_quota_bytes": item.change.IncludedQuotaBytes, "remaining_included_quota": item.quota.RemainingIncludedQuota,
@@ -1607,6 +1613,9 @@ func (s *memoryStore) GetSubscriptionRecord(ctx context.Context, userID string) 
 	}
 	record.ValidFrom = cloneTimePointer(record.ValidFrom)
 	record.ValidUntil = cloneTimePointer(record.ValidUntil)
+	if u := s.byID[userID]; u != nil {
+		record.PlanCode = SubscriptionSourcePlan(u.Groups)
+	}
 	return &record, nil
 }
 
@@ -1616,6 +1625,9 @@ func (s *memoryStore) ListSubscriptionRecords(ctx context.Context) ([]Subscripti
 	defer s.mu.RUnlock()
 	result := make([]SubscriptionRecord, 0, len(s.subscriptionRecords))
 	for _, record := range s.subscriptionRecords {
+		if u := s.byID[record.UserID]; u != nil {
+			record.PlanCode = SubscriptionSourcePlan(u.Groups)
+		}
 		record.ValidFrom = cloneTimePointer(record.ValidFrom)
 		record.ValidUntil = cloneTimePointer(record.ValidUntil)
 		result = append(result, record)

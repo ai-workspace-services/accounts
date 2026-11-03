@@ -77,6 +77,9 @@ func (s *memoryStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan) 
 	// records with individually agreed quotas remain authoritative.
 	if stored.Active {
 		for id, profile := range s.accountBillingProfiles {
+			if u := s.byID[id]; u != nil && SubscriptionSourcePlan(u.Groups) == "CUSTOM" {
+				continue
+			}
 			if profile.PricingRuleVersion != "plan:"+stored.PlanID {
 				continue
 			}
