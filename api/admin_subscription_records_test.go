@@ -110,13 +110,27 @@ func TestSubscriptionCSVEmailUpsertPreviewReplayAndExport(t *testing.T) {
 	}
 }
 
-func TestSubscriptionCSVRequiresRoot(t *testing.T) {
-	router, _, token, _ := opsHarness(t)
-	response := putAdminPlanGroup(t, router, token, "/api/auth/admin/users/plan-groups/batch", gin.H{"mode": "preview", "requestId": "not-root", "reason": "test", "csv": "email\ntarget@example.com"})
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("non-root import allowed: %d", response.Code)
+func TestSubscriptionCSVAllowsAdministrator(t *testing.T) {
+	router, _, token, target := opsHarness(t)
+	response := putAdminPlanGroup(t, router, token, "/api/auth/admin/users/plan-groups/batch", gin.H{"mode": "preview", "requestId": "admin-import", "reason": "test", "csv": "email\n" + target.Email})
+	if response.Code == http.StatusForbidden {
+		t.Fatalf("administrator import forbidden: %s", response.Body.String())
 	}
-	if rec := opsGet(t, router, token, "/api/auth/admin/users/subscription-records?format=csv"); rec.Code != http.StatusForbidden {
-		t.Fatalf("non-root export allowed: %d", rec.Code)
+	if rec := opsGet(t, router, token, "/api/auth/admin/users/subscription-records?format=csv"); rec.Code != http.StatusOK {
+		t.Fatalf("administrator export: %d", rec.Code)
+	}
+	if rec := opsGet(t, router, token, "/api/auth/admin/billing/accounts"); rec.Code != http.StatusOK {
+		t.Fatalf("account collection: %d", rec.Code)
+	}
+}
+
+func TestSubscriptionImportRoleBoundary(t *testing.T) {
+	for _, role := range []string{store.RoleRoot, store.RoleAdmin, store.RoleOperator} {
+		if !subscriptionImportRoleAllowed(&store.User{Role: role}) {
+			t.Fatalf("role rejected: %s", role)
+		}
+	}
+	if subscriptionImportRoleAllowed(&store.User{Role: store.RoleUser}) || subscriptionImportRoleAllowed(nil) {
+		t.Fatal("ordinary user granted import")
 	}
 }
