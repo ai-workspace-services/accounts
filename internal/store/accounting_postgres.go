@@ -436,7 +436,7 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
  period_start=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
  period_end=(date_trunc('month',now() AT TIME ZONE 'UTC')+interval '1 month') AT TIME ZONE 'UTC',effective_at=now(),updated_at=now()
  FROM account_billing_profiles p WHERE q.account_uuid=$1 AND p.account_uuid=q.account_uuid
- AND q.period_end<=now() AND EXISTS(SELECT 1 FROM audit_logs a WHERE a.action='admin.monthly_usage.reset' AND a.details->>'target_uuid'=$1
+ AND q.period_end<=now() AND EXISTS(SELECT 1 FROM audit_logs a WHERE a.action='admin.monthly_usage.reset' AND a.details->>'target_uuid'=$1::text
  AND (CASE WHEN a.action='admin.monthly_usage.reset' THEN (a.details->'after'->>'period_start')::timestamptz END)=q.period_start
  AND (CASE WHEN a.action='admin.monthly_usage.reset' THEN (a.details->'after'->>'period_end')::timestamptz END)=q.period_end)`, accountUUID); err != nil {
 		return nil, err

@@ -34,7 +34,7 @@ func (s *postgresStore) ResetMonthlyUsage(ctx context.Context, id, actor, email,
 	}
 	var included, remaining int64
 	var currentEmail string
-	if err = tx.QueryRowContext(ctx, `SELECT p.included_quota_bytes,q.remaining_included_quota,u.email FROM account_billing_profiles p JOIN account_quota_states q USING(account_uuid) JOIN users u ON u.uuid=q.account_uuid WHERE q.account_uuid=$1 FOR UPDATE OF p,q,u`, id).Scan(&included, &remaining, &currentEmail); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT p.included_quota_bytes,q.remaining_included_quota,u.email FROM account_billing_profiles p JOIN account_quota_states q USING(account_uuid) JOIN users u ON u.uuid::text=q.account_uuid::text WHERE q.account_uuid=$1 FOR UPDATE OF p,q,u`, id).Scan(&included, &remaining, &currentEmail); err != nil {
 		return nil, err
 	}
 	if currentEmail != email || included <= 0 {
