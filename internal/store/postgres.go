@@ -94,6 +94,7 @@ type schemaCapabilities struct {
 	hasProxyUUIDExpiresAt     bool
 	hasSubscriptionValidFrom  bool
 	hasSubscriptionValidUntil bool
+	hasSubscriptionRecords    bool
 	hasLastActiveAt           bool
 	hasArchivedAt             bool
 }
@@ -690,7 +691,7 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 	seen := make(map[string]struct{}, len(changes))
 	for i := range changes {
 		change := &changes[i]
-		if (change.SetValidFrom && !caps.hasSubscriptionValidFrom) || (change.SetValidUntil && !caps.hasSubscriptionValidUntil) {
+		if ((change.SetValidFrom && !caps.hasSubscriptionValidFrom) || (change.SetValidUntil && !caps.hasSubscriptionValidUntil)) && (change.SubscriptionRecord == nil || !caps.hasSubscriptionRecords) {
 			return nil, errors.New("subscription date updates are not supported by the current user schema")
 		}
 		if _, duplicate := seen[change.UserID]; duplicate {
@@ -709,6 +710,10 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 			levelExpr = fmt.Sprintf("coalesce(level, %d)", LevelUser)
 		}
 		fromExpr, untilExpr := "NULL::timestamptz", "NULL::timestamptz"
+		if caps.hasSubscriptionRecords {
+			fromExpr = "(SELECT valid_from FROM public.subscription_records sr WHERE sr.user_uuid::text=users.uuid::text)"
+			untilExpr = "(SELECT valid_until FROM public.subscription_records sr WHERE sr.user_uuid::text=users.uuid::text)"
+		}
 		if caps.hasSubscriptionValidFrom {
 			fromExpr = "subscription_valid_from"
 		}
@@ -911,7 +916,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 	states := make([]currentState, 0, len(changes))
 	seen := make(map[string]struct{}, len(changes))
 	for _, change := range changes {
-		if (change.SetValidFrom && !caps.hasSubscriptionValidFrom) || (change.SetValidUntil && !caps.hasSubscriptionValidUntil) {
+		if ((change.SetValidFrom && !caps.hasSubscriptionValidFrom) || (change.SetValidUntil && !caps.hasSubscriptionValidUntil)) && (change.SubscriptionRecord == nil || !caps.hasSubscriptionRecords) {
 			return nil, false, errors.New("subscription date updates are not supported by the current user schema")
 		}
 		if _, ok := seen[change.UserID]; ok {
@@ -930,6 +935,10 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			levelExpr = fmt.Sprintf("coalesce(level, %d)", LevelUser)
 		}
 		fromExpr, untilExpr := "NULL::timestamptz", "NULL::timestamptz"
+		if caps.hasSubscriptionRecords {
+			fromExpr = "(SELECT valid_from FROM public.subscription_records sr WHERE sr.user_uuid::text=users.uuid::text)"
+			untilExpr = "(SELECT valid_until FROM public.subscription_records sr WHERE sr.user_uuid::text=users.uuid::text)"
+		}
 		if caps.hasSubscriptionValidFrom {
 			fromExpr = "subscription_valid_from"
 		}
@@ -1034,9 +1043,10 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 		if _, err := tx.ExecContext(ctx, update, args...); err != nil {
 			return nil, false, err
 		}
+		var previousSubscription json.RawMessage
 		if change.SubscriptionRecord != nil {
 			var updatedAt sql.NullTime
-			err := tx.QueryRowContext(ctx, "SELECT updated_at FROM public.subscription_records WHERE user_uuid=$1 FOR UPDATE", change.UserID).Scan(&updatedAt)
+			err := tx.QueryRowContext(ctx, "SELECT updated_at,to_jsonb(subscription_records) FROM public.subscription_records WHERE user_uuid=$1 FOR UPDATE", change.UserID).Scan(&updatedAt, &previousSubscription)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return nil, false, err
 			}
@@ -1074,7 +1084,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 				return nil, false, err
 			}
 		}
-		before, _ := json.Marshal(map[string]any{"groups": state.groups, "valid_from": state.validFrom, "valid_until": state.validUntil, "included_quota_bytes": state.profile.IncludedQuotaBytes, "remaining_included_quota": state.quota.RemainingIncludedQuota})
+		before, _ := json.Marshal(map[string]any{"subscription_record": previousSubscription, "groups": state.groups, "valid_from": state.validFrom, "valid_until": state.validUntil, "included_quota_bytes": state.profile.IncludedQuotaBytes, "remaining_included_quota": state.quota.RemainingIncludedQuota})
 		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "subscription_record": change.SubscriptionRecord, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "used_bytes_preserved": used, "remaining_included_quota": remaining, "configuration_sync_paused": change.IncludedQuotaBytes > 0 && remaining == 0})
 		details, _ := json.Marshal(map[string]any{"target_uuid": change.UserID, "reason": batch.Reason, "request_id": batch.RequestID, "preview_token_hash": batch.PreviewTokenHash, "before": json.RawMessage(before), "after": json.RawMessage(after)})
 		if _, err := tx.ExecContext(ctx, `INSERT INTO public.audit_logs (uuid, action, actor_uuid, details, created_at) VALUES ($1,$2,$3,$4,$5)`, uuid.NewString(), AuditActionPlanGroupUpdate, batch.ActorUUID, details, now); err != nil {
@@ -1263,6 +1273,11 @@ func (s *postgresStore) GetSubscriptionRecord(ctx context.Context, userID string
 	if until.Valid {
 		record.ValidUntil = &until.Time
 	}
+	user, err := s.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	record.PlanCode = SubscriptionSourcePlan(user.Groups)
 	return &record, nil
 }
 
@@ -1290,7 +1305,22 @@ func (s *postgresStore) ListSubscriptionRecords(ctx context.Context) ([]Subscrip
 		}
 		result = append(result, record)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	plans := map[string]string{}
+	for _, u := range users {
+		plans[u.ID] = SubscriptionSourcePlan(u.Groups)
+	}
+	for i := range result {
+		result[i].PlanCode = plans[result[i].UserID]
+	}
+	return result, nil
 }
 
 // ListSubscriptionsByUser returns all subscriptions for a user ordered by recency.
@@ -1638,7 +1668,7 @@ func (s *postgresStore) capabilities(ctx context.Context) (schemaCapabilities, e
     WHERE table_name = 'users'
       AND table_schema = ANY (current_schemas(false))
       AND column_name = 'archived_at'
-  ) AS has_archived_at`
+  ) AS has_archived_at, to_regclass('public.subscription_records') IS NOT NULL AS has_subscription_records`
 
 	row := s.db.QueryRowContext(ctx, query)
 	var caps schemaCapabilities
@@ -1660,6 +1690,7 @@ func (s *postgresStore) capabilities(ctx context.Context) (schemaCapabilities, e
 		&caps.hasSubscriptionValidUntil,
 		&caps.hasLastActiveAt,
 		&caps.hasArchivedAt,
+		&caps.hasSubscriptionRecords,
 	); err != nil {
 		return schemaCapabilities{}, err
 	}
@@ -1736,11 +1767,17 @@ func (s *postgresStore) selectUserQuery(caps schemaCapabilities, whereClause str
 	}
 
 	subscriptionValidFromExpr := "NULL::timestamptz"
+	if caps.hasSubscriptionRecords {
+		subscriptionValidFromExpr = "(SELECT valid_from FROM public.subscription_records sr WHERE sr.user_uuid::text=users.uuid::text)"
+	}
 	if caps.hasSubscriptionValidFrom {
 		subscriptionValidFromExpr = "subscription_valid_from"
 	}
 
 	subscriptionValidUntilExpr := "NULL::timestamptz"
+	if caps.hasSubscriptionRecords {
+		subscriptionValidUntilExpr = "(SELECT valid_until FROM public.subscription_records sr WHERE sr.user_uuid::text=users.uuid::text)"
+	}
 	if caps.hasSubscriptionValidUntil {
 		subscriptionValidUntilExpr = "subscription_valid_until"
 	}

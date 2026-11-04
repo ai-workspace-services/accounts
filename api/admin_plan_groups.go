@@ -88,6 +88,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 		respondError(c, http.StatusBadRequest, "invalid_mode", "mode must be preview or apply")
 		return
 	}
+
 	if req.Mode == "apply" {
 		if strings.TrimSpace(req.PreviewToken) == "" {
 			respondError(c, http.StatusBadRequest, "preview_required", "previewToken from a current preview is required")
@@ -115,6 +116,11 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			return
 		}
 		skipped = skippedRows
+		if len(skipped) > 0 && strings.Count(source, "\n") == 1 {
+			c.JSON(200, gin.H{"mode": "preview", "requestId": requestID, "changes": []any{}, "skipped": skipped, "noChanges": true})
+			return
+		}
+
 		updates, err := h.subscriptionCSVUpdates(c.Request.Context(), source, false)
 		if err != nil {
 			respondError(c, 400, "invalid_csv", err.Error())
@@ -180,7 +186,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 					return
 				}
 			}
-			groups := store.PreserveRegistrationGroups(user.Groups, normalizeGroups(*update.Groups))
+			groups := store.WithSubscriptionSourcePlan(store.PreserveRegistrationGroups(user.Groups, normalizeGroups(*update.Groups)), store.SubscriptionSourcePlan(user.Groups))
 			if err := h.validateSubscriptionOverride(ctx, actor, user, groups); err != nil {
 				respondError(c, http.StatusBadRequest, "invalid_subscription_override", err.Error())
 				return
@@ -224,12 +230,47 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			}
 			record.UserID = user.ID
 		}
+		if record := update.SubscriptionRecord; record != nil {
+			record.PlanCode = strings.ToUpper(strings.TrimSpace(record.PlanCode))
+			if record.PlanCode == "" {
+				record.PlanCode = planID
+			}
+			if record.PlanCode != "FREE" && record.PlanCode != "PLUS" && record.PlanCode != "PRO" && record.PlanCode != "CUSTOM" && record.PlanCode != "UNLIMITED-BETA" {
+				respondError(c, 400, "invalid_source_plan", "invalid source plan")
+				return
+			}
+			if record.PlanCode == "CUSTOM" {
+				change, err := h.customSubscriptionImport(ctx, user, update)
+				if err != nil {
+					respondError(c, 400, "custom_import_requires_profile", err.Error())
+					return
+				}
+				changes = append(changes, change)
+				continue
+			}
+		}
 		group, err := planIDToQuotaGroup(planID)
 		if err != nil {
 			respondError(c, http.StatusBadRequest, "invalid_plan", err.Error())
 			return
 		}
 		plan, err := h.store.GetBillingPlan(ctx, planID)
+		if planID == "PRO" && update.SubscriptionRecord != nil && errors.Is(err, store.ErrBillingPlanNotFound) {
+			base, e := h.store.GetBillingPlan(ctx, store.BillingPlanPlus)
+			if e == nil && base != nil && base.Active {
+				copy := *base
+				copy.PlanID = "PRO"
+				copy.PackageName = "pro"
+				copy.DisplayName = "Pro"
+				copy.IncludedQuotaBytes = 50 << 30
+				copy.Features = map[string]any{}
+				if existing, e := h.store.GetAccountBillingProfile(ctx, user.ID); e == nil && existing != nil {
+					copy.PriceMultipliers = map[string]float64{"region": existing.RegionMultiplier, "line": existing.LineMultiplier, "peak": existing.PeakMultiplier, "offpeak": existing.OffPeakMultiplier}
+				}
+				plan = &copy
+				err = nil
+			}
+		}
 		if err != nil || plan == nil || !plan.Active {
 			if errors.Is(err, store.ErrBillingPlanNotFound) || (err == nil && plan != nil && !plan.Active) {
 				respondError(c, http.StatusBadRequest, "plan_unavailable", "selected plan is not active in the billing catalog")
@@ -276,11 +317,23 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 				case "month":
 					labels = append(labels, "segment:monthly")
 				}
-				if enabled, _ := plan.Features["temporary_subscription_unlimited"].(bool); enabled && (record.SubscriptionType == "month" || record.SubscriptionType == "year") {
+				if enabled, _ := plan.Features["temporary_subscription_unlimited"].(bool); record.PlanCode != "PRO" && enabled && (record.SubscriptionType == "month" || record.SubscriptionType == "year") {
 					labels = append(labels, store.SubscriptionUnlimitedOverrideGroup)
 				}
 			}
+			if record.PlanCode == "PRO" {
+				filtered := labels[:0]
+				for _, g := range labels {
+					if g != store.SubscriptionUnlimitedOverrideGroup {
+						filtered = append(filtered, g)
+					}
+				}
+				labels = filtered
+			}
 			change.Groups = labels
+		}
+		if change.SubscriptionRecord != nil {
+			change.Groups = normalizeGroups(store.WithSubscriptionSourcePlan(change.Groups, change.SubscriptionRecord.PlanCode))
 		}
 		if change.SubscriptionRecord != nil && planID != store.BillingPlanFree && change.SubscriptionRecord.MonthlyQuotaBytes > 0 {
 			change.IncludedQuotaBytes = change.SubscriptionRecord.MonthlyQuotaBytes
@@ -290,6 +343,24 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			return
 		}
 		changes = append(changes, change)
+	}
+	if req.CSV != nil {
+		changed := make([]store.AdminPlanGroupChange, 0, len(changes))
+		for _, change := range changes {
+			same, err := h.subscriptionImportUnchanged(ctx, change)
+			if err != nil {
+				respondError(c, 503, "comparison_failed", "could not compare subscription records")
+				return
+			}
+			if !same {
+				changed = append(changed, change)
+			}
+		}
+		changes = changed
+		if len(changes) == 0 {
+			c.JSON(200, gin.H{"mode": "preview", "requestId": requestID, "changes": changes, "skipped": skipped, "noChanges": true})
+			return
+		}
 	}
 	sort.Slice(changes, func(i, j int) bool { return changes[i].UserID < changes[j].UserID })
 	previewToken, tokenHash, err := generateAdminPreviewToken()
@@ -316,9 +387,22 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 		if change.SetValidUntil {
 			desiredUntil = change.ValidUntil
 		}
+		var beforeRecord *store.SubscriptionRecord
+		if change.SubscriptionRecord != nil {
+			var err error
+			beforeRecord, err = h.store.GetSubscriptionRecord(ctx, change.UserID)
+			if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+				respondError(c, 503, "preview_failed", "failed to read subscription comparison")
+				return
+			}
+			if beforeRecord != nil && (change.ExpectedRecordUpdatedAt == nil || !beforeRecord.UpdatedAt.Equal(*change.ExpectedRecordUpdatedAt)) {
+				respondError(c, 409, "preview_stale", "subscription changed while preparing preview")
+				return
+			}
+		}
 		rows = append(rows, adminPlanGroupPreviewRow{
 			UserID: change.UserID, PlanID: change.PlanID, Groups: change.Groups,
-			Before: gin.H{"groups": change.ExpectedGroups, "validFrom": adminPlanDateString(beforeFrom), "validUntil": adminPlanDateString(beforeUntil),
+			Before: gin.H{"subscriptionRecord": beforeRecord, "groups": change.ExpectedGroups, "validFrom": adminPlanDateString(beforeFrom), "validUntil": adminPlanDateString(beforeUntil),
 				"includedQuotaBytes": change.ExpectedProfileIncludedQuota, "remainingIncludedQuota": change.ExpectedQuotaRemaining},
 			After: gin.H{"groups": change.Groups, "validFrom": adminPlanDateString(desiredFrom), "validUntil": adminPlanDateString(desiredUntil),
 				"includedQuotaBytes": change.IncludedQuotaBytes, "subscriptionRecord": change.SubscriptionRecord},
@@ -424,12 +508,12 @@ func planIDToQuotaGroup(planID string) (string, error) {
 	switch strings.ToUpper(strings.TrimSpace(planID)) {
 	case store.BillingPlanFree:
 		return store.MonthlyFreeQuotaLimitGroup, nil
-	case store.BillingPlanPlus:
+	case store.BillingPlanPlus, "PRO":
 		return store.MonthlyPlusQuotaLimitGroup, nil
 	case store.BillingPlanUnlimitedBeta:
 		return store.MonthlyUnlimitedBetaQuotaGroup, nil
 	default:
-		return "", errors.New("planId must be FREE, PLUS or UNLIMITED-BETA")
+		return "", errors.New("planId must be FREE, PLUS, PRO or UNLIMITED-BETA")
 	}
 }
 

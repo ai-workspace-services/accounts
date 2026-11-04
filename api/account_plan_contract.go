@@ -84,6 +84,7 @@ func (h *handler) accountPlanContract(ctx context.Context, profile *store.Accoun
 	}
 	result.AssignmentStatus = "assigned"
 	result.CurrentPlan = &accountPlanContractPayload{
+		PlanID:          existingPlanID(profile),
 		DisplayName:     packageName,
 		PackageName:     packageName,
 		MaxTrafficBytes: profile.IncludedQuotaBytes,

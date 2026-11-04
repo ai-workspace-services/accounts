@@ -123,12 +123,14 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 	if MonthlyQuotaGroup(current) != MonthlyPlusQuotaLimitGroup || record.FeeMinor != 20000 || quota.RemainingIncludedQuota != 16*gib {
 		t.Fatal("record constraint failure partially updated account")
 	}
-	// Native users have no legacy subscription dates: reject unsupported mutation.
+	// Date-only updates without a commercial record still require legacy columns.
 	change.ExpectedGroups = change.Groups
 	change.SetValidFrom = true
 	preview.RequestID = "native-dates"
 	preview.TokenHash = "native-dates-token"
-	preview.Changes = []AdminPlanGroupChange{change}
+	unsupported := change
+	unsupported.SubscriptionRecord = nil
+	preview.Changes = []AdminPlanGroupChange{unsupported}
 	if _, err = st.CreateAdminPlanGroupPreview(ctx, preview); err == nil {
 		t.Fatal("unsupported subscription date mutation accepted")
 	}
@@ -192,6 +194,30 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 	rows, _ = st.ListSubscriptionRecords(ctx)
 	if len(rows) != 1 {
 		t.Fatal("reapplied migration lost subscription records")
+	}
+
+	// Imported records provide validity on native schemas without legacy columns.
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2030, 12, 31, 0, 0, 0, 0, time.UTC)
+	imported := AdminPlanGroupChange{UserID: free.ID, PlanID: "PRO", ExpectedGroups: freeStored.Groups, Groups: WithSubscriptionSourcePlan([]string{MonthlyPlusQuotaLimitGroup}, "PRO"), SetEntitlement: true, PackageName: "pro", IncludedQuotaBytes: 50 * gib, PricingRuleVersion: "plan:PRO", SetValidFrom: true, SetValidUntil: true, ValidFrom: &from, ValidUntil: &until, SubscriptionRecord: &SubscriptionRecord{UserID: free.ID, PlanCode: "PRO", SubscriptionType: "month", MonthlyQuotaBytes: 50 * gib, ValidFrom: &from, ValidUntil: &until}}
+	importedPreview := AdminPlanGroupPreview{ActorUUID: id, Reason: "native date fallback", RequestID: "native-date-fallback", TokenHash: "native-date-fallback", ExpiresAt: time.Now().Add(time.Minute), Changes: []AdminPlanGroupChange{imported}}
+	if _, err = st.CreateAdminPlanGroupPreview(ctx, importedPreview); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = st.ApplyAdminPlanGroupBatch(ctx, AdminPlanGroupBatch{ActorUUID: id, Reason: importedPreview.Reason, RequestID: importedPreview.RequestID, PreviewTokenHash: importedPreview.TokenHash}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := st.GetUserByID(ctx, free.ID)
+	if err != nil || reloaded.SubscriptionValidUntil == nil || !reloaded.SubscriptionValidUntil.Equal(until) {
+		t.Fatalf("native imported validity: %+v %v", reloaded, err)
+	}
+	sourceRecord, err := st.GetSubscriptionRecord(ctx, free.ID)
+	if err != nil || sourceRecord.PlanCode != "PRO" {
+		t.Fatalf("native source plan: %+v %v", sourceRecord, err)
+	}
+	history, err := st.ListAuditLogs(ctx, AuditLogFilter{ActionPrefix: AuditActionPlanGroupUpdate, TargetUUID: free.ID, Limit: 1})
+	if err != nil || len(history) != 1 {
+		t.Fatalf("source receipt lookup: %v %v", history, err)
 	}
 
 }

@@ -3598,7 +3598,7 @@ func (h *handler) listUsers(c *gin.Context) {
 
 	sanitized := make([]gin.H, 0, len(users))
 	recordsByID := map[string]store.SubscriptionRecord{}
-	if store.IsRootRole(actor.Role) {
+	if subscriptionImportRoleAllowed(actor) {
 		records, err := h.store.ListSubscriptionRecords(c.Request.Context())
 		if err != nil {
 			respondError(c, 503, "subscription_records_unavailable", "failed to load subscription records")
@@ -3742,7 +3742,8 @@ func (h *handler) updateUserGroups(c *gin.Context) {
 			return
 		}
 	}
-	user.Groups = store.PreserveRegistrationGroups(user.Groups, normalizeGroups(req.Groups))
+	sourcePlan := store.SubscriptionSourcePlan(user.Groups)
+	user.Groups = store.WithSubscriptionSourcePlan(store.PreserveRegistrationGroups(user.Groups, normalizeGroups(req.Groups)), sourcePlan)
 	if currentPlanGroup != "" {
 		user.Groups = replaceMonthlyQuotaGroup(user.Groups, currentPlanGroup)
 	}

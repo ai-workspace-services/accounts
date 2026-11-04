@@ -172,7 +172,8 @@ func syncCatalogQuota(ctx context.Context, tx *sql.Tx, plan *BillingPlan) error 
 		q.remaining_included_quota, q.period_start, q.period_end
 		FROM account_billing_profiles p JOIN account_quota_states q USING (account_uuid)
 		WHERE p.pricing_rule_version = $1
-		AND ($2 = 'FREE' OR NOT EXISTS (SELECT 1 FROM subscription_records r
+		AND NOT EXISTS (SELECT 1 FROM public.users u WHERE u.uuid::text=p.account_uuid::text AND u.groups ? 'subscription:source-plan:custom')
+        AND ($2 = 'FREE' OR NOT EXISTS (SELECT 1 FROM subscription_records r
 		  WHERE r.user_uuid = p.account_uuid AND (r.monthly_quota_bytes > 0 OR r.annual_quota_bytes > 0)))
 		ORDER BY p.account_uuid FOR UPDATE OF p, q`, "plan:"+normalizePlanID(plan.PlanID), normalizePlanID(plan.PlanID))
 	if err != nil {
