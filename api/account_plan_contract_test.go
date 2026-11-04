@@ -115,3 +115,20 @@ func TestLegacyDefaultBillingProfileRemainsUnassigned(t *testing.T) {
 		t.Fatalf("Free 3GiB should remain reference-only for this legacy account: %+v", contract.DefaultPlan)
 	}
 }
+
+func TestCustomContractUsesEffectiveQuotaAndSourceIdentity(t *testing.T) {
+	st := store.NewMemoryStore()
+	seedQuotaPlan(t, st, "FREE", "Free", "free", 5<<30, nil)
+	h := &handler{store: st}
+	for _, pkg := range []string{"free", "default"} {
+		profile := &store.AccountBillingProfile{PackageName: pkg, PricingRuleVersion: "plan:FREE", IncludedQuotaBytes: 1 << 40}
+		user := &store.User{Groups: store.WithSubscriptionSourcePlan([]string{"access:dedicated-only"}, "CUSTOM")}
+		contract, err := h.accountPlanContract(context.Background(), profile, user)
+		if err != nil || contract.CurrentPlan == nil || contract.CurrentPlan.PlanID != "CUSTOM" || contract.CurrentPlan.MaxTrafficBytes != 1<<40 || contract.AssignmentStatus != "assigned" {
+			t.Fatalf("custom account contract: %+v %v", contract, err)
+		}
+		if profile.PackageName != pkg || profile.PricingRuleVersion != "plan:FREE" {
+			t.Fatal("display resolution mutated billing identity")
+		}
+	}
+}

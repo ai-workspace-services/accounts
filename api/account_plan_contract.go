@@ -30,7 +30,7 @@ type accountPlanContract struct {
 // The account billing profile remains the effective assigned allowance used
 // by metering; the default plan is returned as reference data only and never
 // creates or changes an account assignment.
-func (h *handler) accountPlanContract(ctx context.Context, profile *store.AccountBillingProfile) (accountPlanContract, error) {
+func (h *handler) accountPlanContract(ctx context.Context, profile *store.AccountBillingProfile, users ...*store.User) (accountPlanContract, error) {
 	result := accountPlanContract{AssignmentStatus: "unassigned"}
 	defaultPlan, err := h.store.GetBillingPlan(ctx, store.BillingPlanFree)
 	if err != nil {
@@ -42,6 +42,16 @@ func (h *handler) accountPlanContract(ctx context.Context, profile *store.Accoun
 	}
 
 	if profile == nil {
+		return result, nil
+	}
+
+	if len(users) > 0 && users[0] != nil && store.SubscriptionSourcePlan(users[0].Groups) == "CUSTOM" {
+		result.AssignmentStatus = "assigned"
+		result.CurrentPlan = &accountPlanContractPayload{
+			PlanID: "CUSTOM", DisplayName: "Custom", PackageName: profile.PackageName,
+			MaxTrafficBytes: profile.IncludedQuotaBytes, QuotaCycle: "natural_month",
+			Assigned: true, Source: "subscription_import",
+		}
 		return result, nil
 	}
 

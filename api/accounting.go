@@ -103,7 +103,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 			usagePercent = float64(usedBytes) / float64(includedQuota) * 100
 		}
 	}
-	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile)
+	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile, user)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "billing_plan_unavailable", "failed to resolve the account plan")
 		return
@@ -222,7 +222,7 @@ func (h *handler) accountBillingSummary(c *gin.Context) {
 	if profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID); err == nil {
 		billingProfile = profile
 	}
-	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile)
+	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile, user)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "billing_plan_unavailable", "failed to resolve the account plan")
 		return
