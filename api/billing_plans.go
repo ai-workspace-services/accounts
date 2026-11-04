@@ -191,6 +191,12 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		SortOrder:          req.SortOrder,
 	}
 	if existing, err := h.store.GetBillingPlan(c.Request.Context(), planID); err == nil && existing != nil {
+		if req.Features == nil {
+			plan.Features = existing.Features
+		}
+		if req.PriceMultipliers == nil {
+			plan.PriceMultipliers = existing.PriceMultipliers
+		}
 		plan.PriceAmount = existing.PriceAmount
 		plan.PriceCurrency = existing.PriceCurrency
 		plan.PriceUnit = existing.PriceUnit
