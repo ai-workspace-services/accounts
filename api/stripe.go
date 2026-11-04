@@ -96,12 +96,22 @@ type stripeSubscription struct {
 	CollectionMethod   string            `json:"collection_method"`
 	PendingUpdate      json.RawMessage   `json:"pending_update"`
 	Schedule           any               `json:"schedule"`
-	Items              struct {
+	Discounts          []json.RawMessage `json:"discounts"`
+	DefaultTaxRates    []json.RawMessage `json:"default_tax_rates"`
+	AutomaticTax       struct {
+		Enabled bool `json:"enabled"`
+	} `json:"automatic_tax"`
+	TransferData          json.RawMessage `json:"transfer_data"`
+	ApplicationFeePercent *float64        `json:"application_fee_percent"`
+	TrialEnd              *int64          `json:"trial_end"`
+	Items                 struct {
 		Data []struct {
-			ID                 string `json:"id"`
-			Quantity           int64  `json:"quantity"`
-			CurrentPeriodStart int64  `json:"current_period_start"`
-			CurrentPeriodEnd   int64  `json:"current_period_end"`
+			Discounts          []json.RawMessage `json:"discounts"`
+			TaxRates           []json.RawMessage `json:"tax_rates"`
+			ID                 string            `json:"id"`
+			Quantity           int64             `json:"quantity"`
+			CurrentPeriodStart int64             `json:"current_period_start"`
+			CurrentPeriodEnd   int64             `json:"current_period_end"`
 			Price              struct {
 				ID string `json:"id"`
 			} `json:"price"`
@@ -1881,6 +1891,19 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		}
 		if invoice.Status != "paid" || invoiceSubscriptionID(invoice) != source.ID {
 			return nil
+		}
+		if customerIDFromAny(source.Schedule) != "" {
+			start, end := subscriptionPeriod(source)
+			matched := false
+			for _, line := range invoice.Lines.Data {
+				price := firstNonEmpty(customerIDFromAny(line.Price), customerIDFromAny(line.Pricing.PriceDetails.Price))
+				if price == subscriptionPriceID(source) && line.Period.Start == start.Unix() && line.Period.End == end.Unix() {
+					matched = true
+				}
+			}
+			if !matched || invoice.Lines.HasMore {
+				return errors.New("scheduled phase requires matching paid invoice lines")
+			}
 		}
 		freshActivation = invoice.BillingReason == "subscription_create"
 	}

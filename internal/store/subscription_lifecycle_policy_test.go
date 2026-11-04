@@ -9,7 +9,7 @@ import (
 func TestSubscriptionLifecycleRollingBoundary(t *testing.T) {
 	last := time.Date(2026, 1, 31, 23, 0, 0, 0, time.UTC)
 	s := SubscriptionLifecycle{LastChangeAt: &last}
-	for _, action := range []string{"upgrade", "downgrade"} {
+	for _, action := range []string{"upgrade", "downgrade", "renewal"} {
 		if !errors.Is(CheckSubscriptionAction(s, action, last.Add(SubscriptionChangeCooldown-time.Nanosecond)), ErrSubscriptionCooldown) {
 			t.Fatal(action, "released early")
 		}
@@ -26,7 +26,7 @@ func TestSubscriptionLifecycleRollingBoundary(t *testing.T) {
 
 func TestSubscriptionLifecyclePendingAndUnknown(t *testing.T) {
 	s := SubscriptionLifecycle{PendingPlanID: "PLUS"}
-	for _, action := range []string{"subscribe", "upgrade", "downgrade"} {
+	for _, action := range []string{"subscribe", "upgrade", "downgrade", "renewal"} {
 		if !errors.Is(CheckSubscriptionAction(s, action, time.Now()), ErrSubscriptionChangePending) {
 			t.Fatal(action)
 		}
@@ -35,7 +35,7 @@ func TestSubscriptionLifecyclePendingAndUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.OperationID = "unknown-provider-outcome"
-	for _, action := range []string{"subscribe", "upgrade", "downgrade", "cancel", "refund_execute"} {
+	for _, action := range []string{"subscribe", "upgrade", "downgrade", "renewal", "cancel", "refund_execute"} {
 		if !errors.Is(CheckSubscriptionAction(s, action, time.Now()), ErrFinanceOperationInProgress) {
 			t.Fatal(action, "bypassed unknown result")
 		}
