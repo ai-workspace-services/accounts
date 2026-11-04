@@ -100,6 +100,7 @@ func (h *handler) renewalQuote(ctx context.Context, userID, planID string, at in
 	q.PeriodStart = start.Unix()
 	q.RenewalAt = end.Unix()
 	q.RenewalAmount = price.UnitAmount
+	q.RenewalInterval = price.Recurring.Interval
 	q.Currency = strings.ToUpper(price.Currency)
 	return q, nil
 }
@@ -201,6 +202,9 @@ func (h *handler) stripeRenewalApply(c *gin.Context) {
 }
 
 func (s *stripeClient) scheduleRenewal(ctx context.Context, q subscriptionQuote, key string) (*renewalSchedule, error) {
+	if q.RenewalInterval != "month" && q.RenewalInterval != "year" {
+		return nil, errors.New("verified renewal interval required")
+	}
 	var created renewalSchedule
 	if err := s.doForm(ctx, http.MethodPost, "/subscription_schedules", url.Values{"from_subscription": {q.SubscriptionID}}, &created, key+":create"); err != nil {
 		return nil, err
@@ -209,22 +213,23 @@ func (s *stripeClient) scheduleRenewal(ctx context.Context, q subscriptionQuote,
 		return nil, errors.New("source schedule mismatch")
 	}
 	form := url.Values{
-		"end_behavior":                  {"release"},
-		"proration_behavior":            {"none"},
-		"metadata[portal_renewal_user]": {q.UserID},
-		"metadata[portal_renewal_key]":  {key},
-		"metadata[portal_renewal_plan]": {q.PlanID},
-		"phases[0][start_date]":         {strconv.FormatInt(q.PeriodStart, 10)},
-		"phases[0][end_date]":           {strconv.FormatInt(q.RenewalAt, 10)},
-		"phases[0][items][0][price]":    {q.FromPriceID},
-		"phases[0][items][0][quantity]": {"1"},
-		"phases[0][proration_behavior]": {"none"},
-		"phases[1][start_date]":         {strconv.FormatInt(q.RenewalAt, 10)},
-		"phases[1][iterations]":         {"1"},
-		"phases[1][items][0][price]":    {q.PriceID},
-		"phases[1][items][0][quantity]": {"1"},
-		"phases[1][proration_behavior]": {"none"},
-		"phases[1][metadata][plan_id]":  {q.PlanID},
+		"end_behavior":                        {"release"},
+		"proration_behavior":                  {"none"},
+		"metadata[portal_renewal_user]":       {q.UserID},
+		"metadata[portal_renewal_key]":        {key},
+		"metadata[portal_renewal_plan]":       {q.PlanID},
+		"phases[0][start_date]":               {strconv.FormatInt(q.PeriodStart, 10)},
+		"phases[0][end_date]":                 {strconv.FormatInt(q.RenewalAt, 10)},
+		"phases[0][items][0][price]":          {q.FromPriceID},
+		"phases[0][items][0][quantity]":       {"1"},
+		"phases[0][proration_behavior]":       {"none"},
+		"phases[1][start_date]":               {strconv.FormatInt(q.RenewalAt, 10)},
+		"phases[1][duration][interval]":       {q.RenewalInterval},
+		"phases[1][duration][interval_count]": {"1"},
+		"phases[1][items][0][price]":          {q.PriceID},
+		"phases[1][items][0][quantity]":       {"1"},
+		"phases[1][proration_behavior]":       {"none"},
+		"phases[1][metadata][plan_id]":        {q.PlanID},
 	}
 	var updated renewalSchedule
 	if err := s.doForm(ctx, http.MethodPost, "/subscription_schedules/"+url.PathEscape(created.ID), form, &updated, key+":update"); err != nil {

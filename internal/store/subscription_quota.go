@@ -8,8 +8,8 @@ import (
 
 var ErrSubscriptionQuotaConflict = errors.New("subscription quota or period requires reconciliation")
 
-// The quota delta and its replay marker are committed together. Never refill
-// an absent grant, change a period, or overwrite a concurrent usage deduction.
+// The quota delta and its replay marker are committed together. Within a paid
+// period usage is preserved; a verified later paid period gets a fresh grant.
 func (s *memoryStore) UpgradeSubscriptionQuota(_ context.Context, id string, previous, target int64, start, end time.Time) error {
 	return s.changeSubscriptionQuota(id, previous, target, start, end, false)
 }
@@ -38,11 +38,12 @@ func (s *memoryStore) changeSubscriptionQuota(id string, previous, target int64,
 		return ErrSubscriptionQuotaConflict
 	}
 	resetPeriod := q.PeriodStart != nil && q.PeriodEnd != nil && start.Equal(month) && end.Equal(month.AddDate(0, 1, 0)) && q.PeriodStart.After(start) && q.PeriodStart.Before(end) && q.PeriodEnd.Equal(end)
-	if !activation && !resetPeriod && (q.PeriodStart == nil || q.PeriodEnd == nil || ((!q.PeriodStart.Equal(start) || !q.PeriodEnd.Equal(end)) && !restoringFree)) {
+	rollover := q.PeriodStart != nil && q.PeriodEnd != nil && q.PeriodEnd.After(*q.PeriodStart) && !q.PeriodEnd.After(start)
+	if !activation && !resetPeriod && !rollover && (q.PeriodStart == nil || q.PeriodEnd == nil || ((!q.PeriodStart.Equal(start) || !q.PeriodEnd.Equal(end)) && !restoringFree)) {
 		return ErrSubscriptionQuotaConflict
 	}
 	q.RemainingIncludedQuota += target - previous
-	if activation {
+	if activation || rollover {
 		q.RemainingIncludedQuota = target
 		q.Arrears, q.ArrearsSince = false, nil
 		q.ThrottleState, q.SuspendState = "normal", "active"
@@ -88,13 +89,13 @@ func (s *postgresStore) changeSubscriptionQuota(ctx context.Context, id string, 
 	}
 	month := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 	result, err := tx.ExecContext(ctx, `UPDATE public.account_quota_states SET
-	 remaining_included_quota=CASE WHEN $9 THEN $10 ELSE remaining_included_quota+$2 END,
-	 arrears=CASE WHEN $9 THEN false ELSE arrears END,
-	 arrears_since=CASE WHEN $9 THEN NULL ELSE arrears_since END,
-	 throttle_state=CASE WHEN $9 THEN 'normal' ELSE throttle_state END,
-	 suspend_state=CASE WHEN $9 THEN 'active' ELSE suspend_state END,
+	 remaining_included_quota=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN $10 ELSE remaining_included_quota+$2 END,
+	 arrears=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN false ELSE arrears END,
+	 arrears_since=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN NULL ELSE arrears_since END,
+	 throttle_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN 'normal' ELSE throttle_state END,
+	 suspend_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN 'active' ELSE suspend_state END,
 	 period_start=CASE WHEN NOT $9 AND period_start >= $3 AND period_start < $4 AND period_end=$4 THEN period_start ELSE $3 END,period_end=$4,effective_at=now(),updated_at=now()
-	 WHERE account_uuid=$1 AND ($9 OR ((period_start=$3 AND period_end=$4) OR ($3=$7 AND $4=$8 AND period_start>$3 AND period_start<$4 AND period_end=$4)) OR ($6 AND period_start=$7 AND period_end=$8)) AND remaining_included_quota<=$5`, id, target-previous, start.UTC(), end.UTC(), previous, rule == "plan:FREE", month, month.AddDate(0, 1, 0), activation, target)
+	 WHERE account_uuid=$1 AND ($9 OR (period_end>period_start AND period_end<=$3) OR ((period_start=$3 AND period_end=$4) OR ($3=$7 AND $4=$8 AND period_start>$3 AND period_start<$4 AND period_end=$4)) OR ($6 AND period_start=$7 AND period_end=$8)) AND remaining_included_quota<=$5`, id, target-previous, start.UTC(), end.UTC(), previous, rule == "plan:FREE", month, month.AddDate(0, 1, 0), activation, target)
 	if err != nil {
 		return err
 	}

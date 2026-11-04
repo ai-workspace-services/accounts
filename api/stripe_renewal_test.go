@@ -50,6 +50,9 @@ func TestRenewalScheduleKeepsCurrentPriceUntilBoundary(t *testing.T) {
 			if r.Header.Get("Idempotency-Key") != "operation:update" {
 				t.Error("schedule update missing idempotency")
 			}
+			if r.Form.Get("phases[1][duration][interval]") != "month" || r.Form.Get("phases[1][duration][interval_count]") != "1" || r.Form.Has("phases[1][iterations]") {
+				t.Error("schedule duration does not match the verified recurring price")
+			}
 			calls++
 			_ = json.NewEncoder(w).Encode(renewalSchedule{ID: "sub_sched_fixture", Subscription: "sub_existing", Status: "active", EndBehavior: "release", Metadata: map[string]string{"portal_renewal_user": user.ID, "portal_renewal_key": "operation", "portal_renewal_plan": "NEW"}, Phases: []renewalPhase{
 				{Start: start, End: end, Items: []struct {

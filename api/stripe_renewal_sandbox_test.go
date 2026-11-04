@@ -139,6 +139,17 @@ func TestStripeRenewalSandbox(t *testing.T) {
 			confirm := map[string]string{"previewToken": quote.Token}
 			applied := request("POST", "/api/auth/stripe/subscription/renewal", confirm)
 			if applied.Code != 200 {
+				// Replay the same provider idempotency keys to surface a sanitized
+				// provider error without creating a second schedule.
+				q, err := sc.readSubscriptionQuote(quote.Token, user.ID)
+				if err == nil {
+					raw, _ := json.Marshal(q)
+					digest := sha256.Sum256(raw)
+					_, err = sc.scheduleRenewal(ctx, q, "subscription-renewal:"+hex.EncodeToString(digest[:]))
+				}
+				if err != nil {
+					t.Fatalf("renewal confirmation status %d: %v", applied.Code, err)
+				}
 				t.Fatalf("renewal confirmation failed: status %d", applied.Code)
 			}
 			replayed := request("POST", "/api/auth/stripe/subscription/renewal", confirm)
@@ -203,7 +214,9 @@ func TestStripeRenewalSandbox(t *testing.T) {
 				w := httptest.NewRecorder()
 				router.ServeHTTP(w, r)
 				if w.Code != 200 {
-					t.Fatalf("signed renewal webhook replay failed: status %d", w.Code)
+					var event stripeEvent
+					_ = json.Unmarshal(body, &event)
+					t.Fatalf("signed renewal webhook replay failed: status %d: %v", w.Code, h.handleStripeEvent(ctx, event))
 				}
 			}
 			profile, err = st.GetAccountBillingProfile(ctx, user.ID)
@@ -231,8 +244,9 @@ func (sandboxStripeTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	defer resp.Body.Close()
 	var v struct {
 		Error struct {
-			Code string `json:"code"`
-			Type string `json:"type"`
+			Code  string `json:"code"`
+			Type  string `json:"type"`
+			Param string `json:"param"`
 		} `json:"error"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&v)
