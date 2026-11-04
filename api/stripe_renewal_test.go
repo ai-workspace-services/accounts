@@ -51,7 +51,7 @@ func TestRenewalScheduleKeepsCurrentPriceUntilBoundary(t *testing.T) {
 				t.Error("schedule update missing idempotency")
 			}
 			calls++
-			_ = json.NewEncoder(w).Encode(renewalSchedule{ID: "sub_sched_fixture", Subscription: "sub_existing", Status: "active", Metadata: map[string]string{"portal_renewal_user": user.ID, "portal_renewal_key": "operation"}, Phases: []renewalPhase{
+			_ = json.NewEncoder(w).Encode(renewalSchedule{ID: "sub_sched_fixture", Subscription: "sub_existing", Status: "active", EndBehavior: "release", Metadata: map[string]string{"portal_renewal_user": user.ID, "portal_renewal_key": "operation", "portal_renewal_plan": "NEW"}, Phases: []renewalPhase{
 				{Start: start, End: end, Items: []struct {
 					Price    string `json:"price"`
 					Quantity int64  `json:"quantity"`
@@ -83,5 +83,69 @@ func TestRenewalScheduleKeepsCurrentPriceUntilBoundary(t *testing.T) {
 	}
 	if _, err = st.GetAccountBillingProfile(ctx, user.ID); err == nil {
 		t.Fatal("scheduling granted an entitlement")
+	}
+}
+
+func TestScheduledPhaseRequiresPaidInvoiceBeforeUpdatingLocalPlan(t *testing.T) {
+	for _, tc := range []struct {
+		name, price string
+		offset      int64
+		hasMore     bool
+		wantReject  bool
+	}{
+		{"old-paid-price", "price_old", 0, false, true},
+		{"previous-paid-period", "price_new", -3600, false, true},
+		{"incomplete-invoice-lines", "price_new", 0, true, true},
+		{"paid-current-phase", "price_new", 0, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			st := store.NewMemoryStore()
+			user := seedActiveUser(t, st, "Renewal", "renewal-invoice@example.invalid", "renewal-invoice")
+			if err := st.UpsertSubscription(ctx, &store.Subscription{UserID: user.ID, Provider: "stripe", Kind: "subscription", PlanID: "OLD", ExternalID: "sub_existing", Status: "active"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "NEW", StripePriceID: "price_new", Kind: "subscription", Active: true, IncludedQuotaBytes: 50 << 30}); err != nil {
+				t.Fatal(err)
+			}
+			start, end := time.Now().Add(-time.Hour).Unix(), time.Now().Add(time.Hour).Unix()
+			var sub stripeSubscription
+			if err := json.Unmarshal([]byte(fmt.Sprintf(`{"id":"sub_existing","status":"active","metadata":{"user_id":%q,"plan_id":"NEW"},"schedule":"sub_sched_existing","latest_invoice":"in_paid","current_period_start":%d,"current_period_end":%d,"items":{"data":[{"price":{"id":"price_new"},"quantity":1}]}}`, user.ID, start, end)), &sub); err != nil {
+				t.Fatal(err)
+			}
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "GET" || r.URL.Path != "/invoices/in_paid" {
+					t.Error("unexpected provider request", r.Method, r.URL.Path)
+					http.Error(w, "unexpected", 500)
+					return
+				}
+				fmt.Fprintf(w, `{"id":"in_paid","subscription":"sub_existing","status":"paid","lines":{"has_more":%t,"data":[{"price":"%s","period":{"start":%d,"end":%d}}]}}`, tc.hasMore, tc.price, start+tc.offset, end+tc.offset)
+			}))
+			defer provider.Close()
+			h := &handler{store: st, stripe: newStripeClient(StripeConfig{SecretKey: "sk_test_fixture", APIBaseURL: provider.URL})}
+			if err := h.applyPlanEntitlements(ctx, user.ID, &store.BillingPlan{PlanID: "OLD", IncludedQuotaBytes: 20 << 30}); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.upsertStripeSubscription(ctx, &sub, "cus_existing"); (err != nil) != tc.wantReject {
+				t.Fatalf("unexpected local plan update result: %v", err)
+			}
+			if tc.wantReject {
+				if err := h.syncSubscriptionEntitlements(ctx, &sub, false); err == nil {
+					t.Fatal("granted entitlement from an unverified invoice phase")
+				}
+				profile, err := st.GetAccountBillingProfile(ctx, user.ID)
+				if err != nil || profile.IncludedQuotaBytes != 20<<30 {
+					t.Fatal("existing allowance changed")
+				}
+			}
+			local, err := h.currentPurchaseSubscription(ctx, user.ID)
+			wantPlan := "NEW"
+			if tc.wantReject {
+				wantPlan = "OLD"
+			}
+			if err != nil || local == nil || local.PlanID != wantPlan {
+				t.Fatalf("local plan differs from payment evidence; expected %s", wantPlan)
+			}
+		})
 	}
 }

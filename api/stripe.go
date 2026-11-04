@@ -1892,18 +1892,8 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		if invoice.Status != "paid" || invoiceSubscriptionID(invoice) != source.ID {
 			return nil
 		}
-		if customerIDFromAny(source.Schedule) != "" {
-			start, end := subscriptionPeriod(source)
-			matched := false
-			for _, line := range invoice.Lines.Data {
-				price := firstNonEmpty(customerIDFromAny(line.Price), customerIDFromAny(line.Pricing.PriceDetails.Price))
-				if price == subscriptionPriceID(source) && line.Period.Start == start.Unix() && line.Period.End == end.Unix() {
-					matched = true
-				}
-			}
-			if !matched || invoice.Lines.HasMore {
-				return errors.New("scheduled phase requires matching paid invoice lines")
-			}
+		if customerIDFromAny(source.Schedule) != "" && !scheduledInvoiceMatchesSubscription(source, invoice) {
+			return errors.New("scheduled phase requires matching paid invoice lines")
 		}
 		freshActivation = invoice.BillingReason == "subscription_create"
 	}
@@ -1990,6 +1980,12 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 		if invoice.Status != "paid" || invoiceSubscriptionID(invoice) != source.ID {
 			return nil
 		}
+		// Do not expose the target plan in the local read model before its
+		// corresponding phase has a paid invoice. The entitlement path applies
+		// the same check; both projections must agree when webhooks race.
+		if customerIDFromAny(source.Schedule) != "" && !scheduledInvoiceMatchesSubscription(source, invoice) {
+			return errors.New("scheduled phase requires matching paid invoice lines")
+		}
 	}
 	priceID := ""
 	if len(source.Items.Data) > 0 {
@@ -2044,6 +2040,20 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 		subscription.CancelledAt = &cancelledAt
 	}
 	return h.store.UpsertSubscription(ctx, subscription)
+}
+
+func scheduledInvoiceMatchesSubscription(source *stripeSubscription, invoice *stripeInvoice) bool {
+	if source == nil || invoice == nil || invoice.Lines.HasMore {
+		return false
+	}
+	start, end := subscriptionPeriod(source)
+	for _, line := range invoice.Lines.Data {
+		price := firstNonEmpty(customerIDFromAny(line.Price), customerIDFromAny(line.Pricing.PriceDetails.Price))
+		if price == subscriptionPriceID(source) && line.Period.Start == start.Unix() && line.Period.End == end.Unix() {
+			return true
+		}
+	}
+	return false
 }
 
 func ParseStripeAllowedPriceIDs(value string) []string {

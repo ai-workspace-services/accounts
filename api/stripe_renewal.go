@@ -29,6 +29,7 @@ type renewalPhase struct {
 type renewalSchedule struct {
 	ID                   string            `json:"id"`
 	Status               string            `json:"status"`
+	EndBehavior          string            `json:"end_behavior"`
 	Subscription         string            `json:"subscription"`
 	ReleasedSubscription string            `json:"released_subscription"`
 	Metadata             map[string]string `json:"metadata"`
@@ -229,7 +230,7 @@ func (s *stripeClient) scheduleRenewal(ctx context.Context, q subscriptionQuote,
 	if err := s.doForm(ctx, http.MethodPost, "/subscription_schedules/"+url.PathEscape(created.ID), form, &updated, key+":update"); err != nil {
 		return nil, err
 	}
-	if updated.ID != created.ID || updated.Subscription != q.SubscriptionID || updated.Status != "active" || updated.Metadata["portal_renewal_user"] != q.UserID || updated.Metadata["portal_renewal_key"] != key || len(updated.Phases) != 2 || len(updated.Phases[0].Items) != 1 || len(updated.Phases[1].Items) != 1 || updated.Phases[0].Items[0].Price != q.FromPriceID || updated.Phases[0].End != q.RenewalAt || updated.Phases[1].Start != q.RenewalAt || updated.Phases[1].Items[0].Price != q.PriceID {
+	if updated.ID != created.ID || updated.Subscription != q.SubscriptionID || updated.Status != "active" || updated.EndBehavior != "release" || updated.Metadata["portal_renewal_user"] != q.UserID || updated.Metadata["portal_renewal_key"] != key || updated.Metadata["portal_renewal_plan"] != q.PlanID || len(updated.Phases) != 2 || len(updated.Phases[0].Items) != 1 || len(updated.Phases[1].Items) != 1 || updated.Phases[0].Start != q.PeriodStart || updated.Phases[0].Items[0].Price != q.FromPriceID || updated.Phases[0].Items[0].Quantity != 1 || updated.Phases[0].End != q.RenewalAt || updated.Phases[1].Start != q.RenewalAt || updated.Phases[1].End <= q.RenewalAt || updated.Phases[1].Items[0].Price != q.PriceID || updated.Phases[1].Items[0].Quantity != 1 {
 		return nil, errors.New("provider did not confirm requested phases")
 	}
 	return &updated, nil
