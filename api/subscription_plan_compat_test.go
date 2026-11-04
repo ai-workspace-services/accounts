@@ -23,7 +23,7 @@ func TestSpreadsheetProCustomRoundTripAndNoOp(t *testing.T) {
 		_ = st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: u.ID, PackageName: "plus", IncludedQuotaBytes: 20 << 30, PricingRuleVersion: "plan:PLUS", RegionMultiplier: 2, LineMultiplier: 3, PeakMultiplier: 4, OffPeakMultiplier: 5})
 		_ = st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: u.ID, RemainingIncludedQuota: 17 << 30})
 	}
-	source := "邮箱\t用户名\t订阅开始\t订阅结束\t\t订阅周期\t月配额\t年配额\t费用\t付费状态\t备注\n" + pro.Email + "\tother-name\t2026-01-01\t2030-12-31\tpro\tmonth\t50GB\t600GB\t200元\t已付费\tmonth contract year\n" + custom.Email + "\t\t2026-01-01\t2030-12-31\tcustom\tmonth\t50GB\t\t50元\t已付费\tUS only"
+	source := "邮箱\t用户名\t订阅开始\t订阅结束\t\t订阅周期\t月配额\t年配额\t费用\t付费状态\t备注\n" + pro.Email + "\tother-name\t2026-01-01\t2030-12-31\tpro\tmonth\t50GB\t600GB\t200元\t已付费\tmonth contract year\n" + custom.Email + "\t\t2026-01-01\t2030-12-31\tcustom\tmonth\t1TB\t\t50元\t已付费\tUS only"
 	path := "/api/auth/admin/users/plan-groups/batch"
 	apply := func(input, request string) {
 		t.Helper()
@@ -48,7 +48,11 @@ func TestSpreadsheetProCustomRoundTripAndNoOp(t *testing.T) {
 	for _, u := range []*store.User{custom, pro} {
 		p, _ := st.GetAccountBillingProfile(ctx, u.ID)
 		q, _ := st.GetAccountQuotaState(ctx, u.ID)
-		if p.IncludedQuotaBytes != 50<<30 || q.RemainingIncludedQuota != 47<<30 {
+		expectedQuota := int64(50 << 30)
+		if u.ID == custom.ID {
+			expectedQuota = 1 << 40
+		}
+		if p.IncludedQuotaBytes != expectedQuota || q.RemainingIncludedQuota != expectedQuota-3<<30 {
 			t.Fatalf("quota/usage: %+v %+v", p, q)
 		}
 	}

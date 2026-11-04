@@ -404,11 +404,11 @@ func subscriptionImportNumber(value string, factor float64) (int64, error) {
 	return int64(scaled), nil
 }
 func subscriptionImportBytes(value string) (int64, error) {
-	upper := strings.ToUpper(value)
+	upper := strings.ToUpper(strings.TrimSpace(value))
 	for _, unit := range []struct {
 		suffix string
 		factor float64
-	}{{"GIB", 1 << 30}, {"GB", 1 << 30}, {"MIB", 1 << 20}, {"MB", 1 << 20}, {"B", 1}} {
+	}{{"TIB", 1 << 40}, {"TB", 1 << 40}, {"GIB", 1 << 30}, {"GB", 1 << 30}, {"MIB", 1 << 20}, {"MB", 1 << 20}, {"B", 1}} {
 		if strings.HasSuffix(upper, unit.suffix) {
 			return subscriptionImportNumber(strings.TrimSuffix(upper, unit.suffix), unit.factor)
 		}
