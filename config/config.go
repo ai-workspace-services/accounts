@@ -31,10 +31,17 @@ type Config struct {
 	Session         Session          `yaml:"session"`
 	Auth            Auth             `yaml:"auth"`
 	SMTP            SMTP             `yaml:"smtp"`
+	Registration    Registration     `yaml:"registration"`
 	Xray            Xray             `yaml:"xray"`
 	Agent           Agent            `yaml:"agent"`
 	Agents          Agents           `yaml:"agents"`
 	ReviewAccount   ReviewAccount    `yaml:"reviewAccount"`
+}
+
+// Registration controls signup verification independently of recovery email.
+// The default permits signup without a code; password recovery still requires one.
+type Registration struct {
+	EmailVerification bool `yaml:"emailVerification"`
 }
 
 // Server defines HTTP server configuration.
