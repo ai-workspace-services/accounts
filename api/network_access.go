@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"regexp"
@@ -790,6 +791,53 @@ func (h *handler) resolveScopedAgentLegacy(c *gin.Context, credential agentserve
 	return identity, true
 }
 
+func (h *handler) resolveNodeBoundAgent(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
+	// All selectors must agree, even when the status body supplies an ID.
+	for _, id := range []string{requested, c.GetHeader(agentIDHeader), c.Query("agentId")} {
+		if id != "" && strings.TrimSpace(id) != credential.ID {
+			respondError(c, 403, "agent_scope_mismatch", "node credential cannot select another agent")
+			return credential, false
+		}
+	}
+	scope, valid := agentResourceScope(credential.Groups)
+	if !valid {
+		respondError(c, 403, "agent_scope_invalid", "invalid enrolled node scope")
+		return credential, false
+	}
+	if class := c.GetHeader("X-Agent-Resource-Class"); class != "" && class != scope.ResourceClass {
+		respondError(c, 403, "agent_scope_mismatch", "node scope is bound to credential")
+		return credential, false
+	}
+	if team := c.GetHeader("X-Agent-Team-ID"); team != "" && team != scope.TeamID {
+		respondError(c, 403, "agent_scope_mismatch", "node team is bound to credential")
+		return credential, false
+	}
+	raw := c.GetHeader("X-Agent-Custom-Allow-Free")
+	if raw != "" && raw != "true" && raw != "false" {
+		respondError(c, 400, "agent_scope_invalid", "invalid custom Free flag")
+		return credential, false
+	}
+	if raw == "true" && !scope.CustomAllowFree {
+		respondError(c, 403, "agent_scope_mismatch", "custom Free audience is not enrolled")
+		return credential, false
+	}
+	if scope.ResourceClass == agentResourceCustom {
+		if len(credential.AllowedEmails) == 0 {
+			respondError(c, 403, "agent_scope_invalid", "custom node has no enrolled audience")
+			return credential, false
+		}
+		// Request headers cannot replace or expand the enrolled audience.
+		encoded, _ := json.Marshal(credential.AllowedEmails)
+		c.Request.Header.Set("X-Agent-Allowed-Emails", string(encoded))
+	}
+	if scope.ResourceClass == agentResourceTeam {
+		identity, ok := h.resolveScopedAgentBase(c, credential, requested)
+		identity.NodeID = credential.NodeID
+		return identity, ok
+	}
+	return credential, true
+}
+
 func (h *handler) resolveScopedAgentBase(c *gin.Context, credential agentserver.Identity, requested string) (agentserver.Identity, bool) {
 	if identity, ok, handled := h.resolveManagedTeam(c, credential, requested); handled {
 		return identity, ok
@@ -872,7 +920,7 @@ func (h *handler) resolveAgentIdentity(c *gin.Context, credential agentserver.Id
 	for _, identity := range inspector.Agents() {
 		if identity.ID == requested {
 			target, ok := agentNetworkScope(identity.Groups)
-			if !ok || target != "" {
+			if !ok || target != "" || identity.NodeID != "" {
 				respondError(c, 403, "agent_scope_mismatch", "agent identity is bound to its credential")
 				return credential, false
 			}

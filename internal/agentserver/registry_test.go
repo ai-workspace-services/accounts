@@ -102,3 +102,15 @@ func TestRegistryAuthenticateAndStatus(t *testing.T) {
 		t.Fatalf("expected updated timestamp to be after initial time")
 	}
 }
+
+func TestNodeCredentialValidation(t *testing.T) {
+	for _, credentials := range [][]Credential{
+		{{ID: "*", NodeID: "a", Token: "test"}},
+		{{ID: "a", NodeID: "n", Token: "test-a"}, {ID: "b", NodeID: "n", Token: "test-b"}},
+		{{ID: "a", Token: "test", AllowedEmails: []string{"user@example.invalid"}}},
+	} {
+		if _, err := NewRegistry(Config{Credentials: credentials}); err == nil {
+			t.Fatal("unsafe node credential accepted")
+		}
+	}
+}

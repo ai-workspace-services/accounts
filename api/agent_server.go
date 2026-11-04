@@ -71,6 +71,8 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 	c.Header("ETag", `"`+revision+`"`)
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, agentproto.ClientListResponse{
+		AgentID:          identity.ID,
+		NodeID:           identity.NodeID,
 		EnrollmentStatus: approvalStatus,
 		Scope:            &scope,
 		Clients:          clients,
@@ -373,6 +375,10 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 		return
 	}
 
+	if identity.NodeID != "" && strings.TrimSpace(report.Xray.NodeID) != identity.NodeID {
+		respondError(c, 403, "agent_node_mismatch", "node ID is bound to credential")
+		return
+	}
 	if report.Overlay != nil && (len(report.Overlay.Paths) > 256 || len(report.Overlay.Capabilities) > 8 || len(report.Overlay.DeviceID) > 128 || len(report.Overlay.NetworkID) > 128) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_overlay_status"})
 		return
@@ -381,6 +387,8 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 	report.Xray.CustomAllowFree = scope.CustomAllowFree
 	if agentproto.PublicResourceClass(scope.ResourceClass) {
 		report.Xray.AllowedEmails = publicUnionEmails(identity.Groups)
+	} else if identity.NodeID != "" {
+		report.Xray.AllowedEmails = append([]string(nil), identity.AllowedEmails...)
 	}
 	// Ensure report uses the resolved agent id.
 	report.AgentID = identity.ID
