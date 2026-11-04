@@ -490,6 +490,19 @@ type AdminPlanGroupChange struct {
 	RemainingAfter               int64
 }
 
+// File imports can absorb ongoing consumption within the reviewed period.
+// A decrease in measured usage or a replenished counter still requires review.
+func (c AdminPlanGroupChange) acceptsUsageAtApply(remaining int64, updatedAt *time.Time, usage int64) bool {
+	if c.SubscriptionRecord != nil {
+		used := max(usage, c.ExpectedProfileIncludedQuota-remaining)
+		// Require another review if new traffic changes the preview's pause outcome.
+		wouldNewlyPause := c.RemainingAfter > 0 && used >= c.IncludedQuotaBytes
+		return remaining <= c.ExpectedQuotaRemaining && usage >= c.ExpectedUsageBytes && !wouldNewlyPause
+	}
+	return remaining == c.ExpectedQuotaRemaining && usage == c.ExpectedUsageBytes &&
+		equalStoreTimes(updatedAt, c.ExpectedQuotaUpdatedAt)
+}
+
 // AdminPlanGroupBatch is the complete, audited admin operation. RequestID is
 // the idempotency key and PreviewToken binds the apply to the reviewed state.
 type AdminPlanGroupBatch struct {
@@ -1367,20 +1380,20 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 		if quota == nil {
 			quota = &AccountQuotaState{AccountUUID: user.ID, ThrottleState: "normal", SuspendState: "active", ProxyAccessState: "active"}
 		}
-		if change.SetEntitlement && (profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota || quota.RemainingIncludedQuota != change.ExpectedQuotaRemaining ||
+		if change.SetEntitlement && (profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota ||
 			!equalStoreTimes(profileUpdatedAt(s.accountBillingProfiles[user.ID]), change.ExpectedProfileUpdatedAt) ||
-			!equalStoreTimes(quotaUpdatedAt(s.accountQuotaStates[user.ID]), change.ExpectedQuotaUpdatedAt) ||
 			!equalStoreTimes(quota.PeriodStart, change.ExpectedPeriodStart) || !equalStoreTimes(quota.PeriodEnd, change.ExpectedPeriodEnd)) {
 			return nil, false, ErrAdminPlanGroupStale
 		}
-		used := profile.IncludedQuotaBytes - quota.RemainingIncludedQuota
+		remainingBefore := quota.RemainingIncludedQuota
+		used := profile.IncludedQuotaBytes - remainingBefore
 		if used < 0 {
 			used = 0
 		}
 		// Buckets are authoritative when they include over-cap traffic that the
 		// remaining-quota counter can no longer represent.
 		bucketUsage := adminPlanGroupBucketUsage(s.trafficMinuteBuckets, user.ID, quota)
-		if change.SetEntitlement && bucketUsage != change.ExpectedUsageBytes {
+		if change.SetEntitlement && !change.acceptsUsageAtApply(quota.RemainingIncludedQuota, quotaUpdatedAt(s.accountQuotaStates[user.ID]), bucketUsage) {
 			return nil, false, ErrAdminPlanGroupStale
 		}
 		if bucketUsage > used {
@@ -1410,11 +1423,15 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 				return nil, false, ErrAdminPlanGroupStale
 			}
 		}
-		prepared = append(prepared, preparedAdminPlanGroupChange{change: change, user: user, profile: profile, quota: quota, used: used})
+		prepared = append(prepared, preparedAdminPlanGroupChange{change: change, user: user, profile: profile, quota: quota, used: used, remainingBefore: remainingBefore})
 	}
 
 	now := time.Now().UTC()
-	for _, item := range prepared {
+	for i, item := range prepared {
+		if item.change.SetEntitlement {
+			changes[i].UsedBytesPreserved = item.used
+			changes[i].RemainingAfter = item.quota.RemainingIncludedQuota
+		}
 		recordBefore, recordExisted := s.subscriptionRecords[item.user.ID]
 		var previousRecord any
 		if recordExisted {
@@ -1443,7 +1460,7 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 			s.accountQuotaStates[item.user.ID] = item.quota
 		}
 		before := map[string]any{"subscription_record": previousRecord, "groups": item.change.ExpectedGroups, "valid_from": item.change.ExpectedValidFrom, "valid_until": item.change.ExpectedValidUntil,
-			"included_quota_bytes": item.change.ExpectedProfileIncludedQuota, "remaining_included_quota": item.change.ExpectedQuotaRemaining}
+			"included_quota_bytes": item.change.ExpectedProfileIncludedQuota, "remaining_included_quota": item.remainingBefore}
 		after := map[string]any{"groups": item.change.Groups, "valid_from": item.user.SubscriptionValidFrom, "valid_until": item.user.SubscriptionValidUntil,
 			"subscription_record": item.change.SubscriptionRecord, "plan_id": item.change.PlanID, "included_quota_bytes": item.change.IncludedQuotaBytes, "remaining_included_quota": item.quota.RemainingIncludedQuota,
 			"used_bytes_preserved": item.used, "configuration_sync_paused": item.change.SetEntitlement && item.change.IncludedQuotaBytes > 0 && item.quota.RemainingIncludedQuota == 0}
@@ -1462,11 +1479,12 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 }
 
 type preparedAdminPlanGroupChange struct {
-	change  AdminPlanGroupChange
-	user    *User
-	profile *AccountBillingProfile
-	quota   *AccountQuotaState
-	used    int64
+	change          AdminPlanGroupChange
+	user            *User
+	profile         *AccountBillingProfile
+	quota           *AccountQuotaState
+	used            int64
+	remainingBefore int64
 }
 
 func quotaPeriodStart(quota *AccountQuotaState, now time.Time) time.Time {
