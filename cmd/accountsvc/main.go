@@ -1187,7 +1187,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}
 
 	var emailSender api.EmailSender
-	emailVerificationEnabled := true
+	emailVerificationEnabled := cfg.Registration.EmailVerification
 	smtpHost := strings.TrimSpace(cfg.SMTP.Host)
 	if smtpHost == "" {
 		emailVerificationEnabled = false
