@@ -204,8 +204,20 @@ func TestAdminPlanGroupsNativeSchema(t *testing.T) {
 	if _, err = st.CreateAdminPlanGroupPreview(ctx, importedPreview); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = st.ApplyAdminPlanGroupBatch(ctx, AdminPlanGroupBatch{ActorUUID: id, Reason: importedPreview.Reason, RequestID: importedPreview.RequestID, PreviewTokenHash: importedPreview.TokenHash}); err != nil {
+	// Traffic arriving after preview must be counted, including over-cap traffic.
+	if err = st.UpsertTrafficMinuteBucket(ctx, &TrafficMinuteBucket{
+		AccountUUID: free.ID, NodeID: "import-test", BucketStart: start.Add(time.Minute), TotalBytes: 4 * gib,
+	}); err != nil {
 		t.Fatal(err)
+	}
+	applied, _, err := st.ApplyAdminPlanGroupBatch(ctx, AdminPlanGroupBatch{ActorUUID: id, Reason: importedPreview.Reason, RequestID: importedPreview.RequestID, PreviewTokenHash: importedPreview.TokenHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quotaAfter, err := st.GetAccountQuotaState(ctx, free.ID)
+	if err != nil || quotaAfter.RemainingIncludedQuota != 46*gib || len(applied) != 1 ||
+		applied[0].UsedBytesPreserved != 4*gib || applied[0].RemainingAfter != 46*gib {
+		t.Fatalf("apply did not preserve newly recorded traffic: quota=%+v applied=%+v err=%v", quotaAfter, applied, err)
 	}
 	reloaded, err := st.GetUserByID(ctx, free.ID)
 	if err != nil || reloaded.SubscriptionValidUntil == nil || !reloaded.SubscriptionValidUntil.Equal(until) {

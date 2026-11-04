@@ -911,6 +911,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 		validFrom, validUntil      *time.Time
 		profile                    AccountBillingProfile
 		quota                      AccountQuotaState
+		usageBytes                 int64
 		profileExists, quotaExists bool
 	}
 	states := make([]currentState, 0, len(changes))
@@ -998,8 +999,8 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 				state.quota.PeriodEnd = &value
 			}
 		}
-		if change.SetEntitlement && (state.profileExists != change.ProfileExisted || state.quotaExists != change.QuotaExisted || state.profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota || state.quota.RemainingIncludedQuota != change.ExpectedQuotaRemaining ||
-			!equalStoreTimes(nullableTimePointer(pUpdated), change.ExpectedProfileUpdatedAt) || !equalStoreTimes(nullableTimePointer(qUpdated), change.ExpectedQuotaUpdatedAt) || !equalStoreTimes(state.quota.PeriodStart, change.ExpectedPeriodStart) || !equalStoreTimes(state.quota.PeriodEnd, change.ExpectedPeriodEnd)) {
+		if change.SetEntitlement && (state.profileExists != change.ProfileExisted || state.quotaExists != change.QuotaExisted || state.profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota ||
+			!equalStoreTimes(nullableTimePointer(pUpdated), change.ExpectedProfileUpdatedAt) || !equalStoreTimes(state.quota.PeriodStart, change.ExpectedPeriodStart) || !equalStoreTimes(state.quota.PeriodEnd, change.ExpectedPeriodEnd)) {
 			return nil, false, ErrAdminPlanGroupStale
 		}
 		if change.SetEntitlement {
@@ -1008,14 +1009,15 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_bytes), 0) FROM public.traffic_minute_buckets WHERE account_uuid = $1 AND bucket_start >= $2 AND ($3::timestamptz IS NULL OR bucket_start < $3)`, change.UserID, start, state.quota.PeriodEnd).Scan(&usage); err != nil {
 				return nil, false, err
 			}
-			if usage != change.ExpectedUsageBytes {
+			if !change.acceptsUsageAtApply(state.quota.RemainingIncludedQuota, nullableTimePointer(qUpdated), usage) {
 				return nil, false, ErrAdminPlanGroupStale
 			}
+			state.usageBytes = usage
 		}
 		states = append(states, state)
 	}
 	now := time.Now().UTC()
-	for _, state := range states {
+	for i, state := range states {
 		change := state.change
 		groups, err := encodeStringSlice(change.Groups)
 		if err != nil {
@@ -1070,8 +1072,8 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			if used < 0 {
 				used = 0
 			}
-			if change.ExpectedUsageBytes > used {
-				used = change.ExpectedUsageBytes
+			if state.usageBytes > used {
+				used = state.usageBytes
 			}
 			remaining = change.IncludedQuotaBytes - used
 			if remaining < 0 {
@@ -1084,6 +1086,8 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 				return nil, false, err
 			}
 		}
+		changes[i].UsedBytesPreserved = used
+		changes[i].RemainingAfter = remaining
 		before, _ := json.Marshal(map[string]any{"subscription_record": previousSubscription, "groups": state.groups, "valid_from": state.validFrom, "valid_until": state.validUntil, "included_quota_bytes": state.profile.IncludedQuotaBytes, "remaining_included_quota": state.quota.RemainingIncludedQuota})
 		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "subscription_record": change.SubscriptionRecord, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "used_bytes_preserved": used, "remaining_included_quota": remaining, "configuration_sync_paused": change.IncludedQuotaBytes > 0 && remaining == 0})
 		details, _ := json.Marshal(map[string]any{"target_uuid": change.UserID, "reason": batch.Reason, "request_id": batch.RequestID, "preview_token_hash": batch.PreviewTokenHash, "before": json.RawMessage(before), "after": json.RawMessage(after)})
