@@ -231,7 +231,7 @@ func finishLifecycle(v *SubscriptionLifecycle, op *FinanceOperation, confirmed b
 		return ErrSubscriptionStateConflict
 	}
 	if confirmed {
-		if op.OperationType == "subscription_upgrade" || op.OperationType == "subscription_downgrade" || op.OperationType == "subscription_purchase" && lifecycleAction("purchase", op.Request) == "upgrade" {
+		if op.OperationType == "subscription_renewal" || op.OperationType == "subscription_upgrade" || op.OperationType == "subscription_downgrade" || op.OperationType == "subscription_purchase" && lifecycleAction("purchase", op.Request) == "upgrade" {
 			v.LastChangeAt = &now
 		}
 		if op.OperationType == "subscription_downgrade" || op.OperationType == "subscription_cancel" {

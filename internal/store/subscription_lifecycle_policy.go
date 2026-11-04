@@ -41,7 +41,7 @@ func CheckSubscriptionAction(s SubscriptionLifecycle, action string, now time.Ti
 		return ErrFinanceOperationInProgress
 	}
 	switch action {
-	case "subscribe", "upgrade", "downgrade":
+	case "subscribe", "upgrade", "downgrade", "renewal":
 		if s.RefundReviewPending && action != "subscribe" {
 			return ErrSubscriptionChangePending
 		}
@@ -52,7 +52,7 @@ func CheckSubscriptionAction(s SubscriptionLifecycle, action string, now time.Ti
 	default:
 		return ErrSubscriptionStateConflict
 	}
-	if action == "upgrade" || action == "downgrade" {
+	if action == "upgrade" || action == "downgrade" || action == "renewal" {
 		if until := s.CooldownUntil(); until != nil && now.Before(*until) {
 			return ErrSubscriptionCooldown
 		}

@@ -242,4 +242,42 @@ func subscriptionPurchaseContract(t *testing.T, st Store, db *sql.DB) {
 	if remaining != 44 || included != 50 {
 		t.Fatalf("allowances stacked or usage reset: remaining=%d included=%d", remaining, included)
 	}
+	// A paid renewal advances the period and grants its full new allowance,
+	// instead of carrying the previous month's consumption into the new one.
+	nextStart, nextEnd := end, end.AddDate(0, 1, 0)
+	if err := st.UpgradeSubscriptionQuota(ctx, id, 50, 80, nextStart, nextEnd); err != nil {
+		t.Fatal("paid renewal failed", err)
+	}
+	if db != nil {
+		if err := db.QueryRow(`SELECT remaining_included_quota FROM account_quota_states WHERE account_uuid=$1`, id).Scan(&remaining); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`UPDATE account_quota_states SET remaining_included_quota=73 WHERE account_uuid=$1`, id); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		q, _ := st.GetAccountQuotaState(ctx, id)
+		remaining = q.RemainingIncludedQuota
+		q.RemainingIncludedQuota = 73
+		if err := st.UpsertAccountQuotaState(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if remaining != 80 {
+		t.Fatalf("new period inherited old usage: %d", remaining)
+	}
+	if err := st.UpgradeSubscriptionQuota(ctx, id, 50, 80, nextStart, nextEnd); err != nil {
+		t.Fatal("renewal replay failed", err)
+	}
+	if db != nil {
+		if err := db.QueryRow(`SELECT remaining_included_quota FROM account_quota_states WHERE account_uuid=$1`, id).Scan(&remaining); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		q, _ := st.GetAccountQuotaState(ctx, id)
+		remaining = q.RemainingIncludedQuota
+	}
+	if remaining != 73 {
+		t.Fatalf("renewal replay erased new-period usage: %d", remaining)
+	}
 }

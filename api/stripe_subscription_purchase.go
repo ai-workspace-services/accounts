@@ -20,21 +20,22 @@ import (
 // A quote is user-bound and short-lived. Its proration timestamp is reused
 // both when checking the preview and updating Stripe's existing item.
 type subscriptionQuote struct {
-	UserID         string `json:"userId"`
-	PlanID         string `json:"planId"`
-	PriceID        string `json:"priceId"`
-	Action         string `json:"action"`
-	SubscriptionID string `json:"subscriptionId,omitempty"`
-	ItemID         string `json:"itemId,omitempty"`
-	FromPriceID    string `json:"fromPriceId,omitempty"`
-	ProrationDate  int64  `json:"prorationDate"`
-	ExpiresAt      int64  `json:"expiresAt"`
-	AmountDue      int64  `json:"amountDue"`
-	Currency       string `json:"currency"`
-	RenewalAmount  int64  `json:"renewalAmount"`
-	RenewalAt      int64  `json:"renewalAt"`
-	PeriodStart    int64  `json:"periodStart,omitempty"`
-	StateVersion   int64  `json:"stateVersion"`
+	UserID          string `json:"userId"`
+	PlanID          string `json:"planId"`
+	PriceID         string `json:"priceId"`
+	Action          string `json:"action"`
+	SubscriptionID  string `json:"subscriptionId,omitempty"`
+	ItemID          string `json:"itemId,omitempty"`
+	FromPriceID     string `json:"fromPriceId,omitempty"`
+	ProrationDate   int64  `json:"prorationDate"`
+	ExpiresAt       int64  `json:"expiresAt"`
+	AmountDue       int64  `json:"amountDue"`
+	Currency        string `json:"currency"`
+	RenewalAmount   int64  `json:"renewalAmount"`
+	RenewalAt       int64  `json:"renewalAt"`
+	RenewalInterval string `json:"renewalInterval,omitempty"`
+	PeriodStart     int64  `json:"periodStart,omitempty"`
+	StateVersion    int64  `json:"stateVersion"`
 }
 
 // Retain the exact submitted inputs for an explicitly requested idempotent

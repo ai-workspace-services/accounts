@@ -34,7 +34,28 @@ func (h *handler) cancelStripeSubscription(ctx context.Context, sub *store.Subsc
 		return errors.New("cancellation ownership mismatch")
 	}
 	if customerIDFromAny(remote.Schedule) != "" {
-		return errors.New("schedule ownership requires investigation before cancellation")
+		scheduleID := customerIDFromAny(remote.Schedule)
+		var schedule renewalSchedule
+		if err = h.stripe.doJSON(ctx, http.MethodGet, "/subscription_schedules/"+url.PathEscape(scheduleID), &schedule); err != nil {
+			return err
+		}
+		if schedule.Subscription != remote.ID || schedule.Metadata["portal_renewal_user"] != sub.UserID || schedule.Metadata["portal_renewal_key"] == "" {
+			return errors.New("schedule ownership requires investigation before cancellation")
+		}
+		var released renewalSchedule
+		if err = h.stripe.doForm(ctx, http.MethodPost, "/subscription_schedules/"+url.PathEscape(scheduleID)+"/release", url.Values{"preserve_cancel_date": {"true"}}, &released, key+":release"); err != nil {
+			return err
+		}
+		if released.Status != "released" || released.ReleasedSubscription != sub.ExternalID {
+			return errors.New("schedule release not confirmed")
+		}
+		remote, err = h.stripe.fetchSubscription(ctx, sub.ExternalID)
+		if err != nil {
+			return err
+		}
+		if remote.ID != sub.ExternalID || remote.Metadata["user_id"] != sub.UserID || customerIDFromAny(remote.Schedule) != "" {
+			return errors.New("subscription release ownership mismatch")
+		}
 	}
 	if !remote.CancelAtPeriodEnd {
 		if time.Since(op.CreatedAt) < 0 || time.Since(op.CreatedAt) > 20*time.Minute {
