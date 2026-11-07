@@ -18,7 +18,12 @@ const (
 	permissionAdminBillingLedger = "admin.billing.ledger.read"
 	permissionAdminUsersListRead = "admin.users.list.read"
 	permissionAdminAgentsStatus  = "admin.agents.status.read"
-	permissionAdminUsersPause    = "admin.users.pause.write"
+	// permissionAdminAgentsGrantsWrite gates creating, renewing, and revoking
+	// temporary Free grants on bound Custom nodes. Operators can view agent
+	// inventory and grant status by default, but write access requires this
+	// explicit permission.
+	permissionAdminAgentsGrantsWrite = "admin.agents.grants.write"
+	permissionAdminUsersPause        = "admin.users.pause.write"
 	permissionAdminUsersResume   = "admin.users.resume.write"
 	// Distinct from pause/resume above, which move AccountQuotaState's
 	// ProxyAccessState (VLESS). These two move users.active -- the flag
@@ -46,9 +51,10 @@ var defaultOperatorPermissions = map[string]bool{
 	permissionAdminSettingsWrite: false,
 	permissionAdminUsersMetrics:  true,
 	permissionAdminBillingLedger: true,
-	permissionAdminUsersListRead: true,
-	permissionAdminAgentsStatus:  true,
-	permissionAdminUsersPause:    true,
+	permissionAdminUsersListRead:     true,
+	permissionAdminAgentsStatus:      true,
+	permissionAdminAgentsGrantsWrite: false,
+	permissionAdminUsersPause:        true,
 	permissionAdminUsersResume:   true,
 	// Asymmetric on purpose. Restoring an account an operator is already
 	// fielding a support request about is low risk and reversible, so it sits
@@ -129,7 +135,7 @@ func (h *handler) requireAdminPermission(c *gin.Context, permission string) (*st
 	}
 
 	if store.IsOperatorRole(user.Role) {
-		if permission != "" && !h.operatorPermissionAllowed(c, permission) {
+		if permission != "" && !hasPermission(user.Permissions, permission) && !h.operatorPermissionAllowed(c, permission) {
 			respondError(c, http.StatusForbidden, "forbidden", "operator permission denied")
 			return nil, false
 		}
@@ -212,6 +218,11 @@ func registerAdminRoutes(group *gin.RouterGroup, h *handler) {
 	admin := group.Group("/admin")
 	admin.GET("/users/metrics", h.adminUsersMetrics)
 	admin.GET("/agents/status", h.adminAgentStatus)
+	admin.GET("/agents/inventory", h.adminAgentInventory)
+	admin.GET("/agents/grants", h.adminListAgentFreeGrants)
+	admin.POST("/agents/grants", h.adminUpsertAgentFreeGrant)
+	admin.PUT("/agents/grants", h.adminUpsertAgentFreeGrant)
+	admin.DELETE("/agents/grants", h.adminRevokeAgentFreeGrant)
 	admin.GET("/traffic/nodes", h.adminTrafficNodes)
 	admin.GET("/traffic/accounts/:uuid", h.adminTrafficAccount)
 	admin.GET("/collector/status", h.adminCollectorStatus)

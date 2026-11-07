@@ -741,7 +741,7 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 		if IsRootRole(role) {
 			return nil, ErrUserProtected
 		}
-		if !equalStoreStrings(currentGroups, change.ExpectedGroups) || !equalStoreTimes(currentFrom, change.ExpectedValidFrom) || !equalStoreTimes(currentUntil, change.ExpectedValidUntil) {
+		if !equalStoreStrings(WithoutAgentFreeGrantGroups(currentGroups), WithoutAgentFreeGrantGroups(change.ExpectedGroups)) || !equalStoreTimes(currentFrom, change.ExpectedValidFrom) || !equalStoreTimes(currentUntil, change.ExpectedValidUntil) {
 			return nil, ErrAdminPlanGroupStale
 		}
 		if change.SubscriptionRecord != nil {
@@ -966,7 +966,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			value := validUntil.Time.UTC()
 			state.validUntil = &value
 		}
-		if !equalStoreStrings(state.groups, change.ExpectedGroups) || !equalStoreTimes(state.validFrom, change.ExpectedValidFrom) || !equalStoreTimes(state.validUntil, change.ExpectedValidUntil) {
+		if !equalStoreStrings(WithoutAgentFreeGrantGroups(state.groups), WithoutAgentFreeGrantGroups(change.ExpectedGroups)) || !equalStoreTimes(state.validFrom, change.ExpectedValidFrom) || !equalStoreTimes(state.validUntil, change.ExpectedValidUntil) {
 			return nil, false, ErrAdminPlanGroupStale
 		}
 		var pUpdated sql.NullTime
@@ -1019,7 +1019,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 	now := time.Now().UTC()
 	for i, state := range states {
 		change := state.change
-		groups, err := encodeStringSlice(change.Groups)
+		groups, err := encodeStringSlice(PreserveAgentFreeGrantGroups(state.groups, change.Groups))
 		if err != nil {
 			return nil, false, err
 		}

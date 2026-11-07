@@ -1201,7 +1201,7 @@ func (s *memoryStore) UpdateUser(ctx context.Context, user *User) error {
 	updated.MFAConfirmedAt = user.MFAConfirmedAt
 	updated.Level = user.Level
 	updated.Role = user.Role
-	updated.Groups = cloneStringSlice(user.Groups)
+	updated.Groups = cloneStringSlice(PreserveAgentFreeGrantGroups(existing.Groups, user.Groups))
 	updated.Permissions = cloneStringSlice(user.Permissions)
 	updated.Active = user.Active
 	updated.ProxyUUID = strings.TrimSpace(user.ProxyUUID)
@@ -1264,7 +1264,7 @@ func (s *memoryStore) CreateAdminPlanGroupPreview(ctx context.Context, preview A
 		if IsRootRole(user.Role) {
 			return nil, ErrUserProtected
 		}
-		if !equalStoreStrings(user.Groups, change.ExpectedGroups) || !equalStoreTimes(user.SubscriptionValidFrom, change.ExpectedValidFrom) || !equalStoreTimes(user.SubscriptionValidUntil, change.ExpectedValidUntil) {
+		if !equalStoreStrings(WithoutAgentFreeGrantGroups(user.Groups), WithoutAgentFreeGrantGroups(change.ExpectedGroups)) || !equalStoreTimes(user.SubscriptionValidFrom, change.ExpectedValidFrom) || !equalStoreTimes(user.SubscriptionValidUntil, change.ExpectedValidUntil) {
 			return nil, ErrAdminPlanGroupStale
 		}
 		if change.SubscriptionRecord != nil {
@@ -1364,7 +1364,7 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 		if IsRootRole(user.Role) {
 			return nil, false, ErrUserProtected
 		}
-		if !equalStoreStrings(user.Groups, change.ExpectedGroups) ||
+		if !equalStoreStrings(WithoutAgentFreeGrantGroups(user.Groups), WithoutAgentFreeGrantGroups(change.ExpectedGroups)) ||
 			!equalStoreTimes(user.SubscriptionValidFrom, change.ExpectedValidFrom) ||
 			!equalStoreTimes(user.SubscriptionValidUntil, change.ExpectedValidUntil) {
 			return nil, false, ErrAdminPlanGroupStale
@@ -1437,7 +1437,7 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 		if recordExisted {
 			previousRecord = recordBefore
 		}
-		item.user.Groups = cloneStringSlice(normalizeStringSlice(item.change.Groups))
+		item.user.Groups = cloneStringSlice(PreserveAgentFreeGrantGroups(item.user.Groups, normalizeStringSlice(item.change.Groups)))
 		if item.change.SetValidFrom {
 			item.user.SubscriptionValidFrom = cloneTimePointer(item.change.ValidFrom)
 		}

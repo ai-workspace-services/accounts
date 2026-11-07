@@ -70,7 +70,20 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 	groups := map[string]*aggregate{}
 	for _, snapshot := range reader.Statuses() {
 		report := snapshot.Report
-		if resourceClass, _ := reportedResourceClass(snapshot); resourceClass == agentResourceCustom && !agentEmailAllowed(report.Xray.AllowedEmails, user) {
+		resourceClass, teamID := reportedResourceClass(snapshot)
+		scope, scopeValid := agentResourceScope(snapshot.Agent.Groups)
+		customEmails := report.Xray.AllowedEmails
+		if len(customEmails) == 0 && snapshot.Agent.NodeID != "" {
+			customEmails = snapshot.Agent.AllowedEmails
+		}
+		tempFreeAllowed := resourceClass == agentResourceCustom &&
+			scopeValid &&
+			access.Mode != "dedicated" &&
+			wantClass == agentResourceFree &&
+			snapshot.Agent.NodeID != "" &&
+			len(customEmails) > 0 &&
+			store.HasActiveAgentFreeGrant(user, snapshot.Agent.NodeID, now)
+		if resourceClass == agentResourceCustom && !agentEmailAllowed(customEmails, user) && !tempFreeAllowed {
 			continue
 		}
 		if snapshot.UpdatedAt.IsZero() || (report.Role != "" && report.Role != "agent-proxy") || !networkScopeAllows(access, snapshot.Agent.Groups) {
@@ -81,12 +94,10 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		if region == "" || entry == "" {
 			continue
 		}
-		resourceClass, teamID := reportedResourceClass(snapshot)
-		scope, scopeValid := agentResourceScope(snapshot.Agent.Groups)
 		publicEmailOverride := agentproto.PublicResourceClass(resourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(snapshot.Agent.Groups, user)
 		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass) || publicEmailOverride
 		if resourceClass == agentResourceCustom {
-			classAllowed = scopeValid && len(report.Xray.AllowedEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree))
+			classAllowed = scopeValid && len(customEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree) || tempFreeAllowed)
 		}
 		if resourceClass == agentResourceTeam {
 			classAllowed = wantClass == agentResourceTeam && wantTeam != "" && teamID == wantTeam
@@ -97,7 +108,7 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		key := region + "\x00" + entry + "\x00" + resourceClass + "\x00" + teamID
 		group := groups[key]
 		if group == nil {
-			group = &aggregate{pool: regionalPool{Private: resourceClass == agentResourceCustom && len(report.Xray.AllowedEmails) > 0, Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}, ids: map[string]bool{}, reasons: map[regionalClosureReason]bool{}}
+			group = &aggregate{pool: regionalPool{Private: resourceClass == agentResourceCustom && len(customEmails) > 0, Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}, ids: map[string]bool{}, reasons: map[regionalClosureReason]bool{}}
 			groups[key] = group
 		}
 		if group.pool.DisplayName == "" {

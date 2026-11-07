@@ -30,7 +30,8 @@ func AccountAccessVerified(user *User) bool {
 	return false
 }
 
-// Generic group edits cannot grant or remove the registration policy marker.
+// Generic group edits cannot grant or remove the registration policy marker
+// or temporary Free node grants.
 func PreserveRegistrationGroups(existing, requested []string) []string {
 	result := make([]string, 0, len(requested)+1)
 	for _, group := range requested {
@@ -44,7 +45,7 @@ func PreserveRegistrationGroups(existing, requested []string) []string {
 			break
 		}
 	}
-	return result
+	return PreserveAgentFreeGrantGroups(existing, result)
 }
 
 func activeStateAudit(id, actor string, before, active bool) *AuditLog {
