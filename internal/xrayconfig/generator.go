@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 )
 
 const (
@@ -21,9 +22,10 @@ const (
 // Client represents an entry under inbounds[0].settings.clients[] in the Xray
 // config.
 type Client struct {
-	ID    string
-	Email string
-	Flow  string
+	ID        string
+	Email     string
+	Flow      string
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
 }
 
 // Generator updates the Xray configuration file based on a template and a set of

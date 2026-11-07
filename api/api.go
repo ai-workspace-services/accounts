@@ -537,6 +537,10 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.GET("/admin/network-teams", h.adminListNetworkTeams)
 	authProtected.PUT("/admin/network-teams/:teamId", h.adminPutNetworkTeam)
 	authProtected.GET("/admin/agents/inventory", h.adminAgentInventory)
+	authProtected.GET("/admin/agents/grants", h.adminListAgentFreeGrants)
+	authProtected.POST("/admin/agents/grants", h.adminUpsertAgentFreeGrant)
+	authProtected.PUT("/admin/agents/grants", h.adminUpsertAgentFreeGrant)
+	authProtected.DELETE("/admin/agents/grants", h.adminRevokeAgentFreeGrant)
 	authProtected.GET("/admin/agents/team-enrollments", h.adminListTeamAgents)
 	authProtected.PUT("/admin/agents/team-enrollments", h.adminDecideTeamAgent)
 	authProtected.GET("/admin/users/:userId/network-access", h.adminGetNetworkMembership)
@@ -3250,7 +3254,7 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 func sanitizeUser(user *store.User, challenge *mfaChallenge) gin.H {
 	identifier := strings.TrimSpace(user.ID)
 	proxyUUID := strings.TrimSpace(user.ProxyUUID)
-	groups := user.Groups
+	groups := store.WithoutAgentFreeGrantGroups(user.Groups)
 	if len(groups) == 0 {
 		groups = []string{}
 	} else {
