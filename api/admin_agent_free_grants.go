@@ -9,7 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"account/internal/agentserver"
 	"account/internal/store"
 )
 
@@ -52,39 +51,15 @@ func (h *handler) requireGrantStore() (store.AgentFreeGrantStore, bool) {
 }
 
 func (h *handler) isEnrolledCustomNode(nodeID string) bool {
-	nodeID = strings.TrimSpace(nodeID)
-	if !store.ValidAgentFreeGrantNodeID(nodeID) {
+	if h.agentRegistry == nil {
 		return false
 	}
-	foundAny := false
-	if inspector, ok := h.agentRegistry.(interface{ Agents() []agentserver.Identity }); ok {
-		for _, a := range inspector.Agents() {
-			if a.NodeID != "" || a.ID != "*" {
-				foundAny = true
-			}
-			if (a.NodeID == nodeID || a.ID == nodeID) && a.NodeID != "" {
-				scope, valid := agentResourceScope(a.Groups)
-				if valid && scope.ResourceClass == agentResourceCustom {
-					return true
-				}
-			}
-		}
+	identity, ok := h.agentRegistry.EnrolledNode(nodeID)
+	if !ok {
+		return false
 	}
-	if h.agentStatusReader != nil {
-		for _, s := range h.agentStatusReader.Statuses() {
-			if s.Agent.NodeID != "" || s.Agent.ID != "*" {
-				foundAny = true
-			}
-			if (s.Agent.NodeID == nodeID || s.Agent.ID == nodeID) && s.Agent.NodeID != "" {
-				scope, valid := agentResourceScope(s.Agent.Groups)
-				if valid && scope.ResourceClass == agentResourceCustom {
-					return true
-				}
-			}
-		}
-	}
-	// If no agents are loaded (e.g. in test environment without registry), fall back to format check.
-	return !foundAny
+	scope, valid := agentResourceScope(identity.Groups)
+	return valid && scope.ResourceClass == agentResourceCustom
 }
 
 func (h *handler) computeGrantState(grant store.AgentFreeGrant, now time.Time) string {

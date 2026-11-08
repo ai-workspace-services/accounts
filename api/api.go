@@ -170,6 +170,7 @@ type agentRegistry interface {
 	ClearSandboxAgents()
 
 	Authenticate(token string) (*agentserver.Identity, bool)
+	EnrolledNode(nodeID string) (agentserver.Identity, bool)
 	RegisterAgent(agentID string, groups []string) agentserver.Identity
 	ReportStatus(agent agentserver.Identity, report agentproto.StatusReport)
 }

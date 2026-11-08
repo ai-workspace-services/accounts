@@ -66,12 +66,33 @@ func TestAdminAgentFreeGrants(t *testing.T) {
 		t.Fatalf("failed to seed operator user: %v", err)
 	}
 
-	nodeID := "jp-edge-custom-01"
+	const (
+		nodeID       = "jp-edge-custom-01"
+		credentialID = "custom-credential"
+		legacyNodeID = "legacy-custom-node"
+		plusNodeID   = "plus-node"
+	)
+	registry, err := agentserver.NewRegistry(agentserver.Config{Credentials: []agentserver.Credential{
+		{ID: credentialID, NodeID: nodeID, Token: "test-custom-token", Groups: []string{"resource:custom"}, AllowedEmails: []string{"enrolled@example.com"}},
+		{ID: "*", Token: "test-shared-token", Groups: []string{"resource:shared"}},
+		{ID: legacyNodeID, Token: "test-legacy-token", Groups: []string{"resource:custom"}},
+		{ID: plusNodeID, NodeID: plusNodeID, Token: "test-plus-token", Groups: []string{"resource:plus"}},
+	}})
+	if err != nil {
+		t.Fatalf("failed to configure agent registry: %v", err)
+	}
+	registry.ReportStatus(agentserver.Identity{
+		ID: legacyNodeID, NodeID: legacyNodeID, Groups: []string{"resource:custom"},
+	}, agentproto.StatusReport{})
+	registry.ReportStatus(agentserver.Identity{
+		ID: plusNodeID, NodeID: plusNodeID, Groups: []string{"resource:custom"},
+	}, agentproto.StatusReport{})
+
 	reader := stubAgentStatusReader{
 		statuses: []agentserver.StatusSnapshot{
 			{
 				Agent: agentserver.Identity{
-					ID:     nodeID,
+					ID:     credentialID,
 					NodeID: nodeID,
 					Groups: []string{"resource:custom"},
 				},
@@ -89,9 +110,9 @@ func TestAdminAgentFreeGrants(t *testing.T) {
 	}
 
 	router := gin.New()
-	RegisterRoutes(router, WithStore(st), WithAgentStatusReader(reader), WithEmailVerification(false))
+	RegisterRoutes(router, WithStore(st), WithAgentRegistry(registry), WithAgentStatusReader(reader), WithEmailVerification(false))
 
-	loginAs := func(email string) string {
+	loginAs := func(router *gin.Engine, email string) string {
 		payload, _ := json.Marshal(map[string]string{"identifier": email, "password": testPass})
 		req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
@@ -109,9 +130,46 @@ func TestAdminAgentFreeGrants(t *testing.T) {
 		return resp.Token
 	}
 
-	adminToken := loginAs(adminUser.Email)
-	regularToken := loginAs(regularUser.Email)
-	operatorToken := loginAs(operatorUser.Email)
+	adminToken := loginAs(router, adminUser.Email)
+	regularToken := loginAs(router, regularUser.Email)
+	operatorToken := loginAs(router, operatorUser.Email)
+
+	// The second router represents a server after the credential was removed.
+	// A previous status report may still be available for display.
+	routerWithoutEnrollment := gin.New()
+	RegisterRoutes(routerWithoutEnrollment, WithStore(st), WithAgentStatusReader(reader), WithEmailVerification(false))
+	adminTokenWithoutEnrollment := loginAs(routerWithoutEnrollment, adminUser.Email)
+
+	t.Run("grant creation requires canonical Custom credential binding", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, nodeID, token string
+			router              *gin.Engine
+		}{
+			{"stale status without registry", nodeID, adminTokenWithoutEnrollment, routerWithoutEnrollment},
+			{"credential ID alias", credentialID, adminToken, router},
+			{"wildcard credential", "*", adminToken, router},
+			{"legacy credential and spoofed heartbeat", legacyNodeID, adminToken, router},
+			{"Plus credential and spoofed Custom heartbeat", plusNodeID, adminToken, router},
+			{"unregistered node", "unknown-node", adminToken, router},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				body, _ := json.Marshal(map[string]any{
+					"nodeId":        tc.nodeID,
+					"accountId":     regularUser.ID,
+					"expiresInDays": 3,
+					"reason":        "verify grant binding",
+				})
+				req := httptest.NewRequest(http.MethodPost, "/api/auth/admin/agents/grants", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer "+tc.token)
+				rec := httptest.NewRecorder()
+				tc.router.ServeHTTP(rec, req)
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("expected 400 for unbound grant target, got %d: %s", rec.Code, rec.Body.String())
+				}
+			})
+		}
+	})
 
 	t.Run("admin can create temporary Free grant", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{
@@ -221,7 +279,24 @@ func TestAdminAgentFreeGrants(t *testing.T) {
 		}
 	})
 
-	t.Run("admin can revoke temporary Free grant", func(t *testing.T) {
+	t.Run("removed node cannot renew but can revoke existing grant", func(t *testing.T) {
+		body, _ := json.Marshal(map[string]any{
+			"nodeId":        nodeID,
+			"accountId":     regularUser.ID,
+			"expiresInDays": 3,
+			"reason":        "verify renewal after removal",
+		})
+		req := httptest.NewRequest(http.MethodPut, "/api/auth/admin/agents/grants", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+adminTokenWithoutEnrollment)
+		rec := httptest.NewRecorder()
+		routerWithoutEnrollment.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 on renewal after removal, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("admin can revoke temporary Free grant after node removal", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{
 			"nodeId":    nodeID,
 			"accountId": regularUser.ID,
@@ -229,9 +304,9 @@ func TestAdminAgentFreeGrants(t *testing.T) {
 		})
 		req := httptest.NewRequest(http.MethodDelete, "/api/auth/admin/agents/grants", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+adminToken)
+		req.Header.Set("Authorization", "Bearer "+adminTokenWithoutEnrollment)
 		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
+		routerWithoutEnrollment.ServeHTTP(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("expected 200 OK on revoke, got %d: %s", rec.Code, rec.Body.String())
