@@ -1504,7 +1504,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		}
 	}
 	options = append(options, api.WithOAuthProviders(oauthProviders))
-	options = append(options, api.WithAgentRegistry(agentRegistry))
+	options = append(options, api.WithAgentRegistry(agentRegistry), api.WithAgentManagedConfigPath(os.Getenv("AGENT_MANAGED_CONFIG_PATH")))
 	options = append(options, api.WithGormDB(gormDB))
 	if sqlDB, dbErr := gormDB.DB(); dbErr != nil {
 		return fmt.Errorf("open admin settings sql db: %w", dbErr)
