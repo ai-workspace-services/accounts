@@ -189,6 +189,23 @@ func (r *Registry) Authenticate(token string) (*Identity, bool) {
 	return &copy, true
 }
 
+// EnrolledNode returns the configured credential identity for a canonical
+// node ID. Heartbeats and dynamically registered agents cannot enroll a node.
+func (r *Registry) EnrolledNode(nodeID string) (Identity, bool) {
+	if nodeID == "" {
+		return Identity{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	for _, identity := range r.credentials {
+		if identity.NodeID == nodeID {
+			return identity, true
+		}
+	}
+	return Identity{}, false
+}
+
 // ReportStatus records the status report for the provided agent identity.
 func (r *Registry) ReportStatus(agent Identity, report agentproto.StatusReport) {
 	r.mu.Lock()
