@@ -519,6 +519,7 @@ func (s *postgresStore) UpdateUser(ctx context.Context, user *User) error {
 
 	args := []any{normalizedName, normalizedEmail, user.PasswordHash}
 	idx := 4
+	groupsArg := -1
 
 	if caps.hasMFATOTPSecret {
 		builder.WriteString(fmt.Sprintf(", mfa_totp_secret = $%d", idx))
@@ -569,12 +570,9 @@ func (s *postgresStore) UpdateUser(ctx context.Context, user *User) error {
 	}
 
 	if caps.hasGroups {
-		encoded, err := encodeStringSlice(user.Groups)
-		if err != nil {
-			return err
-		}
+		groupsArg = len(args)
 		builder.WriteString(fmt.Sprintf(", groups = $%d", idx))
-		args = append(args, encoded)
+		args = append(args, nil)
 		idx++
 	}
 
@@ -642,9 +640,34 @@ func (s *postgresStore) UpdateUser(ctx context.Context, user *User) error {
 
 	query := builder.String()
 
+	queryRow := s.db.QueryRowContext
+	var tx *sql.Tx
+	if groupsArg >= 0 {
+		// Grant mutations lock this same row. Read their latest state while
+		// holding the lock so a stale user update cannot undo a grant change.
+		tx, err = s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		var currentGroups []byte
+		err = tx.QueryRowContext(ctx, "SELECT groups FROM users WHERE uuid = $1 FOR UPDATE", user.ID).Scan(&currentGroups)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrUserNotFound
+		}
+		if err != nil {
+			return err
+		}
+		args[groupsArg], err = encodeStringSlice(PreserveAgentFreeGrantGroups(decodeStringSlice(currentGroups), user.Groups))
+		if err != nil {
+			return err
+		}
+		queryRow = tx.QueryRowContext
+	}
+
 	var createdAt time.Time
 	var updatedAt time.Time
-	err = s.db.QueryRowContext(ctx, query, args...).Scan(&createdAt, &updatedAt)
+	err = queryRow(ctx, query, args...).Scan(&createdAt, &updatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUserNotFound
@@ -663,6 +686,11 @@ func (s *postgresStore) UpdateUser(ctx context.Context, user *User) error {
 		return err
 	}
 
+	if tx != nil {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
 	user.Name = normalizedName
 	user.Email = normalizedEmail
 	user.CreatedAt = createdAt.UTC()
