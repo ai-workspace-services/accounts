@@ -131,6 +131,7 @@ type handler struct {
 	xworkmateVaultService     xworkmateVaultService
 	xrayConfigRenderer        func(*store.User) (string, string, []string, error)
 	agentRegistry             agentRegistry
+	agentManagedConfigPath    string
 	overlayService            *overlay.Service
 	db                        *gorm.DB
 	dbHealth                  func(context.Context) error
@@ -768,6 +769,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	agentServerGroup := r.Group("/api/agent-server/v1")
 	agentServerGroup.GET("/nodes", h.listAgentNodes)
 	agentServerGroup.GET("/regional-pools", h.listRegionalPools)
+	agentServerGroup.GET("/managed-config", h.getAgentManagedConfig)
 	agentServerGroup.GET("/users", h.listAgentUsers)
 	agentServerGroup.GET("/users/events", h.watchAgentUsers)
 	agentServerGroup.POST("/status", h.reportAgentStatus)
