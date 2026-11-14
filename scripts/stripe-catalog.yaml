@@ -11,7 +11,7 @@ products:
     name: "Plus"
     description: "Plus 订阅用户：30元/月 · 30GB · 共享资源池 · 3天欠款宽限期"
     prices:
-      - key: plus-monthly-2026
+      - key: plus-monthly-2026       # gitleaks:allow
         plan_id: PLUS-MONTHLY-2026
         unit_amount: 3000            # ¥30.00 / 月
         currency: cny
@@ -21,7 +21,7 @@ products:
     name: "Pro"
     description: "Pro 订阅用户：50元/月 · 50GB/月 · PRO专属资源池 · 3天欠款宽限期"
     prices:
-      - key: pro-monthly-2026
+      - key: pro-monthly-2026        # gitleaks:allow
         plan_id: PRO-MONTHLY-2026
         unit_amount: 5000            # ¥50.00 / 月
         currency: cny
@@ -31,7 +31,7 @@ products:
     name: "定制节点"
     description: "定制节点订阅用户：80元/月 · 独享IP · 独享节点 · 每个月免费更换一次，再次更换10元/次"
     prices:
-      - key: custom-node-monthly-2026
+      - key: custom-node-monthly-2026 # gitleaks:allow
         plan_id: CUSTOM-NODE-MONTHLY-2026
         unit_amount: 8000            # ¥80.00 / 月
         currency: cny
@@ -41,7 +41,7 @@ products:
     name: "AI 工具咨询，电脑环境配置"
     description: "面向非订阅用户的付费服务：100元/小时/次（支持：MacOS Windows Linux IOS Android，不支持：国产华为纯血鸿蒙系统）"
     prices:
-      - key: custom-ai-consult-2026
+      - key: custom-ai-consult-2026  # gitleaks:allow
         plan_id: CUSTOM-AI-CONSULT-2026
         unit_amount: 10000           # ¥100.00 / 小时/次（一次性购买）
         currency: cny
