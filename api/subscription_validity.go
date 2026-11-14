@@ -160,7 +160,7 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 	if quotaErr != nil && !errors.Is(quotaErr, store.ErrUserNotFound) {
 		return quotaErr
 	}
-	paymentGraceExpired := quota != nil && quota.Arrears && quota.ArrearsSince != nil && !now.Before(quota.ArrearsSince.Add(subscriptionGracePeriod))
+	paymentGraceExpired := quota != nil && quota.Arrears && quota.ArrearsSince != nil && !now.Before(quota.ArrearsSince.Add(subscriptionGracePeriod()))
 	if paymentGraceExpired {
 		shouldDowngrade = true
 	}

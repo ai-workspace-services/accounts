@@ -108,6 +108,51 @@ func (h *handler) currentPurchaseSubscription(ctx context.Context, userID string
 	return active, nil
 }
 
+func canUpgradeSubscriptionPlan(oldPlan, newPlan *store.BillingPlan) bool {
+	if oldPlan == nil || newPlan == nil {
+		return false
+	}
+	if !strings.EqualFold(oldPlan.Kind, "subscription") || !strings.EqualFold(newPlan.Kind, "subscription") {
+		return false
+	}
+	if !strings.EqualFold(oldPlan.PriceCurrency, newPlan.PriceCurrency) {
+		return false
+	}
+	if newPlan.PriceAmount <= oldPlan.PriceAmount {
+		return false
+	}
+	oldRank := planTierRank(oldPlan)
+	newRank := planTierRank(newPlan)
+	if newRank > oldRank {
+		return strings.EqualFold(oldPlan.PriceUnit, newPlan.PriceUnit) || (strings.EqualFold(oldPlan.PriceUnit, "month") && strings.EqualFold(newPlan.PriceUnit, "year"))
+	}
+	if newRank == oldRank && strings.EqualFold(oldPlan.PriceUnit, "month") && strings.EqualFold(newPlan.PriceUnit, "year") {
+		return newPlan.IncludedQuotaBytes >= oldPlan.IncludedQuotaBytes
+	}
+	return false
+}
+
+func planSupportsProductSlug(plan *store.BillingPlan, slug string) bool {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return false
+	}
+	if plan != nil && plan.Features != nil {
+		if raw, ok := plan.Features["product_slug"].(string); ok && strings.TrimSpace(raw) != "" {
+			return strings.EqualFold(strings.TrimSpace(raw), slug)
+		}
+		if rawList, ok := plan.Features["product_slugs"].([]any); ok && len(rawList) > 0 {
+			for _, item := range rawList {
+				if s, ok := item.(string); ok && strings.EqualFold(strings.TrimSpace(s), slug) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return strings.EqualFold(slug, "xconnect")
+}
+
 func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, plan *store.BillingPlan, at int64) (subscriptionQuote, error) {
 	q := subscriptionQuote{UserID: userID, PlanID: plan.PlanID, PriceID: plan.StripePriceID, Action: "subscribe", ProrationDate: at, ExpiresAt: at + 600}
 	lifecycle, err := h.store.GetSubscriptionLifecycle(ctx, userID)
@@ -115,7 +160,7 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 		return q, err
 	}
 	q.StateVersion = lifecycle.Version
-	if !plan.Active || plan.Kind != "subscription" || plan.PriceAmount <= 0 || plan.StripePriceID == "" {
+	if !plan.Active || plan.Kind != "subscription" || plan.PriceAmount <= 0 || plan.StripePriceID == "" || normalizePlanFamily(plan) == "" {
 		return q, errors.New("plan unavailable")
 	}
 	current, err := h.currentPurchaseSubscription(ctx, userID)
@@ -124,19 +169,17 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 	}
 	form := url.Values{"subscription_details[items][0][price]": {plan.StripePriceID}, "subscription_details[items][0][quantity]": {"1"}}
 	if current != nil {
-		// Phase 1 only: an existing Plus monthly item becomes Pro monthly. Never
-		// silently create a second subscription for downgrades or annual switches.
 		if current.PlanID == plan.PlanID {
 			return q, errors.New("already subscribed to this plan")
-		}
-		if current.PlanID != "PLUS" || plan.PlanID != "PRO-MONTHLY-V2" {
-			return q, errors.New("this plan change is not supported yet")
 		}
 		old, err := h.store.GetBillingPlan(ctx, current.PlanID)
 		if err != nil {
 			return q, err
 		}
-		if old.PriceUnit != "month" || plan.PriceUnit != "month" || !strings.EqualFold(old.PriceCurrency, plan.PriceCurrency) || plan.PriceAmount <= old.PriceAmount || plan.IncludedQuotaBytes <= old.IncludedQuotaBytes {
+		if !canUpgradeSubscriptionPlan(old, plan) {
+			return q, errors.New("this plan change is not supported yet")
+		}
+		if !strings.EqualFold(old.PriceUnit, "month") || !strings.EqualFold(plan.PriceUnit, "month") {
 			return q, errors.New("unsupported upgrade currency or period")
 		}
 		sub, err := h.stripe.fetchSubscription(ctx, current.ExternalID)
@@ -225,7 +268,7 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 		return
 	}
 	var req stripeCheckoutRequest
-	if c.ShouldBindJSON(&req) != nil || req.Mode != "subscription" || req.ProductSlug != "xconnect" || !h.validateCheckoutPlan(c.Request.Context(), req) {
+	if c.ShouldBindJSON(&req) != nil || req.Mode != "subscription" || !h.validateCheckoutPlan(c.Request.Context(), req) {
 		respondError(c, 400, "invalid_billing_plan", "Invalid subscription plan")
 		return
 	}
@@ -238,7 +281,7 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 		return
 	}
 	plan, err := h.store.GetBillingPlan(c.Request.Context(), req.PlanID)
-	if err != nil {
+	if err != nil || !planSupportsProductSlug(plan, req.ProductSlug) {
 		respondError(c, 400, "invalid_billing_plan", "Plan unavailable")
 		return
 	}
@@ -262,7 +305,7 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, req stripeCheckoutRequest) {
 	ctx := c.Request.Context()
 	q, err := h.stripe.readSubscriptionQuote(req.PreviewToken, user.ID)
-	if err != nil || q.PlanID != req.PlanID || q.PriceID != req.StripePriceID || req.ProductSlug != "xconnect" {
+	if err != nil || q.PlanID != req.PlanID || q.PriceID != req.StripePriceID {
 		respondError(c, 409, "preview_required", "Preview and confirm the subscription before payment")
 		return
 	}
@@ -271,7 +314,7 @@ func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, 
 		return
 	}
 	plan, err := h.store.GetBillingPlan(ctx, req.PlanID)
-	if err != nil {
+	if err != nil || !planSupportsProductSlug(plan, req.ProductSlug) {
 		respondError(c, 409, "plan_changed", "Refresh the plan preview")
 		return
 	}
@@ -289,7 +332,7 @@ func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, 
 	// Recheck local subscription state after obtaining the account reservation.
 	// A webhook might have completed between preview and reservation.
 	current, err := h.currentPurchaseSubscription(ctx, user.ID)
-	if err != nil || q.Action == "subscribe" && current != nil || q.Action == "upgrade" && (current == nil || current.ExternalID != q.SubscriptionID || current.PlanID != "PLUS") {
+	if err != nil || q.Action == "subscribe" && current != nil || q.Action == "upgrade" && (current == nil || current.ExternalID != q.SubscriptionID || current.PlanID == q.PlanID) {
 		_ = h.store.UpdateSubscriptionPurchase(ctx, op.ID, "", json.RawMessage(`{"outcome":"not_submitted"}`), true)
 		respondError(c, 409, "subscription_changed", "Refresh the subscription state")
 		return
@@ -327,7 +370,7 @@ func (h *handler) stripeSubscriptionRetry(c *gin.Context) {
 		return
 	}
 	current, err := h.currentPurchaseSubscription(c.Request.Context(), user.ID)
-	if err != nil || stored.Action == "subscribe" && current != nil || stored.Action == "upgrade" && (current == nil || current.ExternalID != stored.SubscriptionID || current.PlanID != "PLUS") {
+	if err != nil || stored.Action == "subscribe" && current != nil || stored.Action == "upgrade" && (current == nil || current.ExternalID != stored.SubscriptionID || current.PlanID == stored.PlanID) {
 		respondError(c, 409, "purchase_retry_unavailable", "Subscription state changed; reconcile the original payment")
 		return
 	}

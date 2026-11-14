@@ -164,7 +164,7 @@ func TestPaymentFailureGraceAndQuotaPeriodResetAreIdempotent(t *testing.T) {
 	if err := st.UpdateUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
-	since := time.Now().UTC().Add(-subscriptionGracePeriod + time.Minute)
+	since := time.Now().UTC().Add(-subscriptionGracePeriod() + time.Minute)
 	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: user.ID, RemainingIncludedQuota: 100, Arrears: true, ArrearsSince: &since}); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestPaymentFailureGraceAndQuotaPeriodResetAreIdempotent(t *testing.T) {
 	}
 	profile, _ := st.GetAccountBillingProfile(ctx, user.ID)
 	if profile != nil && profile.PricingRuleVersion == "plan:FREE" {
-		t.Fatalf("payment failure downgraded before the explicit 14-day grace elapsed: %+v", profile)
+		t.Fatalf("payment failure downgraded before the explicit 3-day grace elapsed: %+v", profile)
 	}
 	if err := h.reconcileSubscriptionAccessAt(ctx, user, time.Now().UTC().Add(2*time.Minute)); err != nil {
 		t.Fatal(err)

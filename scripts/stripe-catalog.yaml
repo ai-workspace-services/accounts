@@ -2,68 +2,49 @@
 #
 # 这份文件描述"应该有哪些 Product / Price / Webhook"，不含任何密钥。
 # 由 scripts/stripe-sync-catalog.sh 读取，对 Stripe API 做幂等同步:
-# 已存在的对象跳过或更新非价格字段，缺失的对象创建。换 Stripe 账号
-# (例如切到 Stripe US)只需要换 STRIPE_SECRET_KEY 重跑这个脚本，
-# 不需要在 Dashboard 里重新点一遍。
-#
-# 与 docs/roadmap/feature-subscription-billing-operations/01-plan-catalog.md
-# 的四档设计一一对应；改价格/加档位改这里，不要去 Dashboard 手改。
+# 仅保留 free / plus / pro / custom 四个系列套餐（无 trial、无 payg）。
+# Dev 模式使用 STRIPE_SECRET_KEY=sk_test_... (Sandbox)；
+# PROD 模式使用 STRIPE_SECRET_KEY=sk_live_... (Live)。
 
 products:
-  - key: pro                        # 稳定标识，跨账号不变；用作 Stripe Product 的自定义 id
-    name: "Pro"
-    description: "订阅套餐：月付 50GB / 年付不限流量"
-    prices:
-      - key: pro-monthly-v2
-        plan_id: PRO-MONTHLY-V2      # versioned ID preserves existing subscription rights
-        unit_amount: 5000            # 最小货币单位(分)；¥50.00
-        currency: cny
-        recurring_interval: month
-      - key: pro-yearly-v2
-        plan_id: PRO-YEARLY-V2
-        unit_amount: 50000           # ¥500.00
-        currency: cny
-        recurring_interval: year
-
   - key: plus
     name: "Plus"
-    description: "Plus 订阅：每月 20GB"
+    description: "Plus 订阅用户：30元/月 · 30GB · 共享资源池 · 3天欠款宽限期"
     prices:
-      - key: plus-monthly
-        plan_id: PLUS
-        unit_amount: 2000
+      - key: plus-monthly-2026       # gitleaks:allow
+        plan_id: PLUS-MONTHLY-2026
+        unit_amount: 3000            # ¥30.00 / 月
         currency: cny
         recurring_interval: month
 
-  - key: payg-topup                  # PAYG 预充值，一次性支付，非订阅
-    name: "余额充值"
-    description: "Pay-As-You-Go 预充值，按面额一次性支付，充值后计入账户余额"
+  - key: pro
+    name: "Pro"
+    description: "Pro 订阅用户：50元/月 · 50GB/月 · PRO专属资源池 · 3天欠款宽限期"
     prices:
-      # 固定快捷档位；自定义金额由 Accounts 服务端校验后以 Stripe price_data 创建。
-      - key: payg-topup-50
-        plan_id: PAYG-TOPUP-50
-        unit_amount: 5000            # ¥50.00
+      - key: pro-monthly-2026        # gitleaks:allow
+        plan_id: PRO-MONTHLY-2026
+        unit_amount: 5000            # ¥50.00 / 月
         currency: cny
-      - key: payg-topup-100
-        plan_id: PAYG-TOPUP-100
-        unit_amount: 10000           # ¥100.00
+        recurring_interval: month
+
+  - key: custom-node
+    name: "定制节点"
+    description: "定制节点订阅用户：80元/月 · 独享IP · 独享节点 · 每个月免费更换一次，再次更换10元/次"
+    prices:
+      - key: custom-node-monthly-2026 # gitleaks:allow
+        plan_id: CUSTOM-NODE-MONTHLY-2026
+        unit_amount: 8000            # ¥80.00 / 月
         currency: cny
-      - key: payg-topup-200
-        plan_id: PAYG-TOPUP-200
-        unit_amount: 20000           # ¥200.00
+        recurring_interval: month
+
+  - key: custom-ai-consult
+    name: "AI 工具咨询，电脑环境配置"
+    description: "面向非订阅用户的付费服务：100元/小时/次（支持：MacOS Windows Linux IOS Android，不支持：国产华为纯血鸿蒙系统）"
+    prices:
+      - key: custom-ai-consult-2026  # gitleaks:allow
+        plan_id: CUSTOM-AI-CONSULT-2026
+        unit_amount: 10000           # ¥100.00 / 小时/次（一次性购买）
         currency: cny
-      - key: payg-topup-usd-20
-        plan_id: PAYG-TOPUP-USD-20
-        unit_amount: 2000             # $20.00
-        currency: usd
-      - key: payg-topup-usd-50
-        plan_id: PAYG-TOPUP-USD-50
-        unit_amount: 5000             # $50.00
-        currency: usd
-      - key: payg-topup-usd-100
-        plan_id: PAYG-TOPUP-USD-100
-        unit_amount: 10000            # $100.00
-        currency: usd
 
 # Webhook URL/secret 由 Vault 和环境声明提供；脚本只验证已有端点，不输出 secret。
 webhook:
