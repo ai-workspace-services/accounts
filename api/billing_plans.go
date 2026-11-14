@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -56,6 +57,97 @@ type billingPlanUpsertRequest struct {
 	Reason             string             `json:"reason,omitempty"`
 }
 
+var allowedPlanFamilies = map[string]int{
+	"free":   0,
+	"plus":   10,
+	"pro":    20,
+	"custom": 30,
+}
+
+func normalizePlanFamily(plan *store.BillingPlan) string {
+	if plan == nil {
+		return ""
+	}
+	if plan.Features != nil {
+		if raw, ok := plan.Features["family"].(string); ok {
+			f := strings.ToLower(strings.TrimSpace(raw))
+			if _, valid := allowedPlanFamilies[f]; valid {
+				return f
+			}
+		}
+	}
+	pkg := strings.ToLower(strings.TrimSpace(plan.PackageName))
+	if _, valid := allowedPlanFamilies[pkg]; valid {
+		return pkg
+	}
+	upperID := strings.ToUpper(strings.TrimSpace(plan.PlanID))
+	switch {
+	case upperID == "FREE" || strings.HasPrefix(upperID, "FREE-"):
+		return "free"
+	case upperID == "PLUS" || strings.HasPrefix(upperID, "PLUS-"):
+		return "plus"
+	case upperID == "PRO" || strings.HasPrefix(upperID, "PRO-"):
+		return "pro"
+	case upperID == "CUSTOM" || strings.HasPrefix(upperID, "CUSTOM-"):
+		return "custom"
+	default:
+		return ""
+	}
+}
+
+func planTierRank(plan *store.BillingPlan) int {
+	if plan != nil && plan.Features != nil {
+		if v, ok := plan.Features["tier_rank"].(float64); ok {
+			return int(v)
+		}
+		if v, ok := plan.Features["tier_rank"].(int); ok {
+			return v
+		}
+	}
+	if rank, ok := allowedPlanFamilies[normalizePlanFamily(plan)]; ok {
+		return rank
+	}
+	return -1
+}
+
+func planGraceDays() int {
+	days := int(subscriptionGracePeriod() / (24 * time.Hour))
+	if days <= 0 {
+		return 3
+	}
+	return days
+}
+
+func isInternalOnlyPlan(plan *store.BillingPlan) bool {
+	if plan == nil || plan.Features == nil {
+		return false
+	}
+	v, ok := plan.Features["internal_only"].(bool)
+	return ok && v
+}
+
+func enrichBillingPlanFeatures(plan *store.BillingPlan) map[string]any {
+	out := make(map[string]any, len(plan.Features)+3)
+	for k, v := range plan.Features {
+		out[k] = v
+	}
+	if fam := normalizePlanFamily(plan); fam != "" {
+		out["family"] = fam
+		if _, exists := out["tier_rank"]; !exists {
+			out["tier_rank"] = allowedPlanFamilies[fam]
+		}
+	}
+	dunning := map[string]any{}
+	if raw, ok := out["dunning"].(map[string]any); ok {
+		for k, v := range raw {
+			dunning[k] = v
+		}
+	}
+	dunning["grace_days"] = planGraceDays()
+	out["dunning"] = dunning
+	return out
+}
+
 func validatePublishedPrice(plan *store.BillingPlan) error {
 	if plan.PriceAmount < 0 {
 		return errors.New("price amount must be non-negative")
@@ -63,6 +155,14 @@ func validatePublishedPrice(plan *store.BillingPlan) error {
 	currency := strings.ToUpper(strings.TrimSpace(plan.PriceCurrency))
 	unit := strings.ToLower(strings.TrimSpace(plan.PriceUnit))
 	if plan.PriceAmount == 0 && currency == "" && unit == "" {
+		return nil
+	}
+	if plan.PriceAmount == 0 && currency != "" && unit != "" {
+		if len(currency) != 3 {
+			return errors.New("price currency must be a three-letter ISO code")
+		}
+		plan.PriceCurrency = currency
+		plan.PriceUnit = unit
 		return nil
 	}
 	if plan.PriceAmount <= 0 || currency == "" || unit == "" {
@@ -77,17 +177,12 @@ func validatePublishedPrice(plan *store.BillingPlan) error {
 		}
 	}
 	switch unit {
-	case "month", "year", "once", "gb":
+	case "month", "year", "hour", "once":
 	default:
-		return errors.New("price unit must be month, year, once or gb")
+		return errors.New("price unit must be month, year, hour or once")
 	}
 	plan.PriceCurrency = currency
 	plan.PriceUnit = unit
-	if strings.EqualFold(strings.TrimSpace(plan.Kind), "paygo_topup") {
-		if !isFixedPaygoTopUp(plan.PlanID, plan.PriceAmount, plan.PriceCurrency, plan.PriceUnit) {
-			return errors.New("pay-as-you-go top-ups must use an approved fixed denomination")
-		}
-	}
 	return nil
 }
 
@@ -104,8 +199,8 @@ func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
 		PriceCurrency:      plan.PriceCurrency,
 		PriceUnit:          plan.PriceUnit,
 		PriceMultipliers:   plan.PriceMultipliers,
-		Features:           plan.Features,
-		TrialDays:          plan.TrialDays,
+		Features:           enrichBillingPlanFeatures(plan),
+		TrialDays:          0,
 		Active:             plan.Active,
 		SortOrder:          plan.SortOrder,
 	}
@@ -120,6 +215,13 @@ func (h *handler) listPublicBillingPlans(c *gin.Context) {
 	}
 	payload := make([]billingPlanPayload, 0, len(plans))
 	for i := range plans {
+		kind := strings.ToLower(strings.TrimSpace(plans[i].Kind))
+		if !plans[i].Active || kind == "trial" || kind == "paygo_topup" || isInternalOnlyPlan(&plans[i]) {
+			continue
+		}
+		if normalizePlanFamily(&plans[i]) == "" {
+			continue
+		}
 		payload = append(payload, billingPlanToPayload(&plans[i]))
 	}
 	c.JSON(http.StatusOK, gin.H{"plans": payload})
@@ -162,14 +264,17 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		return
 	}
 	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	if kind == "" {
+		kind = "subscription"
+	}
 	switch kind {
-	case "trial", "subscription", "paygo_topup":
+	case "subscription", "service":
 	default:
-		respondError(c, http.StatusBadRequest, "invalid_plan_kind", "kind must be trial, subscription or paygo_topup")
+		respondError(c, http.StatusBadRequest, "invalid_plan_kind", "kind must be subscription or service")
 		return
 	}
-	if req.IncludedQuotaBytes < 0 || req.TrialDays < 0 {
-		respondError(c, http.StatusBadRequest, "invalid_request", "quota and trial days must be non-negative")
+	if req.IncludedQuotaBytes < 0 {
+		respondError(c, http.StatusBadRequest, "invalid_request", "quota must be non-negative")
 		return
 	}
 	if priceID := strings.TrimSpace(req.StripePriceID); priceID != "" && !strings.HasPrefix(priceID, "price_") {
@@ -183,10 +288,10 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		DisplayName:        strings.TrimSpace(req.DisplayName),
 		Kind:               kind,
 		IncludedQuotaBytes: req.IncludedQuotaBytes,
-		PackageName:        strings.TrimSpace(req.PackageName),
+		PackageName:        strings.ToLower(strings.TrimSpace(req.PackageName)),
 		PriceMultipliers:   req.PriceMultipliers,
 		Features:           req.Features,
-		TrialDays:          req.TrialDays,
+		TrialDays:          0,
 		Active:             req.Active,
 		SortOrder:          req.SortOrder,
 	}
@@ -210,9 +315,13 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 	if req.PriceUnit != nil {
 		plan.PriceUnit = *req.PriceUnit
 	}
-	if plan.PackageName == "" {
-		plan.PackageName = "default"
+	if fam := normalizePlanFamily(plan); fam != "" {
+		plan.PackageName = fam
+	} else {
+		respondError(c, http.StatusBadRequest, "invalid_plan_family", "packageName or features.family must be free, plus, pro or custom")
+		return
 	}
+	plan.Features = enrichBillingPlanFeatures(plan)
 	if err := validatePublishedPrice(plan); err != nil {
 		respondError(c, http.StatusBadRequest, "invalid_price", err.Error())
 		return

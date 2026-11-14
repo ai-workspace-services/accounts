@@ -61,7 +61,7 @@ func ReconcileAnnualPlanQuotas(ctx context.Context, st store.Store, now time.Tim
 				// Earned paid service (including referral days) remains usable
 				// after dunning grace. A failed renewal snapshot cannot extend it.
 				paidServiceActive := !periodEnd.IsZero() && now.UTC().Before(periodEnd)
-				graceActive := quota != nil && quota.Arrears && quota.ArrearsSince != nil && now.UTC().Before(quota.ArrearsSince.Add(subscriptionGracePeriod))
+				graceActive := quota != nil && quota.Arrears && quota.ArrearsSince != nil && now.UTC().Before(quota.ArrearsSince.Add(subscriptionGracePeriod()))
 				if !paidServiceActive && !graceActive {
 					continue
 				}

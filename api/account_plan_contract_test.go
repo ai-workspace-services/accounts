@@ -50,8 +50,11 @@ func TestPublicPlanCatalogReturnsExplicitMaximumTraffic(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode plans: %v", err)
 	}
-	want := map[string]int64{"FREE": fiveGiB, "PLUS": twentyGiB, "UNLIMITED-BETA": 0}
+	want := map[string]int64{"FREE": fiveGiB, "PLUS": twentyGiB}
 	for _, plan := range response.Plans {
+		if plan.PlanID == "UNLIMITED-BETA" {
+			t.Errorf("internal_only plan %s must not be exposed publicly", plan.PlanID)
+		}
 		if expected, ok := want[plan.PlanID]; ok {
 			if plan.IncludedQuotaBytes != expected || plan.MaxTrafficBytes != expected {
 				t.Errorf("plan %s quota fields = %d/%d, want %d", plan.PlanID, plan.IncludedQuotaBytes, plan.MaxTrafficBytes, expected)

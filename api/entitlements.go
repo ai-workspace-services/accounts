@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -13,9 +14,21 @@ import (
 
 const defaultFreeQuotaBytes int64 = 5 * 1024 * 1024 * 1024
 
-// subscriptionGracePeriod is the explicit access grace for failed payments
-// before an account is moved to Free.
-const subscriptionGracePeriod = 14 * 24 * time.Hour
+// defaultSubscriptionGracePeriod is the explicit 3-day access grace for failed
+// payments before an account is moved to Free.
+const defaultSubscriptionGracePeriod = 3 * 24 * time.Hour
+
+func subscriptionGracePeriod() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("SUBSCRIPTION_GRACE_PERIOD"))
+	if raw == "" {
+		return defaultSubscriptionGracePeriod
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		return defaultSubscriptionGracePeriod
+	}
+	return parsed
+}
 
 // Missing Stripe period metadata gets one bounded retry window from the first
 // persisted subscription observation; webhook updates cannot extend it.
@@ -373,7 +386,7 @@ func (h *handler) revokeRefundedSubscription(ctx context.Context, userID, refund
 	if quotaErr != nil && !errors.Is(quotaErr, store.ErrUserNotFound) {
 		return quotaErr
 	}
-	graceActive := quota != nil && quota.Arrears && quota.ArrearsSince != nil && time.Now().UTC().Before(quota.ArrearsSince.Add(subscriptionGracePeriod))
+	graceActive := quota != nil && quota.Arrears && quota.ArrearsSince != nil && time.Now().UTC().Before(quota.ArrearsSince.Add(subscriptionGracePeriod()))
 	for i := range subscriptions {
 		sub := &subscriptions[i]
 		if !strings.EqualFold(sub.Provider, "stripe") || !strings.EqualFold(sub.Kind, "subscription") || strings.TrimSpace(sub.ExternalID) == strings.TrimSpace(refundedID) {

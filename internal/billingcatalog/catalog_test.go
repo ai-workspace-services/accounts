@@ -119,14 +119,11 @@ func TestManifestQuotesWhatStripeCharges(t *testing.T) {
 }
 
 func TestSellablePlansArePublishable(t *testing.T) {
-	// The storefront (portal src/modules/billing/catalog.ts) shows a buy button
-	// only when the plan is active and carries a Stripe price, and quotes a
-	// price only when priceAmount and priceCurrency are both set. A plan that
-	// misses either renders as 即将上线 with no explanation.
 	sellable := []string{
-		"PLUS", "PRO-MONTHLY-V2", "PRO-YEARLY-V2",
-		"PAYG-TOPUP-50", "PAYG-TOPUP-100", "PAYG-TOPUP-200",
-		"PAYG-TOPUP-USD-20", "PAYG-TOPUP-USD-50", "PAYG-TOPUP-USD-100",
+		"PLUS-MONTHLY-2026",
+		"PRO-MONTHLY-2026",
+		"CUSTOM-NODE-MONTHLY-2026",
+		"CUSTOM-AI-CONSULT-2026",
 	}
 
 	plans := make(map[string]manifestPlan)
@@ -161,55 +158,31 @@ func TestV3CommercialCatalogMatchesApprovedOffers(t *testing.T) {
 		amount, quota int64
 		unit          string
 	}{
-		"PLUS":           {2000, 20 * 1024 * 1024 * 1024, "month"},
-		"PRO-MONTHLY-V2": {5000, 50 * 1024 * 1024 * 1024, "month"},
-		"PRO-YEARLY-V2":  {50000, int64(^uint64(0) >> 1), "year"},
+		"PLUS-MONTHLY-2026":        {3000, 30 * 1024 * 1024 * 1024, "month"},
+		"PRO-MONTHLY-2026":         {5000, 50 * 1024 * 1024 * 1024, "month"},
+		"CUSTOM-NODE-MONTHLY-2026": {8000, 0, "month"},
+		"CUSTOM-AI-CONSULT-2026":   {10000, 0, "once"},
 	} {
 		plan := plans[planID]
 		if !plan.Active || plan.PriceAmount != want.amount || plan.PriceCurrency != "CNY" || plan.PriceUnit != want.unit || plan.IncludedQuotaBytes != want.quota {
 			t.Errorf("%s does not match approved offer: %+v", planID, plan)
 		}
 	}
-	for planID, want := range map[string]struct {
-		amount int64
-		quota  int64
-		unit   string
-	}{
-		"PRO-MONTHLY": {2000, 20 * 1024 * 1024 * 1024, "month"},
-		"PRO-YEARLY":  {20000, 20 * 1024 * 1024 * 1024, "year"},
-	} {
-		plan := plans[planID]
-		if plan.Active || plan.PriceAmount != want.amount || plan.PriceUnit != want.unit || plan.IncludedQuotaBytes != want.quota {
-			t.Errorf("legacy subscription terms must remain intact and not be sold: %s %+v", planID, plan)
-		}
-	}
-	for planID, want := range map[string]int64{
-		"PAYG-TOPUP-50": 5000, "PAYG-TOPUP-100": 10000, "PAYG-TOPUP-200": 20000,
-		"PAYG-TOPUP-USD-20": 2000, "PAYG-TOPUP-USD-50": 5000, "PAYG-TOPUP-USD-100": 10000,
-	} {
-		plan := plans[planID]
-		if !plan.Active || plan.Kind != "paygo_topup" || plan.PriceAmount != want {
-			t.Errorf("unexpected active PAYG preset %s: %+v", planID, plan)
-		}
-	}
-	for _, planID := range []string{"PAYG-TOPUP-10", "PAYG-TOPUP-500", "PAYG-TOPUP-USD-5", "PAYG-TOPUP-USD-10"} {
-		if plans[planID].Active {
-			t.Errorf("legacy PAYG denomination %s must no longer be offered", planID)
-		}
-	}
 }
 
 func TestKindsAreAcceptedByTheUpsertEndpoint(t *testing.T) {
-	// adminUpsertBillingPlan rejects anything outside this set, and the column
-	// has no other accepted values. A typo here fails the seed at the last step.
-	allowed := map[string]bool{"trial": true, "subscription": true, "paygo_topup": true}
+	allowed := map[string]bool{"subscription": true, "service": true}
+	allowedFamilies := map[string]bool{"free": true, "plus": true, "pro": true, "custom": true}
 
 	for _, plan := range loadManifest(t) {
 		if !allowed[plan.Kind] {
 			t.Errorf("plan %s has kind %q, which the upsert endpoint rejects", plan.PlanID, plan.Kind)
 		}
-		if plan.PackageName == "" {
-			t.Errorf("plan %s has no package name; billing-service prices against it", plan.PlanID)
+		if !allowedFamilies[plan.PackageName] {
+			t.Errorf("plan %s has packageName %q, expected free/plus/pro/custom", plan.PlanID, plan.PackageName)
+		}
+		if plan.TrialDays != 0 {
+			t.Errorf("plan %s has trialDays=%d, expected 0 (no trials)", plan.PlanID, plan.TrialDays)
 		}
 	}
 }
@@ -237,10 +210,11 @@ func TestFreeTierGrantsTheQuotaTheStorefrontPromises(t *testing.T) {
 	t.Error("manifest defines no FREE plan; accounts downgrades to it when a subscription ends")
 }
 
-func TestQuotaCatalogDefinesTheUATGroups(t *testing.T) {
+func TestQuotaCatalogDefinesFourFamilies(t *testing.T) {
 	const (
 		fiveGiB   = int64(5 * 1024 * 1024 * 1024)
-		twentyGiB = int64(20 * 1024 * 1024 * 1024)
+		thirtyGiB = int64(30 * 1024 * 1024 * 1024)
+		fiftyGiB  = int64(50 * 1024 * 1024 * 1024)
 	)
 	plans := make(map[string]manifestPlan)
 	for _, plan := range loadManifest(t) {
@@ -251,17 +225,17 @@ func TestQuotaCatalogDefinesTheUATGroups(t *testing.T) {
 	if free.IncludedQuotaBytes != fiveGiB || free.PackageName != "free" {
 		t.Fatalf("FREE must expose 5GiB in the free package: %+v", free)
 	}
-	plus := plans["PLUS"]
-	if plus.IncludedQuotaBytes != twentyGiB || plus.PackageName != "plus" {
-		t.Fatalf("PLUS must expose 20GiB in the plus package: %+v", plus)
+	plus := plans["PLUS-MONTHLY-2026"]
+	if plus.IncludedQuotaBytes != thirtyGiB || plus.PackageName != "plus" {
+		t.Fatalf("PLUS-MONTHLY-2026 must expose 30GiB in the plus package: %+v", plus)
 	}
-	unlimited := plans["UNLIMITED-BETA"]
-	if unlimited.IncludedQuotaBytes != 0 || unlimited.PackageName != "unlimited-beta" {
-		t.Fatalf("UNLIMITED-BETA must be an explicit unlimited internal package: %+v", unlimited)
+	pro := plans["PRO-MONTHLY-2026"]
+	if pro.IncludedQuotaBytes != fiftyGiB || pro.PackageName != "pro" {
+		t.Fatalf("PRO-MONTHLY-2026 must expose 50GiB in the pro package: %+v", pro)
 	}
-	features, _ := unlimited.Features["internal_only"].(bool)
-	if !features {
-		t.Fatal("UNLIMITED-BETA must remain internal-only")
+	customNode := plans["CUSTOM-NODE-MONTHLY-2026"]
+	if customNode.PackageName != "custom" || customNode.PriceAmount != 8000 {
+		t.Fatalf("CUSTOM-NODE-MONTHLY-2026 must be 80 CNY/month in custom package: %+v", customNode)
 	}
 }
 

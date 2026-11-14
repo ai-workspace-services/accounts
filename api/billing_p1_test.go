@@ -441,12 +441,12 @@ func TestValidateCheckoutPlanBindsPriceAndModeToCatalog(t *testing.T) {
 		stripe: newStripeClient(StripeConfig{SecretKey: "sk_test_x", AllowedPriceIDs: []string{"price_legacy"}}),
 	}
 	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{
-		PlanID: "PAYG-TOPUP-50", StripePriceID: "price_payg", Kind: "paygo_topup", PriceAmount: 5000, PriceCurrency: "CNY", PriceUnit: "once", Active: true,
+		PlanID: "CUSTOM-AI-CONSULT-2026", StripePriceID: "price_service", Kind: "service", PackageName: "custom", PriceAmount: 10000, PriceCurrency: "CNY", PriceUnit: "once", Active: true,
 	}); err != nil {
-		t.Fatalf("seed PAYG plan: %v", err)
+		t.Fatalf("seed service plan: %v", err)
 	}
 	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{
-		PlanID: "PRO-M", StripePriceID: "price_monthly", Kind: "subscription", Active: true,
+		PlanID: "PRO-M", StripePriceID: "price_monthly", Kind: "subscription", PackageName: "pro", PriceUnit: "month", Active: true,
 	}); err != nil {
 		t.Fatalf("seed subscription plan: %v", err)
 	}
@@ -456,18 +456,12 @@ func TestValidateCheckoutPlanBindsPriceAndModeToCatalog(t *testing.T) {
 		req  stripeCheckoutRequest
 		want bool
 	}{
-		{"PAYG payment", stripeCheckoutRequest{PlanID: "PAYG-TOPUP-50", StripePriceID: "price_payg", Mode: "payment"}, true},
+		{"one-time service payment", stripeCheckoutRequest{PlanID: "CUSTOM-AI-CONSULT-2026", StripePriceID: "price_service", Mode: "payment"}, true},
 		{"subscription", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_monthly", Mode: "subscription"}, true},
-		{"PAYG cannot use subscription mode", stripeCheckoutRequest{PlanID: "PAYG-TOPUP-50", StripePriceID: "price_payg", Mode: "subscription"}, false},
+		{"service cannot use subscription mode", stripeCheckoutRequest{PlanID: "CUSTOM-AI-CONSULT-2026", StripePriceID: "price_service", Mode: "subscription"}, false},
 		{"subscription cannot use payment mode", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_monthly", Mode: "payment"}, false},
-		{"plan price mismatch", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_payg", Mode: "subscription"}, false},
+		{"plan price mismatch", stripeCheckoutRequest{PlanID: "PRO-M", StripePriceID: "price_service", Mode: "subscription"}, false},
 		{"unknown plan rejected once catalog exists", stripeCheckoutRequest{PlanID: "unknown", StripePriceID: "price_legacy", Mode: "subscription"}, false},
-		{"custom CNY minimum", stripeCheckoutRequest{PlanID: customCNYTopUpPlanID, AmountMinor: 1000, Currency: "CNY", Mode: "payment"}, true},
-		{"custom CNY maximum", stripeCheckoutRequest{PlanID: customCNYTopUpPlanID, AmountMinor: 20000, Currency: "CNY", Mode: "payment"}, true},
-		{"custom CNY below minimum", stripeCheckoutRequest{PlanID: customCNYTopUpPlanID, AmountMinor: 999, Currency: "CNY", Mode: "payment"}, false},
-		{"custom USD minimum", stripeCheckoutRequest{PlanID: customUSDTopUpPlanID, AmountMinor: 500, Currency: "USD", Mode: "payment"}, true},
-		{"custom USD maximum", stripeCheckoutRequest{PlanID: customUSDTopUpPlanID, AmountMinor: 10000, Currency: "USD", Mode: "payment"}, true},
-		{"custom top-up cannot use fixed price", stripeCheckoutRequest{PlanID: customUSDTopUpPlanID, AmountMinor: 500, Currency: "USD", StripePriceID: "price_any", Mode: "payment"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2064,7 +2064,7 @@ func (h *handler) requireAuthenticatedUser(c *gin.Context) (*store.User, bool) {
 }
 
 // rejectIfBillingSuspended enforces the same billing-arrears suspension
-// (suspend_state, promoted by billing-service's SuspendSyncer after a 14-day
+// (suspend_state, promoted by billing-service's SuspendSyncer after a 3-day
 // grace — P1.5) as auth.RequireActiveUser, for handlers that authenticate
 // in-handler via requireAuthenticatedUser rather than the token middleware.
 func (h *handler) rejectIfBillingSuspended(c *gin.Context, userID string) bool {

@@ -429,40 +429,49 @@ func (h *handler) validCheckoutPrice(ctx context.Context, priceID string) bool {
 // The legacy allowlist remains usable only while the catalog is completely
 // empty. Once a catalog exists, it is the sole authority for a plan's price
 // and commercial shape.
+func planCheckoutMode(plan *store.BillingPlan) string {
+	if plan == nil {
+		return ""
+	}
+	if plan.Features != nil {
+		if raw, ok := plan.Features["checkout_mode"].(string); ok {
+			switch strings.ToLower(strings.TrimSpace(raw)) {
+			case "payment", "subscription":
+				return strings.ToLower(strings.TrimSpace(raw))
+			}
+		}
+	}
+	kind := strings.ToLower(strings.TrimSpace(plan.Kind))
+	unit := strings.ToLower(strings.TrimSpace(plan.PriceUnit))
+	if kind == "service" || unit == "once" || unit == "hour" {
+		return "payment"
+	}
+	if kind == "subscription" {
+		return "subscription"
+	}
+	return ""
+}
+
 func (h *handler) validateCheckoutPlan(ctx context.Context, req stripeCheckoutRequest) bool {
 	planID := strings.TrimSpace(req.PlanID)
 	priceID := strings.TrimSpace(req.StripePriceID)
 	mode := h.stripe.normalizeMode(req.Mode)
-	if mode == "payment" && isCustomPaygoTopUp(planID, req.AmountMinor, req.Currency) {
-		return priceID == ""
-	}
 	if planID == "" || priceID == "" {
 		return false
 	}
 
 	plan, err := h.store.GetBillingPlan(ctx, planID)
 	if err == nil {
-		if !plan.Active || strings.TrimSpace(plan.StripePriceID) != priceID {
+		if !plan.Active || strings.TrimSpace(plan.StripePriceID) != priceID || normalizePlanFamily(plan) == "" {
 			return false
 		}
-		switch strings.ToLower(strings.TrimSpace(plan.Kind)) {
-		case "paygo_topup":
-			return mode == "payment" && isFixedPaygoTopUp(plan.PlanID, plan.PriceAmount, plan.PriceCurrency, plan.PriceUnit)
-		case "subscription":
-			return mode == "subscription"
-		default:
-			return false
-		}
+		return planCheckoutMode(plan) == mode
 	}
 	if !errors.Is(err, store.ErrBillingPlanNotFound) {
 		slog.Warn("billing plan lookup failed during checkout validation", "err", err, "planID", planID)
 		return false
 	}
 
-	// Bootstrap compatibility for installations upgraded before their plan
-	// catalog was seeded. It deliberately does not infer PAYG eligibility:
-	// a one-time payment must have an explicit paygo_topup catalog record
-	// before it can ever credit a balance.
 	plans, listErr := h.store.ListBillingPlans(ctx, false)
 	if listErr != nil {
 		slog.Warn("billing plan list failed during checkout validation", "err", listErr)
