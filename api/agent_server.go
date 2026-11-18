@@ -510,6 +510,10 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_overlay_status"})
 		return
 	}
+	if report.GatewayTelemetry != nil && (len(report.GatewayTelemetry.Peers) > 512 || len(report.GatewayTelemetry.TopApps) > 64 || len(report.GatewayTelemetry.GatewayID) > 128 || len(report.GatewayTelemetry.NetworkID) > 128) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_gateway_telemetry"})
+		return
+	}
 	scope, _ := agentResourceScope(identity.Groups)
 	report.Xray.CustomAllowFree = scope.CustomAllowFree
 	if agentproto.PublicResourceClass(scope.ResourceClass) {
@@ -526,9 +530,12 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 	// Zero ownership or tenant isolation.
 	if h.overlayService != nil && (report.Role == overlay.RoleGateway || report.Role == overlay.RoleOne) {
 		if err := h.overlayService.RecordRuntimeObservation(c.Request.Context(), overlay.RuntimeObservationRequest{
-			NetworkID: report.Xray.NetworkID,
-			DeviceID:  report.Xray.NodeID,
-			Role:      report.Role,
+			NetworkID:        report.Xray.NetworkID,
+			DeviceID:         report.Xray.NodeID,
+			Role:             report.Role,
+			Healthy:          report.Healthy,
+			Overlay:          report.Overlay,
+			GatewayTelemetry: report.GatewayTelemetry,
 		}); err != nil {
 			if !errors.Is(err, overlay.ErrNotFound) && !errors.Is(err, overlay.ErrInvalidInput) {
 				c.Error(err)

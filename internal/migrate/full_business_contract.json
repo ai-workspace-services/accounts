@@ -497,6 +497,33 @@
     "primary_key": ["id"],
     "foreign_keys": []
   },
+  "overlay_device_telemetry": {
+    "columns": [
+      {"generated": false,"name": "network_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "device_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "role","nullable": false,"type": "text"},
+      {"generated": false,"name": "healthy","nullable": false,"type": "boolean"},
+      {"generated": false,"name": "connection_mode","nullable": false,"type": "text"},
+      {"generated": false,"name": "applied_config_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "applied_generation","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "active_path","nullable": false,"type": "text"},
+      {"generated": false,"name": "endpoint","nullable": false,"type": "text"},
+      {"generated": false,"name": "rtt_ms","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "rx_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "tx_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "internet_rx_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "internet_tx_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "private_rx_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "private_tx_bytes","nullable": false,"type": "bigint"},
+      {"generated": false,"name": "latest_handshake_at","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "peers_json","nullable": false,"type": "text"},
+      {"generated": false,"name": "top_apps_json","nullable": false,"type": "text"},
+      {"generated": false,"name": "sampled_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["network_id", "device_id"],
+    "foreign_keys": []
+  },
   "overlay_devices": {
     "columns": [
       {"generated": false,"name": "id","nullable": false,"type": "text"},
@@ -565,6 +592,7 @@
       {"generated": false,"name": "transport_host","nullable": false,"type": "text"},
       {"generated": false,"name": "gateway_frontend","nullable": false,"type": "text"},
       {"generated": false,"name": "gateway_listen_socket","nullable": false,"type": "text"},
+      {"generated": false,"name": "connection_mode","nullable": false,"type": "text"},
       {"generated": false,"name": "owner_user_id","nullable": true,"type": "text"},
       {"generated": false,"name": "policy_json","nullable": false,"type": "text"},
       {"generated": false,"name": "config_generation","nullable": false,"type": "bigint"},

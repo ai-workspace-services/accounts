@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,8 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"account/internal/agentproto"
 )
 
 var overlayDeviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
@@ -306,17 +309,34 @@ func (s *Service) AdminDevices(ctx context.Context, ownerUserID string) ([]Admin
 	if err := s.repo.DB.WithContext(ctx).
 		Model(&AckRecord{}).
 		Joins("JOIN overlay_networks ON overlay_networks.id = overlay_signed_config_acks.network_id").
-		Where("overlay_networks.owner_user_id = ? AND overlay_signed_config_acks.generation = overlay_networks.config_generation", ownerUserID).
+		Where("overlay_networks.owner_user_id = ?", ownerUserID).
 		Find(&acks).Error; err != nil {
 		return nil, err
 	}
 	currentACK := make(map[string]time.Time, len(acks))
+	hasAnyACK := make(map[string]bool, len(acks))
 	for _, ack := range acks {
 		network, ok := networkByID[ack.NetworkID]
-		if !ok || ack.Generation != network.ConfigGeneration || ack.ConfigID != configID(network.ID, ack.DeviceID, network.ConfigGeneration) {
+		if !ok {
 			continue
 		}
-		currentACK[adminDeviceACKKey(ack.NetworkID, ack.DeviceID)] = ack.ReceivedAt
+		key := adminDeviceACKKey(ack.NetworkID, ack.DeviceID)
+		hasAnyACK[key] = true
+		if ack.Generation != network.ConfigGeneration || ack.ConfigID != configID(network.ID, ack.DeviceID, network.ConfigGeneration) {
+			continue
+		}
+		currentACK[key] = ack.ReceivedAt
+	}
+
+	var telemetries []DeviceTelemetryRecord
+	if s.repo.DB.Migrator().HasTable(&DeviceTelemetryRecord{}) {
+		if err := s.repo.DB.WithContext(ctx).Where("network_id IN ?", networkIDs).Find(&telemetries).Error; err != nil {
+			return nil, err
+		}
+	}
+	telemetryByKey := make(map[string]DeviceTelemetryRecord, len(telemetries))
+	for _, item := range telemetries {
+		telemetryByKey[adminDeviceACKKey(item.NetworkID, item.DeviceID)] = item
 	}
 
 	now := s.now()
@@ -326,34 +346,653 @@ func (s *Service) AdminDevices(ctx context.Context, ownerUserID string) ([]Admin
 		if !ok {
 			continue
 		}
-		ackReceivedAt, acknowledged := currentACK[adminDeviceACKKey(network.ID, record.ID)]
-		result = append(result, toAdminDevice(record, ackReceivedAt, acknowledged, now))
+		key := adminDeviceACKKey(network.ID, record.ID)
+		ackReceivedAt, acknowledged := currentACK[key]
+		var telemetryPtr *DeviceTelemetryRecord
+		if item, exists := telemetryByKey[key]; exists {
+			telemetryPtr = &item
+		}
+		result = append(result, toAdminDevice(record, network, ackReceivedAt, acknowledged, hasAnyACK[key], telemetryPtr, now))
 	}
 	return result, nil
 }
 
 // RecordRuntimeObservation marks an existing, active signed-enrollment device
-// as recently observed. It is intentionally limited to liveness: ownership,
+// as recently observed and persists non-secret runtime telemetry. Ownership,
 // credentials, WireGuard keys, transport settings, and device status are not
 // mutable through this path.
 func (s *Service) RecordRuntimeObservation(ctx context.Context, request RuntimeObservationRequest) error {
 	networkID := strings.TrimSpace(request.NetworkID)
 	deviceID := strings.TrimSpace(request.DeviceID)
 	role := strings.TrimSpace(request.Role)
-	if networkID == "" || deviceID == "" || (role != RoleGateway && role != RoleOne) {
+	if networkID == "" && request.Overlay != nil {
+		networkID = strings.TrimSpace(request.Overlay.NetworkID)
+	}
+	if networkID == "" && request.GatewayTelemetry != nil {
+		networkID = strings.TrimSpace(request.GatewayTelemetry.NetworkID)
+	}
+	if deviceID == "" && request.Overlay != nil {
+		deviceID = strings.TrimSpace(request.Overlay.DeviceID)
+	}
+	if deviceID == "" && request.GatewayTelemetry != nil {
+		deviceID = strings.TrimSpace(request.GatewayTelemetry.GatewayID)
+	}
+	if networkID == "" || len(networkID) > 128 || deviceID == "" || len(deviceID) > 128 || (role != RoleGateway && role != RoleOne) {
 		return ErrInvalidInput
 	}
+	if request.Overlay != nil {
+		if overlayNet := strings.TrimSpace(request.Overlay.NetworkID); overlayNet != "" && overlayNet != networkID {
+			return ErrInvalidInput
+		}
+		if overlayDev := strings.TrimSpace(request.Overlay.DeviceID); overlayDev != "" && overlayDev != deviceID {
+			return ErrInvalidInput
+		}
+		if len(request.Overlay.Paths) > 256 || len(request.Overlay.Capabilities) > 8 {
+			return ErrInvalidInput
+		}
+	}
+	if request.GatewayTelemetry != nil {
+		gt := request.GatewayTelemetry
+		if gtNet := strings.TrimSpace(gt.NetworkID); gtNet != "" && gtNet != networkID {
+			return ErrInvalidInput
+		}
+		if gtID := strings.TrimSpace(gt.GatewayID); gtID != "" && gtID != deviceID {
+			return ErrInvalidInput
+		}
+		if len(gt.Peers) > 512 || len(gt.TopApps) > 64 {
+			return ErrInvalidInput
+		}
+	}
 
-	result := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).
-		Where("id = ? AND network_id = ? AND role = ? AND status = ?", deviceID, networkID, role, "active").
-		Updates(map[string]any{"last_seen_at": s.now(), "updated_at": s.now()})
-	if result.Error != nil {
-		return result.Error
+	now := s.now()
+	return s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&DeviceRecord{}).
+			Where("id = ? AND network_id = ? AND role = ? AND status = ?", deviceID, networkID, role, "active").
+			Updates(map[string]any{"last_seen_at": now, "updated_at": now})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrNotFound
+		}
+
+		sampledAt := now
+		healthy := request.Healthy
+		if request.Overlay != nil {
+			if !request.Overlay.UpdatedAt.IsZero() {
+				sampledAt = canonicalTime(request.Overlay.UpdatedAt)
+			}
+			if request.Overlay.Healthy {
+				healthy = true
+			}
+		}
+		if request.GatewayTelemetry != nil {
+			if !request.GatewayTelemetry.SampledAt.IsZero() {
+				sampledAt = canonicalTime(request.GatewayTelemetry.SampledAt)
+			}
+			if request.GatewayTelemetry.WireGuardRunning && request.GatewayTelemetry.XrayRunning {
+				healthy = true
+			}
+		}
+
+		telemetry := DeviceTelemetryRecord{
+			NetworkID:   networkID,
+			DeviceID:    deviceID,
+			Role:        role,
+			Healthy:     healthy,
+			PeersJSON:   "[]",
+			TopAppsJSON: "[]",
+			SampledAt:   sampledAt,
+			UpdatedAt:   now,
+		}
+		if request.Overlay != nil && len(request.Overlay.Paths) > 0 {
+			firstPath := request.Overlay.Paths[0]
+			telemetry.ActivePath = strings.TrimSpace(firstPath.Path)
+			telemetry.Endpoint = strings.TrimSpace(firstPath.Endpoint)
+			telemetry.RTTMillis = firstPath.RTTMillis
+		}
+		if request.GatewayTelemetry != nil {
+			gt := request.GatewayTelemetry
+			telemetry.ConnectionMode = strings.TrimSpace(gt.ConnectionMode)
+			telemetry.AppliedConfigID = strings.TrimSpace(gt.AppliedConfigID)
+			telemetry.AppliedGeneration = gt.AppliedGeneration
+			if telemetry.Endpoint == "" && strings.TrimSpace(gt.EndpointHost) != "" {
+				telemetry.Endpoint = strings.TrimSpace(gt.EndpointHost)
+			}
+			if telemetry.ActivePath == "" {
+				if gt.RelayRunning {
+					telemetry.ActivePath = "relay"
+				} else if gt.WireGuardRunning {
+					telemetry.ActivePath = "direct"
+				}
+			}
+			telemetry.RxBytes = gt.Traffic.RxBytesTotal
+			telemetry.TxBytes = gt.Traffic.TxBytesTotal
+			telemetry.InternetRxBytes = gt.Traffic.InternetRxBytes
+			telemetry.InternetTxBytes = gt.Traffic.InternetTxBytes
+			telemetry.PrivateRxBytes = gt.Traffic.PrivateRxBytes
+			telemetry.PrivateTxBytes = gt.Traffic.PrivateTxBytes
+			if len(gt.Peers) > 0 {
+				if raw, err := json.Marshal(gt.Peers); err == nil {
+					telemetry.PeersJSON = string(raw)
+				}
+			}
+			if len(gt.TopApps) > 0 {
+				if raw, err := json.Marshal(gt.TopApps); err == nil {
+					telemetry.TopAppsJSON = string(raw)
+				}
+			}
+		}
+
+		upsertCols := []string{
+			"role", "healthy", "connection_mode", "applied_config_id", "applied_generation",
+			"active_path", "endpoint", "rtt_ms", "rx_bytes", "tx_bytes",
+			"internet_rx_bytes", "internet_tx_bytes", "private_rx_bytes", "private_tx_bytes",
+			"latest_handshake_at", "peers_json", "top_apps_json", "sampled_at", "updated_at",
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "network_id"}, {Name: "device_id"}},
+			DoUpdates: clause.AssignmentColumns(upsertCols),
+		}).Create(&telemetry).Error; err != nil {
+			return err
+		}
+
+		if role == RoleGateway && request.GatewayTelemetry != nil && len(request.GatewayTelemetry.Peers) > 0 {
+			gt := request.GatewayTelemetry
+			for _, peer := range gt.Peers {
+				peerID := strings.TrimSpace(peer.DeviceID)
+				if peerID == "" || len(peerID) > 128 || peerID == deviceID {
+					continue
+				}
+				peerResult := tx.Model(&DeviceRecord{}).
+					Where("id = ? AND network_id = ? AND role = ? AND status = ?", peerID, networkID, RoleOne, "active").
+					Updates(map[string]any{"last_seen_at": now, "updated_at": now})
+				if peerResult.Error != nil {
+					return peerResult.Error
+				}
+				if peerResult.RowsAffected != 1 {
+					continue
+				}
+				var handshakeAt *time.Time
+				if peer.LatestHandshakeAt != nil && !peer.LatestHandshakeAt.IsZero() {
+					ts := canonicalTime(*peer.LatestHandshakeAt)
+					handshakeAt = &ts
+				}
+				peerTelemetry := DeviceTelemetryRecord{
+					NetworkID:         networkID,
+					DeviceID:          peerID,
+					Role:              RoleOne,
+					Healthy:           peer.Connected,
+					ConnectionMode:    strings.TrimSpace(gt.ConnectionMode),
+					AppliedConfigID:   strings.TrimSpace(gt.AppliedConfigID),
+					AppliedGeneration: gt.AppliedGeneration,
+					ActivePath:        strings.TrimSpace(peer.Path),
+					Endpoint:          strings.TrimSpace(peer.Endpoint),
+					RTTMillis:         peer.RTTMillis,
+					RxBytes:           peer.RxBytes,
+					TxBytes:           peer.TxBytes,
+					LatestHandshakeAt: handshakeAt,
+					PeersJSON:         "[]",
+					TopAppsJSON:       "[]",
+					SampledAt:         sampledAt,
+					UpdatedAt:         now,
+				}
+				if err := tx.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "network_id"}, {Name: "device_id"}},
+					DoUpdates: clause.AssignmentColumns(upsertCols),
+				}).Create(&peerTelemetry).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Service) AdminTelemetry(ctx context.Context, ownerUserID string) (AdminTelemetry, error) {
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if ownerUserID == "" {
+		return AdminTelemetry{}, ErrInvalidInput
 	}
-	if result.RowsAffected != 1 {
-		return ErrNotFound
+	var networks []NetworkRecord
+	if err := s.repo.DB.WithContext(ctx).Where("owner_user_id = ?", ownerUserID).Order("id ASC").Find(&networks).Error; err != nil {
+		return AdminTelemetry{}, err
 	}
-	return nil
+	if len(networks) == 0 {
+		return AdminTelemetry{
+			Status:         "available",
+			TopPrivateApps: []AdminAppTraffic{},
+			TopUsers:       []AdminUserTrafficEntry{},
+		}, nil
+	}
+	networkIDs := make([]string, 0, len(networks))
+	for _, n := range networks {
+		networkIDs = append(networkIDs, n.ID)
+	}
+
+	adminDevices, err := s.AdminDevices(ctx, ownerUserID)
+	if err != nil {
+		return AdminTelemetry{}, err
+	}
+
+	var telemetries []DeviceTelemetryRecord
+	if s.repo.DB.Migrator().HasTable(&DeviceTelemetryRecord{}) {
+		if err := s.repo.DB.WithContext(ctx).Where("network_id IN ?", networkIDs).Find(&telemetries).Error; err != nil {
+			return AdminTelemetry{}, err
+		}
+	}
+	telemetryByKey := make(map[string]DeviceTelemetryRecord, len(telemetries))
+	var sase AdminSASETraffic
+	appAgg := make(map[string]*AdminAppTraffic)
+	for _, item := range telemetries {
+		telemetryByKey[adminDeviceACKKey(item.NetworkID, item.DeviceID)] = item
+		if item.Role == RoleGateway {
+			sase.RxBytesTotal += item.RxBytes
+			sase.TxBytesTotal += item.TxBytes
+			sase.InternetRxBytes += item.InternetRxBytes
+			sase.InternetTxBytes += item.InternetTxBytes
+			sase.PrivateRxBytes += item.PrivateRxBytes
+			sase.PrivateTxBytes += item.PrivateTxBytes
+		}
+		if strings.TrimSpace(item.TopAppsJSON) != "" && strings.TrimSpace(item.TopAppsJSON) != "[]" {
+			var apps []agentproto.GatewayAppTraffic
+			if err := json.Unmarshal([]byte(item.TopAppsJSON), &apps); err == nil {
+				for _, app := range apps {
+					name := strings.TrimSpace(app.App)
+					if name == "" {
+						continue
+					}
+					entry, ok := appAgg[name]
+					if !ok {
+						entry = &AdminAppTraffic{App: name}
+						appAgg[name] = entry
+					}
+					entry.RxBytes += app.RxBytes
+					entry.TxBytes += app.TxBytes
+					entry.TotalBytes += app.RxBytes + app.TxBytes
+					entry.Connections += app.Connections
+				}
+			}
+		}
+	}
+
+	var connectedUsers AdminConnectedUsers
+	topUsers := make([]AdminUserTrafficEntry, 0)
+	var oneRxSum, oneTxSum uint64
+	for _, device := range adminDevices {
+		if device.Status != "active" {
+			continue
+		}
+		connected := device.ConnectionStatus == "recent_ack" || (device.RuntimeHealthy != nil && *device.RuntimeHealthy)
+		switch device.Role {
+		case RoleGateway:
+			connectedUsers.GatewayTotal++
+			if connected {
+				connectedUsers.GatewayOnline++
+			}
+		case RoleOne:
+			connectedUsers.ActiveCount++
+			if connected {
+				connectedUsers.ConnectedCount++
+			}
+			var rtt int64
+			if device.RTTMillis != nil {
+				rtt = *device.RTTMillis
+			}
+			oneRxSum += device.RxBytes
+			oneTxSum += device.TxBytes
+			topUsers = append(topUsers, AdminUserTrafficEntry{
+				DeviceID:         device.ID,
+				Name:             device.Name,
+				NetworkID:        device.NetworkID,
+				WireGuardAddress: device.WireGuardAddress,
+				ActivePath:       device.ActivePath,
+				Connected:        connected,
+				RTTMillis:        rtt,
+				RxBytes:          device.RxBytes,
+				TxBytes:          device.TxBytes,
+				TotalBytes:       device.RxBytes + device.TxBytes,
+				LastSeenAt:       device.LastSeenAt,
+			})
+		}
+	}
+	if sase.RxBytesTotal == 0 && sase.TxBytesTotal == 0 && (oneRxSum > 0 || oneTxSum > 0) {
+		sase.RxBytesTotal = oneRxSum
+		sase.TxBytesTotal = oneTxSum
+	}
+
+	topPrivateApps := make([]AdminAppTraffic, 0, len(appAgg))
+	for _, entry := range appAgg {
+		topPrivateApps = append(topPrivateApps, *entry)
+	}
+	sort.Slice(topPrivateApps, func(i, j int) bool {
+		if topPrivateApps[i].TotalBytes == topPrivateApps[j].TotalBytes {
+			return topPrivateApps[i].App < topPrivateApps[j].App
+		}
+		return topPrivateApps[i].TotalBytes > topPrivateApps[j].TotalBytes
+	})
+	if len(topPrivateApps) > 20 {
+		topPrivateApps = topPrivateApps[:20]
+	}
+
+	sort.Slice(topUsers, func(i, j int) bool {
+		if topUsers[i].TotalBytes == topUsers[j].TotalBytes {
+			return topUsers[i].DeviceID < topUsers[j].DeviceID
+		}
+		return topUsers[i].TotalBytes > topUsers[j].TotalBytes
+	})
+	if len(topUsers) > 50 {
+		topUsers = topUsers[:50]
+	}
+
+	return AdminTelemetry{
+		Status:         "available",
+		SASETraffic:    sase,
+		ConnectedUsers: connectedUsers,
+		TopPrivateApps: topPrivateApps,
+		TopUsers:       topUsers,
+	}, nil
+}
+
+func (s *Service) AdminUpdateNetworkMode(ctx context.Context, ownerUserID, networkID, mode string) (Network, error) {
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	networkID = strings.TrimSpace(networkID)
+	mode = strings.TrimSpace(mode)
+	if ownerUserID == "" || networkID == "" {
+		return Network{}, ErrInvalidInput
+	}
+	switch mode {
+	case ConnectionModeWGVLESSL3, ConnectionModeWGUDPL3, ConnectionModeWGVLESSL2:
+	default:
+		return Network{}, ErrInvalidInput
+	}
+	var updated NetworkRecord
+	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var network NetworkRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_user_id = ?", networkID, ownerUserID).
+			First(&network).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		now := s.now()
+		if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(map[string]any{
+			"connection_mode": mode,
+			"updated_at":      now,
+		}).Error; err != nil {
+			return err
+		}
+		network.ConnectionMode = mode
+		network.UpdatedAt = now
+		if err := advanceNetworkGeneration(tx, &network); err != nil {
+			return err
+		}
+		updated = network
+		return nil
+	})
+	if err != nil {
+		return Network{}, err
+	}
+	return toNetwork(updated), nil
+}
+
+func (s *Service) UserGateways(ctx context.Context, userID string) ([]UserGatewaySummary, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil, ErrInvalidInput
+	}
+	var networks []NetworkRecord
+	userDevicesSubquery := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Select("network_id").Where("user_id = ? AND status = ?", userID, "active")
+	if err := s.repo.DB.WithContext(ctx).
+		Where("owner_user_id = ? OR id IN (?)", userID, userDevicesSubquery).
+		Order("id ASC").
+		Find(&networks).Error; err != nil {
+		return nil, err
+	}
+	if len(networks) == 0 {
+		return []UserGatewaySummary{}, nil
+	}
+	networkIDs := make([]string, 0, len(networks))
+	for _, network := range networks {
+		networkIDs = append(networkIDs, network.ID)
+	}
+
+	var gwDevices []DeviceRecord
+	if err := s.repo.DB.WithContext(ctx).
+		Where("network_id IN ? AND role = ? AND status = ?", networkIDs, RoleGateway, "active").
+		Find(&gwDevices).Error; err != nil {
+		return nil, err
+	}
+	gwDeviceByNetwork := make(map[string]DeviceRecord, len(gwDevices))
+	for _, dev := range gwDevices {
+		gwDeviceByNetwork[dev.NetworkID] = dev
+	}
+
+	var gwTelemetries []DeviceTelemetryRecord
+	if s.repo.DB.Migrator().HasTable(&DeviceTelemetryRecord{}) {
+		if err := s.repo.DB.WithContext(ctx).
+			Where("network_id IN ? AND role = ?", networkIDs, RoleGateway).
+			Find(&gwTelemetries).Error; err != nil {
+			return nil, err
+		}
+	}
+	gwTelemetryByNetwork := make(map[string]DeviceTelemetryRecord, len(gwTelemetries))
+	for _, item := range gwTelemetries {
+		gwTelemetryByNetwork[item.NetworkID] = item
+	}
+
+	now := s.now()
+	result := make([]UserGatewaySummary, 0, len(networks))
+	for _, network := range networks {
+		mode := strings.TrimSpace(network.ConnectionMode)
+		if mode == "" {
+			mode = DefaultConnectionMode
+		}
+		var lastSeenAt *time.Time
+		runtimeHealthy := false
+		if gwDev, ok := gwDeviceByNetwork[network.ID]; ok && gwDev.LastSeenAt != nil {
+			lastSeenAt = gwDev.LastSeenAt
+			if !gwDev.LastSeenAt.After(now) && !gwDev.LastSeenAt.Before(now.Add(-adminDeviceACKRecentWindow)) {
+				runtimeHealthy = true
+			}
+		}
+		if gwTel, ok := gwTelemetryByNetwork[network.ID]; ok {
+			runtimeHealthy = gwTel.Healthy
+			if lastSeenAt == nil {
+				ts := gwTel.UpdatedAt
+				lastSeenAt = &ts
+			}
+		}
+		result = append(result, UserGatewaySummary{
+			NetworkID:           network.ID,
+			DisplayName:         network.DisplayName,
+			CIDR:                network.CIDR,
+			GatewayID:           network.GatewayID,
+			GatewayEndpointHost: network.GatewayEndpointHost,
+			GatewayEndpointPort: network.GatewayEndpointPort,
+			TransportServerName: network.TransportServerName,
+			TransportPort:       network.TransportPort,
+			ConnectionMode:      mode,
+			RuntimeHealthy:      runtimeHealthy,
+			LastSeenAt:          lastSeenAt,
+		})
+	}
+	return result, nil
+}
+
+func (s *Service) UserEnrollDevice(ctx context.Context, userID string, request UserEnrollRequest) (ExchangeResponse, error) {
+	userID = strings.TrimSpace(userID)
+	request.NetworkID = strings.TrimSpace(request.NetworkID)
+	request.GatewayID = strings.TrimSpace(request.GatewayID)
+	request.DeviceID = strings.TrimSpace(request.DeviceID)
+	request.Name = strings.TrimSpace(request.Name)
+	request.Platform = strings.TrimSpace(request.Platform)
+	request.Hostname = strings.TrimSpace(request.Hostname)
+	request.WireGuardPublicKey = strings.TrimSpace(request.WireGuardPublicKey)
+
+	publicKey, keyErr := base64.StdEncoding.DecodeString(request.WireGuardPublicKey)
+	if keyErr != nil {
+		publicKey, keyErr = base64.RawStdEncoding.DecodeString(request.WireGuardPublicKey)
+	}
+	if userID == "" || request.NetworkID == "" || len(request.NetworkID) > 128 || !overlayDeviceIDPattern.MatchString(request.DeviceID) || keyErr != nil || len(publicKey) != 32 || len(request.Name) > 255 || len(request.Hostname) > 255 {
+		return ExchangeResponse{}, ErrInvalidInput
+	}
+	switch request.Platform {
+	case "linux", "darwin", "windows", "ios", "android":
+	default:
+		return ExchangeResponse{}, ErrInvalidInput
+	}
+	request.WireGuardPublicKey = base64.StdEncoding.EncodeToString(publicKey)
+	if request.Name == "" {
+		request.Name = request.DeviceID
+	}
+	if request.Hostname == "" {
+		request.Hostname = request.DeviceID
+	}
+
+	now := s.now()
+	credentialRawID := randomHex(16)
+	credentialID := "xdcid_" + credentialRawID
+	credentialSecret := "xdc_" + credentialRawID + "." + newOpaqueToken("")
+	enrollmentSecret := newOpaqueToken("xenr_")
+	credentialIssued := canonicalTime(now)
+	credentialExpiry := canonicalTime(now.Add(s.credentialTTL))
+	enrollmentExpiry := canonicalTime(now.Add(s.enrollmentTTL))
+
+	var device DeviceRecord
+	var network NetworkRecord
+	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		networkRecord, err := s.repo.networkTx(tx, request.NetworkID)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(networkRecord.OwnerUserID) != userID {
+			return ErrForbidden
+		}
+		if request.GatewayID != "" && request.GatewayID != networkRecord.GatewayID {
+			return ErrInvalidInput
+		}
+		if request.DeviceID == networkRecord.GatewayID || request.WireGuardPublicKey == networkRecord.GatewayWireGuardKey {
+			return ErrDeviceConflict
+		}
+
+		var existing DeviceRecord
+		existingErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", request.DeviceID).First(&existing).Error
+		if existingErr == nil {
+			if existing.NetworkID != networkRecord.ID || existing.UserID != userID || existing.Role != RoleOne {
+				return ErrDeviceConflict
+			}
+			var keyConflict int64
+			if err := tx.Model(&DeviceRecord{}).
+				Where("network_id = ? AND id <> ? AND wireguard_public_key = ?", networkRecord.ID, existing.ID, request.WireGuardPublicKey).
+				Count(&keyConflict).Error; err != nil {
+				return err
+			}
+			if keyConflict > 0 {
+				return ErrDeviceConflict
+			}
+			address := existing.WireGuardAddress
+			if strings.TrimSpace(address) == "" {
+				var allocErr error
+				address, allocErr = s.repo.allocateAddress(tx, networkRecord)
+				if allocErr != nil {
+					return allocErr
+				}
+			}
+			if err := tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", existing.ID).Update("revoked_at", now).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&DeviceRecord{}).Where("id = ? AND network_id = ?", existing.ID, networkRecord.ID).Updates(map[string]any{
+				"name":                 request.Name,
+				"platform":             request.Platform,
+				"hostname":             request.Hostname,
+				"wireguard_public_key": request.WireGuardPublicKey,
+				"wireguard_address":    address,
+				"status":               "active",
+				"updated_at":           now,
+			}).Error; err != nil {
+				return err
+			}
+			existing.Name = request.Name
+			existing.Platform = request.Platform
+			existing.Hostname = request.Hostname
+			existing.WireGuardPublicKey = request.WireGuardPublicKey
+			existing.WireGuardAddress = address
+			existing.Status = "active"
+			existing.UpdatedAt = now
+			device = existing
+		} else if errors.Is(existingErr, gorm.ErrRecordNotFound) {
+			var keyConflict int64
+			if err := tx.Model(&DeviceRecord{}).
+				Where("network_id = ? AND wireguard_public_key = ?", networkRecord.ID, request.WireGuardPublicKey).
+				Count(&keyConflict).Error; err != nil {
+				return err
+			}
+			if keyConflict > 0 {
+				return ErrDeviceConflict
+			}
+			address, err := s.repo.allocateAddress(tx, networkRecord)
+			if err != nil {
+				return err
+			}
+			device = DeviceRecord{
+				ID:                 request.DeviceID,
+				UserUUID:           networkRecord.OwnerUserID,
+				UserID:             networkRecord.OwnerUserID,
+				NetworkID:          networkRecord.ID,
+				Role:               RoleOne,
+				Name:               request.Name,
+				Platform:           request.Platform,
+				Hostname:           request.Hostname,
+				WireGuardPublicKey: request.WireGuardPublicKey,
+				WireGuardAddress:   address,
+				Status:             "active",
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			}
+			if err := tx.Create(&device).Error; err != nil {
+				return err
+			}
+		} else {
+			return existingErr
+		}
+
+		if err := advanceNetworkGeneration(tx, &networkRecord); err != nil {
+			return err
+		}
+		credential := CredentialRecord{ID: newID("cred"), DeviceID: device.ID, CredentialID: credentialID, TokenHash: HashSecret(credentialSecret), IssuedAt: credentialIssued, ExpiresAt: credentialExpiry}
+		enrollment := EnrollmentRecord{ID: newID("enr"), DeviceID: device.ID, TokenHash: HashSecret(enrollmentSecret), IssuedAt: credentialIssued, ExpiresAt: enrollmentExpiry}
+		if err := tx.Create(&credential).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&enrollment).Error; err != nil {
+			return err
+		}
+		network = networkRecord
+		return nil
+	})
+	if err != nil {
+		return ExchangeResponse{}, err
+	}
+	return ExchangeResponse{
+		EnrollmentToken: enrollmentSecret,
+		TokenType:       TokenTypeBearer,
+		ExpiresAt:       enrollmentExpiry,
+		Scope:           []string{ScopeConfigRead, ScopeConfigAck, ScopeDeviceRevoke},
+		DeviceCredential: DeviceCredential{
+			CredentialID: credentialID,
+			Credential:   credentialSecret,
+			TokenType:    TokenTypeDevice,
+			IssuedAt:     credentialIssued,
+			ExpiresAt:    credentialExpiry,
+			Scope:        []string{ScopeSessionMint, ScopeRotate, ScopeDeviceRevoke},
+		},
+		Device:      toDevice(device),
+		Network:     toNetwork(network),
+		SigningKeys: s.SigningKeys(now),
+	}, nil
 }
 
 func adminDeviceACKKey(networkID, deviceID string) string { return networkID + "\x00" + deviceID }
@@ -1346,7 +1985,7 @@ func toDevice(record DeviceRecord) Device {
 	return Device{ID: record.ID, UserID: record.UserID, NetworkID: record.NetworkID, Role: role, Name: record.Name, Platform: record.Platform, Hostname: record.Hostname, WireGuardPublicKey: record.WireGuardPublicKey, WireGuardAddress: record.WireGuardAddress, CreatedAt: record.CreatedAt.UTC(), UpdatedAt: record.UpdatedAt.UTC(), LastSeenAt: record.LastSeenAt}
 }
 
-func toAdminDevice(record DeviceRecord, ackReceivedAt time.Time, acknowledged bool, now time.Time) AdminDevice {
+func toAdminDevice(record DeviceRecord, network NetworkRecord, ackReceivedAt time.Time, acknowledged bool, hasAnyACK bool, telemetry *DeviceTelemetryRecord, now time.Time) AdminDevice {
 	connectionStatus := "never_seen"
 	if record.Status == "revoked" {
 		connectionStatus = "revoked"
@@ -1359,10 +1998,83 @@ func toAdminDevice(record DeviceRecord, ackReceivedAt time.Time, acknowledged bo
 		if !lastACKAt.After(now) && !lastACKAt.Before(now.Add(-adminDeviceACKRecentWindow)) {
 			connectionStatus = "recent_ack"
 		}
+	} else if telemetry != nil {
+		connectionStatus = "stale"
+		observedAt := telemetry.UpdatedAt
+		if record.LastSeenAt != nil && record.LastSeenAt.After(observedAt) {
+			observedAt = *record.LastSeenAt
+		}
+		if !observedAt.After(now) && !observedAt.Before(now.Add(-adminDeviceACKRecentWindow)) {
+			connectionStatus = "recent_ack"
+		}
+	} else if !hasAnyACK && record.LastSeenAt != nil {
+		connectionStatus = "stale"
+		observedAt := *record.LastSeenAt
+		if !observedAt.After(now) && !observedAt.Before(now.Add(-adminDeviceACKRecentWindow)) {
+			connectionStatus = "recent_ack"
+		}
 	}
-	return AdminDevice{ID: record.ID, UserID: record.UserID, NetworkID: record.NetworkID, Role: record.Role, Name: record.Name, Platform: record.Platform, Hostname: record.Hostname, WireGuardPublicKey: record.WireGuardPublicKey, WireGuardAddress: record.WireGuardAddress, Status: record.Status, LastSeenAt: record.LastSeenAt, ConnectionStatus: connectionStatus, CreatedAt: record.CreatedAt.UTC(), UpdatedAt: record.UpdatedAt.UTC()}
+	adminDevice := AdminDevice{
+		ID:                 record.ID,
+		UserID:             record.UserID,
+		NetworkID:          record.NetworkID,
+		Role:               record.Role,
+		Name:               record.Name,
+		Platform:           record.Platform,
+		Hostname:           record.Hostname,
+		WireGuardPublicKey: record.WireGuardPublicKey,
+		WireGuardAddress:   record.WireGuardAddress,
+		Status:             record.Status,
+		LastSeenAt:         record.LastSeenAt,
+		ConnectionStatus:   connectionStatus,
+		CreatedAt:          record.CreatedAt.UTC(),
+		UpdatedAt:          record.UpdatedAt.UTC(),
+	}
+	if telemetry != nil {
+		healthy := telemetry.Healthy
+		adminDevice.RuntimeHealthy = &healthy
+		adminDevice.ActivePath = telemetry.ActivePath
+		if telemetry.RTTMillis > 0 {
+			rtt := telemetry.RTTMillis
+			adminDevice.RTTMillis = &rtt
+		}
+		adminDevice.RxBytes = telemetry.RxBytes
+		adminDevice.TxBytes = telemetry.TxBytes
+		adminDevice.AppliedGeneration = telemetry.AppliedGeneration
+		mode := strings.TrimSpace(telemetry.ConnectionMode)
+		if mode == "" {
+			mode = strings.TrimSpace(network.ConnectionMode)
+		}
+		adminDevice.ConnectionMode = mode
+	}
+	return adminDevice
 }
 
 func toNetwork(record NetworkRecord) Network {
-	return Network{ID: record.ID, DisplayName: record.DisplayName, CIDR: record.CIDR, GatewayID: record.GatewayID, GatewayWireGuardKey: record.GatewayWireGuardKey, GatewayEndpointHost: record.GatewayEndpointHost, GatewayEndpointPort: record.GatewayEndpointPort, TransportServerName: record.TransportServerName, TransportPort: record.TransportPort, TransportAuthID: record.TransportAuthID, TransportKind: record.TransportKind, TransportPath: record.TransportPath, TransportMode: record.TransportMode, TransportHost: record.TransportHost, GatewayFrontend: record.GatewayFrontend, GatewayListenSocket: record.GatewayListenSocket, ConfigGeneration: record.ConfigGeneration, CreatedAt: record.CreatedAt.UTC(), UpdatedAt: record.UpdatedAt.UTC()}
+	mode := strings.TrimSpace(record.ConnectionMode)
+	if mode == "" {
+		mode = DefaultConnectionMode
+	}
+	return Network{
+		ID:                  record.ID,
+		DisplayName:         record.DisplayName,
+		CIDR:                record.CIDR,
+		GatewayID:           record.GatewayID,
+		GatewayWireGuardKey: record.GatewayWireGuardKey,
+		GatewayEndpointHost: record.GatewayEndpointHost,
+		GatewayEndpointPort: record.GatewayEndpointPort,
+		TransportServerName: record.TransportServerName,
+		TransportPort:       record.TransportPort,
+		TransportAuthID:     record.TransportAuthID,
+		TransportKind:       record.TransportKind,
+		TransportPath:       record.TransportPath,
+		TransportMode:       record.TransportMode,
+		TransportHost:       record.TransportHost,
+		GatewayFrontend:     record.GatewayFrontend,
+		GatewayListenSocket: record.GatewayListenSocket,
+		ConnectionMode:      mode,
+		ConfigGeneration:    record.ConfigGeneration,
+		CreatedAt:           record.CreatedAt.UTC(),
+		UpdatedAt:           record.UpdatedAt.UTC(),
+	}
 }

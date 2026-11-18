@@ -212,6 +212,32 @@ func (h *HTTPHandler) AckUser(c *gin.Context, userID string) {
 	c.JSON(http.StatusOK, response)
 }
 
+func (h *HTTPHandler) UserGateways(c *gin.Context, userID string) {
+	noStore(c)
+	gateways, err := h.Service.UserGateways(c.Request.Context(), userID)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	noStore(c)
+	c.JSON(http.StatusOK, gin.H{"gateways": gateways})
+}
+
+func (h *HTTPHandler) UserEnrollDevice(c *gin.Context, userID string) {
+	noStore(c)
+	var request UserEnrollRequest
+	if !decodeJSONLimit(c, &request, 64*1024) {
+		return
+	}
+	response, err := h.Service.UserEnrollDevice(c.Request.Context(), userID, request)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	noStore(c)
+	c.JSON(http.StatusOK, response)
+}
+
 func decodeJSON(c *gin.Context, target any) bool {
 	return decodeJSONLimit(c, target, 1<<20)
 }

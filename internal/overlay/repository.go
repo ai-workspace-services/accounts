@@ -36,6 +36,7 @@ type NetworkRecord struct {
 	TransportHost           string    `gorm:"column:transport_host;type:text;not null;default:''"`
 	GatewayFrontend         string    `gorm:"column:gateway_frontend;type:text;not null;default:''"`
 	GatewayListenSocket     string    `gorm:"column:gateway_listen_socket;type:text;not null;default:''"`
+	ConnectionMode          string    `gorm:"column:connection_mode;type:text;not null;default:'wg_vless_l3'"`
 	OwnerUserID             string    `gorm:"column:owner_user_id;type:text;index"`
 	PolicyJSON              string    `gorm:"column:policy_json;type:text;not null;default:''"`
 	ConfigGeneration        uint64    `gorm:"column:config_generation;not null;default:1"`
@@ -145,6 +146,32 @@ type RegistrationRecord struct {
 
 func (RegistrationRecord) TableName() string { return "overlay_registrations" }
 
+type DeviceTelemetryRecord struct {
+	NetworkID         string     `gorm:"column:network_id;type:text;primaryKey"`
+	DeviceID          string     `gorm:"column:device_id;type:text;primaryKey"`
+	Role              string     `gorm:"column:role;type:text;not null;default:'one';index"`
+	Healthy           bool       `gorm:"column:healthy;not null;default:false"`
+	ConnectionMode    string     `gorm:"column:connection_mode;type:text;not null;default:''"`
+	AppliedConfigID   string     `gorm:"column:applied_config_id;type:text;not null;default:''"`
+	AppliedGeneration uint64     `gorm:"column:applied_generation;not null;default:0"`
+	ActivePath        string     `gorm:"column:active_path;type:text;not null;default:''"`
+	Endpoint          string     `gorm:"column:endpoint;type:text;not null;default:''"`
+	RTTMillis         int64      `gorm:"column:rtt_ms;not null;default:0"`
+	RxBytes           uint64     `gorm:"column:rx_bytes;not null;default:0"`
+	TxBytes           uint64     `gorm:"column:tx_bytes;not null;default:0"`
+	InternetRxBytes   uint64     `gorm:"column:internet_rx_bytes;not null;default:0"`
+	InternetTxBytes   uint64     `gorm:"column:internet_tx_bytes;not null;default:0"`
+	PrivateRxBytes    uint64     `gorm:"column:private_rx_bytes;not null;default:0"`
+	PrivateTxBytes    uint64     `gorm:"column:private_tx_bytes;not null;default:0"`
+	LatestHandshakeAt *time.Time `gorm:"column:latest_handshake_at"`
+	PeersJSON         string     `gorm:"column:peers_json;type:text;not null;default:'[]'"`
+	TopAppsJSON       string     `gorm:"column:top_apps_json;type:text;not null;default:'[]'"`
+	SampledAt         time.Time  `gorm:"column:sampled_at;not null"`
+	UpdatedAt         time.Time  `gorm:"column:updated_at;not null;autoUpdateTime"`
+}
+
+func (DeviceTelemetryRecord) TableName() string { return "overlay_device_telemetry" }
+
 type Repository struct{ DB *gorm.DB }
 
 func NewRepository(db *gorm.DB) (*Repository, error) {
@@ -158,7 +185,7 @@ func AutoMigrate(db *gorm.DB) error {
 	if db == nil {
 		return errors.New("overlay migration requires a database")
 	}
-	return db.AutoMigrate(&NetworkRecord{}, &InviteRecord{}, &DeviceRecord{}, &CredentialRecord{}, &EnrollmentRecord{}, &AckRecord{}, &RegistrationRecord{})
+	return db.AutoMigrate(&NetworkRecord{}, &InviteRecord{}, &DeviceRecord{}, &CredentialRecord{}, &EnrollmentRecord{}, &AckRecord{}, &RegistrationRecord{}, &DeviceTelemetryRecord{})
 }
 
 func HashSecret(secret string) string {
@@ -195,7 +222,8 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 			TransportAuthID: cfg.Network.TransportAuthID, TransportKind: cfg.Network.TransportKind,
 			TransportPath: cfg.Network.TransportPath, TransportMode: cfg.Network.TransportMode,
 			TransportHost: cfg.Network.TransportHost, GatewayFrontend: cfg.Network.GatewayFrontend,
-			GatewayListenSocket: cfg.Network.GatewayListenSocket, OwnerUserID: cfg.Network.OwnerUserID, PolicyJSON: "",
+			GatewayListenSocket: cfg.Network.GatewayListenSocket, ConnectionMode: cfg.Network.ConnectionMode,
+			OwnerUserID: cfg.Network.OwnerUserID, PolicyJSON: "",
 			ConfigGeneration: 1,
 		}
 		var existing NetworkRecord
@@ -286,6 +314,7 @@ func (r *Repository) DeleteNetwork(ctx context.Context, ownerUserID, networkID s
 		// These legacy tables may be absent in fresh Zero-only installations;
 		// when present, remove stale network records as part of the same delete.
 		for _, table := range []string{
+			"overlay_device_telemetry",
 			"overlay_signed_config_acks",
 			"overlay_registrations",
 			"overlay_invites",

@@ -24,6 +24,10 @@
     "path": "/api/overlay/v1/admin/networks/:networkID"
   },
   {
+    "method": "PUT",
+    "path": "/api/overlay/v1/admin/networks/:networkID/mode"
+  },
+  {
     "method": "GET",
     "path": "/api/overlay/v1/admin/networks/:networkID/policy"
   },
@@ -52,8 +56,16 @@
     "path": "/api/overlay/v1/admin/registrations/:registrationID/reject"
   },
   {
+    "method": "GET",
+    "path": "/api/overlay/v1/admin/telemetry"
+  },
+  {
     "method": "POST",
     "path": "/api/overlay/v1/device/session"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/devices/enroll"
   },
   {
     "method": "GET",
@@ -70,6 +82,10 @@
   {
     "method": "GET",
     "path": "/api/overlay/v1/gateway/signed-config"
+  },
+  {
+    "method": "GET",
+    "path": "/api/overlay/v1/gateways"
   },
   {
     "method": "POST",

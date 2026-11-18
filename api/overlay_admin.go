@@ -67,6 +67,11 @@ type overlayAdminDeleteNetworkRequest struct {
 	ConfirmNetworkID string `json:"confirm_network_id"`
 }
 
+type overlayAdminUpdateNetworkModeRequest struct {
+	ConnectionMode string `json:"connection_mode"`
+	Mode           string `json:"mode"`
+}
+
 func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	if h.overlayService == nil || h.tokenService == nil {
 		return
@@ -75,8 +80,10 @@ func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	group.Use(h.tokenService.AuthMiddleware())
 	group.Use(auth.RequireActiveUser(h.store))
 	group.GET("/overview", h.overlayAdminOverview)
+	group.GET("/telemetry", h.overlayAdminTelemetry)
 	group.GET("/networks", h.overlayAdminNetworks)
 	group.DELETE("/networks/:networkID", h.overlayAdminDeleteNetwork)
+	group.PUT("/networks/:networkID/mode", h.overlayAdminUpdateNetworkMode)
 	group.GET("/devices", h.overlayAdminDevices)
 	group.GET("/invites", h.overlayAdminInvites)
 	group.POST("/invites", h.overlayAdminCreateInvite)
@@ -98,6 +105,45 @@ func (h *handler) overlayAdminOverview(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero overview")
 		return
 	}
+	c.JSON(http.StatusOK, value)
+}
+
+func (h *handler) overlayAdminTelemetry(c *gin.Context) {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+		return
+	}
+	value, err := h.overlayService.AdminTelemetry(c.Request.Context(), auth.GetUserID(c))
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero telemetry")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, value)
+}
+
+func (h *handler) overlayAdminUpdateNetworkMode(c *gin.Context) {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+		return
+	}
+	var request overlayAdminUpdateNetworkModeRequest
+	if !decodeOverlayAdminJSON(c, &request) {
+		return
+	}
+	mode := strings.TrimSpace(request.ConnectionMode)
+	alt := strings.TrimSpace(request.Mode)
+	if mode != "" && alt != "" && mode != alt {
+		respondError(c, http.StatusBadRequest, "invalid_request", "conflicting XConnect Zero connection mode fields")
+		return
+	}
+	if mode == "" {
+		mode = alt
+	}
+	value, err := h.overlayService.AdminUpdateNetworkMode(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"), mode)
+	if err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, value)
 }
 
@@ -366,20 +412,29 @@ func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
 // ownership is still enforced in every service query, so this grants no
 // cross-user administrative view.
 func (h *handler) requireXConnectZeroAccess(c *gin.Context, permission string) (*store.User, bool) {
-	token := h.resolveSessionToken(c)
-	if token == "" {
-		respondError(c, http.StatusUnauthorized, "session_token_required", "session token is required")
-		return nil, false
+	var user *store.User
+	if userID := auth.GetUserID(c); userID != "" {
+		if u, err := h.store.GetUserByID(c.Request.Context(), userID); err == nil && u != nil {
+			user = u
+		}
 	}
-	sess, ok := h.lookupSession(token)
-	if !ok {
-		respondError(c, http.StatusUnauthorized, "invalid_session", "session not found or expired")
-		return nil, false
-	}
-	user, err := h.store.GetUserByID(c.Request.Context(), sess.userID)
-	if err != nil {
-		respondError(c, http.StatusInternalServerError, "session_user_lookup_failed", "failed to load session user")
-		return nil, false
+	if user == nil {
+		token := h.resolveSessionToken(c)
+		if token == "" {
+			respondError(c, http.StatusUnauthorized, "session_token_required", "session token is required")
+			return nil, false
+		}
+		sess, ok := h.lookupSession(token)
+		if !ok {
+			respondError(c, http.StatusUnauthorized, "invalid_session", "session not found or expired")
+			return nil, false
+		}
+		u, err := h.store.GetUserByID(c.Request.Context(), sess.userID)
+		if err != nil {
+			respondError(c, http.StatusInternalServerError, "session_user_lookup_failed", "failed to load session user")
+			return nil, false
+		}
+		user = u
 	}
 	if !user.Active {
 		respondError(c, http.StatusForbidden, "account_suspended", "your account has been suspended")
