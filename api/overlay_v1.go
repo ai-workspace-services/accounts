@@ -30,6 +30,22 @@ func (h *handler) registerOverlayV1Routes(r *gin.Engine) {
 	userGroup.Use(h.tokenService.AuthMiddleware())
 	userGroup.Use(auth.RequireActiveUser(h.store))
 	userGroup.GET("/signing-keys", overlayHTTP.SigningKeys)
+	userGroup.GET("/gateways", func(c *gin.Context) {
+		userID := auth.GetUserID(c)
+		if userID == "" || userID == "system" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user authentication required"})
+			return
+		}
+		overlayHTTP.UserGateways(c, userID)
+	})
+	userGroup.POST("/devices/enroll", func(c *gin.Context) {
+		userID := auth.GetUserID(c)
+		if userID == "" || userID == "system" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user authentication required"})
+			return
+		}
+		overlayHTTP.UserEnrollDevice(c, userID)
+	})
 	userGroup.GET("/signed-config", func(c *gin.Context) {
 		userID := auth.GetUserID(c)
 		if userID == "" || userID == "system" {

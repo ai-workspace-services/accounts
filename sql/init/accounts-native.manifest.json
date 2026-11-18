@@ -1,8 +1,8 @@
 {
   "format": 1,
-  "migration_version": 2026102801,
-  "schema_sha256": "80ca865a9b93f1e63ca4c4c76e7a08e69458245ec63f1bba5667e28c4409a619",
-  "business_table_count": 78,
+  "migration_version": 2026111801,
+  "schema_sha256": "015b4f761736cc59d9417825a2631414c6783eb253eac142de2ba806386fb9b0",
+  "business_table_count": 79,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
@@ -34,7 +34,7 @@
     },
     {
       "path": "internal/overlay/repository.go",
-      "sha256": "7e256b6f33a4364302eefbca3ffb3636e4024fe55c14ebb031d9184cb645d60d"
+      "sha256": "22778806529bac3eb1be4558dc6f40452747e846301b947c57e82b5c708d520a"
     },
     {
       "path": "internal/tasksession/postgres_schema.go",
@@ -46,7 +46,7 @@
     },
     {
       "path": "scripts/qualify-native-schema.mjs",
-      "sha256": "612ce6c7ae81bc42f28823153659968639897a2ca242ce2b9a3e4d183f397a33"
+      "sha256": "5b9e0ccdfd2e4417398a4829a8fd330e5e18a245c9f7f63709985eb6e3b8f1e6"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
@@ -145,6 +145,10 @@
       "sha256": "6af662b1c3cc8cc3aa993cfc5c1b6d3d6ef17fa8ce1a304f79963afd20444068"
     },
     {
+      "path": "sql/migrations/2026111801_overlay_telemetry_and_mode.up.sql",
+      "sha256": "960f36201cfc0eb25aed98a438877048c4ea99e286a46773e0ad0870b2556c33"
+    },
+    {
       "path": "sql/schema.sql",
       "sha256": "b7cf8aa23d8fb12fe003873b9a9fd458226c57ce332d0818d4a73a04813e11b1"
     }
@@ -187,6 +191,7 @@
     "oauth_exchange_codes",
     "overlay_config_acks",
     "overlay_device_credentials",
+    "overlay_device_telemetry",
     "overlay_devices",
     "overlay_enrollment_sessions",
     "overlay_invites",

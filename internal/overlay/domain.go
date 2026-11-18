@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	"account/internal/agentproto"
 )
 
 const (
@@ -18,6 +20,11 @@ const (
 	GatewayFrontendDirectTLS    = "direct-tls"
 	GatewayFrontendCaddyUnixH2C = "caddy-unix-h2c"
 	DefaultGatewayListenSocket  = "/run/xconnect-gateway/xray.sock"
+
+	ConnectionModeWGVLESSL3 = "wg_vless_l3"
+	ConnectionModeWGUDPL3   = "wg_udp_l3"
+	ConnectionModeWGVLESSL2 = "wg_vless_l2"
+	DefaultConnectionMode   = ConnectionModeWGVLESSL3
 
 	TokenTypeBearer = "Bearer"
 	TokenTypeDevice = "Device"
@@ -69,7 +76,8 @@ type Network struct {
 	TransportHost       string    `json:"transport_host,omitempty"`
 	GatewayFrontend     string    `json:"gateway_frontend,omitempty"`
 	GatewayListenSocket string    `json:"gateway_listen_socket,omitempty"`
-	ConfigGeneration    uint64    `json:"-"`
+	ConnectionMode      string    `json:"connection_mode,omitempty"`
+	ConfigGeneration    uint64    `json:"config_generation,omitempty"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
@@ -105,8 +113,39 @@ type AdminDevice struct {
 	Status             string     `json:"status"`
 	LastSeenAt         *time.Time `json:"last_seen_at"`
 	ConnectionStatus   string     `json:"connection_status"`
+	RuntimeHealthy     *bool      `json:"runtime_healthy,omitempty"`
+	ActivePath         string     `json:"active_path,omitempty"`
+	RTTMillis          *int64     `json:"rtt_ms,omitempty"`
+	RxBytes            uint64     `json:"rx_bytes,omitempty"`
+	TxBytes            uint64     `json:"tx_bytes,omitempty"`
+	AppliedGeneration  uint64     `json:"applied_generation,omitempty"`
+	ConnectionMode     string     `json:"connection_mode,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+type UserGatewaySummary struct {
+	NetworkID           string     `json:"network_id"`
+	DisplayName         string     `json:"display_name"`
+	CIDR                string     `json:"cidr"`
+	GatewayID           string     `json:"gateway_id"`
+	GatewayEndpointHost string     `json:"gateway_endpoint_host"`
+	GatewayEndpointPort int        `json:"gateway_endpoint_port"`
+	TransportServerName string     `json:"transport_server_name"`
+	TransportPort       int        `json:"transport_port"`
+	ConnectionMode      string     `json:"connection_mode"`
+	RuntimeHealthy      bool       `json:"runtime_healthy"`
+	LastSeenAt          *time.Time `json:"last_seen_at,omitempty"`
+}
+
+type UserEnrollRequest struct {
+	NetworkID          string `json:"network_id"`
+	GatewayID          string `json:"gateway_id,omitempty"`
+	DeviceID           string `json:"device_id"`
+	Name               string `json:"name,omitempty"`
+	Platform           string `json:"platform"`
+	Hostname           string `json:"hostname,omitempty"`
+	WireGuardPublicKey string `json:"wireguard_public_key"`
 }
 
 type SigningKey struct {
@@ -405,6 +444,52 @@ type AdminOverview struct {
 	SigningKeyID  string `json:"signingKeyId"`
 }
 
+type AdminTelemetry struct {
+	Status         string                  `json:"status"`
+	SASETraffic    AdminSASETraffic        `json:"sase_traffic"`
+	ConnectedUsers AdminConnectedUsers     `json:"connected_users"`
+	TopPrivateApps []AdminAppTraffic       `json:"top_private_apps"`
+	TopUsers       []AdminUserTrafficEntry `json:"top_users"`
+}
+
+type AdminSASETraffic struct {
+	RxBytesTotal    uint64 `json:"rx_bytes_total"`
+	TxBytesTotal    uint64 `json:"tx_bytes_total"`
+	InternetRxBytes uint64 `json:"internet_rx_bytes"`
+	InternetTxBytes uint64 `json:"internet_tx_bytes"`
+	PrivateRxBytes  uint64 `json:"private_rx_bytes"`
+	PrivateTxBytes  uint64 `json:"private_tx_bytes"`
+}
+
+type AdminConnectedUsers struct {
+	ConnectedCount int `json:"connected_count"`
+	ActiveCount    int `json:"active_count"`
+	GatewayOnline  int `json:"gateway_online"`
+	GatewayTotal   int `json:"gateway_total"`
+}
+
+type AdminAppTraffic struct {
+	App         string `json:"app"`
+	RxBytes     uint64 `json:"rx_bytes"`
+	TxBytes     uint64 `json:"tx_bytes"`
+	TotalBytes  uint64 `json:"total_bytes"`
+	Connections int    `json:"connections"`
+}
+
+type AdminUserTrafficEntry struct {
+	DeviceID         string     `json:"device_id"`
+	Name             string     `json:"name"`
+	NetworkID        string     `json:"network_id"`
+	WireGuardAddress string     `json:"wireguard_address,omitempty"`
+	ActivePath       string     `json:"active_path,omitempty"`
+	Connected        bool       `json:"connected"`
+	RTTMillis        int64      `json:"rtt_ms,omitempty"`
+	RxBytes          uint64     `json:"rx_bytes"`
+	TxBytes          uint64     `json:"tx_bytes"`
+	TotalBytes       uint64     `json:"total_bytes"`
+	LastSeenAt       *time.Time `json:"last_seen_at,omitempty"`
+}
+
 type InviteSummary struct {
 	ID            string     `json:"id"`
 	NetworkID     string     `json:"network_id"`
@@ -451,9 +536,12 @@ type StableGatewayReconcileResult struct {
 // deployed control agent. It cannot create, reassign, rekey, enroll, or revoke
 // an overlay device.
 type RuntimeObservationRequest struct {
-	NetworkID string
-	DeviceID  string
-	Role      string
+	NetworkID        string
+	DeviceID         string
+	Role             string
+	Healthy          bool
+	Overlay          *agentproto.OverlayStatus
+	GatewayTelemetry *agentproto.GatewayTelemetry
 }
 
 // AdminInviteRequest creates one device-bound enrollment invitation for an
@@ -495,6 +583,7 @@ type BootstrapNetwork struct {
 	TransportHost           string
 	GatewayFrontend         string
 	GatewayListenSocket     string
+	ConnectionMode          string
 	OwnerUserID             string
 }
 
@@ -562,6 +651,13 @@ func (n BootstrapNetwork) validate() error {
 	if n.GatewayFrontend == "" && n.GatewayListenSocket != "" {
 		return ErrInvalidInput
 	}
+	if mode := strings.TrimSpace(n.ConnectionMode); mode != "" {
+		switch mode {
+		case ConnectionModeWGVLESSL3, ConnectionModeWGUDPL3, ConnectionModeWGVLESSL2:
+		default:
+			return ErrInvalidInput
+		}
+	}
 	return nil
 }
 
@@ -574,6 +670,9 @@ func (n BootstrapNetwork) withTransportDefaults() BootstrapNetwork {
 	}
 	if strings.TrimSpace(n.TransportMode) == "" {
 		n.TransportMode = DefaultTransportMode
+	}
+	if strings.TrimSpace(n.ConnectionMode) == "" {
+		n.ConnectionMode = DefaultConnectionMode
 	}
 	return n
 }

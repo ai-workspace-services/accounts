@@ -852,6 +852,35 @@ CREATE TABLE public.overlay_device_credentials (
 
 
 --
+-- Name: overlay_device_telemetry; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.overlay_device_telemetry (
+    network_id text NOT NULL,
+    device_id text NOT NULL,
+    role text DEFAULT 'one'::text NOT NULL,
+    healthy boolean DEFAULT false NOT NULL,
+    connection_mode text DEFAULT ''::text NOT NULL,
+    applied_config_id text DEFAULT ''::text NOT NULL,
+    applied_generation bigint DEFAULT 0 NOT NULL,
+    active_path text DEFAULT ''::text NOT NULL,
+    endpoint text DEFAULT ''::text NOT NULL,
+    rtt_ms bigint DEFAULT 0 NOT NULL,
+    rx_bytes bigint DEFAULT 0 NOT NULL,
+    tx_bytes bigint DEFAULT 0 NOT NULL,
+    internet_rx_bytes bigint DEFAULT 0 NOT NULL,
+    internet_tx_bytes bigint DEFAULT 0 NOT NULL,
+    private_rx_bytes bigint DEFAULT 0 NOT NULL,
+    private_tx_bytes bigint DEFAULT 0 NOT NULL,
+    latest_handshake_at timestamp with time zone,
+    peers_json text DEFAULT '[]'::text NOT NULL,
+    top_apps_json text DEFAULT '[]'::text NOT NULL,
+    sampled_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL
+);
+
+
+--
 -- Name: overlay_devices; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -928,6 +957,7 @@ CREATE TABLE public.overlay_networks (
     transport_host text DEFAULT ''::text NOT NULL,
     gateway_frontend text DEFAULT ''::text NOT NULL,
     gateway_listen_socket text DEFAULT ''::text NOT NULL,
+    connection_mode text DEFAULT 'wg_vless_l3'::text NOT NULL,
     owner_user_id text,
     policy_json text DEFAULT ''::text NOT NULL,
     config_generation bigint DEFAULT 1 NOT NULL,
@@ -2099,6 +2129,14 @@ ALTER TABLE ONLY public.overlay_device_credentials
 
 
 --
+-- Name: overlay_device_telemetry overlay_device_telemetry_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.overlay_device_telemetry
+    ADD CONSTRAINT overlay_device_telemetry_pkey PRIMARY KEY (network_id, device_id);
+
+
+--
 -- Name: overlay_devices overlay_devices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2787,6 +2825,13 @@ CREATE INDEX idx_overlay_device_credentials_expires_at ON public.overlay_device_
 --
 
 CREATE UNIQUE INDEX idx_overlay_device_credentials_token_hash ON public.overlay_device_credentials USING btree (token_hash);
+
+
+--
+-- Name: idx_overlay_device_telemetry_role; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_overlay_device_telemetry_role ON public.overlay_device_telemetry USING btree (role);
 
 
 --

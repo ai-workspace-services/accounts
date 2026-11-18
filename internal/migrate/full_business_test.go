@@ -19,7 +19,7 @@ func TestFullBusinessContractNativeCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(order) != 79 || len(optionalBusinessTables) != 35 {
+	if len(order) != 80 || len(optionalBusinessTables) != 36 {
 		t.Fatal("reviewed full scope differs")
 	}
 	body, manifest, err := schema.NativeArtifact()
@@ -48,7 +48,7 @@ func TestFullBusinessContractNativeCoverage(t *testing.T) {
 			}
 		}
 	}
-	if len(manifest.BusinessTables) != 78 {
+	if len(manifest.BusinessTables) != 79 {
 		t.Fatal("native scope drift")
 	}
 	positions := map[string]int{}
