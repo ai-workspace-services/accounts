@@ -24,6 +24,18 @@
     "path": "/api/overlay/v1/admin/networks/:networkID"
   },
   {
+    "method": "GET",
+    "path": "/api/overlay/v1/admin/networks/:networkID/members"
+  },
+  {
+    "method": "POST",
+    "path": "/api/overlay/v1/admin/networks/:networkID/members"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/overlay/v1/admin/networks/:networkID/members/:userID"
+  },
+  {
     "method": "PUT",
     "path": "/api/overlay/v1/admin/networks/:networkID/mode"
   },

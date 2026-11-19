@@ -280,6 +280,122 @@ func (s *Service) AdminDeleteNetwork(ctx context.Context, ownerUserID, networkID
 	return s.repo.DeleteNetwork(ctx, ownerUserID, networkID)
 }
 
+func (s *Service) AdminNetworkMembers(ctx context.Context, callerUserID, networkID string) ([]NetworkMemberSummary, error) {
+	callerUserID = strings.TrimSpace(callerUserID)
+	networkID = strings.TrimSpace(networkID)
+	if callerUserID == "" || networkID == "" {
+		return nil, ErrInvalidInput
+	}
+	var network NetworkRecord
+	if err := s.repo.DB.WithContext(ctx).
+		Where("id = ? AND owner_user_id = ?", networkID, callerUserID).
+		First(&network).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	var records []NetworkMemberRecord
+	if err := s.repo.DB.WithContext(ctx).
+		Where("network_id = ?", network.ID).
+		Order("created_at ASC, id ASC").
+		Find(&records).Error; err != nil {
+		return nil, err
+	}
+	result := make([]NetworkMemberSummary, 0, len(records))
+	for _, record := range records {
+		result = append(result, toNetworkMemberSummary(record))
+	}
+	return result, nil
+}
+
+func (s *Service) AdminBindNetworkMember(ctx context.Context, callerUserID, networkID, targetUserID, targetEmail string) (NetworkMemberSummary, error) {
+	callerUserID = strings.TrimSpace(callerUserID)
+	networkID = strings.TrimSpace(networkID)
+	targetUserID = strings.TrimSpace(targetUserID)
+	targetEmail = strings.TrimSpace(targetEmail)
+	if callerUserID == "" || networkID == "" || targetUserID == "" {
+		return NetworkMemberSummary{}, ErrInvalidInput
+	}
+	var bound NetworkMemberRecord
+	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var network NetworkRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_user_id = ?", networkID, callerUserID).
+			First(&network).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		candidate := NetworkMemberRecord{
+			ID:        newID("nmem"),
+			NetworkID: network.ID,
+			UserID:    targetUserID,
+			Email:     targetEmail,
+			CreatedBy: callerUserID,
+			CreatedAt: canonicalTime(s.now()),
+		}
+		conflictClause := clause.OnConflict{
+			Columns:   []clause.Column{{Name: "network_id"}, {Name: "user_id"}},
+			DoNothing: true,
+		}
+		if targetEmail != "" {
+			conflictClause = clause.OnConflict{
+				Columns:   []clause.Column{{Name: "network_id"}, {Name: "user_id"}},
+				DoUpdates: clause.AssignmentColumns([]string{"email"}),
+			}
+		}
+		if err := tx.Clauses(conflictClause).Create(&candidate).Error; err != nil {
+			return err
+		}
+		return tx.Where("network_id = ? AND user_id = ?", network.ID, targetUserID).First(&bound).Error
+	})
+	if err != nil {
+		return NetworkMemberSummary{}, err
+	}
+	return toNetworkMemberSummary(bound), nil
+}
+
+func (s *Service) AdminRemoveNetworkMember(ctx context.Context, callerUserID, networkID, targetUserID string) error {
+	callerUserID = strings.TrimSpace(callerUserID)
+	networkID = strings.TrimSpace(networkID)
+	targetUserID = strings.TrimSpace(targetUserID)
+	if callerUserID == "" || networkID == "" || targetUserID == "" {
+		return ErrInvalidInput
+	}
+	return s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var network NetworkRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_user_id = ?", networkID, callerUserID).
+			First(&network).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNotFound
+			}
+			return err
+		}
+		result := tx.Where("network_id = ? AND user_id = ?", network.ID, targetUserID).Delete(&NetworkMemberRecord{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
+func toNetworkMemberSummary(record NetworkMemberRecord) NetworkMemberSummary {
+	return NetworkMemberSummary{
+		ID:        record.ID,
+		NetworkID: record.NetworkID,
+		UserID:    record.UserID,
+		Email:     record.Email,
+		CreatedBy: record.CreatedBy,
+		CreatedAt: record.CreatedAt.UTC(),
+	}
+}
+
 func (s *Service) AdminDevices(ctx context.Context, ownerUserID string) ([]AdminDevice, error) {
 	ownerUserID = strings.TrimSpace(ownerUserID)
 	var networks []NetworkRecord
@@ -745,8 +861,9 @@ func (s *Service) UserGateways(ctx context.Context, userID string) ([]UserGatewa
 	}
 	var networks []NetworkRecord
 	userDevicesSubquery := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Select("network_id").Where("user_id = ? AND status = ?", userID, "active")
+	networkMembersSubquery := s.repo.DB.WithContext(ctx).Model(&NetworkMemberRecord{}).Select("network_id").Where("user_id = ?", userID)
 	if err := s.repo.DB.WithContext(ctx).
-		Where("owner_user_id = ? OR id IN (?)", userID, userDevicesSubquery).
+		Where("owner_user_id = ? OR id IN (?) OR id IN (?)", userID, userDevicesSubquery, networkMembersSubquery).
 		Order("id ASC").
 		Find(&networks).Error; err != nil {
 		return nil, err
@@ -869,7 +986,15 @@ func (s *Service) UserEnrollDevice(ctx context.Context, userID string, request U
 			return err
 		}
 		if strings.TrimSpace(networkRecord.OwnerUserID) != userID {
-			return ErrForbidden
+			var memberCount int64
+			if err := tx.Model(&NetworkMemberRecord{}).
+				Where("network_id = ? AND user_id = ?", networkRecord.ID, userID).
+				Count(&memberCount).Error; err != nil {
+				return err
+			}
+			if memberCount == 0 {
+				return ErrForbidden
+			}
 		}
 		if request.GatewayID != "" && request.GatewayID != networkRecord.GatewayID {
 			return ErrInvalidInput
@@ -939,8 +1064,8 @@ func (s *Service) UserEnrollDevice(ctx context.Context, userID string, request U
 			}
 			device = DeviceRecord{
 				ID:                 request.DeviceID,
-				UserUUID:           networkRecord.OwnerUserID,
-				UserID:             networkRecord.OwnerUserID,
+				UserUUID:           userID,
+				UserID:             userID,
 				NetworkID:          networkRecord.ID,
 				Role:               RoleOne,
 				Name:               request.Name,

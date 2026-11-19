@@ -72,6 +72,11 @@ type overlayAdminUpdateNetworkModeRequest struct {
 	Mode           string `json:"mode"`
 }
 
+type overlayAdminBindNetworkMemberRequest struct {
+	Email  string `json:"email"`
+	UserID string `json:"user_id"`
+}
+
 func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	if h.overlayService == nil || h.tokenService == nil {
 		return
@@ -84,6 +89,9 @@ func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	group.GET("/networks", h.overlayAdminNetworks)
 	group.DELETE("/networks/:networkID", h.overlayAdminDeleteNetwork)
 	group.PUT("/networks/:networkID/mode", h.overlayAdminUpdateNetworkMode)
+	group.GET("/networks/:networkID/members", h.overlayAdminNetworkMembers)
+	group.POST("/networks/:networkID/members", h.overlayAdminBindNetworkMember)
+	group.DELETE("/networks/:networkID/members/:userID", h.overlayAdminRemoveNetworkMember)
 	group.GET("/devices", h.overlayAdminDevices)
 	group.GET("/invites", h.overlayAdminInvites)
 	group.POST("/invites", h.overlayAdminCreateInvite)
@@ -145,6 +153,72 @@ func (h *handler) overlayAdminUpdateNetworkMode(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, value)
+}
+
+func (h *handler) overlayAdminNetworkMembers(c *gin.Context) {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+		return
+	}
+	members, err := h.overlayService.AdminNetworkMembers(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"))
+	if err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"members": members})
+}
+
+func (h *handler) overlayAdminBindNetworkMember(c *gin.Context) {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+		return
+	}
+	var request overlayAdminBindNetworkMemberRequest
+	if !decodeOverlayAdminJSON(c, &request) {
+		return
+	}
+	targetUserID := strings.TrimSpace(request.UserID)
+	targetEmail := strings.TrimSpace(request.Email)
+	if targetUserID == "" && targetEmail == "" {
+		respondError(c, http.StatusBadRequest, "invalid_request", "email or user_id is required")
+		return
+	}
+	if targetUserID == "" && targetEmail != "" {
+		user, err := h.store.GetUserByEmail(c.Request.Context(), targetEmail)
+		if err != nil || user == nil {
+			respondError(c, http.StatusNotFound, "user_not_found", "target user was not found")
+			return
+		}
+		targetUserID = strings.TrimSpace(user.ID)
+		targetEmail = strings.TrimSpace(user.Email)
+	} else if targetUserID != "" && targetEmail == "" {
+		if user, err := h.store.GetUserByID(c.Request.Context(), targetUserID); err == nil && user != nil {
+			targetEmail = strings.TrimSpace(user.Email)
+		}
+	}
+	member, err := h.overlayService.AdminBindNetworkMember(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"), targetUserID, targetEmail)
+	if err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"member": member})
+}
+
+func (h *handler) overlayAdminRemoveNetworkMember(c *gin.Context) {
+	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+		return
+	}
+	networkID := strings.TrimSpace(c.Param("networkID"))
+	targetUserID := strings.TrimSpace(c.Param("userID"))
+	if err := h.overlayService.AdminRemoveNetworkMember(c.Request.Context(), auth.GetUserID(c), networkID, targetUserID); err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{
+		"deleted":    true,
+		"network_id": networkID,
+		"user_id":    targetUserID,
+	})
 }
 
 func (h *handler) overlayAdminNetworks(c *gin.Context) {

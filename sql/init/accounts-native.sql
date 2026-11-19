@@ -936,6 +936,20 @@ CREATE TABLE public.overlay_invites (
 
 
 --
+-- Name: overlay_network_members; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.overlay_network_members (
+    id text NOT NULL,
+    network_id text NOT NULL,
+    user_id text NOT NULL,
+    email text DEFAULT ''::text NOT NULL,
+    created_by text DEFAULT ''::text NOT NULL,
+    created_at timestamp with time zone NOT NULL
+);
+
+
+--
 -- Name: overlay_networks; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2161,6 +2175,14 @@ ALTER TABLE ONLY public.overlay_invites
 
 
 --
+-- Name: overlay_network_members overlay_network_members_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.overlay_network_members
+    ADD CONSTRAINT overlay_network_members_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: overlay_networks overlay_networks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2916,6 +2938,13 @@ CREATE INDEX idx_overlay_invites_network_id ON public.overlay_invites USING btre
 --
 
 CREATE UNIQUE INDEX idx_overlay_invites_token_hash ON public.overlay_invites USING btree (token_hash);
+
+
+--
+-- Name: idx_overlay_network_member; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_overlay_network_member ON public.overlay_network_members USING btree (network_id, user_id);
 
 
 --
