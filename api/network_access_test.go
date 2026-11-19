@@ -388,7 +388,7 @@ func TestFreeQuotaAliasReconciliationAndCustomDedicatedIsolation(t *testing.T) {
 		t.Fatalf("expected only custom user, got %+v", resp.Clients)
 	}
 
-	// Pro agent receives RoutingPolicy with MediaOnProAction = "blackhole"
+	// Pro agent receives RoutingPolicy with MediaOnProAction = "allow" by default
 	req = httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/users", nil)
 	req.Header.Set("Authorization", "Bearer pro-node-token")
 	rr = httptest.NewRecorder()
@@ -400,7 +400,7 @@ func TestFreeQuotaAliasReconciliationAndCustomDedicatedIsolation(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &proResp); err != nil {
 		t.Fatal(err)
 	}
-	if proResp.RoutingPolicy == nil || proResp.RoutingPolicy.Pool != routingpolicy.RoutingPoolProEC2 || proResp.RoutingPolicy.MediaOnProAction != routingpolicy.MediaOnProActionBlackhole {
+	if proResp.RoutingPolicy == nil || proResp.RoutingPolicy.Pool != routingpolicy.RoutingPoolProEC2 || proResp.RoutingPolicy.MediaOnProAction != routingpolicy.MediaOnProActionAllow {
 		t.Fatalf("unexpected pro RoutingPolicy: %+v", proResp.RoutingPolicy)
 	}
 	if proResp.Revision == "" || proResp.Revision == resp.Revision {

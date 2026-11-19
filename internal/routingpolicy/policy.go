@@ -107,10 +107,10 @@ func DefaultPolicy() Policy {
 			},
 			RoutingPoolProEC2: {
 				PublicResource:   true,
-				MediaOnProAction: MediaOnProActionBlackhole,
+				MediaOnProAction: MediaOnProActionAllow,
 				FallbackDefault:  false,
 				Unlimited:        false,
-				Description:      "Public EC2 pool: AI / dev / business office explicit whitelist only; media blackholed on server",
+				Description:      "Public EC2 pool: AI / dev / business office priority; allows normal traffic with reminder + traffic control for heavy media",
 				PricingGroups:    []string{"pro"},
 				URLTest: &URLTestConfig{
 					URL:      "https://cp.cloudflare.com/generate_204",
@@ -403,9 +403,6 @@ func (p Policy) IsPublicPool(name string) bool {
 func (p Policy) MediaOnProActionFor(name string) string {
 	pool, ok := p.Pools[name]
 	if !ok || strings.TrimSpace(pool.MediaOnProAction) == "" {
-		if name == RoutingPoolProEC2 {
-			return MediaOnProActionBlackhole
-		}
 		return MediaOnProActionAllow
 	}
 	return pool.MediaOnProAction

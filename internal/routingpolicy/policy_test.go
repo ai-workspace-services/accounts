@@ -25,7 +25,7 @@ func TestDefaultPolicyMatchesCanonicalThreeTierContract(t *testing.T) {
 	}
 
 	pro, ok := p.Pool(RoutingPoolProEC2)
-	if !ok || !pro.PublicResource || pro.FallbackDefault || pro.Unlimited || pro.MediaOnProAction != MediaOnProActionBlackhole {
+	if !ok || !pro.PublicResource || pro.FallbackDefault || pro.Unlimited || pro.MediaOnProAction != MediaOnProActionAllow {
 		t.Fatalf("Pro-EC2-Pool policy mismatch: %+v ok=%v", pro, ok)
 	}
 	if !reflect.DeepEqual(pro.PricingGroups, []string{"pro"}) {

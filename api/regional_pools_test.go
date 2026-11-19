@@ -236,7 +236,7 @@ func TestRegionalPoolRoutingMetadataAndCustomIsolation(t *testing.T) {
 	if p := byEntry["jp-xconnect-01.svc.plus"]; p.RoutingPool != routingpolicy.RoutingPoolMediaPriority || !p.PublicResource || p.MediaOnProAction != routingpolicy.MediaOnProActionAllow || len(p.SubPoolTags) == 0 {
 		t.Fatalf("Media-Pool metadata mismatch: %+v", p)
 	}
-	if p := byEntry["jp-xconnect-02.svc.plus"]; p.RoutingPool != routingpolicy.RoutingPoolProEC2 || !p.PublicResource || p.MediaOnProAction != routingpolicy.MediaOnProActionBlackhole {
+	if p := byEntry["jp-xconnect-02.svc.plus"]; p.RoutingPool != routingpolicy.RoutingPoolProEC2 || !p.PublicResource || p.MediaOnProAction != routingpolicy.MediaOnProActionAllow {
 		t.Fatalf("Pro-EC2-Pool metadata mismatch: %+v", p)
 	}
 	if p := byEntry["us-xconnect-los-angeles-custom-01.svc.plus"]; p.RoutingPool != routingpolicy.RoutingPoolCustomDedicated || p.PublicResource {
