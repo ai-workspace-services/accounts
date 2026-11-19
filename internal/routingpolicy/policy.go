@@ -13,8 +13,8 @@ const (
 	// RoutingPoolMediaPriority is the public high-bandwidth pool serving free,
 	// shared, and plus plans with media priority and MATCH fallback.
 	RoutingPoolMediaPriority = "Media-Pool"
-	// RoutingPoolProEC2 is the public low-latency EC2 pool serving pro plans
-	// strictly for AI, dev, and business office whitelisted traffic.
+	// RoutingPoolProEC2 is the public low-latency EC2 high-speed quota pool serving pro plans
+	// (no streaming/download restrictions; invisible to Free/Shared/Plus plans).
 	RoutingPoolProEC2 = "Pro-EC2-Pool"
 	// RoutingPoolCustomDedicated is the non-public whitelist-bound pool serving
 	// custom and team dedicated accounts without traffic restrictions.
@@ -110,7 +110,7 @@ func DefaultPolicy() Policy {
 				MediaOnProAction: MediaOnProActionAllow,
 				FallbackDefault:  false,
 				Unlimited:        false,
-				Description:      "Public EC2 pool: AI / dev / business office priority; allows normal traffic with reminder + traffic control for heavy media",
+				Description:      "Public EC2 high-speed quota pool (Pro only; invisible to Plus/Free/Shared): no streaming or download restriction; Pro plans access both Media-Pool (VPS) and Pro-EC2-Pool (high-speed)",
 				PricingGroups:    []string{"pro"},
 				URLTest: &URLTestConfig{
 					URL:      "https://cp.cloudflare.com/generate_204",

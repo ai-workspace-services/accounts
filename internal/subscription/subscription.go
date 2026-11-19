@@ -283,6 +283,10 @@ func partitionNodes(input RenderInput, policy routingpolicy.Policy) nodeBuckets 
 		if pool == routingpolicy.RoutingPoolCustomDedicated && !input.AllowCustom {
 			continue
 		}
+		// Keep Pro-EC2-Pool nodes invisible to non-Pro subscriptions (Free/Shared/Plus).
+		if pool == routingpolicy.RoutingPoolProEC2 && !input.AllowPro {
+			continue
+		}
 		node.RoutingPool = pool
 		if node.Port <= 0 {
 			node.Port = 443

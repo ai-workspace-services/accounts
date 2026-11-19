@@ -139,6 +139,7 @@ func TestClashSubscriptionThreeTierAndCustomIsolation(t *testing.T) {
 	customData, _, err := Render(FormatClash, RenderInput{
 		UserID:      "u-custom",
 		AllowCustom: true,
+		AllowPro:    true,
 		Nodes:       sampleNodes(),
 	})
 	if err != nil {
@@ -194,7 +195,7 @@ func TestSingBoxXrayOneAndVLESSURIFormats(t *testing.T) {
 	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
 
 	// Sing-box
-	sbBytes, _, err := Render(FormatSingBox, RenderInput{AllowCustom: false, Nodes: sampleNodes(), GeneratedAt: now})
+	sbBytes, _, err := Render(FormatSingBox, RenderInput{AllowCustom: false, AllowPro: true, Nodes: sampleNodes(), GeneratedAt: now})
 	if err != nil {
 		t.Fatalf("singbox render failed: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestSingBoxXrayOneAndVLESSURIFormats(t *testing.T) {
 	}
 
 	// Xray JSON
-	xrayBytes, _, err := Render(FormatXray, RenderInput{AllowCustom: false, Nodes: sampleNodes(), GeneratedAt: now})
+	xrayBytes, _, err := Render(FormatXray, RenderInput{AllowCustom: false, AllowPro: true, Nodes: sampleNodes(), GeneratedAt: now})
 	if err != nil {
 		t.Fatalf("xray render failed: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestSingBoxXrayOneAndVLESSURIFormats(t *testing.T) {
 	}
 
 	// One
-	oneBytes, _, err := Render(FormatOne, RenderInput{AllowCustom: true, Nodes: sampleNodes(), GeneratedAt: now})
+	oneBytes, _, err := Render(FormatOne, RenderInput{AllowCustom: true, AllowPro: true, Nodes: sampleNodes(), GeneratedAt: now})
 	if err != nil {
 		t.Fatalf("one render failed: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestSingBoxXrayOneAndVLESSURIFormats(t *testing.T) {
 	}
 
 	// VLESS URIs must stay completely config-agnostic.
-	vlessBytes, _, err := Render(FormatVLESS, RenderInput{AllowCustom: true, Nodes: sampleNodes()})
+	vlessBytes, _, err := Render(FormatVLESS, RenderInput{AllowCustom: true, AllowPro: true, Nodes: sampleNodes()})
 	if err != nil {
 		t.Fatalf("vless render failed: %v", err)
 	}
@@ -269,6 +270,43 @@ func TestSingBoxXrayOneAndVLESSURIFormats(t *testing.T) {
 		}
 		if strings.Contains(u.Fragment, "Media-Pool") || strings.Contains(u.Fragment, "Pro-EC2-Pool") {
 			t.Fatalf("vless URI fragment %q should stay config-agnostic", u.Fragment)
+		}
+	}
+}
+
+func TestPlusAndFreeSubscriptionsHideProNodes(t *testing.T) {
+	now := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+	for _, format := range []Format{FormatClash, FormatSingBox, FormatXray, FormatOne, FormatVLESS} {
+		data, _, err := Render(format, RenderInput{
+			UserID:      "u-plus",
+			AllowCustom: false,
+			AllowPro:    false,
+			Nodes:       sampleNodes(),
+			GeneratedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("render %s failed: %v", format, err)
+		}
+		text := string(data)
+		if strings.Contains(text, "jp-xconnect-02.svc.plus") {
+			t.Fatalf("format %s leaked Pro-EC2-Pool node to Plus/Free user:\n%s", format, text)
+		}
+		if strings.Contains(text, "us-xconnect-los-angeles-custom-01.svc.plus") || strings.Contains(text, routingpolicy.RoutingPoolCustomDedicated) {
+			t.Fatalf("format %s leaked Custom-Dedicated node/group to Plus/Free user:\n%s", format, text)
+		}
+		if format == FormatOne {
+			var doc onePayload
+			if err := json.Unmarshal(data, &doc); err != nil {
+				t.Fatalf("invalid one json: %v", err)
+			}
+			if _, ok := doc.Pools[routingpolicy.RoutingPoolProEC2]; ok {
+				t.Fatalf("One payload leaked Pro-EC2-Pool to Plus/Free user: %+v", doc.Pools)
+			}
+			if len(doc.Nodes) != 1 || doc.Nodes[0].RoutingPool != routingpolicy.RoutingPoolMediaPriority {
+				t.Fatalf("One payload should only include Media-Pool nodes: %+v", doc.Nodes)
+			}
+		} else if strings.Contains(text, routingpolicy.RoutingPoolProEC2) {
+			t.Fatalf("format %s leaked Pro-EC2-Pool group/rule to Plus/Free user:\n%s", format, text)
 		}
 	}
 }
