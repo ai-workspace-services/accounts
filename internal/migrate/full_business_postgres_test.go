@@ -179,7 +179,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 	}
 	exec(target, `ALTER TABLE public.billing_ledger DROP CONSTRAINT fixture_reject`)
 	receipt, e := CopyFullBusiness(context.Background(), sourceDSN, targetDSN, options)
-	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 80 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
+	if e != nil || receipt.Result != "copied" || !receipt.FullBusinessEqual || !receipt.TargetWrites || receipt.DatabaseCutoverApproved || len(receipt.Tables) != 81 || receipt.Tables["billing_ledger"].Rows != 1003 || receipt.Tables["traffic_minute_buckets"].Rows != 1003 {
 		t.Fatalf("full copy: %#v %v", receipt, e)
 	}
 	var after string
@@ -512,7 +512,7 @@ func TestFullBusinessPostgres17(t *testing.T) {
 		}
 		exec(target, `DROP TRIGGER fixture_late_mutation ON public.users; DROP FUNCTION public.fixture_late_mutation()`)
 		copied, e := CopyFullBusiness(context.Background(), readonlyNative, targetDSN, copyOptions)
-		if e != nil || copied.SourceTables != 80 || len(copied.Tables) != 80 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
+		if e != nil || copied.SourceTables != 81 || len(copied.Tables) != 81 || copied.Tables["finance_payments"].Rows != 1 || copied.Tables["finance_operation_events"].Rows != 1 {
 			t.Fatalf("native finance copy failed: %v", e)
 		}
 

@@ -502,6 +502,15 @@ type InviteSummary struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
+type NetworkMemberSummary struct {
+	ID        string    `json:"id"`
+	NetworkID string    `json:"network_id"`
+	UserID    string    `json:"user_id"`
+	Email     string    `json:"email"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type AdminBootstrapResult struct {
 	Network Network       `json:"network"`
 	Invite  InviteSummary `json:"invite"`

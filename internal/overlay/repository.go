@@ -172,6 +172,17 @@ type DeviceTelemetryRecord struct {
 
 func (DeviceTelemetryRecord) TableName() string { return "overlay_device_telemetry" }
 
+type NetworkMemberRecord struct {
+	ID        string    `gorm:"column:id;type:text;primaryKey"`
+	NetworkID string    `gorm:"column:network_id;type:text;not null;uniqueIndex:idx_overlay_network_member"`
+	UserID    string    `gorm:"column:user_id;type:text;not null;uniqueIndex:idx_overlay_network_member"`
+	Email     string    `gorm:"column:email;type:text;not null;default:''"`
+	CreatedBy string    `gorm:"column:created_by;type:text;not null;default:''"`
+	CreatedAt time.Time `gorm:"column:created_at;not null;autoCreateTime"`
+}
+
+func (NetworkMemberRecord) TableName() string { return "overlay_network_members" }
+
 type Repository struct{ DB *gorm.DB }
 
 func NewRepository(db *gorm.DB) (*Repository, error) {
@@ -185,7 +196,7 @@ func AutoMigrate(db *gorm.DB) error {
 	if db == nil {
 		return errors.New("overlay migration requires a database")
 	}
-	return db.AutoMigrate(&NetworkRecord{}, &InviteRecord{}, &DeviceRecord{}, &CredentialRecord{}, &EnrollmentRecord{}, &AckRecord{}, &RegistrationRecord{}, &DeviceTelemetryRecord{})
+	return db.AutoMigrate(&NetworkRecord{}, &InviteRecord{}, &DeviceRecord{}, &CredentialRecord{}, &EnrollmentRecord{}, &AckRecord{}, &RegistrationRecord{}, &DeviceTelemetryRecord{}, &NetworkMemberRecord{})
 }
 
 func HashSecret(secret string) string {
@@ -315,6 +326,7 @@ func (r *Repository) DeleteNetwork(ctx context.Context, ownerUserID, networkID s
 		// when present, remove stale network records as part of the same delete.
 		for _, table := range []string{
 			"overlay_device_telemetry",
+			"overlay_network_members",
 			"overlay_signed_config_acks",
 			"overlay_registrations",
 			"overlay_invites",

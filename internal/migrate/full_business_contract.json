@@ -573,6 +573,18 @@
     "primary_key": ["id"],
     "foreign_keys": []
   },
+  "overlay_network_members": {
+    "columns": [
+      {"generated": false,"name": "id","nullable": false,"type": "text"},
+      {"generated": false,"name": "network_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "user_id","nullable": false,"type": "text"},
+      {"generated": false,"name": "email","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_by","nullable": false,"type": "text"},
+      {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"}
+    ],
+    "primary_key": ["id"],
+    "foreign_keys": []
+  },
   "overlay_networks": {
     "columns": [
       {"generated": false,"name": "id","nullable": false,"type": "text"},
