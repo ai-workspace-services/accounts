@@ -10,7 +10,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"account/internal/agentproto"
 	"account/internal/agentserver"
+	"account/internal/routingpolicy"
 	"account/internal/store"
 )
 
@@ -40,15 +42,43 @@ const (
 )
 
 type regionalPool struct {
-	Private       bool                    `json:"private,omitempty"`
-	Code          string                  `json:"code"`
-	Entry         string                  `json:"entry"`
-	DisplayName   string                  `json:"displayName,omitempty"`
-	ResourceClass string                  `json:"resourceClass,omitempty"`
-	TeamID        string                  `json:"teamId,omitempty"`
-	PoolCount     int                     `json:"poolCount"`
-	OpenToUsers   bool                    `json:"openToUsers"`
-	ClosedReasons []regionalClosureReason `json:"closedReasons"`
+	Private          bool                    `json:"private,omitempty"`
+	Code             string                  `json:"code"`
+	Entry            string                  `json:"entry"`
+	DisplayName      string                  `json:"displayName,omitempty"`
+	ResourceClass    string                  `json:"resourceClass,omitempty"`
+	TeamID           string                  `json:"teamId,omitempty"`
+	RoutingPool      string                  `json:"routingPool,omitempty"`
+	MediaOnProAction string                  `json:"mediaOnProAction,omitempty"`
+	PublicResource   bool                    `json:"publicResource"`
+	SubPoolTags      []string                `json:"subPoolTags,omitempty"`
+	PoolCount        int                     `json:"poolCount"`
+	OpenToUsers      bool                    `json:"openToUsers"`
+	ClosedReasons    []regionalClosureReason `json:"closedReasons"`
+}
+
+func populateRegionalPoolRoutingMetadata(pool *regionalPool, resourceClass string, report agentproto.StatusReport, policy routingpolicy.Policy) {
+	if pool == nil {
+		return
+	}
+	if resourceClass == "" {
+		pool.RoutingPool = ""
+		pool.MediaOnProAction = ""
+		pool.PublicResource = false
+		return
+	}
+	routingPool := policy.PoolForResourceClass(resourceClass)
+	if strings.EqualFold(strings.TrimSpace(report.Xray.RoutingPool), routingpolicy.RoutingPoolCustomDedicated) {
+		routingPool = routingpolicy.RoutingPoolCustomDedicated
+	}
+	pool.RoutingPool = routingPool
+	pool.MediaOnProAction = policy.MediaOnProActionFor(routingPool)
+	pool.PublicResource = policy.IsPublicPool(routingPool)
+	if len(report.Xray.SubPoolTags) > 0 {
+		pool.SubPoolTags = append([]string(nil), report.Xray.SubPoolTags...)
+	} else if tags := policy.SubPoolTagsFor(routingPool); len(tags) > 0 {
+		pool.SubPoolTags = tags
+	}
 }
 
 func (h *handler) listRegionalPools(c *gin.Context) {
@@ -119,6 +149,7 @@ func registeredRegionalPools(reader agentStatusReader, now time.Time) []regional
 		ids     map[string]bool
 		reasons map[regionalClosureReason]bool
 	}
+	policy := routingpolicy.DefaultPolicy()
 	groups := make(map[string]*aggregate)
 	for _, snapshot := range reader.Statuses() {
 		report := snapshot.Report
@@ -138,8 +169,10 @@ func registeredRegionalPools(reader agentStatusReader, now time.Time) []regional
 		key := region + "\x00" + entry + "\x00" + resourceClass + "\x00" + teamID
 		group := groups[key]
 		if group == nil {
+			pool := regionalPool{Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}
+			populateRegionalPoolRoutingMetadata(&pool, resourceClass, report, policy)
 			group = &aggregate{
-				pool:    regionalPool{Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)},
+				pool:    pool,
 				ids:     make(map[string]bool),
 				reasons: make(map[regionalClosureReason]bool),
 			}
@@ -189,6 +222,19 @@ func registeredRegionalPools(reader agentStatusReader, now time.Time) []regional
 		return pools[i].Code < pools[j].Code
 	})
 	return pools
+}
+
+// publicRegionalPools returns only open, public pools and never leaks
+// Custom-Dedicated (resource:custom or team:*) nodes into public discovery.
+func publicRegionalPools(reader agentStatusReader, now time.Time) []regionalPool {
+	all := registeredRegionalPools(reader, now)
+	public := make([]regionalPool, 0, len(all))
+	for _, pool := range all {
+		if pool.PublicResource && pool.OpenToUsers && pool.RoutingPool != routingpolicy.RoutingPoolCustomDedicated {
+			public = append(public, pool)
+		}
+	}
+	return public
 }
 
 // Credential scope is authoritative, including explicit shared registrations.

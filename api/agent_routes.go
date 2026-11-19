@@ -8,18 +8,23 @@ import (
 	"time"
 
 	"account/internal/agentproto"
+	"account/internal/routingpolicy"
 	"account/internal/store"
 )
 
 const agentResourceTeam = "team"
 
 // effectiveAgentResourceClass is the single control-plane decision used when
-// rendering a subscription path. Team access wins over the personal plan;
-// otherwise the billing package selects Pro, quota groups select Plus, and
-// Free is the safe fallback. The agent independently enforces this scope.
+// rendering a subscription path. Team access wins over personal plans;
+// custom whitelist wins over public tiers; otherwise the billing package
+// selects Pro, quota groups select Plus, and Free is the safe fallback.
+// The agent independently enforces this scope.
 func effectiveAgentResourceClass(access networkAccess, user *store.User, packageName string) string {
 	if access.Mode == "dedicated" {
 		return agentResourceTeam
+	}
+	if isCustomDedicatedUser(user, packageName) {
+		return agentResourceCustom
 	}
 	group := store.MonthlyQuotaGroup(user)
 	if strings.EqualFold(strings.TrimSpace(packageName), agentResourcePro) &&
@@ -59,9 +64,11 @@ func poolXHTTPPath(basePath, _ string) string {
 func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *store.User, packageName string, now time.Time) []regionalPool {
 	wantClass := effectiveAgentResourceClass(access, user, packageName)
 	wantTeam := strings.TrimSpace(access.TeamID)
+	customAllowed := wantClass == agentResourceCustom || (access.Mode != "dedicated" && isCustomDedicatedUser(user, packageName))
 	if reader == nil {
 		return nil
 	}
+	policy := routingpolicy.DefaultPolicy()
 	type aggregate struct {
 		pool    regionalPool
 		ids     map[string]bool
@@ -71,6 +78,9 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 	for _, snapshot := range reader.Statuses() {
 		report := snapshot.Report
 		resourceClass, teamID := reportedResourceClass(snapshot)
+		if resourceClass == "" {
+			continue
+		}
 		scope, scopeValid := agentResourceScope(snapshot.Agent.Groups)
 		customEmails := report.Xray.AllowedEmails
 		if len(customEmails) == 0 && snapshot.Agent.NodeID != "" {
@@ -94,13 +104,22 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		if region == "" || entry == "" {
 			continue
 		}
-		publicEmailOverride := agentproto.PublicResourceClass(resourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(snapshot.Agent.Groups, user)
-		classAllowed := publicAgentResourceClassAllows(resourceClass, wantClass) || publicEmailOverride
-		if resourceClass == agentResourceCustom {
-			classAllowed = scopeValid && len(customEmails) > 0 && (wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree) || tempFreeAllowed)
-		}
+		isCustomPool := resourceClass == agentResourceCustom ||
+			strings.EqualFold(strings.TrimSpace(report.Xray.RoutingPool), routingpolicy.RoutingPoolCustomDedicated)
+		var classAllowed bool
 		if resourceClass == agentResourceTeam {
 			classAllowed = wantClass == agentResourceTeam && wantTeam != "" && teamID == wantTeam
+		} else if isCustomPool {
+			if resourceClass == agentResourceCustom {
+				if len(customEmails) > 0 {
+					classAllowed = scopeValid && (customAllowed || wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree) || tempFreeAllowed)
+				} else {
+					classAllowed = scopeValid && customAllowed
+				}
+			}
+		} else {
+			publicEmailOverride := agentproto.PublicResourceClass(resourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(snapshot.Agent.Groups, user)
+			classAllowed = publicAgentResourceClassAllows(resourceClass, wantClass) || publicEmailOverride
 		}
 		if !classAllowed {
 			continue
@@ -108,7 +127,9 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		key := region + "\x00" + entry + "\x00" + resourceClass + "\x00" + teamID
 		group := groups[key]
 		if group == nil {
-			group = &aggregate{pool: regionalPool{Private: resourceClass == agentResourceCustom && len(customEmails) > 0, Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}, ids: map[string]bool{}, reasons: map[regionalClosureReason]bool{}}
+			pool := regionalPool{Private: resourceClass == agentResourceCustom && len(customEmails) > 0, Code: region, Entry: entry, DisplayName: strings.TrimSpace(snapshot.Agent.Name), ResourceClass: resourceClass, TeamID: teamID, ClosedReasons: make([]regionalClosureReason, 0)}
+			populateRegionalPoolRoutingMetadata(&pool, resourceClass, report, policy)
+			group = &aggregate{pool: pool, ids: map[string]bool{}, reasons: map[regionalClosureReason]bool{}}
 			groups[key] = group
 		}
 		if group.pool.DisplayName == "" {

@@ -512,6 +512,8 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	authGroup.GET("/mfa/status", h.mfaStatus)
 	authGroup.GET("/sync/config", h.syncConfigSnapshot)
+	authGroup.GET("/sync/subscription", h.getSubscription)
+	authGroup.GET("/sync/subscription/:format", h.getSubscription)
 	authGroup.POST("/sync/ack", h.syncConfigAck)
 	authGroup.GET("/homepage-video", h.getHomepageVideoPublic)
 	// These endpoints accept a scoped opaque email capability; no login required.
@@ -768,6 +770,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	// stay outside token middleware to support dashboard session tokens.
 	agentServerGroup := r.Group("/api/agent-server/v1")
 	agentServerGroup.GET("/nodes", h.listAgentNodes)
+	agentServerGroup.GET("/subscription", h.getSubscription)
 	agentServerGroup.GET("/regional-pools", h.listRegionalPools)
 	agentServerGroup.GET("/managed-config", h.getAgentManagedConfig)
 	agentServerGroup.GET("/users", h.listAgentUsers)
@@ -3748,7 +3751,7 @@ func (h *handler) updateUserGroups(c *gin.Context) {
 		return
 	}
 	for _, requested := range req.Groups {
-		if isMonthlyQuotaGroup(requested) && strings.TrimSpace(requested) != currentPlanGroup {
+		if isMonthlyQuotaGroup(requested) && store.NormalizeMonthlyQuotaGroup(requested) != currentPlanGroup {
 			respondError(c, http.StatusBadRequest, "plan_group_requires_plan_id", "managed quota groups must be changed through plan-group operations")
 			return
 		}

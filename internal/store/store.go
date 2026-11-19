@@ -47,6 +47,7 @@ type User struct {
 // only affect proxy/config access; the user record is never removed.
 const (
 	MonthlyFreeQuotaLimitGroup     = "segment:quota:free-3gb"
+	MonthlyFreeQuota5GBAliasGroup  = "segment:quota:free-5gb"
 	MonthlyPlusQuotaLimitGroup     = "segment:quota:plus-20gb"
 	MonthlyUnlimitedBetaQuotaGroup = "segment:quota:unlimited-beta"
 	// Independent, reversible operator override. Never replaces the paid plan.
@@ -60,13 +61,40 @@ var monthlyQuotaGroups = [...]string{
 	MonthlyFreeQuotaLimitGroup,
 }
 
+// NormalizeMonthlyQuotaGroup maps canonical and alias monthly quota group
+// identifiers (including segment:quota:free-5gb -> segment:quota:free-3gb) to
+// the canonical store constant, or returns "" if the group is not a monthly
+// quota group.
+func NormalizeMonthlyQuotaGroup(group string) string {
+	trimmed := strings.TrimSpace(group)
+	switch trimmed {
+	case MonthlyFreeQuotaLimitGroup, MonthlyFreeQuota5GBAliasGroup:
+		return MonthlyFreeQuotaLimitGroup
+	case MonthlyPlusQuotaLimitGroup, MonthlyUnlimitedBetaQuotaGroup:
+		return trimmed
+	default:
+		return ""
+	}
+}
+
+// IsMonthlyFreeQuotaGroup reports whether group identifies the Free monthly
+// quota tier under either its canonical or 5GB alias name.
+func IsMonthlyFreeQuotaGroup(group string) bool {
+	return NormalizeMonthlyQuotaGroup(group) == MonthlyFreeQuotaLimitGroup
+}
+
+// IsMonthlyQuotaGroup reports whether group is any managed monthly quota group.
+func IsMonthlyQuotaGroup(group string) bool {
+	return NormalizeMonthlyQuotaGroup(group) != ""
+}
+
 func MonthlyQuotaGroup(user *User) string {
 	if user == nil {
 		return ""
 	}
-	for _, group := range user.Groups {
-		for _, known := range monthlyQuotaGroups {
-			if strings.TrimSpace(group) == known {
+	for _, known := range monthlyQuotaGroups {
+		for _, group := range user.Groups {
+			if NormalizeMonthlyQuotaGroup(group) == known {
 				return known
 			}
 		}

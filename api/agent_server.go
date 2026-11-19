@@ -16,6 +16,7 @@ import (
 	"account/internal/agentproto"
 	"account/internal/agentserver"
 	"account/internal/overlay"
+	"account/internal/routingpolicy"
 	"account/internal/store"
 	"account/internal/xrayconfig"
 )
@@ -53,7 +54,7 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		return
 	}
 
-	clients, revision, err := h.authorizedAgentClientsForIdentity(c.Request.Context(), identity, c.GetHeader("X-Agent-Allowed-Emails"))
+	clients, policy, revision, err := h.authorizedAgentClientsForIdentityWithPolicy(c.Request.Context(), identity, c.GetHeader("X-Agent-Allowed-Emails"))
 	if err != nil {
 		if errors.Is(err, errCustomEmailsRequired) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "custom_emails_required"})
@@ -74,6 +75,7 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 		NodeID:           identity.NodeID,
 		EnrollmentStatus: approvalStatus,
 		Scope:            &scope,
+		RoutingPolicy:    policy,
 		Clients:          clients,
 		Total:            len(clients),
 		Revision:         revision,
@@ -81,33 +83,59 @@ func (h *handler) listAgentUsers(c *gin.Context) {
 	})
 }
 
+func agentRoutingPolicyForScope(scope agentproto.UserScope, policy routingpolicy.Policy) *agentproto.RoutingPolicy {
+	poolName := policy.PoolForResourceClass(scope.ResourceClass)
+	poolCfg, _ := policy.Pool(poolName)
+	return &agentproto.RoutingPolicy{
+		Version:             policy.Version,
+		Revision:            policy.Revision,
+		Pool:                poolName,
+		PublicResource:      policy.IsPublicPool(poolName),
+		MediaOnProAction:    policy.MediaOnProActionFor(poolName),
+		FallbackDefault:     poolCfg.FallbackDefault,
+		Unlimited:           poolCfg.Unlimited,
+		PricingGroups:       append([]string(nil), poolCfg.PricingGroups...),
+		SubPoolTags:         append([]string(nil), poolCfg.SubPoolTags...),
+		DirectDomains:       append([]string(nil), policy.Tiers.DirectCNPrivate.XrayDomains...),
+		DirectIPs:           append([]string(nil), policy.Tiers.DirectCNPrivate.XrayIPs...),
+		MediaDomains:        append([]string(nil), policy.Tiers.MediaPoolPriority.XrayDomains...),
+		ProWhitelistDomains: append([]string(nil), policy.Tiers.ProEC2Whitelist.XrayDomains...),
+	}
+}
+
 // groups must come from the authenticated credential or an approved persisted
 // assignment, never directly from node request metadata.
 // Requiring the argument prevents a caller from silently defaulting to public.
 func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) ([]xrayconfig.Client, string, error) {
+	clients, _, revision, err := h.authorizedAgentClientsWithPolicy(ctx, groups)
+	return clients, revision, err
+}
+
+func (h *handler) authorizedAgentClientsWithPolicy(ctx context.Context, groups []string) ([]xrayconfig.Client, *agentproto.RoutingPolicy, string, error) {
 	if _, valid := agentNetworkScope(groups); !valid {
-		return nil, "", errors.New("invalid agent network scope")
+		return nil, nil, "", errors.New("invalid agent network scope")
 	}
 	teamStore, ok := h.store.(store.NetworkTeamStore)
 	if !ok {
-		return nil, "", errors.New("network team store unavailable")
+		return nil, nil, "", errors.New("network team store unavailable")
 	}
 	clients := make([]xrayconfig.Client, 0, 16)
 	scope, valid := agentResourceScope(groups)
 	if !valid {
-		return nil, "", errors.New("invalid agent resource scope")
+		return nil, nil, "", errors.New("invalid agent resource scope")
 	}
+	routingPolicy := agentRoutingPolicyForScope(scope, routingpolicy.DefaultPolicy())
 	users, err := h.store.ListUsers(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 
 	for _, u := range users {
 		if err := h.archiveInactiveFreeUser(ctx, &u); err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		if err := h.ensureExpiredSubscriptionDowngrade(ctx, &u); err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 	}
 
@@ -115,12 +143,12 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 	// but quota exhaustion alone must not withhold otherwise authorized clients.
 	blocked, err := h.store.ListProxyBlockedAccountUUIDs(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 
 	emails, err := h.store.ListBlacklist(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	blockedEmails := make(map[string]bool, len(emails))
 	for _, email := range emails {
@@ -129,11 +157,11 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 
 	teams, err := teamStore.ListNetworkTeams(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	members, err := teamStore.ListNetworkMemberships(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	memberByUser := make(map[string]store.NetworkMembership, len(members))
 	for _, member := range members {
@@ -147,7 +175,7 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		}
 		packageName, err := h.billingPackageName(ctx, &u)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		publicEmailOverride := agentproto.PublicResourceClass(scope.ResourceClass) && access.Mode != "dedicated" && publicUnionEmailMatches(groups, &u)
 		if !agentResourceScopeAllowsUser(scope, access, &u, packageName) && !publicEmailOverride {
@@ -162,8 +190,8 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 		}
 		email := strings.ToLower(strings.TrimSpace(u.Email))
 
-		if exhausted, err := h.quotaExhaustedForUser(ctx, &u); err != nil {
-			return nil, "", err
+		if exhausted, err := h.quotaExhaustedForAgentScope(ctx, &u, scope, groups); err != nil {
+			return nil, nil, "", err
 		} else if exhausted {
 			continue
 		}
@@ -205,33 +233,39 @@ func (h *handler) authorizedAgentClients(ctx context.Context, groups []string) (
 
 	sort.Slice(clients, func(i, j int) bool { return clients[i].ID < clients[j].ID })
 	payload, err := json.Marshal(struct {
-		Scope   agentproto.UserScope `json:"scope"`
-		Clients []xrayconfig.Client  `json:"clients"`
-	}{Scope: scope, Clients: clients})
+		Scope         agentproto.UserScope      `json:"scope"`
+		RoutingPolicy *agentproto.RoutingPolicy `json:"routingPolicy,omitempty"`
+		Clients       []xrayconfig.Client       `json:"clients"`
+	}{Scope: scope, RoutingPolicy: routingPolicy, Clients: clients})
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	sum := sha256.Sum256(payload)
-	return clients, hex.EncodeToString(sum[:]), nil
+	return clients, routingPolicy, hex.EncodeToString(sum[:]), nil
 }
 
 var errCustomEmailsRequired = errors.New("invalid custom emails")
 
 func (h *handler) authorizedAgentClientsForIdentity(ctx context.Context, identity agentserver.Identity, rawAllowedEmails string) ([]xrayconfig.Client, string, error) {
+	clients, _, revision, err := h.authorizedAgentClientsForIdentityWithPolicy(ctx, identity, rawAllowedEmails)
+	return clients, revision, err
+}
+
+func (h *handler) authorizedAgentClientsForIdentityWithPolicy(ctx context.Context, identity agentserver.Identity, rawAllowedEmails string) ([]xrayconfig.Client, *agentproto.RoutingPolicy, string, error) {
 	scope, valid := agentResourceScope(identity.Groups)
 	if !valid {
-		return nil, "", errors.New("invalid agent resource scope")
+		return nil, nil, "", errors.New("invalid agent resource scope")
 	}
-	baseClients, baseRevision, err := h.authorizedAgentClients(ctx, identity.Groups)
+	baseClients, routingPolicy, baseRevision, err := h.authorizedAgentClientsWithPolicy(ctx, identity.Groups)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if scope.ResourceClass != agentResourceCustom {
-		return baseClients, baseRevision, nil
+		return baseClients, routingPolicy, baseRevision, nil
 	}
 	var allowed []string
 	if err := json.Unmarshal([]byte(rawAllowedEmails), &allowed); err != nil || len(allowed) == 0 || len(allowed) > 256 {
-		return nil, "", errCustomEmailsRequired
+		return nil, nil, "", errCustomEmailsRequired
 	}
 	filtered := make([]xrayconfig.Client, 0, len(baseClients))
 	staticIDs := make(map[string]bool, len(baseClients))
@@ -244,20 +278,21 @@ func (h *handler) authorizedAgentClientsForIdentity(ctx context.Context, identit
 	if strings.TrimSpace(identity.NodeID) != "" {
 		tempClients, err := h.authorizedCustomTempFreeClients(ctx, identity, staticIDs)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		filtered = append(filtered, tempClients...)
 		sort.Slice(filtered, func(i, j int) bool { return filtered[i].ID < filtered[j].ID })
 	}
 	data, err := json.Marshal(struct {
-		Revision string
-		Clients  []xrayconfig.Client
-	}{baseRevision, filtered})
+		Revision      string
+		RoutingPolicy *agentproto.RoutingPolicy
+		Clients       []xrayconfig.Client
+	}{baseRevision, routingPolicy, filtered})
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	sum := sha256.Sum256(data)
-	return filtered, hex.EncodeToString(sum[:]), nil
+	return filtered, routingPolicy, hex.EncodeToString(sum[:]), nil
 }
 
 func (h *handler) authorizedCustomTempFreeClients(ctx context.Context, identity agentserver.Identity, staticIDs map[string]bool) ([]xrayconfig.Client, error) {
