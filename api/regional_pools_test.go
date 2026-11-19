@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"account/internal/agentproto"
 	"account/internal/agentserver"
+	"account/internal/routingpolicy"
 	"account/internal/store"
 	"github.com/gin-gonic/gin"
 )
@@ -199,5 +202,205 @@ func TestRegionalPoolsKeepClosedMetadataAdminOnly(t *testing.T) {
 		if role == store.RoleAdmin && (len(pools) != 2 || pools[1].ClosedReasons[0] != regionalUnhealthy) {
 			t.Fatalf("admin diagnostics: %#v", pools)
 		}
+	}
+}
+
+func TestRegionalPoolRoutingMetadataAndCustomIsolation(t *testing.T) {
+	now := time.Now().UTC()
+	reader := stubAgentStatusReader{statuses: []agentserver.StatusSnapshot{
+		{
+			Agent:     agentserver.Identity{ID: "jp-media", Name: "JP-Media", Groups: []string{"resource:shared"}},
+			UpdatedAt: now,
+			Report:    agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "jp", EntryPoint: "jp-xconnect-01.svc.plus"}},
+		},
+		{
+			Agent:     agentserver.Identity{ID: "jp-pro", Name: "JP-Pro", Groups: []string{"resource:pro"}},
+			UpdatedAt: now,
+			Report:    agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "jp", EntryPoint: "jp-xconnect-02.svc.plus"}},
+		},
+		{
+			Agent:     agentserver.Identity{ID: "us-custom", Name: "US-Custom", Groups: []string{"resource:custom"}},
+			UpdatedAt: now,
+			Report:    agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "us", EntryPoint: "us-xconnect-los-angeles-custom-01.svc.plus"}},
+		},
+	}}
+
+	all := registeredRegionalPools(reader, now)
+	if len(all) != 3 {
+		t.Fatalf("expected 3 registered pools, got %d: %#v", len(all), all)
+	}
+	byEntry := map[string]regionalPool{}
+	for _, p := range all {
+		byEntry[p.Entry] = p
+	}
+	if p := byEntry["jp-xconnect-01.svc.plus"]; p.RoutingPool != routingpolicy.RoutingPoolMediaPriority || !p.PublicResource || p.MediaOnProAction != routingpolicy.MediaOnProActionAllow || len(p.SubPoolTags) == 0 {
+		t.Fatalf("Media-Pool metadata mismatch: %+v", p)
+	}
+	if p := byEntry["jp-xconnect-02.svc.plus"]; p.RoutingPool != routingpolicy.RoutingPoolProEC2 || !p.PublicResource || p.MediaOnProAction != routingpolicy.MediaOnProActionBlackhole {
+		t.Fatalf("Pro-EC2-Pool metadata mismatch: %+v", p)
+	}
+	if p := byEntry["us-xconnect-los-angeles-custom-01.svc.plus"]; p.RoutingPool != routingpolicy.RoutingPoolCustomDedicated || p.PublicResource {
+		t.Fatalf("Custom-Dedicated metadata mismatch (must have PublicResource=false): %+v", p)
+	}
+
+	pub := publicRegionalPools(reader, now)
+	if len(pub) != 2 {
+		t.Fatalf("publicRegionalPools must exclude Custom-Dedicated, got %#v", pub)
+	}
+	for _, p := range pub {
+		if p.RoutingPool == routingpolicy.RoutingPoolCustomDedicated || p.Entry == "us-xconnect-los-angeles-custom-01.svc.plus" {
+			t.Fatalf("Custom-Dedicated leaked into publicRegionalPools: %+v", p)
+		}
+	}
+
+	personal := networkAccess{Mode: "personal", Allowed: true}
+	freeUser := &store.User{Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
+	proUser := &store.User{Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
+	customUser := &store.User{Groups: []string{"segment:custom"}}
+
+	for _, pool := range regionalPoolsForUser(reader, personal, freeUser, "free", now) {
+		if pool.RoutingPool == routingpolicy.RoutingPoolCustomDedicated || pool.RoutingPool == routingpolicy.RoutingPoolProEC2 {
+			t.Fatalf("free user leaked restricted pool: %+v", pool)
+		}
+	}
+	for _, pool := range regionalPoolsForUser(reader, personal, proUser, "pro", now) {
+		if pool.RoutingPool == routingpolicy.RoutingPoolCustomDedicated {
+			t.Fatalf("pro user leaked Custom-Dedicated pool: %+v", pool)
+		}
+	}
+	customPools := regionalPoolsForUser(reader, personal, customUser, "custom", now)
+	foundCustom := false
+	for _, pool := range customPools {
+		if pool.RoutingPool == routingpolicy.RoutingPoolCustomDedicated && pool.Entry == "us-xconnect-los-angeles-custom-01.svc.plus" {
+			foundCustom = true
+		}
+	}
+	if !foundCustom {
+		t.Fatalf("whitelisted custom user missing Custom-Dedicated pool: %#v", customPools)
+	}
+}
+
+func TestSubscriptionAndSyncConfigRoutesEndpoints(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	st := store.NewMemoryStore()
+
+	proUser := &store.User{Name: "pro", Email: "pro-sub@example.invalid", Active: true, EmailVerified: true, ProxyUUID: "11111111-1111-1111-1111-111111111111", Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
+	customUser := &store.User{Name: "custom", Email: "custom-sub@example.invalid", Active: true, EmailVerified: true, ProxyUUID: "22222222-2222-2222-2222-222222222222", Groups: []string{"segment:custom"}}
+	for _, u := range []*store.User{proUser, customUser} {
+		if err := st.CreateUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateSession(ctx, "tok-"+u.Name, u.ID, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: proUser.ID, PackageName: "pro", IncludedQuotaBytes: 50 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: proUser.ID, RemainingIncludedQuota: 50 << 30, SuspendState: "active", ProxyAccessState: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := stubAgentStatusReader{statuses: []agentserver.StatusSnapshot{
+		{Agent: agentserver.Identity{ID: "jp-media", Name: "JP-Media", Groups: []string{"resource:shared"}}, UpdatedAt: now, Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "jp", EntryPoint: "jp-xconnect-01.svc.plus"}}},
+		{Agent: agentserver.Identity{ID: "jp-pro", Name: "JP-Pro", Groups: []string{"resource:pro"}}, UpdatedAt: now, Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "jp", EntryPoint: "jp-xconnect-02.svc.plus"}}},
+		{Agent: agentserver.Identity{ID: "us-custom", Name: "US-Custom", Groups: []string{"resource:custom"}}, UpdatedAt: now, Report: agentproto.StatusReport{Role: "agent-proxy", Healthy: true, Xray: agentproto.XrayStatus{Running: true, Region: "us", EntryPoint: "us-xconnect-los-angeles-custom-01.svc.plus"}}},
+	}}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithAgentStatusReader(reader), WithXrayConfigRenderer(func(*store.User) (string, string, []string, error) {
+		return `{"outbounds":[{"tag":"proxy"}]}`, "digest-1", nil, nil
+	}))
+
+	// 1. /api/agent-server/v1/nodes populates RoutingPool and PricingGroup with config-agnostic vless:// URIs
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/nodes", nil)
+	req.Header.Set("Authorization", "Bearer tok-pro")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("nodes: %d %s", rr.Code, rr.Body.String())
+	}
+	var nodes []VlessNode
+	if err := json.Unmarshal(rr.Body.Bytes(), &nodes); err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes (Media-Pool + Pro-EC2-Pool), got %d: %+v", len(nodes), nodes)
+	}
+	for _, n := range nodes {
+		if n.RoutingPool == "" || n.PricingGroup == "" {
+			t.Fatalf("node missing RoutingPool or PricingGroup: %+v", n)
+		}
+		if n.RoutingPool == routingpolicy.RoutingPoolCustomDedicated {
+			t.Fatalf("pro user saw Custom-Dedicated node: %+v", n)
+		}
+		parsedURI, err := url.Parse(n.URISchemeXHTTP)
+		if err != nil {
+			t.Fatalf("invalid vless URI %q: %v", n.URISchemeXHTTP, err)
+		}
+		if parsedURI.Query().Has("routing_pool") || parsedURI.Query().Has("pricing_group") {
+			t.Fatalf("vless URI must remain config-agnostic: %q", n.URISchemeXHTTP)
+		}
+	}
+
+	// 2. /api/auth/sync/config populates three-tier "routes"
+	req = httptest.NewRequest(http.MethodGet, "/api/auth/sync/config?since_version=0", nil)
+	req.Header.Set("Authorization", "Bearer tok-pro")
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("sync/config: %d %s", rr.Code, rr.Body.String())
+	}
+	var syncPayload struct {
+		Routes []struct {
+			Name            string `json:"name"`
+			Target          string `json:"target"`
+			EffectiveTarget string `json:"effective_target"`
+		} `json:"routes"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &syncPayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(syncPayload.Routes) != 4 || syncPayload.Routes[0].Name != "direct_cn_private" || syncPayload.Routes[2].EffectiveTarget != routingpolicy.RoutingPoolProEC2 || syncPayload.Routes[3].EffectiveTarget != routingpolicy.RoutingPoolMediaPriority {
+		t.Fatalf("unexpected sync/config routes: %+v", syncPayload.Routes)
+	}
+
+	// 3. /api/agent-server/v1/subscription & /api/auth/sync/subscription/:format
+	for _, endpoint := range []string{
+		"/api/agent-server/v1/subscription?format=clash",
+		"/api/auth/sync/subscription/singbox",
+		"/api/auth/sync/subscription/xray",
+		"/api/auth/sync/subscription/one",
+		"/api/auth/sync/subscription/vless",
+	} {
+		req := httptest.NewRequest(http.MethodGet, endpoint, nil)
+		req.Header.Set("Authorization", "Bearer tok-pro")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", endpoint, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "us-xconnect-los-angeles-custom-01.svc.plus") {
+			t.Fatalf("%s leaked Custom-Dedicated node to pro user", endpoint)
+		}
+	}
+
+	// Whitelisted custom user receives Custom-Dedicated in Clash subscription
+	req = httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/subscription?format=clash&token=tok-custom", nil)
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "us-xconnect-los-angeles-custom-01.svc.plus") || !strings.Contains(rr.Body.String(), routingpolicy.RoutingPoolCustomDedicated) {
+		t.Fatalf("custom user clash subscription failed: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Unsupported format returns 400
+	req = httptest.NewRequest(http.MethodGet, "/api/auth/sync/subscription/invalid-fmt", nil)
+	req.Header.Set("Authorization", "Bearer tok-pro")
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid format expected 400, got %d", rr.Code)
 	}
 }

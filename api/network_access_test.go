@@ -11,6 +11,7 @@ import (
 
 	"account/internal/agentproto"
 	"account/internal/agentserver"
+	"account/internal/routingpolicy"
 	"account/internal/store"
 	"github.com/gin-gonic/gin"
 )
@@ -269,5 +270,179 @@ func TestActiveTeamProtectsInfrequentFreeMembersFromArchival(t *testing.T) {
 	fresh, err := st.GetUserByID(ctx, user.ID)
 	if err != nil || !fresh.Active || fresh.ArchivedAt != nil {
 		t.Fatalf("active enterprise member archived: %+v %v", fresh, err)
+	}
+}
+
+func TestFreeQuotaAliasReconciliationAndCustomDedicatedIsolation(t *testing.T) {
+	// 1. free-3gb / free-5gb alias reconciliation
+	free5 := &store.User{Groups: []string{"segment:keep", store.MonthlyFreeQuota5GBAliasGroup}}
+	if got := store.MonthlyQuotaGroup(free5); got != store.MonthlyFreeQuotaLimitGroup {
+		t.Fatalf("MonthlyQuotaGroup(free-5gb) = %q, want %q", got, store.MonthlyFreeQuotaLimitGroup)
+	}
+	if !store.IsMonthlyFreeQuotaLimitMember(free5) || !store.IsMonthlyQuotaLimitMember(free5) {
+		t.Fatal("free-5gb alias must be recognized as Free monthly quota member")
+	}
+	if group, label := teamQuotaGroup(free5); group != "3gb" || label != "Free" {
+		t.Fatalf("teamQuotaGroup(free-5gb) = %q %q, want 3gb Free", group, label)
+	}
+	if err := setTeamQuotaGroup(free5, "5gb"); err != nil {
+		t.Fatalf("setTeamQuotaGroup(5gb) failed: %v", err)
+	}
+	replaced := replaceMonthlyQuotaGroup([]string{"segment:keep", store.MonthlyFreeQuota5GBAliasGroup}, store.MonthlyPlusQuotaLimitGroup)
+	for _, g := range replaced {
+		if g == store.MonthlyFreeQuota5GBAliasGroup || g == store.MonthlyFreeQuotaLimitGroup {
+			t.Fatalf("replaceMonthlyQuotaGroup left stale free group in %v", replaced)
+		}
+	}
+
+	// 2. agentResourceCustom scope + forbid agent:configure-public from claiming resource:custom
+	if scope, ok := agentResourceScope([]string{"resource:custom"}); !ok || scope.ResourceClass != agentResourceCustom {
+		t.Fatalf("agentResourceScope(resource:custom) = %+v ok=%v", scope, ok)
+	}
+	if _, ok := agentResourceScope([]string{"agent:configure-public", "resource:custom"}); ok {
+		t.Fatal("agent:configure-public combined with resource:custom must fail closed")
+	}
+	if _, ok := agentResourceScope([]string{"team:acme", "resource:custom"}); ok {
+		t.Fatal("team:acme combined with resource:custom must fail closed")
+	}
+
+	personal := networkAccess{Mode: "personal", Allowed: true}
+	dedicated := networkAccess{Mode: "dedicated", TeamID: "acme", Allowed: true}
+	freeUser := &store.User{Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
+	proUser := &store.User{Groups: []string{store.MonthlyPlusQuotaLimitGroup}}
+	customUser := &store.User{Groups: []string{"segment:custom"}}
+
+	customScope := agentproto.UserScope{ResourceClass: agentResourceCustom}
+	if agentResourceScopeAllowsUser(customScope, personal, freeUser, "free") {
+		t.Fatal("free user must not access resource:custom without custom:allow-free")
+	}
+	if agentResourceScopeAllowsUser(customScope, dedicated, customUser, "custom") {
+		t.Fatal("dedicated team user must not cross into resource:custom")
+	}
+	if !agentResourceScopeAllowsUser(customScope, personal, customUser, "") {
+		t.Fatal("custom-whitelisted user must be allowed on resource:custom")
+	}
+	if !agentResourceScopeAllowsUser(customScope, personal, freeUser, "custom") {
+		t.Fatal("packageName=custom user must be allowed on resource:custom")
+	}
+	// Pro user without Custom-Dedicated whitelist or email allowlist must not see un-allowlisted Custom-Dedicated nodes
+	if proUser.Email != "" && agentEmailAllowed([]string{"custom@example.invalid"}, proUser) {
+		t.Fatal("unexpected email match")
+	}
+
+	// 3. resolveScopedAgent forbids agent:configure-public / internal wildcard from claiming resource:custom
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	if err := st.CreateUser(ctx, &store.User{
+		Name: "custom-whitelisted", Email: "custom@example.invalid", Active: true, EmailVerified: true,
+		ProxyUUID: "proxy-custom", Groups: []string{"segment:custom", store.MonthlyFreeQuotaLimitGroup},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateUser(ctx, &store.User{
+		Name: "public-free", Email: "public-free@example.invalid", Active: true, EmailVerified: true,
+		ProxyUUID: "proxy-public-free", Groups: []string{store.MonthlyFreeQuota5GBAliasGroup},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := agentserver.NewRegistry(agentserver.Config{Credentials: []agentserver.Credential{
+		{ID: "*", Token: "public-mgr-token", Groups: []string{"agent:configure-public", "resource:shared"}},
+		{ID: "us-custom-01", Token: "custom-node-token", Groups: []string{"resource:custom"}},
+		{ID: "jp-pro-01", Token: "pro-node-token", Groups: []string{"resource:pro"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithAgentRegistry(registry), WithAgentStatusReader(registry))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer public-mgr-token")
+	req.Header.Set("X-Agent-ID", "hijack-custom")
+	req.Header.Set("X-Agent-Resource-Class", "custom")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("agent:configure-public claiming resource:custom got HTTP %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Dedicated resource:custom agent receives RoutingPolicy + only allowlisted user
+	req = httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer custom-node-token")
+	req.Header.Set("X-Agent-Resource-Class", "custom")
+	req.Header.Set("X-Agent-Allowed-Emails", `["custom@example.invalid"]`)
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("custom agent /users got HTTP %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp agentproto.ClientListResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.RoutingPolicy == nil || resp.RoutingPolicy.Pool != routingpolicy.RoutingPoolCustomDedicated || resp.RoutingPolicy.PublicResource {
+		t.Fatalf("unexpected custom RoutingPolicy: %+v", resp.RoutingPolicy)
+	}
+	if len(resp.Clients) != 1 || resp.Clients[0].Email != "custom@example.invalid" {
+		t.Fatalf("expected only custom user, got %+v", resp.Clients)
+	}
+
+	// Pro agent receives RoutingPolicy with MediaOnProAction = "blackhole"
+	req = httptest.NewRequest(http.MethodGet, "/api/agent-server/v1/users", nil)
+	req.Header.Set("Authorization", "Bearer pro-node-token")
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("pro agent /users got HTTP %d: %s", rr.Code, rr.Body.String())
+	}
+	var proResp agentproto.ClientListResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &proResp); err != nil {
+		t.Fatal(err)
+	}
+	if proResp.RoutingPolicy == nil || proResp.RoutingPolicy.Pool != routingpolicy.RoutingPoolProEC2 || proResp.RoutingPolicy.MediaOnProAction != routingpolicy.MediaOnProActionBlackhole {
+		t.Fatalf("unexpected pro RoutingPolicy: %+v", proResp.RoutingPolicy)
+	}
+	if proResp.Revision == "" || proResp.Revision == resp.Revision {
+		t.Fatalf("distinct RoutingPolicy scopes must produce distinct non-empty revisions: pro=%q custom=%q", proResp.Revision, resp.Revision)
+	}
+}
+
+func TestQuotaExhaustedExemptionsForCustomAndMediaPassthrough(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	h := &handler{store: st}
+	start := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 1, 0)
+
+	createExhausted := func(name string, groups []string, pkg string) *store.User {
+		u := &store.User{Name: name, Email: name + "@example.invalid", Active: true, EmailVerified: true, Groups: groups}
+		if err := st.CreateUser(ctx, u); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: u.ID, PackageName: pkg, IncludedQuotaBytes: 5 << 30}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: u.ID, RemainingIncludedQuota: 0, PeriodStart: &start, PeriodEnd: &end}); err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+
+	freeUser := createExhausted("free-exhausted", []string{store.MonthlyFreeQuota5GBAliasGroup}, "free")
+	customUser := createExhausted("custom-user", []string{store.MonthlyFreeQuota5GBAliasGroup}, "custom")
+	mediaPassthroughUser := createExhausted("media-pass", []string{store.MonthlyFreeQuotaLimitGroup, "media:passthrough"}, "free")
+
+	if exhausted, err := h.quotaExhaustedForUser(ctx, freeUser); err != nil || !exhausted {
+		t.Fatalf("free user with 0 remaining should be exhausted: exhausted=%v err=%v", exhausted, err)
+	}
+	if exhausted, err := h.quotaExhaustedForUser(ctx, customUser); err != nil || exhausted {
+		t.Fatalf("Custom-Dedicated user must be exempt from quota blocking: exhausted=%v err=%v", exhausted, err)
+	}
+	if exhausted, err := h.quotaExhaustedForUser(ctx, mediaPassthroughUser); err != nil || exhausted {
+		t.Fatalf("Media-Pool media pass-through user must be exempt from quota blocking: exhausted=%v err=%v", exhausted, err)
+	}
+	if exhausted, err := h.quotaExhaustedForAgentScope(ctx, freeUser, agentproto.UserScope{ResourceClass: agentResourceShared}, []string{"resource:shared", "media:passthrough"}); err != nil || exhausted {
+		t.Fatalf("Media-Pool media pass-through agent scope must be exempt: exhausted=%v err=%v", exhausted, err)
 	}
 }

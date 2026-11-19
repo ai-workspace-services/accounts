@@ -181,7 +181,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			// change or remove the managed entitlement group.
 			currentPlanGroup := store.MonthlyQuotaGroup(user)
 			for _, requested := range *update.Groups {
-				if isMonthlyQuotaGroup(requested) && requested != currentPlanGroup {
+				if isMonthlyQuotaGroup(requested) && store.NormalizeMonthlyQuotaGroup(requested) != currentPlanGroup {
 					respondError(c, http.StatusBadRequest, "plan_group_requires_plan_id", "managed quota groups must be changed through planId")
 					return
 				}
@@ -496,12 +496,7 @@ func existingPlanID(profile *store.AccountBillingProfile) string {
 }
 
 func isMonthlyQuotaGroup(group string) bool {
-	switch strings.TrimSpace(group) {
-	case store.MonthlyFreeQuotaLimitGroup, store.MonthlyPlusQuotaLimitGroup, store.MonthlyUnlimitedBetaQuotaGroup:
-		return true
-	default:
-		return false
-	}
+	return store.IsMonthlyQuotaGroup(group)
 }
 
 func planIDToQuotaGroup(planID string) (string, error) {

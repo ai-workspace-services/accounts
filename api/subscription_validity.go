@@ -236,9 +236,7 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 	if store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup {
 		groups := make([]string, 0, len(user.Groups)+1)
 		for _, group := range user.Groups {
-			if group == store.MonthlyFreeQuotaLimitGroup ||
-				group == store.MonthlyPlusQuotaLimitGroup ||
-				group == store.MonthlyUnlimitedBetaQuotaGroup || group == "segment:subscribed" || group == "segment:monthly" || group == "segment:yearly" {
+			if store.IsMonthlyQuotaGroup(group) || group == "segment:subscribed" || group == "segment:monthly" || group == "segment:yearly" {
 				continue
 			}
 			groups = append(groups, group)

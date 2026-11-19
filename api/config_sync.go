@@ -15,7 +15,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"account/internal/routingpolicy"
 	"account/internal/store"
+	"account/internal/subscription"
 	"account/internal/xrayconfig"
 )
 
@@ -130,6 +132,34 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		}
 	}
 
+	policy := routingpolicy.DefaultPolicy()
+	hasMedia, hasPro, hasCustom := false, false, false
+	for _, pool := range selectedPools {
+		if !pool.OpenToUsers {
+			continue
+		}
+		switch pool.RoutingPool {
+		case routingpolicy.RoutingPoolProEC2:
+			hasPro = true
+		case routingpolicy.RoutingPoolCustomDedicated:
+			hasCustom = true
+		default:
+			hasMedia = true
+		}
+	}
+	if !hasMedia && !hasPro && !hasCustom {
+		switch resourceClass {
+		case agentResourcePro:
+			hasPro = true
+			hasMedia = true
+		case agentResourceCustom, agentResourceTeam:
+			hasCustom = true
+		default:
+			hasMedia = true
+		}
+	}
+	routes := subscription.BuildThreeTierRoutes(policy, hasMedia, hasPro, hasCustom)
+
 	profiles := []gin.H{}
 	nodes := []gin.H{}
 	if changed {
@@ -153,6 +183,14 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 			}
 			countryCode := pool.Code
 			nodeID := host
+			pricingGroup := strings.TrimSpace(pool.ResourceClass)
+			if pricingGroup == "" {
+				pricingGroup = resourceClass
+			}
+			routingPool := strings.TrimSpace(pool.RoutingPool)
+			if routingPool == "" {
+				routingPool = policy.PoolForResourceClass(pricingGroup)
+			}
 			vlessURI := renderVLESSURIScheme(xhttpScheme, map[string]string{
 				"UUID":   proxyUUID,
 				"DOMAIN": host,
@@ -178,6 +216,8 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 				"source":         "server",
 				"country_code":   countryCode,
 				"resource_class": resourceClass,
+				"routing_pool":   routingPool,
+				"pricing_group":  pricingGroup,
 				"vless_uri":      vlessURI,
 			})
 			nodes = append(nodes, gin.H{
@@ -197,6 +237,8 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 				"source":           "server",
 				"country_code":     countryCode,
 				"resource_class":   resourceClass,
+				"routing_pool":     routingPool,
+				"pricing_group":    pricingGroup,
 				"updated_at":       updatedAt,
 				"vless_uri":        vlessURI,
 				"uri_scheme_xhttp": vlessURI,
@@ -213,7 +255,7 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		"profiles":       profiles,
 		"nodes":          nodes,
 		"rendered_json":  renderedJSON,
-		"routes":         []gin.H{},
+		"routes":         routes,
 		"dns": gin.H{
 			"mode":    "secure_tunnel",
 			"servers": []string{},

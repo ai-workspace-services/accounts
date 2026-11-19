@@ -13,7 +13,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"account/internal/auth"
+	"account/internal/routingpolicy"
 	"account/internal/store"
+	"account/internal/subscription"
 	"account/internal/xrayconfig"
 )
 
@@ -41,6 +43,9 @@ type VlessNode struct {
 	Security       string   `json:"security,omitempty"`
 	Flow           string   `json:"flow,omitempty"`
 	ResourceClass  string   `json:"resource_class,omitempty"`
+	RoutingPool    string   `json:"routing_pool,omitempty"`
+	PricingGroup   string   `json:"pricing_group,omitempty"`
+	SubPoolTags    []string `json:"sub_pool_tags,omitempty"`
 	ServerName     string   `json:"server_name,omitempty"`
 	XHTTPPort      int      `json:"xhttp_port,omitempty"`
 	TCPPort        int      `json:"tcp_port,omitempty"`
@@ -48,28 +53,37 @@ type VlessNode struct {
 	URISchemeTCP   string   `json:"uri_scheme_tcp,omitempty"`
 }
 
-func (h *handler) listAgentNodes(c *gin.Context) {
+type userNodesContext struct {
+	user          *store.User
+	access        networkAccess
+	packageName   string
+	resourceClass string
+	nodes         []VlessNode
+	subNodes      []subscription.Node
+}
+
+func (h *handler) resolveUserNodes(c *gin.Context) (*userNodesContext, bool) {
 	user, ok := h.resolveAgentNodeUser(c)
 	if !ok {
-		return
+		return nil, false
 	}
 	if blocked, err := h.proxyAccountBlocked(c.Request.Context(), user); err != nil {
 		respondError(c, 503, "network_access_unavailable", "network access is unavailable")
-		return
+		return nil, false
 	} else if blocked {
 		respondError(c, 403, "proxy_access_blocked", "proxy access is blocked")
-		return
+		return nil, false
 	}
 	if err := h.ensureExpiredSubscriptionDowngrade(c.Request.Context(), user); err != nil {
 		respondError(c, 503, "quota_unavailable", "failed to reconcile quota")
-		return
+		return nil, false
 	}
 	if exhausted, err := h.quotaExhaustedForUser(c.Request.Context(), user); err != nil {
 		respondError(c, 503, "quota_unavailable", "failed to evaluate quota")
-		return
+		return nil, false
 	} else if exhausted {
 		respondError(c, 403, "quota_exhausted", "natural-month quota exhausted")
-		return
+		return nil, false
 	}
 
 	if !user.Active {
@@ -77,7 +91,7 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 			"error":   "account_paused",
 			"message": "account is paused",
 		})
-		return
+		return nil, false
 	}
 
 	proxyUUID := strings.TrimSpace(user.ProxyUUID)
@@ -86,7 +100,7 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 			"error":   "proxy_uuid_unavailable",
 			"message": "proxy UUID is not provisioned for this account",
 		})
-		return
+		return nil, false
 	}
 
 	if user.ProxyUUIDExpiresAt != nil && time.Now().UTC().After(*user.ProxyUUIDExpiresAt) {
@@ -94,7 +108,7 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		if strings.EqualFold(strings.TrimSpace(user.Email), sandboxUserEmail) {
 			if err := h.ensureSandboxProxyUUID(c.Request.Context(), user); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "sandbox_uuid_rotation_failed"})
-				return
+				return nil, false
 			}
 			proxyUUID = strings.TrimSpace(user.ProxyUUID)
 			if proxyUUID == "" {
@@ -102,38 +116,30 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 					"error":   "proxy_uuid_unavailable",
 					"message": "proxy UUID is not provisioned for this account",
 				})
-				return
+				return nil, false
 			}
 		} else {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":   "proxy_uuid_expired",
 				"message": "proxy access has expired, please renew",
 			})
-			return
+			return nil, false
 		}
 	}
-
-	// Add panic recovery for this handler
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Printf("PANIC in listAgentNodes: %v\n", r)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error", "message": fmt.Sprintf("%v", r)})
-		}
-	}()
 
 	access, err := h.networkAccessForUser(c.Request.Context(), user)
 	if err != nil {
 		respondError(c, 503, "network_access_unavailable", "network access is unavailable")
-		return
+		return nil, false
 	}
 	if !access.Allowed {
 		respondError(c, 403, "team_access_inactive", "team access is inactive")
-		return
+		return nil, false
 	}
 	packageName, err := h.billingPackageName(c.Request.Context(), user)
 	if err != nil {
 		respondError(c, 503, "billing_profile_unavailable", "failed to evaluate subscription resource class")
-		return
+		return nil, false
 	}
 	resourceClass := effectiveAgentResourceClass(access, user, packageName)
 	pools := regionalPoolsForUser(h.networkStatusReader(access), access, user, packageName, time.Now().UTC())
@@ -143,9 +149,11 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 
 	xhttpScheme := xrayconfig.VLESSXHTTPScheme()
 	tcpScheme := xrayconfig.VLESSTCPScheme()
+	policy := routingpolicy.DefaultPolicy()
 
 	users := []string{proxyUUID}
 	nodes := make([]VlessNode, 0, len(pools))
+	subNodes := make([]subscription.Node, 0, len(pools))
 	for _, pool := range pools {
 		if !pool.OpenToUsers {
 			continue
@@ -154,58 +162,152 @@ func (h *handler) listAgentNodes(c *gin.Context) {
 		if pool.ResourceClass == agentResourceFree {
 			nodeClass = agentResourceFree
 		}
+		pricingGroup := strings.TrimSpace(pool.ResourceClass)
+		if pricingGroup == "" {
+			pricingGroup = nodeClass
+		}
+		routingPool := strings.TrimSpace(pool.RoutingPool)
+		if routingPool == "" {
+			routingPool = policy.PoolForResourceClass(pricingGroup)
+		}
 		xhttpPath := poolXHTTPPath(envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), nodeClass)
 		host := pool.Entry
 		nodeName := pool.DisplayName
 		if strings.TrimSpace(nodeName) == "" {
 			nodeName = pool.Code
 		}
+		vlessXHTTP := renderVLESSURIScheme(xhttpScheme, map[string]string{
+			"UUID":   proxyUUID,
+			"DOMAIN": host,
+			"NODE":   host,
+			"PATH":   url.QueryEscape(xhttpPath),
+			"MODE":   url.QueryEscape(xhttpMode),
+			"SNI":    host,
+			"FP":     defaultTLSFP,
+			"TAG":    url.QueryEscape(nodeName),
+		})
+		vlessTCP := renderVLESSURIScheme(tcpScheme, map[string]string{
+			"UUID":   proxyUUID,
+			"DOMAIN": host,
+			"NODE":   host,
+			"SNI":    host,
+			"FP":     defaultTLSFP,
+			"FLOW":   defaultTCPFlow,
+			"TAG":    url.QueryEscape(nodeName),
+		})
 		nodes = append(nodes, VlessNode{
-			Private:       pool.Private,
+			Private:        pool.Private,
+			Name:           nodeName,
+			Region:         pool.Code,
+			PoolCount:      pool.PoolCount,
+			OpenToUsers:    true,
+			Address:        host,
+			Port:           xhttpPort,
+			Users:          users,
+			Transport:      "xhttp",
+			Path:           xhttpPath,
+			Mode:           xhttpMode,
+			Security:       "tls",
+			Flow:           defaultTCPFlow,
+			ResourceClass:  nodeClass,
+			RoutingPool:    routingPool,
+			PricingGroup:   pricingGroup,
+			SubPoolTags:    append([]string(nil), pool.SubPoolTags...),
+			ServerName:     host,
+			XHTTPPort:      xhttpPort,
+			TCPPort:        tcpPort,
+			URISchemeXHTTP: vlessXHTTP,
+			URISchemeTCP:   vlessTCP,
+		})
+		subNodes = append(subNodes, subscription.Node{
+			ID:            host,
 			Name:          nodeName,
 			Region:        pool.Code,
-			PoolCount:     pool.PoolCount,
-			OpenToUsers:   true,
 			Address:       host,
 			Port:          xhttpPort,
-			Users:         users,
+			UUID:          proxyUUID,
+			Flow:          defaultTCPFlow,
 			Transport:     "xhttp",
 			Path:          xhttpPath,
 			Mode:          xhttpMode,
 			Security:      "tls",
-			Flow:          defaultTCPFlow,
-			ResourceClass: nodeClass,
 			ServerName:    host,
-			XHTTPPort:     xhttpPort,
-			TCPPort:       tcpPort,
-			URISchemeXHTTP: renderVLESSURIScheme(xhttpScheme, map[string]string{
-				"UUID":   proxyUUID,
-				"DOMAIN": host,
-				"NODE":   host,
-				"PATH":   url.QueryEscape(xhttpPath),
-				"MODE":   url.QueryEscape(xhttpMode),
-				"SNI":    host,
-				"FP":     defaultTLSFP,
-				"TAG":    url.QueryEscape(nodeName),
-			}),
-			URISchemeTCP: renderVLESSURIScheme(tcpScheme, map[string]string{
-				"UUID":   proxyUUID,
-				"DOMAIN": host,
-				"NODE":   host,
-				"SNI":    host,
-				"FP":     defaultTLSFP,
-				"FLOW":   defaultTCPFlow,
-				"TAG":    url.QueryEscape(nodeName),
-			}),
+			Fingerprint:   defaultTLSFP,
+			ResourceClass: pricingGroup,
+			RoutingPool:   routingPool,
+			PricingGroup:  pricingGroup,
+			SubPoolTags:   append([]string(nil), pool.SubPoolTags...),
+			VlessURI:      vlessXHTTP,
 		})
 	}
 
 	if access.Mode == "dedicated" && len(nodes) == 0 {
 		respondError(c, 503, "team_nodes_unavailable", "dedicated team nodes are unavailable")
+		return nil, false
+	}
+
+	return &userNodesContext{
+		user:          user,
+		access:        access,
+		packageName:   packageName,
+		resourceClass: resourceClass,
+		nodes:         nodes,
+		subNodes:      subNodes,
+	}, true
+}
+
+func (h *handler) listAgentNodes(c *gin.Context) {
+	// Add panic recovery for this handler
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("PANIC in listAgentNodes: %v\n", r)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal_error", "message": fmt.Sprintf("%v", r)})
+		}
+	}()
+
+	resolved, ok := h.resolveUserNodes(c)
+	if !ok {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, nodes)
+	c.JSON(http.StatusOK, resolved.nodes)
+}
+
+func (h *handler) getSubscription(c *gin.Context) {
+	rawFormat := strings.TrimSpace(c.Param("format"))
+	if rawFormat == "" {
+		rawFormat = strings.TrimSpace(c.Query("format"))
+	}
+	format, err := subscription.ParseFormat(rawFormat)
+	if err != nil {
+		respondError(c, http.StatusBadRequest, "unsupported_subscription_format", err.Error())
+		return
+	}
+
+	resolved, ok := h.resolveUserNodes(c)
+	if !ok {
+		return
+	}
+
+	allowCustom := resolved.resourceClass == agentResourceCustom ||
+		resolved.resourceClass == agentResourceTeam ||
+		(resolved.access.Mode != "dedicated" && isCustomDedicatedUser(resolved.user, resolved.packageName))
+	body, contentType, err := subscription.Render(format, subscription.RenderInput{
+		UserID:      resolved.user.ID,
+		UserEmail:   resolved.user.Email,
+		AllowCustom: allowCustom,
+		AllowPro:    resolved.resourceClass == agentResourcePro,
+		Policy:      routingpolicy.DefaultPolicy(),
+		Nodes:       resolved.subNodes,
+		GeneratedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, "subscription_render_failed", "failed to render subscription")
+		return
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.Data(http.StatusOK, contentType, body)
 }
 
 func (h *handler) resolveAgentNodeUser(c *gin.Context) (*store.User, bool) {

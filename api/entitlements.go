@@ -214,7 +214,7 @@ func (h *handler) restoreQuotaGroupForPlan(ctx context.Context, userID string, p
 	}
 	groups := make([]string, 0, len(user.Groups)+1)
 	for _, group := range user.Groups {
-		if group == store.MonthlyFreeQuotaLimitGroup || group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup {
+		if store.IsMonthlyQuotaGroup(group) {
 			continue
 		}
 		groups = append(groups, group)

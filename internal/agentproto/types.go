@@ -13,10 +13,29 @@ type ClientListResponse struct {
 	NodeID           string              `json:"nodeId,omitempty"`
 	EnrollmentStatus string              `json:"enrollmentStatus,omitempty"`
 	Scope            *UserScope          `json:"scope,omitempty"`
+	RoutingPolicy    *RoutingPolicy      `json:"routingPolicy,omitempty"`
 	Clients          []xrayconfig.Client `json:"clients"`
 	Total            int                 `json:"total"`
 	GeneratedAt      time.Time           `json:"generatedAt"`
 	Revision         string              `json:"revision,omitempty"`
+}
+
+// RoutingPolicy conveys the controller's authoritative pool and three-tier
+// traffic-split policy to an edge agent for its authenticated scope.
+type RoutingPolicy struct {
+	Version             int      `json:"version"`
+	Revision            string   `json:"revision"`
+	Pool                string   `json:"pool"`
+	PublicResource      bool     `json:"publicResource"`
+	MediaOnProAction    string   `json:"mediaOnProAction"`
+	FallbackDefault     bool     `json:"fallbackDefault,omitempty"`
+	Unlimited           bool     `json:"unlimited,omitempty"`
+	PricingGroups       []string `json:"pricingGroups,omitempty"`
+	SubPoolTags         []string `json:"subPoolTags,omitempty"`
+	DirectDomains       []string `json:"directDomains,omitempty"`
+	DirectIPs           []string `json:"directIps,omitempty"`
+	MediaDomains        []string `json:"mediaDomains,omitempty"`
+	ProWhitelistDomains []string `json:"proWhitelistDomains,omitempty"`
 }
 
 // UserScope is derived from an enrolled credential or an administrator-approved
@@ -59,6 +78,8 @@ type XrayStatus struct {
 	OpenToUsers     *bool      `json:"openToUsers,omitempty"`
 	LineCode        string     `json:"lineCode,omitempty"`
 	PricingGroup    string     `json:"pricingGroup,omitempty"`
+	RoutingPool     string     `json:"routingPool,omitempty"`
+	SubPoolTags     []string   `json:"subPoolTags,omitempty"`
 	StatsEnabled    bool       `json:"statsEnabled"`
 	XrayRevision    string     `json:"xrayRevision,omitempty"`
 }

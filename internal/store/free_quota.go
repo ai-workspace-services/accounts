@@ -11,7 +11,7 @@ SET remaining_included_quota=GREATEST(0,p.included_quota_bytes-COALESCE((SELECT 
 period_start=$2, period_end=$3, effective_at=$4, updated_at=$4
 FROM public.account_billing_profiles p, public.users u
 WHERE q.account_uuid=$1 AND p.account_uuid=q.account_uuid AND u.uuid=q.account_uuid
-AND u.groups ? 'segment:quota:free-3gb' AND p.pricing_rule_version='plan:FREE'
+AND (u.groups ? 'segment:quota:free-3gb' OR u.groups ? 'segment:quota:free-5gb') AND p.pricing_rule_version='plan:FREE'
 AND (q.period_end IS NULL OR (q.period_end <= $4 AND q.period_end <= $2))`, id, start.UTC(), end.UTC(), now.UTC())
 	return err
 }

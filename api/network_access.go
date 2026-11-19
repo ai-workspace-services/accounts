@@ -24,9 +24,26 @@ const (
 	agentResourceCustom      = "custom"
 )
 
+func isCustomDedicatedUser(user *store.User, packageName string) bool {
+	if strings.EqualFold(strings.TrimSpace(packageName), agentResourceCustom) {
+		return true
+	}
+	if user == nil {
+		return false
+	}
+	for _, group := range user.Groups {
+		switch strings.ToLower(strings.TrimSpace(group)) {
+		case "resource:custom", "segment:custom", "access:custom", "access:custom-dedicated", "pool:custom-dedicated":
+			return true
+		}
+	}
+	return false
+}
+
 // agentResourceScope resolves the pool entitlement from the enrolled
 // credential. A team marker remains the source of tenant isolation; a
-// resource marker selects a public pool. Conflicting markers fail closed.
+// resource marker selects a public pool (or non-public custom pool). Conflicting
+// markers and public-management markers combined with custom fail closed.
 func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 	scope := agentproto.UserScope{ResourceClass: agentResourceShared}
 	if hasPublicUnionPolicy(groups) {
@@ -39,6 +56,7 @@ func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 		}
 	}
 	seen := ""
+	hasConfigurePublic := false
 	team, valid := agentNetworkScope(groups)
 	if !valid {
 		return agentproto.UserScope{}, false
@@ -49,6 +67,10 @@ func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 	}
 	for _, group := range groups {
 		group = strings.TrimSpace(group)
+		if group == "agent:configure-public" {
+			hasConfigurePublic = true
+			continue
+		}
 		if !strings.HasPrefix(group, agentResourceGroupPrefix) {
 			continue
 		}
@@ -61,6 +83,9 @@ func agentResourceScope(groups []string) (agentproto.UserScope, bool) {
 		}
 		seen = class
 		scope.ResourceClass = class
+	}
+	if hasConfigurePublic && scope.ResourceClass == agentResourceCustom {
+		return agentproto.UserScope{}, false
 	}
 	if scope.ResourceClass == "team" && seen != "team" {
 		return agentproto.UserScope{}, false
@@ -80,7 +105,7 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 	}
 	class := effectiveAgentResourceClass(access, user, packageName)
 	if scope.ResourceClass == agentResourceCustom {
-		return class == agentResourcePlus || class == agentResourcePro || (scope.CustomAllowFree && class == agentResourceFree)
+		return class == agentResourceCustom || class == agentResourcePlus || class == agentResourcePro || (scope.CustomAllowFree && class == agentResourceFree)
 	}
 	return publicAgentResourceClassAllows(scope.ResourceClass, class)
 }
@@ -88,6 +113,9 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 // Public tiers inherit the lower-tier pools. Team resources never participate
 // in this hierarchy; membership is checked separately by the caller.
 func publicAgentResourceClassAllows(poolClass, userClass string) bool {
+	if poolClass == agentResourceShared && userClass == agentResourceCustom {
+		return true
+	}
 	rank := map[string]int{agentResourceFree: 1, agentResourcePlus: 2, agentResourcePro: 3}
 	userRank, known := rank[userClass]
 	if !known {
@@ -315,7 +343,7 @@ func setTeamQuotaGroup(user *store.User, quotaGroup string) error {
 	var selected string
 	switch quotaGroup {
 	case "", "none":
-	case "3gb":
+	case "3gb", "5gb":
 		selected = store.MonthlyFreeQuotaLimitGroup
 	case "20gb":
 		selected = store.MonthlyPlusQuotaLimitGroup
@@ -326,7 +354,7 @@ func setTeamQuotaGroup(user *store.User, quotaGroup string) error {
 	}
 	groups := make([]string, 0, len(user.Groups)+1)
 	for _, group := range user.Groups {
-		if group == store.MonthlyFreeQuotaLimitGroup || group == store.MonthlyPlusQuotaLimitGroup || group == store.MonthlyUnlimitedBetaQuotaGroup {
+		if store.IsMonthlyQuotaGroup(group) {
 			continue
 		}
 		groups = append(groups, group)
@@ -870,13 +898,21 @@ func (h *handler) resolveScopedAgentBase(c *gin.Context, credential agentserver.
 		return identity, false
 	}
 	managePublic := false
+	hasConfigurePublic := false
 	for _, group := range credential.Groups {
+		if group == "agent:configure-public" {
+			hasConfigurePublic = true
+		}
 		if group == "agent:configure-public" || (group == "internal" && credential.ID == "*" && credentialScope.ResourceClass == agentResourceShared) {
 			managePublic = true
 		}
 	}
+	if class == agentResourceCustom && hasConfigurePublic {
+		respondError(c, 403, "agent_scope_mismatch", "agent:configure-public credentials cannot claim resource:custom")
+		return identity, false
+	}
 	managePublic = managePublic && (credential.ID == "*" || credential.ID == identity.ID)
-	if managePublic && credentialScope.ResourceClass != agentResourceTeam && scope.ResourceClass != agentResourceTeam && class != agentResourceTeam {
+	if managePublic && credentialScope.ResourceClass != agentResourceTeam && credentialScope.ResourceClass != agentResourceCustom && scope.ResourceClass != agentResourceTeam && class != agentResourceTeam && (class != agentResourceCustom || !hasConfigurePublic) {
 		groups := make([]string, 0, len(identity.Groups)+1)
 		for _, group := range identity.Groups {
 			if !strings.HasPrefix(strings.TrimSpace(group), agentResourceGroupPrefix) {
@@ -967,7 +1003,9 @@ func (h *handler) reservedDedicatedHost(host string) bool {
 	}
 	for _, snapshot := range h.enrollmentStatusReader().Statuses() {
 		team, valid := agentNetworkScope(snapshot.Agent.Groups)
-		if (!valid || team != "") && (normalizeHost(snapshot.Agent.ID) == host || regionalEntryHost(snapshot.Report.Xray.EntryPoint) == host) {
+		scope, scopeValid := agentResourceScope(snapshot.Agent.Groups)
+		dedicated := !valid || team != "" || !scopeValid || scope.ResourceClass == agentResourceCustom
+		if dedicated && (normalizeHost(snapshot.Agent.ID) == host || regionalEntryHost(snapshot.Report.Xray.EntryPoint) == host) {
 			return true
 		}
 	}
