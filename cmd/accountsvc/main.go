@@ -876,6 +876,10 @@ func billingSchemaStatements() []string {
 		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS period_start TIMESTAMPTZ NULL`,
 		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS period_end TIMESTAMPTZ NULL`,
 		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS proxy_access_state TEXT NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE public.billing_plans ADD COLUMN IF NOT EXISTS high_speed_quota_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE public.account_billing_profiles ADD COLUMN IF NOT EXISTS high_speed_quota_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE public.account_quota_states ADD COLUMN IF NOT EXISTS remaining_high_speed_quota BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE public.traffic_minute_buckets ADD COLUMN IF NOT EXISTS routing_pool TEXT NOT NULL DEFAULT ''`,
 	}
 
 }
@@ -953,14 +957,15 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 			SortOrder: 20,
 		},
 		{
-			PlanID:             "PRO-MONTHLY-2026",
-			DisplayName:        "Pro",
-			Kind:               "subscription",
-			IncludedQuotaBytes: 50 * 1024 * 1024 * 1024, // 50 GiB per month
-			PackageName:        "pro",
-			PriceAmount:        5000,
-			PriceCurrency:      "CNY",
-			PriceUnit:          "month",
+			PlanID:              "PRO-MONTHLY-2026",
+			DisplayName:         "Pro",
+			Kind:                "subscription",
+			IncludedQuotaBytes:  50 * 1024 * 1024 * 1024, // 50 GiB VPS per month
+			HighSpeedQuotaBytes: 30 * 1024 * 1024 * 1024, // 30 GiB high-speed per month
+			PackageName:         "pro",
+			PriceAmount:         5000,
+			PriceCurrency:       "CNY",
+			PriceUnit:           "month",
 			Features: map[string]any{
 				"family":      "pro",
 				"tier_rank":   20,

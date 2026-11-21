@@ -16,21 +16,22 @@ import (
 // deploy. Admin access reuses the settings permissions.
 
 type billingPlanPayload struct {
-	PlanID             string             `json:"planId"`
-	StripePriceID      string             `json:"stripePriceId,omitempty"`
-	DisplayName        string             `json:"displayName"`
-	Kind               string             `json:"kind"`
-	IncludedQuotaBytes int64              `json:"includedQuotaBytes"`
-	MaxTrafficBytes    int64              `json:"maxTrafficBytes"`
-	PackageName        string             `json:"packageName"`
-	PriceAmount        int64              `json:"priceAmount"`
-	PriceCurrency      string             `json:"priceCurrency,omitempty"`
-	PriceUnit          string             `json:"priceUnit,omitempty"`
-	PriceMultipliers   map[string]float64 `json:"priceMultipliers,omitempty"`
-	Features           map[string]any     `json:"features,omitempty"`
-	TrialDays          int                `json:"trialDays"`
-	Active             bool               `json:"active"`
-	SortOrder          int                `json:"sortOrder"`
+	PlanID              string             `json:"planId"`
+	StripePriceID       string             `json:"stripePriceId,omitempty"`
+	DisplayName         string             `json:"displayName"`
+	Kind                string             `json:"kind"`
+	IncludedQuotaBytes  int64              `json:"includedQuotaBytes"`
+	HighSpeedQuotaBytes int64              `json:"highSpeedQuotaBytes"`
+	MaxTrafficBytes     int64              `json:"maxTrafficBytes"`
+	PackageName         string             `json:"packageName"`
+	PriceAmount         int64              `json:"priceAmount"`
+	PriceCurrency       string             `json:"priceCurrency,omitempty"`
+	PriceUnit           string             `json:"priceUnit,omitempty"`
+	PriceMultipliers    map[string]float64 `json:"priceMultipliers,omitempty"`
+	Features            map[string]any     `json:"features,omitempty"`
+	TrialDays           int                `json:"trialDays"`
+	Active              bool               `json:"active"`
+	SortOrder           int                `json:"sortOrder"`
 	// Reason is write-only: operators supply it when changing the catalog and
 	// it is stored in the audit trail, never echoed back in listings.
 	Reason string `json:"reason,omitempty"`
@@ -41,20 +42,21 @@ type billingPlanPayload struct {
 // that has not yet been taught to edit prices can omit them without replacing
 // an already-published Stripe price with zero values.
 type billingPlanUpsertRequest struct {
-	StripePriceID      string             `json:"stripePriceId,omitempty"`
-	DisplayName        string             `json:"displayName"`
-	Kind               string             `json:"kind"`
-	IncludedQuotaBytes int64              `json:"includedQuotaBytes"`
-	PackageName        string             `json:"packageName"`
-	PriceAmount        *int64             `json:"priceAmount"`
-	PriceCurrency      *string            `json:"priceCurrency"`
-	PriceUnit          *string            `json:"priceUnit"`
-	PriceMultipliers   map[string]float64 `json:"priceMultipliers,omitempty"`
-	Features           map[string]any     `json:"features,omitempty"`
-	TrialDays          int                `json:"trialDays"`
-	Active             bool               `json:"active"`
-	SortOrder          int                `json:"sortOrder"`
-	Reason             string             `json:"reason,omitempty"`
+	StripePriceID       string             `json:"stripePriceId,omitempty"`
+	DisplayName         string             `json:"displayName"`
+	Kind                string             `json:"kind"`
+	IncludedQuotaBytes  int64              `json:"includedQuotaBytes"`
+	HighSpeedQuotaBytes *int64             `json:"highSpeedQuotaBytes"`
+	PackageName         string             `json:"packageName"`
+	PriceAmount         *int64             `json:"priceAmount"`
+	PriceCurrency       *string            `json:"priceCurrency"`
+	PriceUnit           *string            `json:"priceUnit"`
+	PriceMultipliers    map[string]float64 `json:"priceMultipliers,omitempty"`
+	Features            map[string]any     `json:"features,omitempty"`
+	TrialDays           int                `json:"trialDays"`
+	Active              bool               `json:"active"`
+	SortOrder           int                `json:"sortOrder"`
+	Reason              string             `json:"reason,omitempty"`
 }
 
 var allowedPlanFamilies = map[string]int{
@@ -188,21 +190,22 @@ func validatePublishedPrice(plan *store.BillingPlan) error {
 
 func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
 	return billingPlanPayload{
-		PlanID:             plan.PlanID,
-		StripePriceID:      plan.StripePriceID,
-		DisplayName:        plan.DisplayName,
-		Kind:               plan.Kind,
-		IncludedQuotaBytes: plan.IncludedQuotaBytes,
-		MaxTrafficBytes:    plan.IncludedQuotaBytes,
-		PackageName:        plan.PackageName,
-		PriceAmount:        plan.PriceAmount,
-		PriceCurrency:      plan.PriceCurrency,
-		PriceUnit:          plan.PriceUnit,
-		PriceMultipliers:   plan.PriceMultipliers,
-		Features:           enrichBillingPlanFeatures(plan),
-		TrialDays:          0,
-		Active:             plan.Active,
-		SortOrder:          plan.SortOrder,
+		PlanID:              plan.PlanID,
+		StripePriceID:       plan.StripePriceID,
+		DisplayName:         plan.DisplayName,
+		Kind:                plan.Kind,
+		IncludedQuotaBytes:  plan.IncludedQuotaBytes,
+		HighSpeedQuotaBytes: plan.HighSpeedQuotaBytes,
+		MaxTrafficBytes:     plan.IncludedQuotaBytes,
+		PackageName:         plan.PackageName,
+		PriceAmount:         plan.PriceAmount,
+		PriceCurrency:       plan.PriceCurrency,
+		PriceUnit:           plan.PriceUnit,
+		PriceMultipliers:    plan.PriceMultipliers,
+		Features:            enrichBillingPlanFeatures(plan),
+		TrialDays:           0,
+		Active:              plan.Active,
+		SortOrder:           plan.SortOrder,
 	}
 }
 
@@ -273,7 +276,7 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_plan_kind", "kind must be subscription or service")
 		return
 	}
-	if req.IncludedQuotaBytes < 0 {
+	if req.IncludedQuotaBytes < 0 || (req.HighSpeedQuotaBytes != nil && *req.HighSpeedQuotaBytes < 0) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "quota must be non-negative")
 		return
 	}
@@ -302,9 +305,13 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		if req.PriceMultipliers == nil {
 			plan.PriceMultipliers = existing.PriceMultipliers
 		}
+		plan.HighSpeedQuotaBytes = existing.HighSpeedQuotaBytes
 		plan.PriceAmount = existing.PriceAmount
 		plan.PriceCurrency = existing.PriceCurrency
 		plan.PriceUnit = existing.PriceUnit
+	}
+	if req.HighSpeedQuotaBytes != nil {
+		plan.HighSpeedQuotaBytes = *req.HighSpeedQuotaBytes
 	}
 	if req.PriceAmount != nil {
 		plan.PriceAmount = *req.PriceAmount
@@ -331,15 +338,16 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 	var before map[string]any
 	if existing, err := h.store.GetBillingPlan(c.Request.Context(), planID); err == nil && existing != nil {
 		before = map[string]any{
-			"display_name":         existing.DisplayName,
-			"stripe_price_id":      existing.StripePriceID,
-			"included_quota_bytes": existing.IncludedQuotaBytes,
-			"package_name":         existing.PackageName,
-			"price_amount":         existing.PriceAmount,
-			"price_currency":       existing.PriceCurrency,
-			"price_unit":           existing.PriceUnit,
-			"active":               existing.Active,
-			"sort_order":           existing.SortOrder,
+			"display_name":           existing.DisplayName,
+			"stripe_price_id":        existing.StripePriceID,
+			"included_quota_bytes":   existing.IncludedQuotaBytes,
+			"high_speed_quota_bytes": existing.HighSpeedQuotaBytes,
+			"package_name":           existing.PackageName,
+			"price_amount":           existing.PriceAmount,
+			"price_currency":         existing.PriceCurrency,
+			"price_unit":             existing.PriceUnit,
+			"active":                 existing.Active,
+			"sort_order":             existing.SortOrder,
 		}
 	}
 
@@ -349,15 +357,16 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 	}
 
 	after := map[string]any{
-		"display_name":         plan.DisplayName,
-		"stripe_price_id":      plan.StripePriceID,
-		"included_quota_bytes": plan.IncludedQuotaBytes,
-		"package_name":         plan.PackageName,
-		"price_amount":         plan.PriceAmount,
-		"price_currency":       plan.PriceCurrency,
-		"price_unit":           plan.PriceUnit,
-		"active":               plan.Active,
-		"sort_order":           plan.SortOrder,
+		"display_name":           plan.DisplayName,
+		"stripe_price_id":        plan.StripePriceID,
+		"included_quota_bytes":   plan.IncludedQuotaBytes,
+		"high_speed_quota_bytes": plan.HighSpeedQuotaBytes,
+		"package_name":           plan.PackageName,
+		"price_amount":           plan.PriceAmount,
+		"price_currency":         plan.PriceCurrency,
+		"price_unit":             plan.PriceUnit,
+		"active":                 plan.Active,
+		"sort_order":             plan.SortOrder,
 	}
 	if err := h.recordAudit(c.Request.Context(), actor.ID, store.AuditActionPlanUpsert,
 		auditDetails(planID, reason, before, after)); err != nil {

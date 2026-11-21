@@ -22,6 +22,7 @@ func scanBillingPlan(scanner interface{ Scan(dest ...any) error }) (*BillingPlan
 		&plan.DisplayName,
 		&plan.Kind,
 		&plan.IncludedQuotaBytes,
+		&plan.HighSpeedQuotaBytes,
 		&plan.PackageName,
 		&plan.PriceAmount,
 		&plan.PriceCurrency,
@@ -46,7 +47,7 @@ func scanBillingPlan(scanner interface{ Scan(dest ...any) error }) (*BillingPlan
 	return &plan, nil
 }
 
-const billingPlanColumns = `plan_id, stripe_price_id, display_name, kind, included_quota_bytes, package_name, price_amount, price_currency, price_unit, price_multipliers, features, trial_days, active, sort_order, created_at, updated_at`
+const billingPlanColumns = `plan_id, stripe_price_id, display_name, kind, included_quota_bytes, high_speed_quota_bytes, package_name, price_amount, price_currency, price_unit, price_multipliers, features, trial_days, active, sort_order, created_at, updated_at`
 
 func (s *postgresStore) ListBillingPlans(ctx context.Context, includeInactive bool) ([]BillingPlan, error) {
 	query := `SELECT ` + billingPlanColumns + ` FROM billing_plans`
@@ -113,13 +114,14 @@ func (s *postgresStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan
 
 	const query = `
 		INSERT INTO billing_plans (
-			plan_id, stripe_price_id, display_name, kind, included_quota_bytes, package_name, price_amount, price_currency, price_unit, price_multipliers, features, trial_days, active, sort_order
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			plan_id, stripe_price_id, display_name, kind, included_quota_bytes, high_speed_quota_bytes, package_name, price_amount, price_currency, price_unit, price_multipliers, features, trial_days, active, sort_order
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (plan_id) DO UPDATE SET
 			stripe_price_id = EXCLUDED.stripe_price_id,
 			display_name = EXCLUDED.display_name,
 			kind = EXCLUDED.kind,
 			included_quota_bytes = EXCLUDED.included_quota_bytes,
+			high_speed_quota_bytes = EXCLUDED.high_speed_quota_bytes,
 			package_name = EXCLUDED.package_name,
 			price_amount = EXCLUDED.price_amount,
 			price_currency = EXCLUDED.price_currency,
@@ -145,6 +147,7 @@ func (s *postgresStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan
 		strings.TrimSpace(plan.DisplayName),
 		strings.TrimSpace(plan.Kind),
 		plan.IncludedQuotaBytes,
+		plan.HighSpeedQuotaBytes,
 		strings.TrimSpace(plan.PackageName),
 		plan.PriceAmount,
 		strings.ToUpper(strings.TrimSpace(plan.PriceCurrency)),
@@ -168,8 +171,8 @@ func (s *postgresStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan
 // Lock each existing entitlement pair before deriving usage. Both updates are
 // committed with the catalog, so readers cannot observe a partially saved plan.
 func syncCatalogQuota(ctx context.Context, tx *sql.Tx, plan *BillingPlan) error {
-	rows, err := tx.QueryContext(ctx, `SELECT p.account_uuid::text, p.included_quota_bytes,
-		q.remaining_included_quota, q.period_start, q.period_end
+	rows, err := tx.QueryContext(ctx, `SELECT p.account_uuid::text, p.included_quota_bytes, p.high_speed_quota_bytes,
+		q.remaining_included_quota, q.remaining_high_speed_quota, q.period_start, q.period_end
 		FROM account_billing_profiles p JOIN account_quota_states q USING (account_uuid)
 		WHERE p.pricing_rule_version = $1
 		AND NOT EXISTS (SELECT 1 FROM public.users u WHERE u.uuid::text=p.account_uuid::text AND u.groups ? 'subscription:source-plan:custom')
@@ -180,14 +183,15 @@ func syncCatalogQuota(ctx context.Context, tx *sql.Tx, plan *BillingPlan) error 
 		return err
 	}
 	type snapshot struct {
-		id                  string
-		included, remaining int64
-		start, end          sql.NullTime
+		id                      string
+		included, highSpeed     int64
+		remaining, remHighSpeed int64
+		start, end              sql.NullTime
 	}
 	var snapshots []snapshot
 	for rows.Next() {
 		var item snapshot
-		if err := rows.Scan(&item.id, &item.included, &item.remaining, &item.start, &item.end); err != nil {
+		if err := rows.Scan(&item.id, &item.included, &item.highSpeed, &item.remaining, &item.remHighSpeed, &item.start, &item.end); err != nil {
 			rows.Close()
 			return err
 		}
@@ -203,21 +207,26 @@ func syncCatalogQuota(ctx context.Context, tx *sql.Tx, plan *BillingPlan) error 
 		if item.start.Valid {
 			start = item.start.Time
 		}
-		var usage int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(GREATEST(total_bytes,0)),0)
+		var usage, hsUsage int64
+		if err := tx.QueryRowContext(ctx, `SELECT
+			COALESCE(SUM(CASE WHEN routing_pool <> 'Pro-EC2-Pool' THEN GREATEST(total_bytes,0) ELSE 0 END),0),
+			COALESCE(SUM(CASE WHEN routing_pool = 'Pro-EC2-Pool' THEN GREATEST(total_bytes,0) ELSE 0 END),0)
 			FROM traffic_minute_buckets WHERE account_uuid=$1 AND bucket_start >= $2
-			AND ($3::timestamptz IS NULL OR bucket_start < $3)`, item.id, start, item.end).Scan(&usage); err != nil {
+			AND ($3::timestamptz IS NULL OR bucket_start < $3)`, item.id, start, item.end).Scan(&usage, &hsUsage); err != nil {
 			return err
 		}
 		used := max(int64(0), item.included-item.remaining, usage)
 		remaining := max(int64(0), plan.IncludedQuotaBytes-used)
-		if item.included == plan.IncludedQuotaBytes && item.remaining == remaining {
+		hsUsed := max(int64(0), item.highSpeed-item.remHighSpeed, hsUsage)
+		hsRemaining := max(int64(0), plan.HighSpeedQuotaBytes-hsUsed)
+		if item.included == plan.IncludedQuotaBytes && item.remaining == remaining &&
+			item.highSpeed == plan.HighSpeedQuotaBytes && item.remHighSpeed == hsRemaining {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE account_billing_profiles SET included_quota_bytes=$2, updated_at=now() WHERE account_uuid=$1`, item.id, plan.IncludedQuotaBytes); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE account_billing_profiles SET included_quota_bytes=$2, high_speed_quota_bytes=$3, updated_at=now() WHERE account_uuid=$1`, item.id, plan.IncludedQuotaBytes, plan.HighSpeedQuotaBytes); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE account_quota_states SET remaining_included_quota=$2, updated_at=now() WHERE account_uuid=$1`, item.id, remaining); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE account_quota_states SET remaining_included_quota=$2, remaining_high_speed_quota=$3, updated_at=now() WHERE account_uuid=$1`, item.id, remaining, hsRemaining); err != nil {
 			return err
 		}
 	}

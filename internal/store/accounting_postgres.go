@@ -112,9 +112,10 @@ func (s *postgresStore) UpsertTrafficMinuteBucket(ctx context.Context, bucket *T
 
 	const query = `
 		INSERT INTO traffic_minute_buckets (
-			bucket_start, node_id, account_uuid, region, line_code, uplink_bytes, downlink_bytes, total_bytes, multiplier, rating_status, source_revision
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			bucket_start, node_id, account_uuid, region, line_code, routing_pool, uplink_bytes, downlink_bytes, total_bytes, multiplier, rating_status, source_revision
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (bucket_start, node_id, account_uuid, region, line_code) DO UPDATE SET
+			routing_pool = CASE WHEN EXCLUDED.routing_pool <> '' THEN EXCLUDED.routing_pool ELSE traffic_minute_buckets.routing_pool END,
 			uplink_bytes = EXCLUDED.uplink_bytes,
 			downlink_bytes = EXCLUDED.downlink_bytes,
 			total_bytes = EXCLUDED.total_bytes,
@@ -132,6 +133,7 @@ func (s *postgresStore) UpsertTrafficMinuteBucket(ctx context.Context, bucket *T
 		strings.TrimSpace(bucket.AccountUUID),
 		strings.TrimSpace(bucket.Region),
 		strings.TrimSpace(bucket.LineCode),
+		strings.TrimSpace(bucket.RoutingPool),
 		bucket.UplinkBytes,
 		bucket.DownlinkBytes,
 		bucket.TotalBytes,
@@ -143,7 +145,7 @@ func (s *postgresStore) UpsertTrafficMinuteBucket(ctx context.Context, bucket *T
 
 func (s *postgresStore) ListTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time) ([]TrafficMinuteBucket, error) {
 	query := `
-		SELECT bucket_start, node_id, account_uuid, region, line_code, uplink_bytes, downlink_bytes, total_bytes, multiplier, rating_status, source_revision, created_at, updated_at
+		SELECT bucket_start, node_id, account_uuid, region, line_code, routing_pool, uplink_bytes, downlink_bytes, total_bytes, multiplier, rating_status, source_revision, created_at, updated_at
 		FROM traffic_minute_buckets
 		WHERE account_uuid = $1`
 	args := []any{strings.TrimSpace(accountUUID)}
@@ -172,6 +174,7 @@ func (s *postgresStore) ListTrafficMinuteBucketsByAccount(ctx context.Context, a
 			&record.AccountUUID,
 			&record.Region,
 			&record.LineCode,
+			&record.RoutingPool,
 			&record.UplinkBytes,
 			&record.DownlinkBytes,
 			&record.TotalBytes,
@@ -190,7 +193,7 @@ func (s *postgresStore) ListTrafficMinuteBucketsByAccount(ctx context.Context, a
 
 func (s *postgresStore) ListTrafficMinuteBuckets(ctx context.Context) ([]TrafficMinuteBucket, error) {
 	const query = `
-		SELECT bucket_start, node_id, account_uuid, region, line_code, uplink_bytes, downlink_bytes, total_bytes, multiplier, rating_status, source_revision, created_at, updated_at
+		SELECT bucket_start, node_id, account_uuid, region, line_code, routing_pool, uplink_bytes, downlink_bytes, total_bytes, multiplier, rating_status, source_revision, created_at, updated_at
 		FROM traffic_minute_buckets
 		ORDER BY bucket_start ASC`
 	rows, err := s.db.QueryContext(ctx, query)
@@ -208,6 +211,7 @@ func (s *postgresStore) ListTrafficMinuteBuckets(ctx context.Context) ([]Traffic
 			&record.AccountUUID,
 			&record.Region,
 			&record.LineCode,
+			&record.RoutingPool,
 			&record.UplinkBytes,
 			&record.DownlinkBytes,
 			&record.TotalBytes,
@@ -383,10 +387,11 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 
 	const query = `
 		INSERT INTO account_quota_states (
-			account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, proxy_access_state, last_rated_bucket_at, period_start, period_end, effective_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			account_uuid, remaining_included_quota, remaining_high_speed_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, proxy_access_state, last_rated_bucket_at, period_start, period_end, effective_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (account_uuid) DO UPDATE SET
 			remaining_included_quota = EXCLUDED.remaining_included_quota,
+			remaining_high_speed_quota = EXCLUDED.remaining_high_speed_quota,
 			current_balance = EXCLUDED.current_balance,
 			arrears = EXCLUDED.arrears,
 			arrears_since = EXCLUDED.arrears_since,
@@ -416,6 +421,7 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 		query,
 		strings.TrimSpace(state.AccountUUID),
 		state.RemainingIncludedQuota,
+		state.RemainingHighSpeedQuota,
 		state.CurrentBalance,
 		state.Arrears,
 		arrearsSince,
@@ -432,7 +438,8 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID string) (*AccountQuotaState, error) {
 	// Expire only a recorded manual reset; preserve financial and suspension state.
 	if _, err := s.db.ExecContext(ctx, `UPDATE account_quota_states q SET
- remaining_included_quota=GREATEST(0,p.included_quota_bytes-COALESCE((SELECT SUM(GREATEST(total_bytes,0)) FROM traffic_minute_buckets b WHERE b.account_uuid=q.account_uuid AND b.bucket_start >= date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'),0)),
+ remaining_included_quota=GREATEST(0,p.included_quota_bytes-COALESCE((SELECT SUM(GREATEST(total_bytes,0)) FROM traffic_minute_buckets b WHERE b.account_uuid=q.account_uuid AND b.routing_pool <> 'Pro-EC2-Pool' AND b.bucket_start >= date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'),0)),
+ remaining_high_speed_quota=GREATEST(0,p.high_speed_quota_bytes-COALESCE((SELECT SUM(GREATEST(total_bytes,0)) FROM traffic_minute_buckets b WHERE b.account_uuid=q.account_uuid AND b.routing_pool = 'Pro-EC2-Pool' AND b.bucket_start >= date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'),0)),
  period_start=date_trunc('month',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
  period_end=(date_trunc('month',now() AT TIME ZONE 'UTC')+interval '1 month') AT TIME ZONE 'UTC',effective_at=now(),updated_at=now()
  FROM account_billing_profiles p WHERE q.account_uuid=$1 AND p.account_uuid=q.account_uuid
@@ -443,7 +450,7 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 	}
 
 	const query = `
-		SELECT account_uuid, remaining_included_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, proxy_access_state, last_rated_bucket_at, period_start, period_end, effective_at, updated_at
+		SELECT account_uuid, remaining_included_quota, remaining_high_speed_quota, current_balance, arrears, arrears_since, throttle_state, suspend_state, proxy_access_state, last_rated_bucket_at, period_start, period_end, effective_at, updated_at
 		FROM account_quota_states
 		WHERE account_uuid = $1`
 	var state AccountQuotaState
@@ -451,6 +458,7 @@ func (s *postgresStore) GetAccountQuotaState(ctx context.Context, accountUUID st
 	err := s.db.QueryRowContext(ctx, query, strings.TrimSpace(accountUUID)).Scan(
 		&state.AccountUUID,
 		&state.RemainingIncludedQuota,
+		&state.RemainingHighSpeedQuota,
 		&state.CurrentBalance,
 		&state.Arrears,
 		&arrearsSince,
@@ -532,11 +540,12 @@ func (s *postgresStore) UpsertAccountBillingProfile(ctx context.Context, profile
 
 	const query = `
 		INSERT INTO account_billing_profiles (
-			account_uuid, package_name, included_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			account_uuid, package_name, included_quota_bytes, high_speed_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (account_uuid) DO UPDATE SET
 			package_name = EXCLUDED.package_name,
 			included_quota_bytes = EXCLUDED.included_quota_bytes,
+			high_speed_quota_bytes = EXCLUDED.high_speed_quota_bytes,
 			base_price_per_byte = EXCLUDED.base_price_per_byte,
 			region_multiplier = EXCLUDED.region_multiplier,
 			line_multiplier = EXCLUDED.line_multiplier,
@@ -552,6 +561,7 @@ func (s *postgresStore) UpsertAccountBillingProfile(ctx context.Context, profile
 		strings.TrimSpace(profile.AccountUUID),
 		strings.TrimSpace(profile.PackageName),
 		profile.IncludedQuotaBytes,
+		profile.HighSpeedQuotaBytes,
 		profile.BasePricePerByte,
 		profile.RegionMultiplier,
 		profile.LineMultiplier,
@@ -563,7 +573,7 @@ func (s *postgresStore) UpsertAccountBillingProfile(ctx context.Context, profile
 
 func (s *postgresStore) GetAccountBillingProfile(ctx context.Context, accountUUID string) (*AccountBillingProfile, error) {
 	const query = `
-		SELECT account_uuid, package_name, included_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version, created_at, updated_at
+		SELECT account_uuid, package_name, included_quota_bytes, high_speed_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version, created_at, updated_at
 		FROM account_billing_profiles
 		WHERE account_uuid = $1`
 	var profile AccountBillingProfile
@@ -571,6 +581,7 @@ func (s *postgresStore) GetAccountBillingProfile(ctx context.Context, accountUUI
 		&profile.AccountUUID,
 		&profile.PackageName,
 		&profile.IncludedQuotaBytes,
+		&profile.HighSpeedQuotaBytes,
 		&profile.BasePricePerByte,
 		&profile.RegionMultiplier,
 		&profile.LineMultiplier,

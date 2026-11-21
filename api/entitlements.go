@@ -74,14 +74,15 @@ func (h *handler) applyPlanEntitlements(ctx context.Context, userID string, plan
 		packageName = "default"
 	}
 	profile := &store.AccountBillingProfile{
-		AccountUUID:        userID,
-		PackageName:        packageName,
-		IncludedQuotaBytes: plan.IncludedQuotaBytes,
-		RegionMultiplier:   plan.Multiplier("region"),
-		LineMultiplier:     plan.Multiplier("line"),
-		PeakMultiplier:     plan.Multiplier("peak"),
-		OffPeakMultiplier:  plan.Multiplier("offpeak"),
-		PricingRuleVersion: fmt.Sprintf("plan:%s", plan.PlanID),
+		AccountUUID:         userID,
+		PackageName:         packageName,
+		IncludedQuotaBytes:  plan.IncludedQuotaBytes,
+		HighSpeedQuotaBytes: plan.HighSpeedQuotaBytes,
+		RegionMultiplier:    plan.Multiplier("region"),
+		LineMultiplier:      plan.Multiplier("line"),
+		PeakMultiplier:      plan.Multiplier("peak"),
+		OffPeakMultiplier:   plan.Multiplier("offpeak"),
+		PricingRuleVersion:  fmt.Sprintf("plan:%s", plan.PlanID),
 	}
 	// Preserve an operator-tuned base price when one exists; the catalog does
 	// not own per-byte pricing yet (billing-service defaults apply otherwise).
@@ -156,6 +157,7 @@ func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *st
 		state = existing
 	}
 	state.RemainingIncludedQuota = plan.IncludedQuotaBytes
+	state.RemainingHighSpeedQuota = plan.HighSpeedQuotaBytes
 	state.Arrears = false
 	state.ArrearsSince = nil
 	state.ThrottleState = "normal"
@@ -197,6 +199,30 @@ func (h *handler) resetQuotaForPlanOnce(ctx context.Context, userID string, plan
 // allowance, preserving usage already consumed in the current period.
 func (h *handler) applyPlanUpgradeQuota(ctx context.Context, userID string, previousIncluded, upgradedIncluded int64, start, end time.Time) error {
 	return h.store.UpgradeSubscriptionQuota(ctx, userID, previousIncluded, upgradedIncluded, start, end)
+}
+
+func (h *handler) applyPlanUpgradeDualQuota(ctx context.Context, userID string, previousIncluded, upgradedIncluded, previousHighSpeed, upgradedHighSpeed int64, start, end time.Time) error {
+	return h.store.UpgradeSubscriptionDualQuota(ctx, userID, previousIncluded, upgradedIncluded, previousHighSpeed, upgradedHighSpeed, start, end)
+}
+
+func (h *handler) clampDowngradedHighSpeedQuota(ctx context.Context, userID string, plan *store.BillingPlan) error {
+	if plan == nil || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	state, err := h.store.GetAccountQuotaState(ctx, userID)
+	if errors.Is(err, store.ErrUserNotFound) || state == nil {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	target := max(int64(0), plan.HighSpeedQuotaBytes)
+	if state.RemainingHighSpeedQuota <= target {
+		return nil
+	}
+	state.RemainingHighSpeedQuota = target
+	state.EffectiveAt = time.Now().UTC()
+	return h.store.UpsertAccountQuotaState(ctx, state)
 }
 
 // restoreQuotaGroupForPlan reverses only a prior Free quota-group downgrade;
@@ -313,7 +339,7 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 	if freePackage == "" {
 		freePackage = "default"
 	}
-	if existingProfile != nil && existingProfile.PricingRuleVersion == fmt.Sprintf("plan:%s", store.BillingPlanFree) && existingProfile.PackageName == freePackage && existingProfile.IncludedQuotaBytes == plan.IncludedQuotaBytes {
+	if existingProfile != nil && existingProfile.PricingRuleVersion == fmt.Sprintf("plan:%s", store.BillingPlanFree) && existingProfile.PackageName == freePackage && existingProfile.IncludedQuotaBytes == plan.IncludedQuotaBytes && existingProfile.HighSpeedQuotaBytes == plan.HighSpeedQuotaBytes {
 		if existingQuota != nil && existingQuota.PeriodStart != nil && existingQuota.PeriodEnd != nil && existingQuota.PeriodStart.Equal(periodStart) && existingQuota.PeriodEnd.Equal(periodEnd) {
 			return nil
 		}
@@ -341,6 +367,7 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 		state = &store.AccountQuotaState{AccountUUID: userID}
 	}
 	state.RemainingIncludedQuota = remaining
+	state.RemainingHighSpeedQuota = plan.HighSpeedQuotaBytes
 	state.Arrears = false
 	state.ArrearsSince = nil
 	state.ThrottleState = "normal"

@@ -176,7 +176,8 @@ CREATE TABLE public.account_billing_profiles (
     offpeak_multiplier double precision DEFAULT 1.0 NOT NULL,
     pricing_rule_version text DEFAULT 'pricing-default-v1'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    high_speed_quota_bytes bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -246,7 +247,8 @@ CREATE TABLE public.account_quota_states (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     arrears_since timestamp with time zone,
     period_start timestamp with time zone,
-    period_end timestamp with time zone
+    period_end timestamp with time zone,
+    remaining_high_speed_quota bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -334,7 +336,8 @@ CREATE TABLE public.billing_plans (
     active boolean DEFAULT true NOT NULL,
     sort_order integer DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    high_speed_quota_bytes bigint DEFAULT 0 NOT NULL
 );
 
 
@@ -1614,7 +1617,8 @@ CREATE TABLE public.traffic_minute_buckets (
     rating_status text DEFAULT 'pending'::text NOT NULL,
     source_revision text DEFAULT ''::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    routing_pool text DEFAULT ''::text NOT NULL
 );
 
 

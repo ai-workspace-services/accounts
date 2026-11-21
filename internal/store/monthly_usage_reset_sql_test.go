@@ -16,7 +16,7 @@ func TestMonthlyResetAuditFailureRollsBack(t *testing.T) {
 	defer db.Close()
 	m.ExpectBegin()
 	m.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
-	m.ExpectQuery("SELECT p.included_quota_bytes").WillReturnRows(sqlmock.NewRows([]string{"included", "remaining", "email"}).AddRow(100, 4, "target@example.invalid"))
+	m.ExpectQuery("SELECT p.included_quota_bytes").WillReturnRows(sqlmock.NewRows([]string{"included", "high_speed", "remaining", "remaining_high_speed", "email"}).AddRow(100, 50, 4, 2, "target@example.invalid"))
 	m.ExpectExec("UPDATE account_quota_states").WillReturnResult(sqlmock.NewResult(0, 1))
 	m.ExpectExec("INSERT INTO audit_logs").WillReturnError(errors.New("audit unavailable"))
 	m.ExpectRollback()

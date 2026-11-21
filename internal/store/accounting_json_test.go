@@ -21,8 +21,8 @@ func TestAccountingResponsesUseCamelCaseFieldNames(t *testing.T) {
 			value: TrafficMinuteBucket{},
 			keys: []string{
 				"bucketStart", "nodeId", "accountUuid", "region", "lineCode",
-				"uplinkBytes", "downlinkBytes", "totalBytes", "multiplier",
-				"ratingStatus", "sourceRevision", "createdAt", "updatedAt",
+				"routingPool", "uplinkBytes", "downlinkBytes", "totalBytes",
+				"multiplier", "ratingStatus", "sourceRevision", "createdAt", "updatedAt",
 			},
 		},
 		{
@@ -38,11 +38,10 @@ func TestAccountingResponsesUseCamelCaseFieldNames(t *testing.T) {
 			name:  "AccountQuotaState",
 			value: AccountQuotaState{},
 			keys: []string{
-				"accountUuid", "remainingIncludedQuota", "currentBalance",
-				"arrears", "arrearsSince", "throttleState", "suspendState",
-				"proxyAccessState",
-				"lastRatedBucketAt", "periodStart", "periodEnd", "effectiveAt",
-				"updatedAt",
+				"accountUuid", "remainingIncludedQuota", "remainingHighSpeedQuota",
+				"currentBalance", "arrears", "arrearsSince", "throttleState",
+				"suspendState", "proxyAccessState", "lastRatedBucketAt",
+				"periodStart", "periodEnd", "effectiveAt", "updatedAt",
 			},
 		},
 		{
@@ -50,9 +49,9 @@ func TestAccountingResponsesUseCamelCaseFieldNames(t *testing.T) {
 			value: AccountBillingProfile{},
 			keys: []string{
 				"accountUuid", "packageName", "includedQuotaBytes",
-				"basePricePerByte", "regionMultiplier", "lineMultiplier",
-				"peakMultiplier", "offPeakMultiplier", "pricingRuleVersion",
-				"createdAt", "updatedAt",
+				"highSpeedQuotaBytes", "basePricePerByte", "regionMultiplier",
+				"lineMultiplier", "peakMultiplier", "offPeakMultiplier",
+				"pricingRuleVersion", "createdAt", "updatedAt",
 			},
 		},
 	}

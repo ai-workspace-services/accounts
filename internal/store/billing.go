@@ -10,12 +10,13 @@ import (
 // to the entitlements billing-service rates against. Adjusting prices or
 // quotas is a catalog edit, never a deploy.
 type BillingPlan struct {
-	PlanID             string
-	StripePriceID      string
-	DisplayName        string
-	Kind               string // trial | subscription | paygo_topup
-	IncludedQuotaBytes int64
-	PackageName        string
+	PlanID              string
+	StripePriceID       string
+	DisplayName         string
+	Kind                string // trial | subscription | paygo_topup
+	IncludedQuotaBytes  int64
+	HighSpeedQuotaBytes int64
+	PackageName         string
 	// PriceAmount is the list price in the currency's minor unit (cents, 分).
 	// Stripe remains the authority on what is actually charged; this is what
 	// the storefront displays and what the ops console audits when the price
@@ -68,6 +69,8 @@ const (
 	BillingPlanFree          = "FREE"
 	BillingPlanPlus          = "PLUS"
 	BillingPlanUnlimitedBeta = "UNLIMITED-BETA"
+
+	DefaultProHighSpeedQuotaBytes int64 = 30 * 1024 * 1024 * 1024
 )
 
 var (

@@ -30,8 +30,9 @@ type adminAdjustQuotaRequest struct {
 	// rather than a delta on purpose: an operator reading "20 GB" off the
 	// screen and typing "20 GB" should end at 20 GB regardless of what raced
 	// with them.
-	RemainingIncludedQuota int64  `json:"remainingIncludedQuota"`
-	Reason                 string `json:"reason"`
+	RemainingIncludedQuota  int64  `json:"remainingIncludedQuota"`
+	RemainingHighSpeedQuota *int64 `json:"remainingHighSpeedQuota,omitempty"`
+	Reason                  string `json:"reason"`
 }
 
 type adminAdjustBalanceRequest struct {
@@ -330,6 +331,7 @@ func (h *handler) adminAssignPlan(c *gin.Context) {
 	if existing, err := h.store.GetAccountBillingProfile(ctx, user.ID); err == nil && existing != nil {
 		before["package_name"] = existing.PackageName
 		before["included_quota_bytes"] = existing.IncludedQuotaBytes
+		before["high_speed_quota_bytes"] = existing.HighSpeedQuotaBytes
 		before["pricing_rule_version"] = existing.PricingRuleVersion
 	}
 
@@ -345,9 +347,10 @@ func (h *handler) adminAssignPlan(c *gin.Context) {
 	}
 
 	after := map[string]any{
-		"plan_id":              plan.PlanID,
-		"package_name":         plan.PackageName,
-		"included_quota_bytes": plan.IncludedQuotaBytes,
+		"plan_id":                plan.PlanID,
+		"package_name":           plan.PackageName,
+		"included_quota_bytes":   plan.IncludedQuotaBytes,
+		"high_speed_quota_bytes": plan.HighSpeedQuotaBytes,
 	}
 	if err := h.recordAudit(ctx, actor.ID, store.AuditActionEntitlementGrant,
 		auditDetails(user.ID, reason, before, after)); err != nil {
@@ -388,8 +391,8 @@ func (h *handler) adminAdjustQuota(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if req.RemainingIncludedQuota < 0 {
-		respondError(c, http.StatusBadRequest, "invalid_quota", "remainingIncludedQuota must not be negative")
+	if req.RemainingIncludedQuota < 0 || (req.RemainingHighSpeedQuota != nil && *req.RemainingHighSpeedQuota < 0) {
+		respondError(c, http.StatusBadRequest, "invalid_quota", "quota must not be negative")
 		return
 	}
 
@@ -402,15 +405,24 @@ func (h *handler) adminAdjustQuota(c *gin.Context) {
 		state = &store.AccountQuotaState{AccountUUID: user.ID}
 	}
 
-	before := map[string]any{"remaining_included_quota": state.RemainingIncludedQuota}
+	before := map[string]any{
+		"remaining_included_quota":   state.RemainingIncludedQuota,
+		"remaining_high_speed_quota": state.RemainingHighSpeedQuota,
+	}
 	state.RemainingIncludedQuota = req.RemainingIncludedQuota
+	if req.RemainingHighSpeedQuota != nil {
+		state.RemainingHighSpeedQuota = *req.RemainingHighSpeedQuota
+	}
 	state.EffectiveAt = time.Now().UTC()
 	if err := h.store.UpsertAccountQuotaState(ctx, state); err != nil {
 		respondError(c, http.StatusInternalServerError, "quota_save_failed", "failed to save quota state")
 		return
 	}
 
-	after := map[string]any{"remaining_included_quota": state.RemainingIncludedQuota}
+	after := map[string]any{
+		"remaining_included_quota":   state.RemainingIncludedQuota,
+		"remaining_high_speed_quota": state.RemainingHighSpeedQuota,
+	}
 	if err := h.recordAudit(ctx, actor.ID, store.AuditActionQuotaAdjust,
 		auditDetails(user.ID, reason, before, after)); err != nil {
 		respondError(c, http.StatusInternalServerError, "audit_write_failed",
@@ -419,8 +431,9 @@ func (h *handler) adminAdjustQuota(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"accountUuid":            user.ID,
-		"remainingIncludedQuota": state.RemainingIncludedQuota,
+		"accountUuid":             user.ID,
+		"remainingIncludedQuota":  state.RemainingIncludedQuota,
+		"remainingHighSpeedQuota": state.RemainingHighSpeedQuota,
 	})
 }
 

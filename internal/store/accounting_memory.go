@@ -168,6 +168,7 @@ func (s *memoryStore) UpsertTrafficMinuteBucket(ctx context.Context, bucket *Tra
 		copy.CreatedAt = now
 	}
 	copy.UpdatedAt = now
+	copy.RoutingPool = strings.TrimSpace(copy.RoutingPool)
 	if strings.TrimSpace(copy.RatingStatus) == "" {
 		copy.RatingStatus = RatingStatusPending
 	}

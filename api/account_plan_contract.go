@@ -9,15 +9,17 @@ import (
 )
 
 type accountPlanContractPayload struct {
-	PlanID                 string `json:"planId,omitempty"`
-	DisplayName            string `json:"displayName"`
-	PackageName            string `json:"packageName"`
-	MaxTrafficBytes        int64  `json:"maxTrafficBytes"`
-	CatalogMaxTrafficBytes int64  `json:"catalogMaxTrafficBytes,omitempty"`
-	QuotaCycle             string `json:"quotaCycle,omitempty"`
-	Unlimited              bool   `json:"unlimited"`
-	Assigned               bool   `json:"assigned"`
-	Source                 string `json:"source"`
+	PlanID                     string `json:"planId,omitempty"`
+	DisplayName                string `json:"displayName"`
+	PackageName                string `json:"packageName"`
+	MaxTrafficBytes            int64  `json:"maxTrafficBytes"`
+	CatalogMaxTrafficBytes     int64  `json:"catalogMaxTrafficBytes,omitempty"`
+	HighSpeedQuotaBytes        int64  `json:"highSpeedQuotaBytes,omitempty"`
+	CatalogHighSpeedQuotaBytes int64  `json:"catalogHighSpeedQuotaBytes,omitempty"`
+	QuotaCycle                 string `json:"quotaCycle,omitempty"`
+	Unlimited                  bool   `json:"unlimited"`
+	Assigned                   bool   `json:"assigned"`
+	Source                     string `json:"source"`
 }
 
 type accountPlanContract struct {
@@ -38,7 +40,7 @@ func (h *handler) accountPlanContract(ctx context.Context, profile *store.Accoun
 			return result, err
 		}
 	} else {
-		result.DefaultPlan = planContractFromCatalog(defaultPlan, 0, false, "local_catalog_default")
+		result.DefaultPlan = planContractFromCatalog(defaultPlan, 0, 0, false, "local_catalog_default")
 	}
 
 	if profile == nil {
@@ -78,7 +80,7 @@ func (h *handler) accountPlanContract(ctx context.Context, profile *store.Accoun
 
 	if catalogPlan != nil {
 		result.AssignmentStatus = "assigned"
-		result.CurrentPlan = planContractFromCatalog(catalogPlan, profile.IncludedQuotaBytes, true, "account_entitlement")
+		result.CurrentPlan = planContractFromCatalog(catalogPlan, profile.IncludedQuotaBytes, profile.HighSpeedQuotaBytes, true, "account_entitlement")
 		return result, nil
 	}
 
@@ -104,28 +106,32 @@ func (h *handler) accountPlanContract(ctx context.Context, profile *store.Accoun
 	return result, nil
 }
 
-func planContractFromCatalog(plan *store.BillingPlan, effectiveQuota int64, assigned bool, source string) *accountPlanContractPayload {
+func planContractFromCatalog(plan *store.BillingPlan, effectiveQuota, effectiveHighSpeedQuota int64, assigned bool, source string) *accountPlanContractPayload {
 	if plan == nil {
 		return nil
 	}
 	maxTraffic := plan.IncludedQuotaBytes
+	highSpeed := plan.HighSpeedQuotaBytes
 	if assigned {
 		// The profile is the exact allowance currently enforced for this
 		// assignment. Catalog edits become effective on the next assignment.
 		maxTraffic = effectiveQuota
+		highSpeed = effectiveHighSpeedQuota
 	}
 	quotaCycle, _ := plan.Features["quota_cycle"].(string)
 	fastLane, _ := plan.Features["fast_lane"].(map[string]any)
 	mode, _ := fastLane["mode"].(string)
 	return &accountPlanContractPayload{
-		PlanID:                 plan.PlanID,
-		DisplayName:            plan.DisplayName,
-		PackageName:            plan.PackageName,
-		MaxTrafficBytes:        maxTraffic,
-		CatalogMaxTrafficBytes: plan.IncludedQuotaBytes,
-		QuotaCycle:             quotaCycle,
-		Unlimited:              mode == "unlimited",
-		Assigned:               assigned,
-		Source:                 source,
+		PlanID:                     plan.PlanID,
+		DisplayName:                plan.DisplayName,
+		PackageName:                plan.PackageName,
+		MaxTrafficBytes:            maxTraffic,
+		CatalogMaxTrafficBytes:     plan.IncludedQuotaBytes,
+		HighSpeedQuotaBytes:        highSpeed,
+		CatalogHighSpeedQuotaBytes: plan.HighSpeedQuotaBytes,
+		QuotaCycle:                 quotaCycle,
+		Unlimited:                  mode == "unlimited",
+		Assigned:                   assigned,
+		Source:                     source,
 	}
 }

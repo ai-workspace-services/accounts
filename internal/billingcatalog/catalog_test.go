@@ -24,19 +24,20 @@ import (
 // cannot simply be corrected afterwards either.
 
 type manifestPlan struct {
-	PlanID             string             `json:"planId"`
-	DisplayName        string             `json:"displayName"`
-	Kind               string             `json:"kind"`
-	IncludedQuotaBytes int64              `json:"includedQuotaBytes"`
-	PackageName        string             `json:"packageName"`
-	PriceAmount        int64              `json:"priceAmount"`
-	PriceCurrency      string             `json:"priceCurrency"`
-	PriceUnit          string             `json:"priceUnit"`
-	PriceMultipliers   map[string]float64 `json:"priceMultipliers"`
-	Features           map[string]any     `json:"features"`
-	TrialDays          int                `json:"trialDays"`
-	Active             bool               `json:"active"`
-	SortOrder          int                `json:"sortOrder"`
+	PlanID              string             `json:"planId"`
+	DisplayName         string             `json:"displayName"`
+	Kind                string             `json:"kind"`
+	IncludedQuotaBytes  int64              `json:"includedQuotaBytes"`
+	HighSpeedQuotaBytes int64              `json:"highSpeedQuotaBytes"`
+	PackageName         string             `json:"packageName"`
+	PriceAmount         int64              `json:"priceAmount"`
+	PriceCurrency       string             `json:"priceCurrency"`
+	PriceUnit           string             `json:"priceUnit"`
+	PriceMultipliers    map[string]float64 `json:"priceMultipliers"`
+	Features            map[string]any     `json:"features"`
+	TrialDays           int                `json:"trialDays"`
+	Active              bool               `json:"active"`
+	SortOrder           int                `json:"sortOrder"`
 }
 
 type stripeCatalog struct {
@@ -222,16 +223,16 @@ func TestQuotaCatalogDefinesFourFamilies(t *testing.T) {
 	}
 
 	free := plans["FREE"]
-	if free.IncludedQuotaBytes != fiveGiB || free.PackageName != "free" {
-		t.Fatalf("FREE must expose 5GiB in the free package: %+v", free)
+	if free.IncludedQuotaBytes != fiveGiB || free.HighSpeedQuotaBytes != 0 || free.PackageName != "free" {
+		t.Fatalf("FREE must expose 5GiB VPS / 0 high-speed in the free package: %+v", free)
 	}
 	plus := plans["PLUS-MONTHLY-2026"]
-	if plus.IncludedQuotaBytes != thirtyGiB || plus.PackageName != "plus" {
-		t.Fatalf("PLUS-MONTHLY-2026 must expose 30GiB in the plus package: %+v", plus)
+	if plus.IncludedQuotaBytes != thirtyGiB || plus.HighSpeedQuotaBytes != 0 || plus.PackageName != "plus" {
+		t.Fatalf("PLUS-MONTHLY-2026 must expose 30GiB VPS / 0 high-speed in the plus package: %+v", plus)
 	}
 	pro := plans["PRO-MONTHLY-2026"]
-	if pro.IncludedQuotaBytes != fiftyGiB || pro.PackageName != "pro" {
-		t.Fatalf("PRO-MONTHLY-2026 must expose 50GiB in the pro package: %+v", pro)
+	if pro.IncludedQuotaBytes != fiftyGiB || pro.HighSpeedQuotaBytes != thirtyGiB || pro.PackageName != "pro" {
+		t.Fatalf("PRO-MONTHLY-2026 must expose 50GiB VPS and 30GiB high-speed in the pro package: %+v", pro)
 	}
 	customNode := plans["CUSTOM-NODE-MONTHLY-2026"]
 	if customNode.PackageName != "custom" || customNode.PriceAmount != 8000 {
@@ -284,5 +285,46 @@ func TestLocalPlanIDIsPrimaryKeyAndStripePriceIsOnlyUniqueAdapterField(t *testin
 	}
 	if strings.Contains(schema, "STRIPE_PRICE_ID TEXT PRIMARY KEY") {
 		t.Fatal("stripe_price_id is an external adapter reference, never a business primary key")
+	}
+}
+
+func TestDualBucketMigrationIsAdditiveExpandOnlyAndIdempotent(t *testing.T) {
+	path := filepath.Join("..", "..", "sql", "migrations", "2026112101_dual_bucket_high_speed_quota.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read dual bucket migration: %v", err)
+	}
+	var executableLines []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "--") {
+			executableLines = append(executableLines, trimmed)
+		}
+	}
+	sql := strings.ToUpper(strings.Join(executableLines, "\n"))
+	for _, forbidden := range []string{
+		"DROP ", "TRUNCATE ", "DELETE FROM ", "REMAINING_INCLUDED_QUOTA", "DROP CONSTRAINT", "ADD PRIMARY KEY",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("dual bucket migration must not contain destructive or VPS-mutating operation %q", forbidden)
+		}
+	}
+	if !strings.Contains(sql, "BEGIN;") || !strings.Contains(sql, "COMMIT;") {
+		t.Fatal("dual bucket migration must execute as one explicit transaction")
+	}
+	for _, required := range []string{
+		"ALTER TABLE PUBLIC.BILLING_PLANS",
+		"ADD COLUMN IF NOT EXISTS HIGH_SPEED_QUOTA_BYTES BIGINT NOT NULL DEFAULT 0",
+		"ALTER TABLE PUBLIC.ACCOUNT_BILLING_PROFILES",
+		"ALTER TABLE PUBLIC.ACCOUNT_QUOTA_STATES",
+		"ADD COLUMN IF NOT EXISTS REMAINING_HIGH_SPEED_QUOTA BIGINT NOT NULL DEFAULT 0",
+		"ALTER TABLE PUBLIC.TRAFFIC_MINUTE_BUCKETS",
+		"ADD COLUMN IF NOT EXISTS ROUTING_POOL TEXT NOT NULL DEFAULT ''",
+		"32212254720",
+		"9223372036854775807",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("dual bucket migration missing required statement %q", required)
+		}
 	}
 }
