@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"account/internal/routingpolicy"
 	"github.com/google/uuid"
 )
 
@@ -340,6 +341,7 @@ type TrafficMinuteBucket struct {
 	AccountUUID    string    `json:"accountUuid"`
 	Region         string    `json:"region"`
 	LineCode       string    `json:"lineCode"`
+	RoutingPool    string    `json:"routingPool"`
 	UplinkBytes    int64     `json:"uplinkBytes"`
 	DownlinkBytes  int64     `json:"downlinkBytes"`
 	TotalBytes     int64     `json:"totalBytes"`
@@ -485,37 +487,43 @@ type AuditLogFilter struct {
 // from the operator's preview and prevent stale previews from overwriting a
 // newer administrator change.
 type AdminPlanGroupChange struct {
-	SubscriptionRecord           *SubscriptionRecord
-	ExpectedRecordUpdatedAt      *time.Time
-	UserID                       string
-	PlanID                       string
-	SetEntitlement               bool
-	ExpectedGroups               []string
-	Groups                       []string
-	ExpectedValidFrom            *time.Time
-	ExpectedValidUntil           *time.Time
-	SetValidFrom                 bool
-	ValidFrom                    *time.Time
-	SetValidUntil                bool
-	ValidUntil                   *time.Time
-	PackageName                  string
-	IncludedQuotaBytes           int64
-	RegionMultiplier             float64
-	LineMultiplier               float64
-	PeakMultiplier               float64
-	OffPeakMultiplier            float64
-	PricingRuleVersion           string
-	ExpectedProfileIncludedQuota int64
-	ExpectedQuotaRemaining       int64
-	ExpectedUsageBytes           int64
-	ExpectedPeriodStart          *time.Time
-	ExpectedPeriodEnd            *time.Time
-	ExpectedProfileUpdatedAt     *time.Time
-	ExpectedQuotaUpdatedAt       *time.Time
-	ProfileExisted               bool
-	QuotaExisted                 bool
-	UsedBytesPreserved           int64
-	RemainingAfter               int64
+	SubscriptionRecord              *SubscriptionRecord
+	ExpectedRecordUpdatedAt         *time.Time
+	UserID                          string
+	PlanID                          string
+	SetEntitlement                  bool
+	ExpectedGroups                  []string
+	Groups                          []string
+	ExpectedValidFrom               *time.Time
+	ExpectedValidUntil              *time.Time
+	SetValidFrom                    bool
+	ValidFrom                       *time.Time
+	SetValidUntil                   bool
+	ValidUntil                      *time.Time
+	PackageName                     string
+	IncludedQuotaBytes              int64
+	HighSpeedQuotaBytes             int64
+	RegionMultiplier                float64
+	LineMultiplier                  float64
+	PeakMultiplier                  float64
+	OffPeakMultiplier               float64
+	PricingRuleVersion              string
+	ExpectedProfileIncludedQuota    int64
+	ExpectedProfileHighSpeedQuota   int64
+	ExpectedQuotaRemaining          int64
+	ExpectedHighSpeedQuotaRemaining int64
+	ExpectedUsageBytes              int64
+	ExpectedHighSpeedUsageBytes     int64
+	ExpectedPeriodStart             *time.Time
+	ExpectedPeriodEnd               *time.Time
+	ExpectedProfileUpdatedAt        *time.Time
+	ExpectedQuotaUpdatedAt          *time.Time
+	ProfileExisted                  bool
+	QuotaExisted                    bool
+	UsedBytesPreserved              int64
+	RemainingAfter                  int64
+	HighSpeedUsedBytesPreserved     int64
+	HighSpeedRemainingAfter         int64
 }
 
 // File imports can absorb ongoing consumption within the reviewed period.
@@ -572,10 +580,11 @@ const (
 )
 
 type AccountQuotaState struct {
-	AccountUUID            string  `json:"accountUuid"`
-	RemainingIncludedQuota int64   `json:"remainingIncludedQuota"`
-	CurrentBalance         float64 `json:"currentBalance"`
-	Arrears                bool    `json:"arrears"`
+	AccountUUID             string  `json:"accountUuid"`
+	RemainingIncludedQuota  int64   `json:"remainingIncludedQuota"`
+	RemainingHighSpeedQuota int64   `json:"remainingHighSpeedQuota"`
+	CurrentBalance          float64 `json:"currentBalance"`
+	Arrears                 bool    `json:"arrears"`
 	// ArrearsSince marks when Arrears last flipped false->true; cleared back
 	// to nil whenever Arrears clears. billing-service's SuspendSyncer reads
 	// this to decide when a prolonged arrears episode should suspend access.
@@ -598,17 +607,18 @@ type AccountQuotaState struct {
 }
 
 type AccountBillingProfile struct {
-	AccountUUID        string    `json:"accountUuid"`
-	PackageName        string    `json:"packageName"`
-	IncludedQuotaBytes int64     `json:"includedQuotaBytes"`
-	BasePricePerByte   float64   `json:"basePricePerByte"`
-	RegionMultiplier   float64   `json:"regionMultiplier"`
-	LineMultiplier     float64   `json:"lineMultiplier"`
-	PeakMultiplier     float64   `json:"peakMultiplier"`
-	OffPeakMultiplier  float64   `json:"offPeakMultiplier"`
-	PricingRuleVersion string    `json:"pricingRuleVersion"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	AccountUUID         string    `json:"accountUuid"`
+	PackageName         string    `json:"packageName"`
+	IncludedQuotaBytes  int64     `json:"includedQuotaBytes"`
+	HighSpeedQuotaBytes int64     `json:"highSpeedQuotaBytes"`
+	BasePricePerByte    float64   `json:"basePricePerByte"`
+	RegionMultiplier    float64   `json:"regionMultiplier"`
+	LineMultiplier      float64   `json:"lineMultiplier"`
+	PeakMultiplier      float64   `json:"peakMultiplier"`
+	OffPeakMultiplier   float64   `json:"offPeakMultiplier"`
+	PricingRuleVersion  string    `json:"pricingRuleVersion"`
+	CreatedAt           time.Time `json:"createdAt"`
+	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
 type AccountPolicySnapshot struct {
@@ -806,6 +816,8 @@ type Store interface {
 	PendingSubscriptionPurchase(ctx context.Context, userID string) (*FinanceOperation, error)
 	UpgradeSubscriptionQuota(ctx context.Context, userID string, previous, target int64, start, end time.Time) error
 	ActivateSubscriptionQuota(ctx context.Context, userID string, previous, target int64, start, end time.Time) error
+	UpgradeSubscriptionDualQuota(ctx context.Context, userID string, previousIncluded, targetIncluded, previousHighSpeed, targetHighSpeed int64, start, end time.Time) error
+	ActivateSubscriptionDualQuota(ctx context.Context, userID string, previousIncluded, targetIncluded, previousHighSpeed, targetHighSpeed int64, start, end time.Time) error
 	UpdateSubscriptionPurchase(ctx context.Context, operationID, providerID string, response json.RawMessage, complete bool) error
 	// BeginStripeWebhookEvent records an inbound event before processing and
 	// reports whether it was already processed (idempotent replay guard).
@@ -1306,11 +1318,13 @@ func (s *memoryStore) CreateAdminPlanGroupPreview(ctx context.Context, preview A
 		change.QuotaExisted = quota != nil
 		if profile != nil {
 			change.ExpectedProfileIncludedQuota = profile.IncludedQuotaBytes
+			change.ExpectedProfileHighSpeedQuota = profile.HighSpeedQuotaBytes
 			updated := profile.UpdatedAt.UTC()
 			change.ExpectedProfileUpdatedAt = &updated
 		}
 		if quota != nil {
 			change.ExpectedQuotaRemaining = quota.RemainingIncludedQuota
+			change.ExpectedHighSpeedQuotaRemaining = quota.RemainingHighSpeedQuota
 			change.ExpectedPeriodStart = cloneTimePointer(quota.PeriodStart)
 			change.ExpectedPeriodEnd = cloneTimePointer(quota.PeriodEnd)
 			updated := quota.UpdatedAt.UTC()
@@ -1329,6 +1343,20 @@ func (s *memoryStore) CreateAdminPlanGroupPreview(ctx context.Context, preview A
 			change.RemainingAfter = change.IncludedQuotaBytes - used
 			if change.RemainingAfter < 0 {
 				change.RemainingAfter = 0
+			}
+
+			hsUsed := change.ExpectedProfileHighSpeedQuota - change.ExpectedHighSpeedQuotaRemaining
+			if hsUsed < 0 {
+				hsUsed = 0
+			}
+			change.ExpectedHighSpeedUsageBytes = adminPlanGroupHighSpeedBucketUsage(s.trafficMinuteBuckets, user.ID, quota)
+			if change.ExpectedHighSpeedUsageBytes > hsUsed {
+				hsUsed = change.ExpectedHighSpeedUsageBytes
+			}
+			change.HighSpeedUsedBytesPreserved = hsUsed
+			change.HighSpeedRemainingAfter = change.HighSpeedQuotaBytes - hsUsed
+			if change.HighSpeedRemainingAfter < 0 || change.HighSpeedQuotaBytes <= 0 {
+				change.HighSpeedRemainingAfter = 0
 			}
 		}
 	}
@@ -1409,28 +1437,43 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 			quota = &AccountQuotaState{AccountUUID: user.ID, ThrottleState: "normal", SuspendState: "active", ProxyAccessState: "active"}
 		}
 		if change.SetEntitlement && (profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota ||
+			profile.HighSpeedQuotaBytes != change.ExpectedProfileHighSpeedQuota ||
 			!equalStoreTimes(profileUpdatedAt(s.accountBillingProfiles[user.ID]), change.ExpectedProfileUpdatedAt) ||
 			!equalStoreTimes(quota.PeriodStart, change.ExpectedPeriodStart) || !equalStoreTimes(quota.PeriodEnd, change.ExpectedPeriodEnd)) {
 			return nil, false, ErrAdminPlanGroupStale
 		}
 		remainingBefore := quota.RemainingIncludedQuota
+		hsRemainingBefore := quota.RemainingHighSpeedQuota
 		used := profile.IncludedQuotaBytes - remainingBefore
 		if used < 0 {
 			used = 0
 		}
+		hsUsed := profile.HighSpeedQuotaBytes - hsRemainingBefore
+		if hsUsed < 0 {
+			hsUsed = 0
+		}
 		// Buckets are authoritative when they include over-cap traffic that the
 		// remaining-quota counter can no longer represent.
 		bucketUsage := adminPlanGroupBucketUsage(s.trafficMinuteBuckets, user.ID, quota)
+		hsBucketUsage := adminPlanGroupHighSpeedBucketUsage(s.trafficMinuteBuckets, user.ID, quota)
 		if change.SetEntitlement && !change.acceptsUsageAtApply(quota.RemainingIncludedQuota, quotaUpdatedAt(s.accountQuotaStates[user.ID]), bucketUsage) {
+			return nil, false, ErrAdminPlanGroupStale
+		}
+		if change.SetEntitlement && change.SubscriptionRecord == nil &&
+			(quota.RemainingHighSpeedQuota != change.ExpectedHighSpeedQuotaRemaining || hsBucketUsage != change.ExpectedHighSpeedUsageBytes) {
 			return nil, false, ErrAdminPlanGroupStale
 		}
 		if bucketUsage > used {
 			used = bucketUsage
 		}
+		if hsBucketUsage > hsUsed {
+			hsUsed = hsBucketUsage
+		}
 		if change.SetEntitlement {
 			profile.AccountUUID = user.ID
 			profile.PackageName = change.PackageName
 			profile.IncludedQuotaBytes = change.IncludedQuotaBytes
+			profile.HighSpeedQuotaBytes = change.HighSpeedQuotaBytes
 			profile.RegionMultiplier = change.RegionMultiplier
 			profile.LineMultiplier = change.LineMultiplier
 			profile.PeakMultiplier = change.PeakMultiplier
@@ -1439,6 +1482,10 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 			quota.RemainingIncludedQuota = change.IncludedQuotaBytes - used
 			if quota.RemainingIncludedQuota < 0 {
 				quota.RemainingIncludedQuota = 0
+			}
+			quota.RemainingHighSpeedQuota = change.HighSpeedQuotaBytes - hsUsed
+			if quota.RemainingHighSpeedQuota < 0 || change.HighSpeedQuotaBytes <= 0 {
+				quota.RemainingHighSpeedQuota = 0
 			}
 			quota.EffectiveAt = time.Now().UTC()
 		}
@@ -1451,7 +1498,7 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 				return nil, false, ErrAdminPlanGroupStale
 			}
 		}
-		prepared = append(prepared, preparedAdminPlanGroupChange{change: change, user: user, profile: profile, quota: quota, used: used, remainingBefore: remainingBefore})
+		prepared = append(prepared, preparedAdminPlanGroupChange{change: change, user: user, profile: profile, quota: quota, used: used, remainingBefore: remainingBefore, hsUsed: hsUsed, hsRemainingBefore: hsRemainingBefore})
 	}
 
 	now := time.Now().UTC()
@@ -1459,6 +1506,8 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 		if item.change.SetEntitlement {
 			changes[i].UsedBytesPreserved = item.used
 			changes[i].RemainingAfter = item.quota.RemainingIncludedQuota
+			changes[i].HighSpeedUsedBytesPreserved = item.hsUsed
+			changes[i].HighSpeedRemainingAfter = item.quota.RemainingHighSpeedQuota
 		}
 		recordBefore, recordExisted := s.subscriptionRecords[item.user.ID]
 		var previousRecord any
@@ -1488,10 +1537,14 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 			s.accountQuotaStates[item.user.ID] = item.quota
 		}
 		before := map[string]any{"subscription_record": previousRecord, "groups": item.change.ExpectedGroups, "valid_from": item.change.ExpectedValidFrom, "valid_until": item.change.ExpectedValidUntil,
-			"included_quota_bytes": item.change.ExpectedProfileIncludedQuota, "remaining_included_quota": item.remainingBefore}
+			"included_quota_bytes": item.change.ExpectedProfileIncludedQuota, "high_speed_quota_bytes": item.change.ExpectedProfileHighSpeedQuota,
+			"remaining_included_quota": item.remainingBefore, "remaining_high_speed_quota": item.hsRemainingBefore}
 		after := map[string]any{"groups": item.change.Groups, "valid_from": item.user.SubscriptionValidFrom, "valid_until": item.user.SubscriptionValidUntil,
-			"subscription_record": item.change.SubscriptionRecord, "plan_id": item.change.PlanID, "included_quota_bytes": item.change.IncludedQuotaBytes, "remaining_included_quota": item.quota.RemainingIncludedQuota,
-			"used_bytes_preserved": item.used, "configuration_sync_paused": item.change.SetEntitlement && item.change.IncludedQuotaBytes > 0 && item.quota.RemainingIncludedQuota == 0}
+			"subscription_record": item.change.SubscriptionRecord, "plan_id": item.change.PlanID,
+			"included_quota_bytes": item.change.IncludedQuotaBytes, "high_speed_quota_bytes": item.change.HighSpeedQuotaBytes,
+			"remaining_included_quota": item.quota.RemainingIncludedQuota, "remaining_high_speed_quota": item.quota.RemainingHighSpeedQuota,
+			"used_bytes_preserved": item.used, "high_speed_used_bytes_preserved": item.hsUsed,
+			"configuration_sync_paused": item.change.SetEntitlement && item.change.IncludedQuotaBytes > 0 && item.quota.RemainingIncludedQuota == 0}
 		s.auditLogs = append(s.auditLogs, &AuditLog{
 			UUID: uuid.NewString(), Action: AuditActionPlanGroupUpdate, ActorUUID: batch.ActorUUID,
 			Details: map[string]any{"target_uuid": item.user.ID, "reason": batch.Reason, "request_id": batch.RequestID,
@@ -1507,12 +1560,14 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 }
 
 type preparedAdminPlanGroupChange struct {
-	change          AdminPlanGroupChange
-	user            *User
-	profile         *AccountBillingProfile
-	quota           *AccountQuotaState
-	used            int64
-	remainingBefore int64
+	change            AdminPlanGroupChange
+	user              *User
+	profile           *AccountBillingProfile
+	quota             *AccountQuotaState
+	used              int64
+	remainingBefore   int64
+	hsUsed            int64
+	hsRemainingBefore int64
 }
 
 func quotaPeriodStart(quota *AccountQuotaState, now time.Time) time.Time {
@@ -1526,7 +1581,18 @@ func adminPlanGroupBucketUsage(buckets map[string]*TrafficMinuteBucket, accountI
 	start := quotaPeriodStart(quota, time.Now().UTC())
 	var total int64
 	for _, bucket := range buckets {
-		if bucket.AccountUUID == accountID && !bucket.BucketStart.Before(start) && (quota == nil || quota.PeriodEnd == nil || bucket.BucketStart.Before(*quota.PeriodEnd)) && bucket.TotalBytes > 0 {
+		if bucket.AccountUUID == accountID && strings.TrimSpace(bucket.RoutingPool) != routingpolicy.RoutingPoolProEC2 && !bucket.BucketStart.Before(start) && (quota == nil || quota.PeriodEnd == nil || bucket.BucketStart.Before(*quota.PeriodEnd)) && bucket.TotalBytes > 0 {
+			total += bucket.TotalBytes
+		}
+	}
+	return total
+}
+
+func adminPlanGroupHighSpeedBucketUsage(buckets map[string]*TrafficMinuteBucket, accountID string, quota *AccountQuotaState) int64 {
+	start := quotaPeriodStart(quota, time.Now().UTC())
+	var total int64
+	for _, bucket := range buckets {
+		if bucket.AccountUUID == accountID && strings.TrimSpace(bucket.RoutingPool) == routingpolicy.RoutingPoolProEC2 && !bucket.BucketStart.Before(start) && (quota == nil || quota.PeriodEnd == nil || bucket.BucketStart.Before(*quota.PeriodEnd)) && bucket.TotalBytes > 0 {
 			total += bucket.TotalBytes
 		}
 	}

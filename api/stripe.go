@@ -1331,15 +1331,15 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if previousErr != nil && !errors.Is(previousErr, store.ErrUserNotFound) {
 			return previousErr
 		}
-		upgraded := previous != nil && plan.IncludedQuotaBytes > previous.IncludedQuotaBytes
+		upgraded := previous != nil && (plan.IncludedQuotaBytes > previous.IncludedQuotaBytes || plan.HighSpeedQuotaBytes > previous.HighSpeedQuotaBytes)
 		periodStart, periodEnd := subscriptionQuotaPeriod(plan, sub, time.Now())
 		activation := previous != nil && previous.PricingRuleVersion == "plan:FREE" && invoice.BillingReason == "subscription_create"
 		if activation {
-			if err := h.store.ActivateSubscriptionQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+			if err := h.store.ActivateSubscriptionDualQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, previous.HighSpeedQuotaBytes, plan.HighSpeedQuotaBytes, periodStart, periodEnd); err != nil {
 				return err
 			}
 		} else if upgraded {
-			if err := h.applyPlanUpgradeQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+			if err := h.applyPlanUpgradeDualQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, previous.HighSpeedQuotaBytes, plan.HighSpeedQuotaBytes, periodStart, periodEnd); err != nil {
 				return err
 			}
 		}
@@ -1349,6 +1349,11 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if !upgraded && !activation {
 			if err := h.resetQuotaForPlanOnce(ctx, userID, plan, periodStart, periodEnd); err != nil {
 				return err
+			}
+			if previous != nil && plan.HighSpeedQuotaBytes < previous.HighSpeedQuotaBytes {
+				if err := h.clampDowngradedHighSpeedQuota(ctx, userID, plan); err != nil {
+					return err
+				}
 			}
 		}
 		if err := h.restoreQuotaGroupForPlan(ctx, userID, plan); err != nil {
@@ -1918,10 +1923,10 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 	if previousErr != nil && !errors.Is(previousErr, store.ErrUserNotFound) {
 		return previousErr
 	}
-	upgraded := previous != nil && plan.IncludedQuotaBytes > previous.IncludedQuotaBytes
+	upgraded := previous != nil && (plan.IncludedQuotaBytes > previous.IncludedQuotaBytes || plan.HighSpeedQuotaBytes > previous.HighSpeedQuotaBytes)
 	if freshActivation && previous != nil && previous.PricingRuleVersion == "plan:FREE" {
 		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
-		if err := h.store.ActivateSubscriptionQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+		if err := h.store.ActivateSubscriptionDualQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, previous.HighSpeedQuotaBytes, plan.HighSpeedQuotaBytes, periodStart, periodEnd); err != nil {
 			return err
 		}
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
@@ -1937,14 +1942,21 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		}
 	} else if upgraded {
 		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
-		if err := h.applyPlanUpgradeQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, periodStart, periodEnd); err != nil {
+		if err := h.applyPlanUpgradeDualQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, previous.HighSpeedQuotaBytes, plan.HighSpeedQuotaBytes, periodStart, periodEnd); err != nil {
 			return err
 		}
 		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
 			return err
 		}
-	} else if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
-		return err
+	} else {
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+			return err
+		}
+		if previous != nil && plan.HighSpeedQuotaBytes < previous.HighSpeedQuotaBytes {
+			if err := h.clampDowngradedHighSpeedQuota(ctx, userID, plan); err != nil {
+				return err
+			}
+		}
 	}
 	if err := h.restoreQuotaGroupForPlan(ctx, userID, plan); err != nil {
 		return err

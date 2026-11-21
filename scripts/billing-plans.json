@@ -69,6 +69,7 @@
       "displayName": "Pro",
       "kind": "subscription",
       "includedQuotaBytes": 53687091200,
+      "highSpeedQuotaBytes": 32212254720,
       "packageName": "pro",
       "priceAmount": 5000,
       "priceCurrency": "CNY",

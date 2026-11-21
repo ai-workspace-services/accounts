@@ -77,7 +77,8 @@
       {"generated": false,"name": "offpeak_multiplier","nullable": false,"type": "double precision"},
       {"generated": false,"name": "pricing_rule_version","nullable": false,"type": "text"},
       {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
-      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "high_speed_quota_bytes","nullable": false,"type": "bigint"}
     ],
     "primary_key": ["account_uuid"],
     "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
@@ -129,7 +130,8 @@
       {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
       {"generated": false,"name": "arrears_since","nullable": true,"type": "timestamp with time zone"},
       {"generated": false,"name": "period_start","nullable": true,"type": "timestamp with time zone"},
-      {"generated": false,"name": "period_end","nullable": true,"type": "timestamp with time zone"}
+      {"generated": false,"name": "period_end","nullable": true,"type": "timestamp with time zone"},
+      {"generated": false,"name": "remaining_high_speed_quota","nullable": false,"type": "bigint"}
     ],
     "primary_key": ["account_uuid"],
     "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]
@@ -207,7 +209,8 @@
       {"generated": false,"name": "active","nullable": false,"type": "boolean"},
       {"generated": false,"name": "sort_order","nullable": false,"type": "integer"},
       {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
-      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "high_speed_quota_bytes","nullable": false,"type": "bigint"}
     ],
     "primary_key": ["plan_id"],
     "foreign_keys": []
@@ -985,7 +988,8 @@
       {"generated": false,"name": "rating_status","nullable": false,"type": "text"},
       {"generated": false,"name": "source_revision","nullable": false,"type": "text"},
       {"generated": false,"name": "created_at","nullable": false,"type": "timestamp with time zone"},
-      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"}
+      {"generated": false,"name": "updated_at","nullable": false,"type": "timestamp with time zone"},
+      {"generated": false,"name": "routing_pool","nullable": false,"type": "text"}
     ],
     "primary_key": ["bucket_start", "node_id", "account_uuid", "region", "line_code"],
     "foreign_keys": [{"columns": ["account_uuid"],"parent": "users","parent_columns": ["uuid"]}]

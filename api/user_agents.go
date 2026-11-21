@@ -29,37 +29,39 @@ const (
 )
 
 type VlessNode struct {
-	Private        bool     `json:"private,omitempty"`
-	Name           string   `json:"name"`
-	Region         string   `json:"region,omitempty"`
-	PoolCount      int      `json:"pool_count,omitempty"`
-	OpenToUsers    bool     `json:"open_to_users"`
-	Address        string   `json:"address"`
-	Port           int      `json:"port,omitempty"`
-	Users          []string `json:"users,omitempty"`
-	Transport      string   `json:"transport,omitempty"`
-	Path           string   `json:"path,omitempty"`
-	Mode           string   `json:"mode,omitempty"`
-	Security       string   `json:"security,omitempty"`
-	Flow           string   `json:"flow,omitempty"`
-	ResourceClass  string   `json:"resource_class,omitempty"`
-	RoutingPool    string   `json:"routing_pool,omitempty"`
-	PricingGroup   string   `json:"pricing_group,omitempty"`
-	SubPoolTags    []string `json:"sub_pool_tags,omitempty"`
-	ServerName     string   `json:"server_name,omitempty"`
-	XHTTPPort      int      `json:"xhttp_port,omitempty"`
-	TCPPort        int      `json:"tcp_port,omitempty"`
-	URISchemeXHTTP string   `json:"uri_scheme_xhttp,omitempty"`
-	URISchemeTCP   string   `json:"uri_scheme_tcp,omitempty"`
+	Private                 bool     `json:"private,omitempty"`
+	Name                    string   `json:"name"`
+	Region                  string   `json:"region,omitempty"`
+	PoolCount               int      `json:"pool_count,omitempty"`
+	OpenToUsers             bool     `json:"open_to_users"`
+	Address                 string   `json:"address"`
+	Port                    int      `json:"port,omitempty"`
+	Users                   []string `json:"users,omitempty"`
+	Transport               string   `json:"transport,omitempty"`
+	Path                    string   `json:"path,omitempty"`
+	Mode                    string   `json:"mode,omitempty"`
+	Security                string   `json:"security,omitempty"`
+	Flow                    string   `json:"flow,omitempty"`
+	ResourceClass           string   `json:"resource_class,omitempty"`
+	RoutingPool             string   `json:"routing_pool,omitempty"`
+	PricingGroup            string   `json:"pricing_group,omitempty"`
+	SubPoolTags             []string `json:"sub_pool_tags,omitempty"`
+	ServerName              string   `json:"server_name,omitempty"`
+	XHTTPPort               int      `json:"xhttp_port,omitempty"`
+	TCPPort                 int      `json:"tcp_port,omitempty"`
+	URISchemeXHTTP          string   `json:"uri_scheme_xhttp,omitempty"`
+	URISchemeTCP            string   `json:"uri_scheme_tcp,omitempty"`
+	HighSpeedQuotaExhausted bool     `json:"highSpeedQuotaExhausted,omitempty"`
 }
 
 type userNodesContext struct {
-	user          *store.User
-	access        networkAccess
-	packageName   string
-	resourceClass string
-	nodes         []VlessNode
-	subNodes      []subscription.Node
+	user                    *store.User
+	access                  networkAccess
+	packageName             string
+	resourceClass           string
+	highSpeedQuotaExhausted bool
+	nodes                   []VlessNode
+	subNodes                []subscription.Node
 }
 
 func (h *handler) resolveUserNodes(c *gin.Context) (*userNodesContext, bool) {
@@ -78,10 +80,12 @@ func (h *handler) resolveUserNodes(c *gin.Context) (*userNodesContext, bool) {
 		respondError(c, 503, "quota_unavailable", "failed to reconcile quota")
 		return nil, false
 	}
-	if exhausted, err := h.quotaExhaustedForUser(c.Request.Context(), user); err != nil {
+	quotaStatus, err := h.evaluateDualBucketQuotaForUser(c.Request.Context(), user)
+	if err != nil {
 		respondError(c, 503, "quota_unavailable", "failed to evaluate quota")
 		return nil, false
-	} else if exhausted {
+	}
+	if quotaStatus.fullyExhausted {
 		respondError(c, 403, "quota_exhausted", "natural-month quota exhausted")
 		return nil, false
 	}
@@ -170,6 +174,9 @@ func (h *handler) resolveUserNodes(c *gin.Context) (*userNodesContext, bool) {
 		if routingPool == "" {
 			routingPool = policy.PoolForResourceClass(pricingGroup)
 		}
+		if !poolAllowedForQuota(routingPool, quotaStatus) {
+			continue
+		}
 		xhttpPath := poolXHTTPPath(envOrDefault("XRAY_XHTTP_PATH", defaultXHTTPPath), nodeClass)
 		host := pool.Entry
 		nodeName := pool.DisplayName
@@ -196,28 +203,29 @@ func (h *handler) resolveUserNodes(c *gin.Context) (*userNodesContext, bool) {
 			"TAG":    url.QueryEscape(nodeName),
 		})
 		nodes = append(nodes, VlessNode{
-			Private:        pool.Private,
-			Name:           nodeName,
-			Region:         pool.Code,
-			PoolCount:      pool.PoolCount,
-			OpenToUsers:    true,
-			Address:        host,
-			Port:           xhttpPort,
-			Users:          users,
-			Transport:      "xhttp",
-			Path:           xhttpPath,
-			Mode:           xhttpMode,
-			Security:       "tls",
-			Flow:           defaultTCPFlow,
-			ResourceClass:  nodeClass,
-			RoutingPool:    routingPool,
-			PricingGroup:   pricingGroup,
-			SubPoolTags:    append([]string(nil), pool.SubPoolTags...),
-			ServerName:     host,
-			XHTTPPort:      xhttpPort,
-			TCPPort:        tcpPort,
-			URISchemeXHTTP: vlessXHTTP,
-			URISchemeTCP:   vlessTCP,
+			Private:                 pool.Private,
+			Name:                    nodeName,
+			Region:                  pool.Code,
+			PoolCount:               pool.PoolCount,
+			OpenToUsers:             true,
+			Address:                 host,
+			Port:                    xhttpPort,
+			Users:                   users,
+			Transport:               "xhttp",
+			Path:                    xhttpPath,
+			Mode:                    xhttpMode,
+			Security:                "tls",
+			Flow:                    defaultTCPFlow,
+			ResourceClass:           nodeClass,
+			RoutingPool:             routingPool,
+			PricingGroup:            pricingGroup,
+			SubPoolTags:             append([]string(nil), pool.SubPoolTags...),
+			ServerName:              host,
+			XHTTPPort:               xhttpPort,
+			TCPPort:                 tcpPort,
+			URISchemeXHTTP:          vlessXHTTP,
+			URISchemeTCP:            vlessTCP,
+			HighSpeedQuotaExhausted: quotaStatus.gateEnabled && quotaStatus.highSpeedExhausted,
 		})
 		subNodes = append(subNodes, subscription.Node{
 			ID:            host,
@@ -247,12 +255,13 @@ func (h *handler) resolveUserNodes(c *gin.Context) (*userNodesContext, bool) {
 	}
 
 	return &userNodesContext{
-		user:          user,
-		access:        access,
-		packageName:   packageName,
-		resourceClass: resourceClass,
-		nodes:         nodes,
-		subNodes:      subNodes,
+		user:                    user,
+		access:                  access,
+		packageName:             packageName,
+		resourceClass:           resourceClass,
+		highSpeedQuotaExhausted: quotaStatus.gateEnabled && quotaStatus.highSpeedExhausted,
+		nodes:                   nodes,
+		subNodes:                subNodes,
 	}, true
 }
 
@@ -292,11 +301,12 @@ func (h *handler) getSubscription(c *gin.Context) {
 	allowCustom := resolved.resourceClass == agentResourceCustom ||
 		resolved.resourceClass == agentResourceTeam ||
 		(resolved.access.Mode != "dedicated" && isCustomDedicatedUser(resolved.user, resolved.packageName))
+	allowPro := resolved.resourceClass == agentResourcePro && !resolved.highSpeedQuotaExhausted
 	body, contentType, err := subscription.Render(format, subscription.RenderInput{
 		UserID:      resolved.user.ID,
 		UserEmail:   resolved.user.Email,
 		AllowCustom: allowCustom,
-		AllowPro:    resolved.resourceClass == agentResourcePro,
+		AllowPro:    allowPro,
 		Policy:      routingpolicy.DefaultPolicy(),
 		Nodes:       resolved.subNodes,
 		GeneratedAt: time.Now().UTC(),

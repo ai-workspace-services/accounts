@@ -124,6 +124,20 @@ func (h *handler) listRegionalPools(c *gin.Context) {
 			return
 		}
 		pools = regionalPoolsForUser(h.networkStatusReader(access), access, user, packageName, time.Now().UTC())
+		if dualBucketProGateEnabled() {
+			quotaStatus, err := h.evaluateDualBucketQuotaForUser(c.Request.Context(), user)
+			if err != nil {
+				respondError(c, 503, "quota_unavailable", "failed to evaluate quota")
+				return
+			}
+			filtered := make([]regionalPool, 0, len(pools))
+			for _, pool := range pools {
+				if poolAllowedForQuota(pool.RoutingPool, quotaStatus) {
+					filtered = append(filtered, pool)
+				}
+			}
+			pools = filtered
+		}
 	}
 	if !canViewRegionalPoolDiagnostics(user) {
 		visible := make([]regionalPool, 0, len(pools))

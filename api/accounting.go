@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -9,10 +10,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"account/internal/routingpolicy"
 	"account/internal/store"
 )
 
 const accountingDataSource = "postgresql"
+
+type poolUsageSummary struct {
+	UplinkBytes   int64 `json:"uplinkBytes"`
+	DownlinkBytes int64 `json:"downlinkBytes"`
+	TotalBytes    int64 `json:"totalBytes"`
+}
 
 type nodeHeartbeatRequest struct {
 	NodeID            string  `json:"nodeId"`
@@ -58,6 +66,9 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 
 	var totalBytes, uplinkBytes, downlinkBytes int64
 	var lastBucketAt *time.Time
+	poolUsageBreakdown := make(map[string]poolUsageSummary)
+	var agentPools, snapshotPools map[string]string
+	var metadataLoaded bool
 	for _, bucket := range buckets {
 		totalBytes += bucket.TotalBytes
 		uplinkBytes += bucket.UplinkBytes
@@ -66,14 +77,31 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		if lastBucketAt == nil || timestamp.After(*lastBucketAt) {
 			lastBucketAt = &timestamp
 		}
+		poolName := strings.TrimSpace(bucket.RoutingPool)
+		if poolName == "" {
+			if !metadataLoaded {
+				agentPools, snapshotPools = h.loadNodeRoutingPoolMaps(c.Request.Context())
+				metadataLoaded = true
+			}
+			poolName = resolveBucketRoutingPool(bucket.NodeID, agentPools, snapshotPools)
+		}
+		entry := poolUsageBreakdown[poolName]
+		entry.UplinkBytes += bucket.UplinkBytes
+		entry.DownlinkBytes += bucket.DownlinkBytes
+		entry.TotalBytes += bucket.TotalBytes
+		poolUsageBreakdown[poolName] = entry
 	}
 
 	currentBalance := 0.0
 	currentBalanceUSD, _ := h.store.GetWalletBalance(c.Request.Context(), user.ID, "USD")
 	remainingQuota := int64(0)
+	remainingHighSpeedQuota := int64(0)
 	includedQuota := int64(0)
+	highSpeedQuota := int64(0)
 	usedBytes := int64(0)
+	highSpeedUsedBytes := int64(0)
 	usagePercent := 0.0
+	highSpeedUsagePercent := 0.0
 	suspendState := "active"
 	throttleState := "normal"
 	proxyAccessState := "active"
@@ -84,6 +112,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	if quota, err := h.store.GetAccountQuotaState(c.Request.Context(), user.ID); err == nil && quota != nil {
 		currentBalance = quota.CurrentBalance
 		remainingQuota = quota.RemainingIncludedQuota
+		remainingHighSpeedQuota = quota.RemainingHighSpeedQuota
 		suspendState = quota.SuspendState
 		throttleState = quota.ThrottleState
 		proxyAccessState = quota.ProxyAccessState
@@ -102,6 +131,14 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		if includedQuota > 0 {
 			usagePercent = float64(usedBytes) / float64(includedQuota) * 100
 		}
+		highSpeedQuota = profile.HighSpeedQuotaBytes
+		if highSpeedQuota > 0 {
+			highSpeedUsedBytes = highSpeedQuota - remainingHighSpeedQuota
+			if highSpeedUsedBytes < 0 {
+				highSpeedUsedBytes = 0
+			}
+			highSpeedUsagePercent = float64(highSpeedUsedBytes) / float64(highSpeedQuota) * 100
+		}
 	}
 	planContract, err := h.accountPlanContract(c.Request.Context(), billingProfile, user)
 	if err != nil {
@@ -111,9 +148,15 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 
 	quotaExhausted := billingProfile != nil &&
 		billingProfile.IncludedQuotaBytes > 0 && store.IsMonthlyQuotaLimitMember(user) && remainingQuota <= 0
+	highSpeedQuotaExhausted := billingProfile != nil &&
+		billingProfile.HighSpeedQuotaBytes > 0 && store.IsMonthlyQuotaLimitMember(user) && remainingHighSpeedQuota <= 0
 	if store.HasSubscriptionUnlimitedOverride(user, time.Now()) && planContract.CurrentPlan != nil {
 		planContract.CurrentPlan.Unlimited = true
 		planContract.CurrentPlan.Source = "temporary_subscription_override"
+	}
+	accessQuotaExhausted := quotaExhausted
+	if dualBucketProGateEnabled() && billingProfile != nil && billingProfile.HighSpeedQuotaBytes > 0 {
+		accessQuotaExhausted = quotaExhausted && highSpeedQuotaExhausted
 	}
 	networkAccessState := "active"
 	networkAccessReason := ""
@@ -124,7 +167,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	case suspendState == "suspended":
 		networkAccessState = "paused"
 		networkAccessReason = "billing_suspended"
-	case quotaExhausted:
+	case accessQuotaExhausted:
 		networkAccessState = "paused"
 		networkAccessReason = "quota_exhausted"
 	}
@@ -151,26 +194,87 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		// The values are account-level aggregates across every node_id that
 		// reports this user's canonical UUID; email remains display/identity
 		// metadata and is never used as a standalone billing key.
-		"includedQuotaBytes":   includedQuota,
-		"usedBytes":            usedBytes,
-		"usagePercent":         usagePercent,
-		"periodStart":          periodStart,
-		"periodEnd":            periodEnd,
-		"suspendState":         suspendState,
-		"throttleState":        throttleState,
-		"quotaExhausted":       quotaExhausted,
-		"temporaryUnlimited":   store.HasSubscriptionUnlimitedOverride(user, time.Now()),
-		"networkAccessState":   networkAccessState,
-		"networkAccessReason":  networkAccessReason,
-		"arrears":              arrears,
-		"arrearsSince":         arrearsSince,
-		"lastBucketAt":         lastBucketAt,
-		"syncDelaySeconds":     syncDelaySeconds,
-		"billingProfile":       billingProfile,
-		"currentPlan":          planContract.CurrentPlan,
-		"defaultPlan":          planContract.DefaultPlan,
-		"planAssignmentStatus": planContract.AssignmentStatus,
+		"includedQuotaBytes":      includedQuota,
+		"usedBytes":               usedBytes,
+		"usagePercent":            usagePercent,
+		"highSpeedQuotaBytes":     highSpeedQuota,
+		"remainingHighSpeedQuota": remainingHighSpeedQuota,
+		"highSpeedUsedBytes":      highSpeedUsedBytes,
+		"highSpeedUsagePercent":   highSpeedUsagePercent,
+		"highSpeedQuotaExhausted": highSpeedQuotaExhausted,
+		"vpsQuotaBytes":           includedQuota,
+		"remainingVpsQuota":       remainingQuota,
+		"vpsUsedBytes":            usedBytes,
+		"vpsUsagePercent":         usagePercent,
+		"vpsQuotaExhausted":       quotaExhausted,
+		"poolUsageBreakdown":      poolUsageBreakdown,
+		"periodStart":             periodStart,
+		"periodEnd":               periodEnd,
+		"suspendState":            suspendState,
+		"throttleState":           throttleState,
+		"quotaExhausted":          quotaExhausted,
+		"temporaryUnlimited":      store.HasSubscriptionUnlimitedOverride(user, time.Now()),
+		"networkAccessState":      networkAccessState,
+		"networkAccessReason":     networkAccessReason,
+		"arrears":                 arrears,
+		"arrearsSince":            arrearsSince,
+		"lastBucketAt":            lastBucketAt,
+		"syncDelaySeconds":        syncDelaySeconds,
+		"billingProfile":          billingProfile,
+		"currentPlan":             planContract.CurrentPlan,
+		"defaultPlan":             planContract.DefaultPlan,
+		"planAssignmentStatus":    planContract.AssignmentStatus,
 	})
+}
+
+func (h *handler) loadNodeRoutingPoolMaps(ctx context.Context) (map[string]string, map[string]string) {
+	policy := routingpolicy.DefaultPolicy()
+	agentPools := make(map[string]string)
+	if h.agentStatusReader != nil {
+		for _, snapshot := range h.agentStatusReader.Statuses() {
+			if class, _ := reportedResourceClass(snapshot); class != "" {
+				pool := policy.PoolForResourceClass(class)
+				if id := strings.TrimSpace(snapshot.Agent.ID); id != "" {
+					agentPools[id] = pool
+				}
+				if nodeID := strings.TrimSpace(snapshot.Agent.NodeID); nodeID != "" {
+					agentPools[nodeID] = pool
+				}
+				if entry := regionalEntryHost(snapshot.Report.Xray.EntryPoint); entry != "" {
+					agentPools[entry] = pool
+				}
+			}
+		}
+	}
+	snapshotPools := make(map[string]string)
+	if snapshots, err := h.store.ListLatestNodeHealthSnapshots(ctx); err == nil {
+		for _, snap := range snapshots {
+			if pg := strings.TrimSpace(snap.PricingGroup); pg != "" {
+				snapshotPools[strings.TrimSpace(snap.NodeID)] = policy.PoolForResourceClass(pg)
+			}
+		}
+	}
+	return agentPools, snapshotPools
+}
+
+func resolveBucketRoutingPool(nodeID string, agentPools, snapshotPools map[string]string) string {
+	trimmed := strings.TrimSpace(nodeID)
+	stripped := trimmed
+	if _, after, ok := strings.Cut(trimmed, ":"); ok && strings.TrimSpace(after) != "" {
+		stripped = strings.TrimSpace(after)
+	}
+	for _, candidate := range []string{trimmed, stripped} {
+		if candidate == "" {
+			continue
+		}
+		if pool := agentPools[candidate]; pool != "" {
+			return pool
+		}
+		if pool := snapshotPools[candidate]; pool != "" {
+			return pool
+		}
+	}
+	return routingpolicy.RoutingPoolMediaPriority
 }
 
 func (h *handler) accountUsageBuckets(c *gin.Context) {

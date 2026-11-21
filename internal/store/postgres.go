@@ -785,7 +785,7 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 		change.ExpectedGroups = currentGroups
 		change.ExpectedValidFrom, change.ExpectedValidUntil = currentFrom, currentUntil
 		var profileUpdated sql.NullTime
-		err = tx.QueryRowContext(ctx, `SELECT included_quota_bytes, updated_at FROM public.account_billing_profiles WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&change.ExpectedProfileIncludedQuota, &profileUpdated)
+		err = tx.QueryRowContext(ctx, `SELECT included_quota_bytes, high_speed_quota_bytes, updated_at FROM public.account_billing_profiles WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&change.ExpectedProfileIncludedQuota, &change.ExpectedProfileHighSpeedQuota, &profileUpdated)
 		if errors.Is(err, sql.ErrNoRows) {
 			change.ProfileExisted = false
 		} else if err != nil {
@@ -796,7 +796,7 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 			change.ExpectedProfileUpdatedAt = &value
 		}
 		var periodStart, periodEnd, quotaUpdated sql.NullTime
-		err = tx.QueryRowContext(ctx, `SELECT remaining_included_quota, period_start, period_end, updated_at FROM public.account_quota_states WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&change.ExpectedQuotaRemaining, &periodStart, &periodEnd, &quotaUpdated)
+		err = tx.QueryRowContext(ctx, `SELECT remaining_included_quota, remaining_high_speed_quota, period_start, period_end, updated_at FROM public.account_quota_states WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&change.ExpectedQuotaRemaining, &change.ExpectedHighSpeedQuotaRemaining, &periodStart, &periodEnd, &quotaUpdated)
 		if errors.Is(err, sql.ErrNoRows) {
 			change.QuotaExisted = false
 		} else if err != nil {
@@ -816,8 +816,8 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 		}
 		if change.SetEntitlement {
 			start := adminPlanGroupPeriodStart(change.ExpectedPeriodStart, time.Now().UTC())
-			var usage int64
-			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_bytes), 0) FROM public.traffic_minute_buckets WHERE account_uuid = $1 AND bucket_start >= $2 AND ($3::timestamptz IS NULL OR bucket_start < $3)`, change.UserID, start, change.ExpectedPeriodEnd).Scan(&usage); err != nil {
+			var usage, hsUsage int64
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN routing_pool <> 'Pro-EC2-Pool' THEN GREATEST(total_bytes, 0) ELSE 0 END), 0), COALESCE(SUM(CASE WHEN routing_pool = 'Pro-EC2-Pool' THEN GREATEST(total_bytes, 0) ELSE 0 END), 0) FROM public.traffic_minute_buckets WHERE account_uuid = $1 AND bucket_start >= $2 AND ($3::timestamptz IS NULL OR bucket_start < $3)`, change.UserID, start, change.ExpectedPeriodEnd).Scan(&usage, &hsUsage); err != nil {
 				return nil, err
 			}
 			if usage < 0 {
@@ -835,6 +835,23 @@ func (s *postgresStore) CreateAdminPlanGroupPreview(ctx context.Context, preview
 			change.RemainingAfter = change.IncludedQuotaBytes - used
 			if change.RemainingAfter < 0 {
 				change.RemainingAfter = 0
+			}
+
+			if hsUsage < 0 {
+				hsUsage = 0
+			}
+			change.ExpectedHighSpeedUsageBytes = hsUsage
+			hsUsed := change.ExpectedProfileHighSpeedQuota - change.ExpectedHighSpeedQuotaRemaining
+			if hsUsed < 0 {
+				hsUsed = 0
+			}
+			if hsUsage > hsUsed {
+				hsUsed = hsUsage
+			}
+			change.HighSpeedUsedBytesPreserved = hsUsed
+			change.HighSpeedRemainingAfter = change.HighSpeedQuotaBytes - hsUsed
+			if change.HighSpeedRemainingAfter < 0 || change.HighSpeedQuotaBytes <= 0 {
+				change.HighSpeedRemainingAfter = 0
 			}
 		}
 	}
@@ -940,6 +957,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 		profile                    AccountBillingProfile
 		quota                      AccountQuotaState
 		usageBytes                 int64
+		hsUsageBytes               int64
 		profileExists, quotaExists bool
 	}
 	states := make([]currentState, 0, len(changes))
@@ -998,7 +1016,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			return nil, false, ErrAdminPlanGroupStale
 		}
 		var pUpdated sql.NullTime
-		err = tx.QueryRowContext(ctx, `SELECT package_name, included_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version, updated_at FROM public.account_billing_profiles WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&state.profile.PackageName, &state.profile.IncludedQuotaBytes, &state.profile.BasePricePerByte, &state.profile.RegionMultiplier, &state.profile.LineMultiplier, &state.profile.PeakMultiplier, &state.profile.OffPeakMultiplier, &state.profile.PricingRuleVersion, &pUpdated)
+		err = tx.QueryRowContext(ctx, `SELECT package_name, included_quota_bytes, high_speed_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version, updated_at FROM public.account_billing_profiles WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&state.profile.PackageName, &state.profile.IncludedQuotaBytes, &state.profile.HighSpeedQuotaBytes, &state.profile.BasePricePerByte, &state.profile.RegionMultiplier, &state.profile.LineMultiplier, &state.profile.PeakMultiplier, &state.profile.OffPeakMultiplier, &state.profile.PricingRuleVersion, &pUpdated)
 		if errors.Is(err, sql.ErrNoRows) {
 			state.profileExists = false
 		} else if err != nil {
@@ -1009,7 +1027,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			state.profile.UpdatedAt = pUpdated.Time.UTC()
 		}
 		var qUpdated, qStart, qEnd sql.NullTime
-		err = tx.QueryRowContext(ctx, `SELECT remaining_included_quota, period_start, period_end, updated_at FROM public.account_quota_states WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&state.quota.RemainingIncludedQuota, &qStart, &qEnd, &qUpdated)
+		err = tx.QueryRowContext(ctx, `SELECT remaining_included_quota, remaining_high_speed_quota, period_start, period_end, updated_at FROM public.account_quota_states WHERE account_uuid = $1 FOR UPDATE`, change.UserID).Scan(&state.quota.RemainingIncludedQuota, &state.quota.RemainingHighSpeedQuota, &qStart, &qEnd, &qUpdated)
 		if errors.Is(err, sql.ErrNoRows) {
 			state.quotaExists = false
 		} else if err != nil {
@@ -1027,20 +1045,24 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 				state.quota.PeriodEnd = &value
 			}
 		}
-		if change.SetEntitlement && (state.profileExists != change.ProfileExisted || state.quotaExists != change.QuotaExisted || state.profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota ||
+		if change.SetEntitlement && (state.profileExists != change.ProfileExisted || state.quotaExists != change.QuotaExisted || state.profile.IncludedQuotaBytes != change.ExpectedProfileIncludedQuota || state.profile.HighSpeedQuotaBytes != change.ExpectedProfileHighSpeedQuota ||
 			!equalStoreTimes(nullableTimePointer(pUpdated), change.ExpectedProfileUpdatedAt) || !equalStoreTimes(state.quota.PeriodStart, change.ExpectedPeriodStart) || !equalStoreTimes(state.quota.PeriodEnd, change.ExpectedPeriodEnd)) {
 			return nil, false, ErrAdminPlanGroupStale
 		}
 		if change.SetEntitlement {
 			start := adminPlanGroupPeriodStart(state.quota.PeriodStart, time.Now().UTC())
-			var usage int64
-			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(total_bytes), 0) FROM public.traffic_minute_buckets WHERE account_uuid = $1 AND bucket_start >= $2 AND ($3::timestamptz IS NULL OR bucket_start < $3)`, change.UserID, start, state.quota.PeriodEnd).Scan(&usage); err != nil {
+			var usage, hsUsage int64
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN routing_pool <> 'Pro-EC2-Pool' THEN GREATEST(total_bytes, 0) ELSE 0 END), 0), COALESCE(SUM(CASE WHEN routing_pool = 'Pro-EC2-Pool' THEN GREATEST(total_bytes, 0) ELSE 0 END), 0) FROM public.traffic_minute_buckets WHERE account_uuid = $1 AND bucket_start >= $2 AND ($3::timestamptz IS NULL OR bucket_start < $3)`, change.UserID, start, state.quota.PeriodEnd).Scan(&usage, &hsUsage); err != nil {
 				return nil, false, err
 			}
 			if !change.acceptsUsageAtApply(state.quota.RemainingIncludedQuota, nullableTimePointer(qUpdated), usage) {
 				return nil, false, ErrAdminPlanGroupStale
 			}
+			if change.SubscriptionRecord == nil && (state.quota.RemainingHighSpeedQuota != change.ExpectedHighSpeedQuotaRemaining || hsUsage != change.ExpectedHighSpeedUsageBytes) {
+				return nil, false, ErrAdminPlanGroupStale
+			}
 			state.usageBytes = usage
+			state.hsUsageBytes = hsUsage
 		}
 		states = append(states, state)
 	}
@@ -1095,6 +1117,8 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 		}
 		used := int64(0)
 		remaining := int64(0)
+		hsUsed := int64(0)
+		hsRemaining := int64(0)
 		if change.SetEntitlement {
 			used = state.profile.IncludedQuotaBytes - state.quota.RemainingIncludedQuota
 			if used < 0 {
@@ -1107,17 +1131,32 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			if remaining < 0 {
 				remaining = 0
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_billing_profiles (account_uuid, package_name, included_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (account_uuid) DO UPDATE SET package_name=EXCLUDED.package_name, included_quota_bytes=EXCLUDED.included_quota_bytes, region_multiplier=EXCLUDED.region_multiplier, line_multiplier=EXCLUDED.line_multiplier, peak_multiplier=EXCLUDED.peak_multiplier, offpeak_multiplier=EXCLUDED.offpeak_multiplier, pricing_rule_version=EXCLUDED.pricing_rule_version, updated_at=now()`, change.UserID, change.PackageName, change.IncludedQuotaBytes, state.profile.BasePricePerByte, change.RegionMultiplier, change.LineMultiplier, change.PeakMultiplier, change.OffPeakMultiplier, change.PricingRuleVersion); err != nil {
+
+			hsUsed = state.profile.HighSpeedQuotaBytes - state.quota.RemainingHighSpeedQuota
+			if hsUsed < 0 {
+				hsUsed = 0
+			}
+			if state.hsUsageBytes > hsUsed {
+				hsUsed = state.hsUsageBytes
+			}
+			hsRemaining = change.HighSpeedQuotaBytes - hsUsed
+			if hsRemaining < 0 || change.HighSpeedQuotaBytes <= 0 {
+				hsRemaining = 0
+			}
+
+			if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_billing_profiles (account_uuid, package_name, included_quota_bytes, high_speed_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (account_uuid) DO UPDATE SET package_name=EXCLUDED.package_name, included_quota_bytes=EXCLUDED.included_quota_bytes, high_speed_quota_bytes=EXCLUDED.high_speed_quota_bytes, region_multiplier=EXCLUDED.region_multiplier, line_multiplier=EXCLUDED.line_multiplier, peak_multiplier=EXCLUDED.peak_multiplier, offpeak_multiplier=EXCLUDED.offpeak_multiplier, pricing_rule_version=EXCLUDED.pricing_rule_version, updated_at=now()`, change.UserID, change.PackageName, change.IncludedQuotaBytes, change.HighSpeedQuotaBytes, state.profile.BasePricePerByte, change.RegionMultiplier, change.LineMultiplier, change.PeakMultiplier, change.OffPeakMultiplier, change.PricingRuleVersion); err != nil {
 				return nil, false, err
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_quota_states (account_uuid, remaining_included_quota, effective_at) VALUES ($1,$2,$3) ON CONFLICT (account_uuid) DO UPDATE SET remaining_included_quota=EXCLUDED.remaining_included_quota, effective_at=EXCLUDED.effective_at, updated_at=now()`, change.UserID, remaining, now); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_quota_states (account_uuid, remaining_included_quota, remaining_high_speed_quota, effective_at) VALUES ($1,$2,$3,$4) ON CONFLICT (account_uuid) DO UPDATE SET remaining_included_quota=EXCLUDED.remaining_included_quota, remaining_high_speed_quota=EXCLUDED.remaining_high_speed_quota, effective_at=EXCLUDED.effective_at, updated_at=now()`, change.UserID, remaining, hsRemaining, now); err != nil {
 				return nil, false, err
 			}
 		}
 		changes[i].UsedBytesPreserved = used
 		changes[i].RemainingAfter = remaining
-		before, _ := json.Marshal(map[string]any{"subscription_record": previousSubscription, "groups": state.groups, "valid_from": state.validFrom, "valid_until": state.validUntil, "included_quota_bytes": state.profile.IncludedQuotaBytes, "remaining_included_quota": state.quota.RemainingIncludedQuota})
-		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "subscription_record": change.SubscriptionRecord, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "used_bytes_preserved": used, "remaining_included_quota": remaining, "configuration_sync_paused": change.IncludedQuotaBytes > 0 && remaining == 0})
+		changes[i].HighSpeedUsedBytesPreserved = hsUsed
+		changes[i].HighSpeedRemainingAfter = hsRemaining
+		before, _ := json.Marshal(map[string]any{"subscription_record": previousSubscription, "groups": state.groups, "valid_from": state.validFrom, "valid_until": state.validUntil, "included_quota_bytes": state.profile.IncludedQuotaBytes, "high_speed_quota_bytes": state.profile.HighSpeedQuotaBytes, "remaining_included_quota": state.quota.RemainingIncludedQuota, "remaining_high_speed_quota": state.quota.RemainingHighSpeedQuota})
+		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "subscription_record": change.SubscriptionRecord, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "high_speed_quota_bytes": change.HighSpeedQuotaBytes, "used_bytes_preserved": used, "high_speed_used_bytes_preserved": hsUsed, "remaining_included_quota": remaining, "remaining_high_speed_quota": hsRemaining, "configuration_sync_paused": change.IncludedQuotaBytes > 0 && remaining == 0})
 		details, _ := json.Marshal(map[string]any{"target_uuid": change.UserID, "reason": batch.Reason, "request_id": batch.RequestID, "preview_token_hash": batch.PreviewTokenHash, "before": json.RawMessage(before), "after": json.RawMessage(after)})
 		if _, err := tx.ExecContext(ctx, `INSERT INTO public.audit_logs (uuid, action, actor_uuid, details, created_at) VALUES ($1,$2,$3,$4,$5)`, uuid.NewString(), AuditActionPlanGroupUpdate, batch.ActorUUID, details, now); err != nil {
 			return nil, false, err

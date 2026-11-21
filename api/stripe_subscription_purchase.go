@@ -212,7 +212,7 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 		if e != nil {
 			return q, e
 		}
-		if profile == nil || profile.IncludedQuotaBytes != old.IncludedQuotaBytes || quota == nil || quota.PeriodStart == nil || quota.PeriodEnd == nil || !quota.PeriodStart.Equal(start) || !quota.PeriodEnd.Equal(end) {
+		if profile == nil || profile.IncludedQuotaBytes != old.IncludedQuotaBytes || profile.HighSpeedQuotaBytes != old.HighSpeedQuotaBytes || quota == nil || quota.PeriodStart == nil || quota.PeriodEnd == nil || !quota.PeriodStart.Equal(start) || !quota.PeriodEnd.Equal(end) {
 			return q, errors.New("source allowance requires reconciliation")
 		}
 		q.Action = "upgrade"
@@ -540,7 +540,7 @@ func (h *handler) reconcileSubscriptionPurchase(ctx context.Context, userID stri
 			return op, e
 		}
 		start, end := subscriptionQuotaPeriod(plan, settled, time.Now())
-		paid = projected && profile != nil && profile.IncludedQuotaBytes == plan.IncludedQuotaBytes && profile.PricingRuleVersion == "plan:"+q.PlanID && quota != nil && quota.PeriodStart != nil && quota.PeriodEnd != nil && quota.PeriodStart.Equal(start) && quota.PeriodEnd.Equal(end)
+		paid = projected && profile != nil && profile.IncludedQuotaBytes == plan.IncludedQuotaBytes && profile.HighSpeedQuotaBytes == plan.HighSpeedQuotaBytes && profile.PricingRuleVersion == "plan:"+q.PlanID && quota != nil && quota.PeriodStart != nil && quota.PeriodEnd != nil && quota.PeriodStart.Equal(start) && quota.PeriodEnd.Equal(end)
 	}
 	if expired || paid {
 		outcome := "webhook_confirmed"

@@ -42,14 +42,16 @@ type adminPlanGroupRequest struct {
 }
 
 type adminPlanGroupPreviewRow struct {
-	UserID                     string   `json:"userId"`
-	PlanID                     string   `json:"planId"`
-	Before                     gin.H    `json:"before"`
-	After                      gin.H    `json:"after"`
-	Groups                     []string `json:"groups"`
-	UsedBytesPreserved         int64    `json:"usedBytesPreserved"`
-	RemainingIncludedQuota     int64    `json:"remainingIncludedQuota"`
-	ConfigurationSyncWillPause bool     `json:"configurationSyncWillPause"`
+	UserID                      string   `json:"userId"`
+	PlanID                      string   `json:"planId"`
+	Before                      gin.H    `json:"before"`
+	After                       gin.H    `json:"after"`
+	Groups                      []string `json:"groups"`
+	UsedBytesPreserved          int64    `json:"usedBytesPreserved"`
+	RemainingIncludedQuota      int64    `json:"remainingIncludedQuota"`
+	HighSpeedUsedBytesPreserved int64    `json:"highSpeedUsedBytesPreserved,omitempty"`
+	RemainingHighSpeedQuota     int64    `json:"remainingHighSpeedQuota"`
+	ConfigurationSyncWillPause  bool     `json:"configurationSyncWillPause"`
 }
 
 func (h *handler) adminAssignPlanGroup(c *gin.Context) {
@@ -202,6 +204,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			change := store.AdminPlanGroupChange{UserID: user.ID, PlanID: existingPlanID(profile), Groups: groups}
 			if profile != nil {
 				change.PackageName, change.IncludedQuotaBytes = profile.PackageName, profile.IncludedQuotaBytes
+				change.HighSpeedQuotaBytes = profile.HighSpeedQuotaBytes
 				change.RegionMultiplier, change.LineMultiplier = profile.RegionMultiplier, profile.LineMultiplier
 				change.PeakMultiplier, change.OffPeakMultiplier = profile.PeakMultiplier, profile.OffPeakMultiplier
 				change.PricingRuleVersion = profile.PricingRuleVersion
@@ -263,6 +266,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 				copy.PackageName = "pro"
 				copy.DisplayName = "Pro"
 				copy.IncludedQuotaBytes = 50 << 30
+				copy.HighSpeedQuotaBytes = store.DefaultProHighSpeedQuotaBytes
 				copy.Features = map[string]any{}
 				if existing, e := h.store.GetAccountBillingProfile(ctx, user.ID); e == nil && existing != nil {
 					copy.PriceMultipliers = map[string]float64{"region": existing.RegionMultiplier, "line": existing.LineMultiplier, "peak": existing.PeakMultiplier, "offpeak": existing.OffPeakMultiplier}
@@ -281,7 +285,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 		}
 		change := store.AdminPlanGroupChange{
 			UserID: user.ID, PlanID: plan.PlanID, SetEntitlement: true, Groups: replaceMonthlyQuotaGroup(user.Groups, group),
-			PackageName: plan.PackageName, IncludedQuotaBytes: plan.IncludedQuotaBytes,
+			PackageName: plan.PackageName, IncludedQuotaBytes: plan.IncludedQuotaBytes, HighSpeedQuotaBytes: plan.HighSpeedQuotaBytes,
 			RegionMultiplier: plan.Multiplier("region"), LineMultiplier: plan.Multiplier("line"),
 			PeakMultiplier: plan.Multiplier("peak"), OffPeakMultiplier: plan.Multiplier("offpeak"),
 			PricingRuleVersion: fmt.Sprintf("plan:%s", plan.PlanID),
@@ -403,10 +407,12 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 		rows = append(rows, adminPlanGroupPreviewRow{
 			UserID: change.UserID, PlanID: change.PlanID, Groups: change.Groups,
 			Before: gin.H{"subscriptionRecord": beforeRecord, "groups": change.ExpectedGroups, "validFrom": adminPlanDateString(beforeFrom), "validUntil": adminPlanDateString(beforeUntil),
-				"includedQuotaBytes": change.ExpectedProfileIncludedQuota, "remainingIncludedQuota": change.ExpectedQuotaRemaining},
+				"includedQuotaBytes": change.ExpectedProfileIncludedQuota, "highSpeedQuotaBytes": change.ExpectedProfileHighSpeedQuota,
+				"remainingIncludedQuota": change.ExpectedQuotaRemaining, "remainingHighSpeedQuota": change.ExpectedHighSpeedQuotaRemaining},
 			After: gin.H{"groups": change.Groups, "validFrom": adminPlanDateString(desiredFrom), "validUntil": adminPlanDateString(desiredUntil),
-				"includedQuotaBytes": change.IncludedQuotaBytes, "subscriptionRecord": change.SubscriptionRecord},
+				"includedQuotaBytes": change.IncludedQuotaBytes, "highSpeedQuotaBytes": change.HighSpeedQuotaBytes, "subscriptionRecord": change.SubscriptionRecord},
 			UsedBytesPreserved: change.UsedBytesPreserved, RemainingIncludedQuota: change.RemainingAfter,
+			HighSpeedUsedBytesPreserved: change.HighSpeedUsedBytesPreserved, RemainingHighSpeedQuota: change.HighSpeedRemainingAfter,
 			ConfigurationSyncWillPause: planChangeQuotaPaused(change),
 		})
 	}
@@ -427,6 +433,7 @@ func (h *handler) applyAdminPlanGroupPreview(c *gin.Context, actorID, reason, re
 	for _, change := range changes {
 		rows = append(rows, adminPlanGroupPreviewRow{UserID: change.UserID, PlanID: change.PlanID, Groups: change.Groups,
 			UsedBytesPreserved: change.UsedBytesPreserved, RemainingIncludedQuota: change.RemainingAfter,
+			HighSpeedUsedBytesPreserved: change.HighSpeedUsedBytesPreserved, RemainingHighSpeedQuota: change.HighSpeedRemainingAfter,
 			ConfigurationSyncWillPause: planChangeQuotaPaused(change)})
 	}
 	c.JSON(http.StatusOK, gin.H{"mode": "applied", "requestId": requestID, "replayed": replayed, "changes": rows})

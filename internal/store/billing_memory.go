@@ -101,10 +101,24 @@ func (s *memoryStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan) 
 			if remaining < 0 {
 				remaining = 0
 			}
-			if profile.IncludedQuotaBytes != stored.IncludedQuotaBytes || quota.RemainingIncludedQuota != remaining {
+			hsUsed := profile.HighSpeedQuotaBytes - quota.RemainingHighSpeedQuota
+			if hsBucketUsage := adminPlanGroupHighSpeedBucketUsage(s.trafficMinuteBuckets, id, quota); hsBucketUsage > hsUsed {
+				hsUsed = hsBucketUsage
+			}
+			if hsUsed < 0 {
+				hsUsed = 0
+			}
+			hsRemaining := stored.HighSpeedQuotaBytes - hsUsed
+			if hsRemaining < 0 {
+				hsRemaining = 0
+			}
+			if profile.IncludedQuotaBytes != stored.IncludedQuotaBytes || quota.RemainingIncludedQuota != remaining ||
+				profile.HighSpeedQuotaBytes != stored.HighSpeedQuotaBytes || quota.RemainingHighSpeedQuota != hsRemaining {
 				profile.IncludedQuotaBytes = stored.IncludedQuotaBytes
+				profile.HighSpeedQuotaBytes = stored.HighSpeedQuotaBytes
 				profile.UpdatedAt = now
 				quota.RemainingIncludedQuota = remaining
+				quota.RemainingHighSpeedQuota = hsRemaining
 				quota.UpdatedAt = now
 			}
 		}

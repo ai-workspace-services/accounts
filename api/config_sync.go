@@ -49,10 +49,12 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		respondError(c, http.StatusServiceUnavailable, "proxy_uuid_unavailable", "proxy UUID is not provisioned for this account")
 		return
 	}
-	if exhausted, err := h.quotaExhaustedForUser(c.Request.Context(), user); err != nil {
+	quotaStatus, err := h.evaluateDualBucketQuotaForUser(c.Request.Context(), user)
+	if err != nil {
 		respondError(c, 503, "quota_unavailable", "failed to evaluate quota")
 		return
-	} else if exhausted {
+	}
+	if quotaStatus.fullyExhausted {
 		respondError(c, 403, "quota_exhausted", "natural-month quota exhausted; configuration sync resumes next month")
 		return
 	}
@@ -74,6 +76,15 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	scopedReader := h.networkStatusReader(access)
 	resourceClass := effectiveAgentResourceClass(access, user, packageName)
 	selectedPools := regionalPoolsForUser(scopedReader, access, user, packageName, time.Now().UTC())
+	if quotaStatus.gateEnabled {
+		filtered := make([]regionalPool, 0, len(selectedPools))
+		for _, pool := range selectedPools {
+			if poolAllowedForQuota(pool.RoutingPool, quotaStatus) {
+				filtered = append(filtered, pool)
+			}
+		}
+		selectedPools = filtered
+	}
 	teamHosts := []string{}
 	if access.Mode == "dedicated" {
 		for _, pool := range selectedPools {
@@ -150,8 +161,8 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 	if !hasMedia && !hasPro && !hasCustom {
 		switch resourceClass {
 		case agentResourcePro:
-			hasPro = true
-			hasMedia = true
+			hasPro = !quotaStatus.gateEnabled || !quotaStatus.highSpeedExhausted
+			hasMedia = !quotaStatus.gateEnabled || !quotaStatus.vpsExhausted
 		case agentResourceCustom, agentResourceTeam:
 			hasCustom = true
 		default:

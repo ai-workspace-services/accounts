@@ -1,12 +1,12 @@
 {
   "format": 1,
-  "migration_version": 2026111901,
-  "schema_sha256": "55bd6abfdda9354106fdcfc84c71e1537fd7c5cc456bd1e456a18656c1161c95",
+  "migration_version": 2026112101,
+  "schema_sha256": "6d76daecc76cc71b958a95d654df4e6822660c3186a09e952b950d2ad2857798",
   "business_table_count": 80,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "7701262267777efc1c888dea0fe93046b592bb8954c4215ce7ae745a098b8ad4"
+      "sha256": "87d05cf4d65b0b718cb07bb2ca8ebc81954fafc6bd1391ffbe91defbdcfc551f"
     },
     {
       "path": "internal/model/admin_setting.go",
@@ -151,6 +151,10 @@
     {
       "path": "sql/migrations/2026111901_overlay_network_members.up.sql",
       "sha256": "8ff271db85bd1fbbf2013283890603fbce98996c15d74e0c0c49b3e2b672e3b4"
+    },
+    {
+      "path": "sql/migrations/2026112101_dual_bucket_high_speed_quota.up.sql",
+      "sha256": "775243cd9eff3fae4fc72b698238c79ff0ebf00280920f3dc69bd281674ae827"
     },
     {
       "path": "sql/schema.sql",
