@@ -99,6 +99,7 @@ func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 	group.POST("/registrations/:registrationID/approve", h.overlayAdminApproveRegistration)
 	group.POST("/registrations/:registrationID/reject", h.overlayAdminRejectRegistration)
 	group.GET("/networks/:networkID/policy", h.overlayAdminPolicy)
+	group.POST("/networks/:networkID/policy/explain", h.overlayAdminExplainPolicy)
 	group.POST("/networks/bootstrap", h.overlayAdminBootstrap)
 	group.PUT("/networks/:networkID/policy", h.overlayAdminUpdatePolicy)
 	group.POST("/devices/:deviceID/revoke", h.overlayAdminRevokeDevice)
@@ -345,7 +346,11 @@ func (h *handler) overlayAdminRejectRegistration(c *gin.Context) {
 }
 
 func decodeOverlayAdminJSON(c *gin.Context, target any) bool {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64*1024)
+	return decodeOverlayAdminJSONLimit(c, target, 64*1024)
+}
+
+func decodeOverlayAdminJSONLimit(c *gin.Context, target any, limit int64) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -465,20 +470,72 @@ func (h *handler) overlayAdminPolicy(c *gin.Context) {
 	c.JSON(http.StatusOK, value)
 }
 
-func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+func (h *handler) overlayAdminExplainPolicy(c *gin.Context) {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead)
+	if !ok {
 		return
 	}
-	var policy overlay.PolicyArtifact
-	if err := c.ShouldBindJSON(&policy); err != nil {
-		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero policy")
+	var request overlay.PolicyExplainRequest
+	if !decodeOverlayAdminJSON(c, &request) {
 		return
 	}
-	value, err := h.overlayService.AdminUpdatePolicy(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"), policy)
+	actorID := strings.TrimSpace(auth.GetUserID(c))
+	if actorID == "" && user != nil {
+		actorID = strings.TrimSpace(user.ID)
+	}
+	value, err := h.overlayService.AdminExplainPolicy(c.Request.Context(), actorID, c.Param("networkID"), request)
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
 	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, value)
+}
+
+func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
+		return
+	}
+	var policy overlay.PolicyArtifact
+	if !decodeOverlayAdminJSONLimit(c, &policy, 512*1024) {
+		return
+	}
+	networkID := strings.TrimSpace(c.Param("networkID"))
+	actorID := strings.TrimSpace(auth.GetUserID(c))
+	if actorID == "" && user != nil {
+		actorID = strings.TrimSpace(user.ID)
+	}
+	var before map[string]any
+	if prev, prevErr := h.overlayService.AdminPolicy(c.Request.Context(), actorID, networkID); prevErr == nil {
+		before = map[string]any{
+			"network_id":     prev.NetworkID,
+			"revision":       prev.Revision,
+			"default_action": prev.DefaultAction,
+			"rule_count":     len(prev.Rules),
+		}
+	}
+	value, err := h.overlayService.AdminUpdatePolicy(c.Request.Context(), actorID, networkID, policy)
+	if err != nil {
+		respondOverlayAdminError(c, err)
+		return
+	}
+	after := map[string]any{
+		"network_id":     value.NetworkID,
+		"revision":       value.Revision,
+		"default_action": value.DefaultAction,
+		"rule_count":     len(value.Rules),
+	}
+	details := auditDetails(value.NetworkID, "overlay network policy updated", before, after)
+	details["network_id"] = value.NetworkID
+	details["revision"] = value.Revision
+	details["default_action"] = value.DefaultAction
+	details["rule_count"] = len(value.Rules)
+	if err := h.recordAudit(c.Request.Context(), actorID, store.AuditActionOverlayPolicyUpdate, details); err != nil {
+		respondError(c, http.StatusInternalServerError, "audit_write_failed", "network policy was updated but the audit entry could not be written")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, value)
 }
 

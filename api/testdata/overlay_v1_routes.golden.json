@@ -49,6 +49,10 @@
   },
   {
     "method": "POST",
+    "path": "/api/overlay/v1/admin/networks/:networkID/policy/explain"
+  },
+  {
+    "method": "POST",
     "path": "/api/overlay/v1/admin/networks/bootstrap"
   },
   {

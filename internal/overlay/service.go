@@ -26,7 +26,12 @@ import (
 	"account/internal/agentproto"
 )
 
-var overlayDeviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+var (
+	overlayDeviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+	policyRuleIDPattern    = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,64}$`)
+)
+
+const maxPolicyRules = 200
 
 type Service struct {
 	meshNetworks    map[string]bool
@@ -1257,7 +1262,7 @@ func (s *Service) reconcileStableUATGatewayKey(ctx context.Context, cfg Bootstra
 		}).Error; err != nil {
 			return err
 		}
-		return tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Update("config_generation", gorm.Expr("config_generation + 1")).Error
+		return advanceNetworkGeneration(tx, &network)
 	})
 }
 
@@ -1307,34 +1312,37 @@ func (s *Service) AdminPolicy(ctx context.Context, ownerUserID, networkID string
 }
 
 func (s *Service) AdminUpdatePolicy(ctx context.Context, ownerUserID, networkID string, policy PolicyArtifact) (PolicyArtifact, error) {
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	networkID = strings.TrimSpace(networkID)
+	if ownerUserID == "" || networkID == "" {
+		return PolicyArtifact{}, ErrNotFound
+	}
 	var result PolicyArtifact
 	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var network NetworkRecord
-		if err := tx.Where("id = ? AND owner_user_id = ?", strings.TrimSpace(networkID), strings.TrimSpace(ownerUserID)).First(&network).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ?", networkID, ownerUserID).First(&network).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
 			return err
 		}
-		if policy.NetworkID != "" && policy.NetworkID != network.ID || policy.DefaultAction != "" && policy.DefaultAction != "deny" && policy.DefaultAction != "allow" {
-			return ErrInvalidInput
-		}
 		generation := network.ConfigGeneration + 1
-		policy.SchemaVersion = 1
-		policy.CompilerVersion = PolicyCompilerVersion
-		policy.NetworkID = network.ID
-		policy.Revision = generation
-		if policy.DefaultAction == "" {
-			policy.DefaultAction = "deny"
-		}
-		raw, err := json.Marshal(policy)
+		normalized, err := validateAndNormalizePolicy(network.ID, generation, policy)
 		if err != nil {
 			return err
 		}
-		if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(map[string]any{"policy_json": string(raw), "config_generation": generation}).Error; err != nil {
+		raw, err := json.Marshal(normalized)
+		if err != nil {
 			return err
 		}
-		result = policy
+		updateRes := tx.Model(&NetworkRecord{}).Where("id = ? AND config_generation = ?", network.ID, network.ConfigGeneration).Updates(map[string]any{"policy_json": string(raw), "config_generation": generation})
+		if updateRes.Error != nil {
+			return updateRes.Error
+		}
+		if updateRes.RowsAffected != 1 {
+			return ErrGenerationConflict
+		}
+		result = normalized
 		return nil
 	})
 	return result, err
@@ -1529,10 +1537,9 @@ func (s *Service) ExchangeRegistration(ctx context.Context, registrationID, toke
 		if result.RowsAffected != 1 {
 			return ErrRegistrationConsumed
 		}
-		if err := tx.Model(&NetworkRecord{}).Where("id = ?", networkRecord.ID).UpdateColumn("config_generation", gorm.Expr("config_generation + 1")).Error; err != nil {
+		if err := advanceNetworkGeneration(tx, &networkRecord); err != nil {
 			return err
 		}
-		networkRecord.ConfigGeneration++
 		credential := CredentialRecord{ID: newID("cred"), DeviceID: device.ID, CredentialID: credentialID, TokenHash: HashSecret(credentialSecret), IssuedAt: credentialIssued, ExpiresAt: credentialExpiry}
 		enrollment := EnrollmentRecord{ID: newID("enr"), DeviceID: device.ID, TokenHash: HashSecret(enrollmentSecret), IssuedAt: credentialIssued, ExpiresAt: enrollmentExpiry}
 		if err := tx.Create(&credential).Error; err != nil {
@@ -1761,7 +1768,7 @@ func (s *Service) UserConfig(ctx context.Context, userID, deviceID, networkID st
 	return s.buildSignedConfig(device, network, v2)
 }
 
-func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string) (GatewaySignedConfig, string, error) {
+func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string, v2 bool) (GatewaySignedConfig, string, error) {
 	enrollment, device, network, err := s.repo.enrollment(ctx, HashSecret(enrollmentToken))
 	if err != nil || enrollment.ConsumedAt != nil || !enrollment.ExpiresAt.After(s.now()) || device.Status != "active" {
 		return GatewaySignedConfig{}, "", ErrInvalidToken
@@ -1794,12 +1801,43 @@ func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string) (Ga
 	if err != nil {
 		return GatewaySignedConfig{}, "", err
 	}
-	config := GatewaySignedConfig{SchemaVersion: 1, Role: RoleGateway, ConfigID: configID(network.ID, network.GatewayID, network.ConfigGeneration), NetworkID: network.ID, GatewayID: network.GatewayID, Generation: network.ConfigGeneration, IssuedAt: now, ExpiresAt: canonicalTime(now.Add(s.signedConfigTTL)), InterfaceName: "xconzero0", Address: address, ListenPort: network.GatewayEndpointPort, MTU: 1420, Peers: peers, Transport: GatewayTransport{Kind: transport.Kind, ServerName: network.TransportServerName, Port: network.TransportPort, AuthID: network.TransportAuthID, Path: transport.Path, Mode: transport.Mode, Host: transport.Host, Frontend: frontend, ListenSocket: listenSocket}}
+	schemaVersion := 1
+	if v2 {
+		schemaVersion = 2
+	}
+	connectionMode := strings.TrimSpace(network.ConnectionMode)
+	if connectionMode == "" {
+		connectionMode = DefaultConnectionMode
+	}
+	config := GatewaySignedConfig{
+		SchemaVersion:  schemaVersion,
+		Role:           RoleGateway,
+		ConfigID:       configID(network.ID, network.GatewayID, network.ConfigGeneration),
+		NetworkID:      network.ID,
+		GatewayID:      network.GatewayID,
+		Generation:     network.ConfigGeneration,
+		IssuedAt:       now,
+		ExpiresAt:      canonicalTime(now.Add(s.signedConfigTTL)),
+		ConnectionMode: connectionMode,
+		InterfaceName:  "xconzero0",
+		Address:        address,
+		ListenPort:     network.GatewayEndpointPort,
+		MTU:            1420,
+		Peers:          peers,
+		Transport:      GatewayTransport{Kind: transport.Kind, ServerName: network.TransportServerName, Port: network.TransportPort, AuthID: network.TransportAuthID, Path: transport.Path, Mode: transport.Mode, Host: transport.Host, Frontend: frontend, ListenSocket: listenSocket},
+	}
 	if s.meshNetworks[network.ID] {
-		config.Mesh, err = s.relaySpec(context.Background(), network)
+		config.Mesh, err = s.relaySpec(ctx, network)
 		if err != nil {
 			return GatewaySignedConfig{}, "", err
 		}
+	}
+	if v2 {
+		policy, err := s.policyArtifact(network)
+		if err != nil {
+			return GatewaySignedConfig{}, "", err
+		}
+		config.Policy = &policy
 	}
 	payload, err := gatewaySigningBytes(config)
 	if err != nil {
@@ -2019,23 +2057,46 @@ func signingBytes(config SignedConfig) ([]byte, error) {
 }
 
 func gatewaySigningBytes(config GatewaySignedConfig) ([]byte, error) {
+	connectionMode := strings.TrimSpace(config.ConnectionMode)
+	if config.SchemaVersion == 1 {
+		return json.Marshal(struct {
+			SchemaVersion  int              `json:"schema_version"`
+			Role           string           `json:"role"`
+			ConfigID       string           `json:"config_id"`
+			NetworkID      string           `json:"network_id"`
+			GatewayID      string           `json:"gateway_id"`
+			Generation     uint64           `json:"generation"`
+			IssuedAt       time.Time        `json:"issued_at"`
+			ExpiresAt      time.Time        `json:"expires_at"`
+			ConnectionMode string           `json:"connection_mode,omitempty"`
+			InterfaceName  string           `json:"interface_name"`
+			Address        string           `json:"address"`
+			ListenPort     int              `json:"listen_port"`
+			MTU            int              `json:"mtu"`
+			Peers          []GatewayPeer    `json:"peers"`
+			Transport      GatewayTransport `json:"transport"`
+			Mesh           *RelaySpec       `json:"mesh,omitempty"`
+		}{config.SchemaVersion, config.Role, config.ConfigID, config.NetworkID, config.GatewayID, config.Generation, config.IssuedAt, config.ExpiresAt, connectionMode, config.InterfaceName, config.Address, config.ListenPort, config.MTU, config.Peers, config.Transport, config.Mesh})
+	}
 	return json.Marshal(struct {
-		SchemaVersion int              `json:"schema_version"`
-		Role          string           `json:"role"`
-		ConfigID      string           `json:"config_id"`
-		NetworkID     string           `json:"network_id"`
-		GatewayID     string           `json:"gateway_id"`
-		Generation    uint64           `json:"generation"`
-		IssuedAt      time.Time        `json:"issued_at"`
-		ExpiresAt     time.Time        `json:"expires_at"`
-		InterfaceName string           `json:"interface_name"`
-		Address       string           `json:"address"`
-		ListenPort    int              `json:"listen_port"`
-		MTU           int              `json:"mtu"`
-		Peers         []GatewayPeer    `json:"peers"`
-		Transport     GatewayTransport `json:"transport"`
-		Mesh          *RelaySpec       `json:"mesh,omitempty"`
-	}{config.SchemaVersion, config.Role, config.ConfigID, config.NetworkID, config.GatewayID, config.Generation, config.IssuedAt, config.ExpiresAt, config.InterfaceName, config.Address, config.ListenPort, config.MTU, config.Peers, config.Transport, config.Mesh})
+		SchemaVersion  int              `json:"schema_version"`
+		Role           string           `json:"role"`
+		ConfigID       string           `json:"config_id"`
+		NetworkID      string           `json:"network_id"`
+		GatewayID      string           `json:"gateway_id"`
+		Generation     uint64           `json:"generation"`
+		IssuedAt       time.Time        `json:"issued_at"`
+		ExpiresAt      time.Time        `json:"expires_at"`
+		ConnectionMode string           `json:"connection_mode,omitempty"`
+		InterfaceName  string           `json:"interface_name"`
+		Address        string           `json:"address"`
+		ListenPort     int              `json:"listen_port"`
+		MTU            int              `json:"mtu"`
+		Peers          []GatewayPeer    `json:"peers"`
+		Transport      GatewayTransport `json:"transport"`
+		Mesh           *RelaySpec       `json:"mesh,omitempty"`
+		Policy         *PolicyArtifact  `json:"policy,omitempty"`
+	}{config.SchemaVersion, config.Role, config.ConfigID, config.NetworkID, config.GatewayID, config.Generation, config.IssuedAt, config.ExpiresAt, connectionMode, config.InterfaceName, config.Address, config.ListenPort, config.MTU, config.Peers, config.Transport, config.Mesh, config.Policy})
 }
 
 func validateExchange(request ExchangeRequest) error {

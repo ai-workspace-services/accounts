@@ -577,6 +577,7 @@ const (
 	AuditActionPlanGroupPreviewUsed  = "account.plan_group.preview.used"
 	AuditActionRoleUpdate            = "account.role.update"
 	AuditActionOverlayOwnerReconcile = "overlay.gateway.owner_reconcile"
+	AuditActionOverlayPolicyUpdate   = "overlay.network.policy_update"
 )
 
 type AccountQuotaState struct {

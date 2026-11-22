@@ -104,13 +104,18 @@ func (h *HTTPHandler) GatewayConfig(c *gin.Context) {
 		writeError(c, ErrInvalidToken)
 		return
 	}
-	config, etag, err := h.Service.GatewayConfig(c.Request.Context(), token)
+	config, etag, err := h.Service.GatewayConfig(c.Request.Context(), token, wantsGatewayV2(c))
 	if err != nil {
 		writeError(c, err)
 		return
 	}
 	c.Header("Cache-Control", "private, no-store")
+	c.Header("Vary", "Accept")
 	c.Header("ETag", etag)
+	if config.SchemaVersion >= 2 {
+		c.Data(http.StatusOK, GatewaySignedConfigV2MediaType, mustJSON(config))
+		return
+	}
 	c.Data(http.StatusOK, "application/json", mustJSON(config))
 }
 
@@ -268,6 +273,10 @@ func bearer(header, scheme string) (string, bool) {
 
 func wantsV2(c *gin.Context) bool {
 	return strings.Contains(c.GetHeader("Accept"), SignedConfigV2MediaType)
+}
+
+func wantsGatewayV2(c *gin.Context) bool {
+	return strings.Contains(c.GetHeader("Accept"), GatewaySignedConfigV2MediaType)
 }
 
 func writeSignedConfig(c *gin.Context, config SignedConfig, etag string) {
