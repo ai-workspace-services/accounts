@@ -34,7 +34,7 @@
     },
     {
       "path": "internal/overlay/repository.go",
-      "sha256": "543cd3115197c9ed51d09026b56ea56d0649ed6fac3777f66e54a4b64a9b5014"
+      "sha256": "f59e8bebe09de418c1db423fb1329a41ae169fdd4adf18aa11748f21b97bd634"
     },
     {
       "path": "internal/tasksession/postgres_schema.go",

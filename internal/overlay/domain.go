@@ -35,9 +35,10 @@ const (
 	ScopeSessionMint  = "overlay:session:mint"
 	ScopeRotate       = "overlay:credential:rotate"
 
-	SignedConfigV2MediaType = "application/vnd.xconnect.signed-config.v2+json"
-	PolicyMediaType         = "application/vnd.xconnect.policy.v1+json"
-	PolicyCompilerVersion   = "xconnect-acl-v1alpha1.1"
+	SignedConfigV2MediaType        = "application/vnd.xconnect.signed-config.v2+json"
+	GatewaySignedConfigV2MediaType = "application/vnd.xconnect.gateway-config.v2+json"
+	PolicyMediaType                = "application/vnd.xconnect.policy.v1+json"
+	PolicyCompilerVersion          = "xconnect-acl-v1alpha1.1"
 )
 
 var (
@@ -383,22 +384,24 @@ type GatewayPeer struct {
 // It is a separate wire type because a Gateway installs peers and forwarding
 // policy, while One installs a local client tunnel and Xray transport.
 type GatewaySignedConfig struct {
-	SchemaVersion int              `json:"schema_version"`
-	Role          string           `json:"role"`
-	ConfigID      string           `json:"config_id"`
-	NetworkID     string           `json:"network_id"`
-	GatewayID     string           `json:"gateway_id"`
-	Generation    uint64           `json:"generation"`
-	IssuedAt      time.Time        `json:"issued_at"`
-	ExpiresAt     time.Time        `json:"expires_at"`
-	InterfaceName string           `json:"interface_name"`
-	Address       string           `json:"address"`
-	ListenPort    int              `json:"listen_port"`
-	MTU           int              `json:"mtu"`
-	Peers         []GatewayPeer    `json:"peers"`
-	Transport     GatewayTransport `json:"transport"`
-	Mesh          *RelaySpec       `json:"mesh,omitempty"`
-	Signature     Signature        `json:"signature"`
+	SchemaVersion  int              `json:"schema_version"`
+	Role           string           `json:"role"`
+	ConfigID       string           `json:"config_id"`
+	NetworkID      string           `json:"network_id"`
+	GatewayID      string           `json:"gateway_id"`
+	Generation     uint64           `json:"generation"`
+	IssuedAt       time.Time        `json:"issued_at"`
+	ExpiresAt      time.Time        `json:"expires_at"`
+	ConnectionMode string           `json:"connection_mode,omitempty"`
+	InterfaceName  string           `json:"interface_name"`
+	Address        string           `json:"address"`
+	ListenPort     int              `json:"listen_port"`
+	MTU            int              `json:"mtu"`
+	Peers          []GatewayPeer    `json:"peers"`
+	Transport      GatewayTransport `json:"transport"`
+	Mesh           *RelaySpec       `json:"mesh,omitempty"`
+	Policy         *PolicyArtifact  `json:"policy,omitempty"`
+	Signature      Signature        `json:"signature"`
 }
 
 type GatewayTransport struct {
@@ -431,6 +434,25 @@ type PolicyRule struct {
 	DestinationDevices []string `json:"destination_devices"`
 	Protocols          []string `json:"protocols"`
 	Ports              []int    `json:"ports"`
+}
+
+type PolicyExplainRequest struct {
+	SourceDeviceID      string `json:"source_device_id"`
+	DestinationDeviceID string `json:"destination_device_id"`
+	Protocol            string `json:"protocol"`
+	Port                int    `json:"port,omitempty"`
+}
+
+type PolicyExplainResponse struct {
+	NetworkID          string `json:"network_id"`
+	Revision           uint64 `json:"revision"`
+	DefaultAction      string `json:"default_action"`
+	Decision           string `json:"decision"`
+	MatchedRuleID      string `json:"matched_rule_id,omitempty"`
+	MatchedRuleIndex   *int   `json:"matched_rule_index,omitempty"`
+	Reason             string `json:"reason"`
+	SourceAddress      string `json:"source_address,omitempty"`
+	DestinationAddress string `json:"destination_address,omitempty"`
 }
 
 type AdminOverview struct {

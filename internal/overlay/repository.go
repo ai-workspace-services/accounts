@@ -238,7 +238,7 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 			ConfigGeneration: 1,
 		}
 		var existing NetworkRecord
-		if err := tx.Where("id = ?", network.ID).First(&existing).Error; err == nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", network.ID).First(&existing).Error; err == nil {
 			if strings.TrimSpace(existing.OwnerUserID) != strings.TrimSpace(network.OwnerUserID) {
 				return ErrForbidden
 			}
@@ -252,13 +252,15 @@ func (r *Repository) Seed(ctx context.Context, cfg BootstrapConfig, joinToken st
 				"owner_user_id":    network.OwnerUserID,
 				"gateway_frontend": network.GatewayFrontend, "gateway_listen_socket": network.GatewayListenSocket,
 			}
+			if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(updates).Error; err != nil {
+				return err
+			}
 			// A frontend change rewires the Gateway's Xray listener, so the
 			// Gateway must re-apply its runtime: issue a new generation.
 			if existing.GatewayFrontend != network.GatewayFrontend || existing.GatewayListenSocket != network.GatewayListenSocket {
-				updates["config_generation"] = gorm.Expr("config_generation + 1")
-			}
-			if err := tx.Model(&NetworkRecord{}).Where("id = ?", network.ID).Updates(updates).Error; err != nil {
-				return err
+				if err := advanceNetworkGeneration(tx, &existing); err != nil {
+					return err
+				}
 			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
