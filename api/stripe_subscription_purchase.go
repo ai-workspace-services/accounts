@@ -93,7 +93,8 @@ func (h *handler) currentPurchaseSubscription(ctx context.Context, userID string
 		if s.Kind != "subscription" {
 			continue
 		}
-		if s.PlanID == store.BillingPlanFree {
+		switch strings.ToUpper(strings.TrimSpace(s.PlanID)) {
+		case store.BillingPlanFree, store.BillingPlanTrialOnce5GB, store.BillingPlanWhitelistFree, store.BillingPlanPaused:
 			continue
 		}
 		switch s.Status {
@@ -268,7 +269,15 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 		return
 	}
 	var req stripeCheckoutRequest
-	if c.ShouldBindJSON(&req) != nil || req.Mode != "subscription" || !h.validateCheckoutPlan(c.Request.Context(), req) {
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, 400, "invalid_billing_plan", "Invalid subscription plan")
+		return
+	}
+	if isPaygDiscontinuedPlanID(req.PlanID, req.ProductSlug) {
+		respondError(c, http.StatusGone, "payg_discontinued", "pay-as-you-go plans have been retired")
+		return
+	}
+	if req.Mode != "subscription" || !h.validateCheckoutPlan(c.Request.Context(), req) {
 		respondError(c, 400, "invalid_billing_plan", "Invalid subscription plan")
 		return
 	}

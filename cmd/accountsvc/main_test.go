@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -137,8 +138,21 @@ func TestEnsureDefaultBillingPlansRetiresLegacyTrial(t *testing.T) {
 	if trial.Active {
 		t.Fatal("legacy TRIAL-7D must be inactive after startup")
 	}
-	if _, err := st.GetBillingPlan(ctx, store.BillingPlanFree); err != nil {
-		t.Fatalf("FREE plan must be seeded: %v", err)
+	if _, err := st.GetBillingPlan(ctx, store.BillingPlanFree); !errors.Is(err, store.ErrBillingPlanNotFound) {
+		t.Fatalf("FREE plan must not be seeded after retirement, got err=%v", err)
+	}
+	for _, planID := range []string{
+		store.BillingPlanWhitelistFree,
+		store.BillingPlanPlus,
+		store.BillingPlanPlusMonthly2026,
+		store.BillingPlanProMonthlyV2,
+		store.BillingPlanProYearlyV2,
+		"CUSTOM-NODE-MONTHLY-2026",
+		"CUSTOM-AI-CONSULT-2026",
+	} {
+		if _, err := st.GetBillingPlan(ctx, planID); err != nil {
+			t.Fatalf("expected %s plan to be seeded: %v", planID, err)
+		}
 	}
 }
 
@@ -327,9 +341,6 @@ func TestBootstrapPreservesExistingIdentitiesAcrossRepeatedStartup(t *testing.T)
 	}
 	for round := 0; round < 3; round++ {
 		if err := ensureRootUser(ctx, st, nil); err != nil {
-			t.Fatal(err)
-		}
-		if err := ensureSandboxUser(ctx, st, nil); err != nil {
 			t.Fatal(err)
 		}
 		for _, enabled := range []bool{false, true} {

@@ -75,11 +75,20 @@ func ReconcileAnnualPlanQuotas(ctx context.Context, st store.Store, now time.Tim
 			if err == nil && quota != nil && quota.PeriodEnd != nil && quota.PeriodEnd.After(now.UTC()) {
 				break
 			}
-			state := &store.AccountQuotaState{AccountUUID: user.ID}
+			state := &store.AccountQuotaState{
+				AccountUUID:      user.ID,
+				ThrottleState:    "normal",
+				SuspendState:     "active",
+				ProxyAccessState: "active",
+			}
 			if quota != nil {
 				state = quota
+				if state.ProxyAccessState == "" || (state.ProxyAccessState == "paused" && state.RemainingIncludedQuota <= 0 && state.RemainingHighSpeedQuota <= 0) {
+					state.ProxyAccessState = "active"
+				}
 			}
 			state.RemainingIncludedQuota = plan.IncludedQuotaBytes
+			state.RemainingHighSpeedQuota = plan.HighSpeedQuotaBytes
 			state.PeriodStart = &start
 			state.PeriodEnd = &end
 			state.EffectiveAt = now.UTC()

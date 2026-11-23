@@ -13,7 +13,7 @@ type BillingPlan struct {
 	PlanID              string
 	StripePriceID       string
 	DisplayName         string
-	Kind                string // trial | subscription | paygo_topup
+	Kind                string // trial | subscription | service | whitelist_group | paygo_topup (retired)
 	IncludedQuotaBytes  int64
 	HighSpeedQuotaBytes int64
 	PackageName         string
@@ -63,14 +63,20 @@ const (
 	StripeWebhookEventStatusFailed    = "failed"
 )
 
-// Well-known catalog plan ids provisioned by the seed.
+// Well-known catalog plan ids provisioned by the seed and control plane.
 const (
-	BillingPlanTrial7D       = "TRIAL-7D"
-	BillingPlanFree          = "FREE"
-	BillingPlanPlus          = "PLUS"
-	BillingPlanUnlimitedBeta = "UNLIMITED-BETA"
-
+	BillingPlanTrial7D                  = "TRIAL-7D"
+	BillingPlanFree                     = "FREE"
+	BillingPlanWhitelistFree            = "WHITELIST-FREE"
+	BillingPlanTrialOnce5GB             = "TRIAL-5GB-ONCE"
+	BillingPlanPlus                     = "PLUS"
+	BillingPlanPlusMonthly2026          = "PLUS-MONTHLY-2026"
+	BillingPlanProMonthlyV2             = "PRO-MONTHLY-V2"
+	BillingPlanProYearlyV2              = "PRO-YEARLY-V2"
+	BillingPlanUnlimitedBeta            = "UNLIMITED-BETA"
+	BillingPlanPaused                   = "PAUSED"
 	DefaultProHighSpeedQuotaBytes int64 = 30 * 1024 * 1024 * 1024
+	DefaultOneTimeTrialQuotaBytes int64 = 5 * 1024 * 1024 * 1024
 )
 
 var (

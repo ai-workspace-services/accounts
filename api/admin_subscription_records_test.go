@@ -107,7 +107,7 @@ func TestSubscriptionCSVEmailUpsertPreviewReplayAndExport(t *testing.T) {
 	// A payment status containing the substring 'paid' must not be treated as paid.
 	handler := &handler{store: st}
 	unpaid, err := handler.subscriptionCSVUpdates(ctx, "email,paid status\ntarget@example.com,unpaid", false)
-	if err != nil || len(unpaid) != 1 || unpaid[0].PlanID != store.BillingPlanFree {
+	if err != nil || len(unpaid) != 1 || unpaid[0].PlanID != store.BillingPlanPaused {
 		t.Fatal("unpaid row granted paid access")
 	}
 }

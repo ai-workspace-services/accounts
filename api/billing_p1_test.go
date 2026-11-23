@@ -336,7 +336,7 @@ func TestResetQuotaForPlanStoresExplicitPeriodBounds(t *testing.T) {
 	}
 }
 
-func TestStripeSubscriptionDeletedDowngradesToFree(t *testing.T) {
+func TestStripeSubscriptionDeletedPausesNonWhitelistAccount(t *testing.T) {
 	router, st, user := newBillingWebhookHarness(t)
 	ctx := context.Background()
 
@@ -354,15 +354,15 @@ func TestStripeSubscriptionDeletedDowngradesToFree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load profile: %v", err)
 	}
-	if profile.PackageName != "default" || profile.IncludedQuotaBytes != defaultFreeQuotaBytes {
-		t.Fatalf("expected free downgrade, got %+v", profile)
+	if profile.PackageName != "paused" || profile.IncludedQuotaBytes != 0 || profile.PricingRuleVersion != "plan:"+store.BillingPlanPaused {
+		t.Fatalf("expected paused profile on subscription end, got %+v", profile)
 	}
 	quota, err := st.GetAccountQuotaState(ctx, user.ID)
 	if err != nil {
 		t.Fatalf("load quota: %v", err)
 	}
-	if quota.RemainingIncludedQuota != defaultFreeQuotaBytes {
-		t.Fatalf("expected zeroed quota, got %+v", quota)
+	if quota.RemainingIncludedQuota != 0 || quota.ProxyAccessState != "paused" || quota.SuspendState == "suspended" {
+		t.Fatalf("expected paused traffic with console login active, got %+v", quota)
 	}
 }
 
@@ -647,12 +647,12 @@ func TestOAuthProviderVerifiedEmailStartsFree(t *testing.T) {
 		t.Fatal("a provider-verified OAuth email must count as verified")
 	}
 	profile, err := memStore.GetAccountBillingProfile(ctx, user.ID)
-	if err != nil || profile.PackageName != "free" || profile.IncludedQuotaBytes != 3*1024*1024*1024 {
-		t.Fatalf("new OAuth account must receive Free 3GiB: profile=%+v err=%v", profile, err)
+	if err != nil || profile.PackageName != "trial" || profile.IncludedQuotaBytes != store.DefaultOneTimeTrialQuotaBytes || profile.PricingRuleVersion != "plan:"+store.BillingPlanTrialOnce5GB {
+		t.Fatalf("new OAuth account must receive 5GiB one-time trial: profile=%+v err=%v", profile, err)
 	}
 	quota, err := memStore.GetAccountQuotaState(ctx, user.ID)
-	if err != nil || quota.RemainingIncludedQuota != 3*1024*1024*1024 {
-		t.Fatalf("new OAuth account quota mismatch: quota=%+v err=%v", quota, err)
+	if err != nil || quota.RemainingIncludedQuota != store.DefaultOneTimeTrialQuotaBytes || quota.PeriodEnd != nil {
+		t.Fatalf("new OAuth account trial quota mismatch: quota=%+v err=%v", quota, err)
 	}
 
 	subs, err := memStore.ListSubscriptionsByUser(ctx, user.ID)
@@ -674,7 +674,7 @@ func TestOAuthProviderVerifiedEmailStartsFree(t *testing.T) {
 		t.Fatalf("repeat OAuth login must not create a trial, err=%v subscriptions=%+v", err, subs)
 	}
 	profileAfterLogin, err := memStore.GetAccountBillingProfile(ctx, user.ID)
-	if err != nil || profileAfterLogin.IncludedQuotaBytes != 3*1024*1024*1024 {
-		t.Fatalf("repeat OAuth login must preserve the existing Free assignment, profile=%+v err=%v", profileAfterLogin, err)
+	if err != nil || profileAfterLogin.IncludedQuotaBytes != store.DefaultOneTimeTrialQuotaBytes || profileAfterLogin.PackageName != "trial" {
+		t.Fatalf("repeat OAuth login must preserve the existing 5GiB trial assignment, profile=%+v err=%v", profileAfterLogin, err)
 	}
 }

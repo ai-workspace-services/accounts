@@ -564,8 +564,8 @@ func TestRegisterEndpoint(t *testing.T) {
 	if !ok || len(groups) == 0 {
 		t.Fatalf("expected groups array in response")
 	}
-	if !containsString(groups, store.MonthlyFreeQuotaLimitGroup) {
-		t.Fatalf("expected new registration to receive Free 3GB group, got %#v", groups)
+	if !containsString(groups, store.OneTimeTrialQuotaGroup) {
+		t.Fatalf("expected new registration to receive 5GB one-time trial group, got %#v", groups)
 	}
 }
 

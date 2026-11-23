@@ -34,14 +34,6 @@ type accountPlanContract struct {
 // creates or changes an account assignment.
 func (h *handler) accountPlanContract(ctx context.Context, profile *store.AccountBillingProfile, users ...*store.User) (accountPlanContract, error) {
 	result := accountPlanContract{AssignmentStatus: "unassigned"}
-	defaultPlan, err := h.store.GetBillingPlan(ctx, store.BillingPlanFree)
-	if err != nil {
-		if !errors.Is(err, store.ErrBillingPlanNotFound) {
-			return result, err
-		}
-	} else {
-		result.DefaultPlan = planContractFromCatalog(defaultPlan, 0, 0, false, "local_catalog_default")
-	}
 
 	if profile == nil {
 		return result, nil
@@ -57,12 +49,60 @@ func (h *handler) accountPlanContract(ctx context.Context, profile *store.Accoun
 		return result, nil
 	}
 
-	var catalogPlan *store.BillingPlan
 	version := strings.TrimSpace(profile.PricingRuleVersion)
+	pkgLower := strings.ToLower(strings.TrimSpace(profile.PackageName))
+	if strings.EqualFold(version, "plan:"+store.BillingPlanTrialOnce5GB) || pkgLower == "trial" {
+		result.AssignmentStatus = "assigned"
+		result.CurrentPlan = &accountPlanContractPayload{
+			PlanID:          store.BillingPlanTrialOnce5GB,
+			DisplayName:     "新用户 5GB 一次性体验",
+			PackageName:     "trial",
+			MaxTrafficBytes: profile.IncludedQuotaBytes,
+			QuotaCycle:      "one_time",
+			Assigned:        true,
+			Source:          "account_entitlement",
+		}
+		return result, nil
+	}
+	if strings.EqualFold(version, "plan:"+store.BillingPlanPaused) || pkgLower == "paused" {
+		result.AssignmentStatus = "assigned"
+		result.CurrentPlan = &accountPlanContractPayload{
+			PlanID:          store.BillingPlanPaused,
+			DisplayName:     "暂停流量",
+			PackageName:     "paused",
+			MaxTrafficBytes: 0,
+			QuotaCycle:      "paused",
+			Assigned:        true,
+			Source:          "account_entitlement",
+		}
+		return result, nil
+	}
+
+	var catalogPlan *store.BillingPlan
+	var err error
 	if strings.HasPrefix(version, "plan:") {
 		catalogPlan, err = h.store.GetBillingPlan(ctx, strings.TrimPrefix(version, "plan:"))
 		if err != nil && !errors.Is(err, store.ErrBillingPlanNotFound) {
 			return result, err
+		}
+	}
+	if catalogPlan == nil && (strings.EqualFold(version, "plan:"+store.BillingPlanWhitelistFree) || pkgLower == "whitelist") {
+		catalogPlan, err = h.store.GetBillingPlan(ctx, store.BillingPlanWhitelistFree)
+		if err != nil && !errors.Is(err, store.ErrBillingPlanNotFound) {
+			return result, err
+		}
+		if catalogPlan == nil {
+			result.AssignmentStatus = "assigned"
+			result.CurrentPlan = &accountPlanContractPayload{
+				PlanID:          store.BillingPlanWhitelistFree,
+				DisplayName:     "白名单免费体验组",
+				PackageName:     "whitelist",
+				MaxTrafficBytes: profile.IncludedQuotaBytes,
+				QuotaCycle:      "natural_month",
+				Assigned:        true,
+				Source:          "account_entitlement",
+			}
+			return result, nil
 		}
 	}
 	if catalogPlan == nil {

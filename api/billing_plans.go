@@ -60,14 +60,22 @@ type billingPlanUpsertRequest struct {
 }
 
 var allowedPlanFamilies = map[string]int{
-	"free":   0,
 	"plus":   10,
 	"pro":    20,
 	"custom": 30,
 }
 
-func normalizePlanFamily(plan *store.BillingPlan) string {
+func isWhitelistGroupPlan(plan *store.BillingPlan) bool {
 	if plan == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(plan.Kind), "whitelist_group") ||
+		strings.EqualFold(strings.TrimSpace(plan.PackageName), "whitelist") ||
+		strings.EqualFold(strings.TrimSpace(plan.PlanID), store.BillingPlanWhitelistFree)
+}
+
+func normalizePlanFamily(plan *store.BillingPlan) string {
+	if plan == nil || isWhitelistGroupPlan(plan) {
 		return ""
 	}
 	if plan.Features != nil {
@@ -84,8 +92,6 @@ func normalizePlanFamily(plan *store.BillingPlan) string {
 	}
 	upperID := strings.ToUpper(strings.TrimSpace(plan.PlanID))
 	switch {
-	case upperID == "FREE" || strings.HasPrefix(upperID, "FREE-"):
-		return "free"
 	case upperID == "PLUS" || strings.HasPrefix(upperID, "PLUS-"):
 		return "plus"
 	case upperID == "PRO" || strings.HasPrefix(upperID, "PRO-"):
@@ -129,11 +135,18 @@ func isInternalOnlyPlan(plan *store.BillingPlan) bool {
 }
 
 func enrichBillingPlanFeatures(plan *store.BillingPlan) map[string]any {
-	out := make(map[string]any, len(plan.Features)+3)
+	out := make(map[string]any, len(plan.Features)+4)
 	for k, v := range plan.Features {
 		out[k] = v
 	}
-	if fam := normalizePlanFamily(plan); fam != "" {
+	if isWhitelistGroupPlan(plan) {
+		out["family"] = "whitelist"
+		out["tier_rank"] = 0
+		out["internal_only"] = true
+		if _, exists := out["allowed_pools"]; !exists {
+			out["allowed_pools"] = []string{"Media-Pool"}
+		}
+	} else if fam := normalizePlanFamily(plan); fam != "" {
 		out["family"] = fam
 		if _, exists := out["tier_rank"]; !exists {
 			out["tier_rank"] = allowedPlanFamilies[fam]
@@ -219,7 +232,8 @@ func (h *handler) listPublicBillingPlans(c *gin.Context) {
 	payload := make([]billingPlanPayload, 0, len(plans))
 	for i := range plans {
 		kind := strings.ToLower(strings.TrimSpace(plans[i].Kind))
-		if !plans[i].Active || kind == "trial" || kind == "paygo_topup" || isInternalOnlyPlan(&plans[i]) {
+		pkg := strings.ToLower(strings.TrimSpace(plans[i].PackageName))
+		if !plans[i].Active || kind == "trial" || kind == "paygo_topup" || kind == "whitelist_group" || pkg == "free" || pkg == "whitelist" || pkg == "payg" || isInternalOnlyPlan(&plans[i]) {
 			continue
 		}
 		if normalizePlanFamily(&plans[i]) == "" {
@@ -271,9 +285,9 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		kind = "subscription"
 	}
 	switch kind {
-	case "subscription", "service":
+	case "subscription", "service", "whitelist_group":
 	default:
-		respondError(c, http.StatusBadRequest, "invalid_plan_kind", "kind must be subscription or service")
+		respondError(c, http.StatusBadRequest, "invalid_plan_kind", "kind must be subscription, service or whitelist_group")
 		return
 	}
 	if req.IncludedQuotaBytes < 0 || (req.HighSpeedQuotaBytes != nil && *req.HighSpeedQuotaBytes < 0) {
@@ -322,10 +336,16 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 	if req.PriceUnit != nil {
 		plan.PriceUnit = *req.PriceUnit
 	}
-	if fam := normalizePlanFamily(plan); fam != "" {
+	if kind == "whitelist_group" {
+		plan.PackageName = "whitelist"
+		if plan.Features == nil {
+			plan.Features = map[string]any{}
+		}
+		plan.Features["internal_only"] = true
+	} else if fam := normalizePlanFamily(plan); fam != "" {
 		plan.PackageName = fam
 	} else {
-		respondError(c, http.StatusBadRequest, "invalid_plan_family", "packageName or features.family must be free, plus, pro or custom")
+		respondError(c, http.StatusBadRequest, "invalid_plan_family", "packageName or features.family must be plus, pro or custom")
 		return
 	}
 	plan.Features = enrichBillingPlanFeatures(plan)
@@ -386,6 +406,10 @@ func (h *handler) adminDeleteBillingPlan(c *gin.Context) {
 	planID := strings.TrimSpace(c.Param("planId"))
 	if planID == "" {
 		respondError(c, http.StatusBadRequest, "plan_id_required", "plan id is required")
+		return
+	}
+	if strings.EqualFold(planID, store.BillingPlanWhitelistFree) {
+		respondError(c, http.StatusBadRequest, "whitelist_group_protected", "whitelist group configuration cannot be deleted")
 		return
 	}
 	reason, ok := requireReason(c, c.Query("reason"))

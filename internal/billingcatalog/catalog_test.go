@@ -121,8 +121,10 @@ func TestManifestQuotesWhatStripeCharges(t *testing.T) {
 
 func TestSellablePlansArePublishable(t *testing.T) {
 	sellable := []string{
+		"PLUS",
 		"PLUS-MONTHLY-2026",
-		"PRO-MONTHLY-2026",
+		"PRO-MONTHLY-V2",
+		"PRO-YEARLY-V2",
 		"CUSTOM-NODE-MONTHLY-2026",
 		"CUSTOM-AI-CONSULT-2026",
 	}
@@ -159,8 +161,10 @@ func TestV3CommercialCatalogMatchesApprovedOffers(t *testing.T) {
 		amount, quota int64
 		unit          string
 	}{
+		"PLUS":                     {2000, 20 * 1024 * 1024 * 1024, "month"},
 		"PLUS-MONTHLY-2026":        {3000, 30 * 1024 * 1024 * 1024, "month"},
-		"PRO-MONTHLY-2026":         {5000, 50 * 1024 * 1024 * 1024, "month"},
+		"PRO-MONTHLY-V2":           {5000, 50 * 1024 * 1024 * 1024, "month"},
+		"PRO-YEARLY-V2":            {50000, 50 * 1024 * 1024 * 1024, "year"},
 		"CUSTOM-NODE-MONTHLY-2026": {8000, 0, "month"},
 		"CUSTOM-AI-CONSULT-2026":   {10000, 0, "once"},
 	} {
@@ -172,15 +176,15 @@ func TestV3CommercialCatalogMatchesApprovedOffers(t *testing.T) {
 }
 
 func TestKindsAreAcceptedByTheUpsertEndpoint(t *testing.T) {
-	allowed := map[string]bool{"subscription": true, "service": true}
-	allowedFamilies := map[string]bool{"free": true, "plus": true, "pro": true, "custom": true}
+	allowed := map[string]bool{"subscription": true, "service": true, "whitelist_group": true}
+	allowedFamilies := map[string]bool{"whitelist": true, "plus": true, "pro": true, "custom": true}
 
 	for _, plan := range loadManifest(t) {
 		if !allowed[plan.Kind] {
 			t.Errorf("plan %s has kind %q, which the upsert endpoint rejects", plan.PlanID, plan.Kind)
 		}
 		if !allowedFamilies[plan.PackageName] {
-			t.Errorf("plan %s has packageName %q, expected free/plus/pro/custom", plan.PlanID, plan.PackageName)
+			t.Errorf("plan %s has packageName %q, expected whitelist/plus/pro/custom", plan.PlanID, plan.PackageName)
 		}
 		if plan.TrialDays != 0 {
 			t.Errorf("plan %s has trialDays=%d, expected 0 (no trials)", plan.PlanID, plan.TrialDays)
@@ -188,32 +192,35 @@ func TestKindsAreAcceptedByTheUpsertEndpoint(t *testing.T) {
 	}
 }
 
-func TestFreeTierGrantsTheQuotaTheStorefrontPromises(t *testing.T) {
-	// The storefront sells Free as "5 GB of accelerated traffic per month".
-	// That promise is kept by included_quota_bytes: with 0 the account is
-	// admitted, granted nothing, and throttled on its first request -- which
-	// looks like a broken product rather than a mis-seeded plan.
+func TestWhitelistGroupReplacesPublicFreeTier(t *testing.T) {
 	const fiveGiB = int64(5 * 1024 * 1024 * 1024)
 
+	var found bool
 	for _, plan := range loadManifest(t) {
-		if plan.PlanID != "FREE" {
+		if plan.PlanID == "FREE" || strings.EqualFold(plan.PackageName, "free") {
+			t.Fatalf("public FREE plan must be retired, found %+v", plan)
+		}
+		if plan.PlanID != "WHITELIST-FREE" {
 			continue
 		}
-		if plan.IncludedQuotaBytes != fiveGiB {
-			t.Errorf("FREE grants %d bytes, storefront promises %d", plan.IncludedQuotaBytes, fiveGiB)
+		found = true
+		if plan.IncludedQuotaBytes != fiveGiB || plan.HighSpeedQuotaBytes != 0 {
+			t.Errorf("WHITELIST-FREE grants %d/%d bytes, expected %d/0", plan.IncludedQuotaBytes, plan.HighSpeedQuotaBytes, fiveGiB)
 		}
-		fastLane, _ := plan.Features["fast_lane"].(map[string]any)
-		if mode, _ := fastLane["mode"].(string); mode != "quota" {
-			t.Errorf("FREE fast_lane mode is %q; a monthly byte allowance is metered as %q", mode, "quota")
+		internalOnly, _ := plan.Features["internal_only"].(bool)
+		if !internalOnly || plan.Kind != "whitelist_group" {
+			t.Errorf("WHITELIST-FREE must be internal_only whitelist_group: %+v", plan)
 		}
-		return
 	}
-	t.Error("manifest defines no FREE plan; accounts downgrades to it when a subscription ends")
+	if !found {
+		t.Fatal("manifest missing configurable WHITELIST-FREE group")
+	}
 }
 
-func TestQuotaCatalogDefinesFourFamilies(t *testing.T) {
+func TestQuotaCatalogDefinesThreeCommercialAndWhitelistFamilies(t *testing.T) {
 	const (
 		fiveGiB   = int64(5 * 1024 * 1024 * 1024)
+		twentyGiB = int64(20 * 1024 * 1024 * 1024)
 		thirtyGiB = int64(30 * 1024 * 1024 * 1024)
 		fiftyGiB  = int64(50 * 1024 * 1024 * 1024)
 	)
@@ -222,17 +229,25 @@ func TestQuotaCatalogDefinesFourFamilies(t *testing.T) {
 		plans[plan.PlanID] = plan
 	}
 
-	free := plans["FREE"]
-	if free.IncludedQuotaBytes != fiveGiB || free.HighSpeedQuotaBytes != 0 || free.PackageName != "free" {
-		t.Fatalf("FREE must expose 5GiB VPS / 0 high-speed in the free package: %+v", free)
+	whitelist := plans["WHITELIST-FREE"]
+	if whitelist.IncludedQuotaBytes != fiveGiB || whitelist.HighSpeedQuotaBytes != 0 || whitelist.PackageName != "whitelist" {
+		t.Fatalf("WHITELIST-FREE must expose 5GiB VPS / 0 high-speed: %+v", whitelist)
 	}
-	plus := plans["PLUS-MONTHLY-2026"]
-	if plus.IncludedQuotaBytes != thirtyGiB || plus.HighSpeedQuotaBytes != 0 || plus.PackageName != "plus" {
-		t.Fatalf("PLUS-MONTHLY-2026 must expose 30GiB VPS / 0 high-speed in the plus package: %+v", plus)
+	plus20 := plans["PLUS"]
+	if plus20.IncludedQuotaBytes != twentyGiB || plus20.HighSpeedQuotaBytes != 0 || plus20.PackageName != "plus" || plus20.PriceAmount != 2000 {
+		t.Fatalf("PLUS must expose 20GiB VPS / 0 high-speed at 2000 minor CNY: %+v", plus20)
 	}
-	pro := plans["PRO-MONTHLY-2026"]
-	if pro.IncludedQuotaBytes != fiftyGiB || pro.HighSpeedQuotaBytes != thirtyGiB || pro.PackageName != "pro" {
-		t.Fatalf("PRO-MONTHLY-2026 must expose 50GiB VPS and 30GiB high-speed in the pro package: %+v", pro)
+	plus30 := plans["PLUS-MONTHLY-2026"]
+	if plus30.IncludedQuotaBytes != thirtyGiB || plus30.HighSpeedQuotaBytes != 0 || plus30.PackageName != "plus" || plus30.PriceAmount != 3000 {
+		t.Fatalf("PLUS-MONTHLY-2026 must expose 30GiB VPS / 0 high-speed at 3000 minor CNY: %+v", plus30)
+	}
+	proMonthly := plans["PRO-MONTHLY-V2"]
+	if proMonthly.IncludedQuotaBytes != fiftyGiB || proMonthly.HighSpeedQuotaBytes != thirtyGiB || proMonthly.PackageName != "pro" || proMonthly.PriceAmount != 5000 {
+		t.Fatalf("PRO-MONTHLY-V2 must expose 50GiB VPS and 30GiB high-speed at 5000 minor CNY: %+v", proMonthly)
+	}
+	proYearly := plans["PRO-YEARLY-V2"]
+	if proYearly.IncludedQuotaBytes != fiftyGiB || proYearly.HighSpeedQuotaBytes != thirtyGiB || proYearly.PackageName != "pro" || proYearly.PriceAmount != 50000 {
+		t.Fatalf("PRO-YEARLY-V2 must expose 50GiB VPS and 30GiB high-speed per month at 50000 minor CNY/year: %+v", proYearly)
 	}
 	customNode := plans["CUSTOM-NODE-MONTHLY-2026"]
 	if customNode.PackageName != "custom" || customNode.PriceAmount != 8000 {

@@ -15,19 +15,19 @@ import (
 func TestAdminPlanSavePropagatesQuotaWithoutResettingUsage(t *testing.T) {
 	router, st, token, target := opsHarness(t)
 	ctx := context.Background()
-	target.Groups = []string{store.MonthlyFreeQuotaLimitGroup}
+	target.Groups = []string{store.WhitelistFreeQuotaGroup}
 	if err := st.UpdateUser(ctx, target); err != nil {
 		t.Fatal(err)
 	}
 	start, end := naturalMonthPeriod(time.Now().UTC())
 	const gib = int64(1 << 30)
-	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: target.ID, IncludedQuotaBytes: 3 * gib, PricingRuleVersion: "plan:FREE"}); err != nil {
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: target.ID, PackageName: "whitelist", IncludedQuotaBytes: 3 * gib, PricingRuleVersion: "plan:" + store.BillingPlanWhitelistFree}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: target.ID, RemainingIncludedQuota: 2 * gib, PeriodStart: &start, PeriodEnd: &end}); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPut, "/api/auth/admin/billing/plans/FREE", strings.NewReader(`{"displayName":"Free","kind":"subscription","packageName":"free","includedQuotaBytes":5368709120,"active":true,"reason":"raise free quota to 5 GiB"}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/auth/admin/billing/plans/WHITELIST-FREE", strings.NewReader(`{"displayName":"Whitelist Free","kind":"whitelist_group","packageName":"whitelist","includedQuotaBytes":5368709120,"active":true,"reason":"raise whitelist free quota to 5 GiB"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()

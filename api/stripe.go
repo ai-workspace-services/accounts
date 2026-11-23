@@ -452,17 +452,49 @@ func planCheckoutMode(plan *store.BillingPlan) string {
 	return ""
 }
 
+func isPaygDiscontinuedPlanID(planID, productSlug string) bool {
+	upperID := strings.ToUpper(strings.TrimSpace(planID))
+	if strings.HasPrefix(upperID, "PAYG") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(productSlug), "payg") {
+		return true
+	}
+	if _, ok := fixedTopUps[upperID]; ok {
+		return true
+	}
+	return upperID == customCNYTopUpPlanID || upperID == customUSDTopUpPlanID
+}
+
+func isBaselineNonPaidRule(version string) bool {
+	trimmed := strings.ToUpper(strings.TrimSpace(version))
+	switch trimmed {
+	case "PLAN:" + store.BillingPlanFree,
+		"PLAN:" + store.BillingPlanTrialOnce5GB,
+		"PLAN:" + store.BillingPlanWhitelistFree,
+		"PLAN:" + store.BillingPlanPaused:
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *handler) validateCheckoutPlan(ctx context.Context, req stripeCheckoutRequest) bool {
 	planID := strings.TrimSpace(req.PlanID)
 	priceID := strings.TrimSpace(req.StripePriceID)
 	mode := h.stripe.normalizeMode(req.Mode)
-	if planID == "" || priceID == "" {
+	if planID == "" || priceID == "" || isPaygDiscontinuedPlanID(planID, req.ProductSlug) {
 		return false
 	}
 
 	plan, err := h.store.GetBillingPlan(ctx, planID)
 	if err == nil {
-		if !plan.Active || strings.TrimSpace(plan.StripePriceID) != priceID || normalizePlanFamily(plan) == "" {
+		kind := strings.ToLower(strings.TrimSpace(plan.Kind))
+		pkg := strings.ToLower(strings.TrimSpace(plan.PackageName))
+		if !plan.Active || strings.TrimSpace(plan.StripePriceID) != priceID ||
+			kind == "paygo_topup" || kind == "trial" || kind == "whitelist_group" ||
+			pkg == "free" || pkg == "whitelist" || pkg == "payg" ||
+			isInternalOnlyPlan(plan) || normalizePlanFamily(plan) == "" {
 			return false
 		}
 		return planCheckoutMode(plan) == mode
@@ -938,6 +970,14 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 	req.SourcePath = strings.TrimSpace(req.SourcePath)
 	req.Mode = h.stripe.normalizeMode(req.Mode)
 
+	if isPaygDiscontinuedPlanID(req.PlanID, req.ProductSlug) {
+		respondError(c, http.StatusGone, "payg_discontinued", "pay-as-you-go plans have been retired")
+		return
+	}
+	if plan, pErr := h.store.GetBillingPlan(c.Request.Context(), req.PlanID); pErr == nil && plan != nil && (strings.EqualFold(strings.TrimSpace(plan.Kind), "paygo_topup") || strings.EqualFold(strings.TrimSpace(plan.PackageName), "payg")) {
+		respondError(c, http.StatusGone, "payg_discontinued", "pay-as-you-go plans have been retired")
+		return
+	}
 	if req.ProductSlug == "" || !h.validateCheckoutPlan(c.Request.Context(), req) {
 		respondError(c, http.StatusBadRequest, "invalid_billing_plan", "billing plan is invalid or unavailable")
 		return
@@ -1333,7 +1373,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		}
 		upgraded := previous != nil && (plan.IncludedQuotaBytes > previous.IncludedQuotaBytes || plan.HighSpeedQuotaBytes > previous.HighSpeedQuotaBytes)
 		periodStart, periodEnd := subscriptionQuotaPeriod(plan, sub, time.Now())
-		activation := previous != nil && previous.PricingRuleVersion == "plan:FREE" && invoice.BillingReason == "subscription_create"
+		activation := previous != nil && isBaselineNonPaidRule(previous.PricingRuleVersion) && invoice.BillingReason == "subscription_create"
 		if activation {
 			if err := h.store.ActivateSubscriptionDualQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, previous.HighSpeedQuotaBytes, plan.HighSpeedQuotaBytes, periodStart, periodEnd); err != nil {
 				return err
@@ -1924,7 +1964,7 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		return previousErr
 	}
 	upgraded := previous != nil && (plan.IncludedQuotaBytes > previous.IncludedQuotaBytes || plan.HighSpeedQuotaBytes > previous.HighSpeedQuotaBytes)
-	if freshActivation && previous != nil && previous.PricingRuleVersion == "plan:FREE" {
+	if freshActivation && previous != nil && isBaselineNonPaidRule(previous.PricingRuleVersion) {
 		periodStart, periodEnd := subscriptionQuotaPeriod(plan, source, time.Now())
 		if err := h.store.ActivateSubscriptionDualQuota(ctx, userID, previous.IncludedQuotaBytes, plan.IncludedQuotaBytes, previous.HighSpeedQuotaBytes, plan.HighSpeedQuotaBytes, periodStart, periodEnd); err != nil {
 			return err

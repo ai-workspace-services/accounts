@@ -626,6 +626,10 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.GET("/admin/billing/plans", h.adminListBillingPlans)
 	authProtected.PUT("/admin/billing/plans/:planId", h.adminUpsertBillingPlan)
 	authProtected.DELETE("/admin/billing/plans/:planId", h.adminDeleteBillingPlan)
+	authProtected.GET("/admin/billing/whitelist-groups", h.adminListWhitelistGroups)
+	authProtected.PUT("/admin/billing/whitelist-groups/:groupId", h.adminUpdateWhitelistGroup)
+	authProtected.POST("/admin/billing/whitelist-groups/:groupId/members", h.adminAddWhitelistGroupMember)
+	authProtected.DELETE("/admin/billing/whitelist-groups/:groupId/members/:userId", h.adminRemoveWhitelistGroupMember)
 	// Manual dunning recovery (billing P1.5): clear arrears + lift suspension.
 	authProtected.POST("/admin/billing/accounts/:accountUUID/clear-arrears", h.adminClearArrears)
 	// Operations console (ops P0). Every write here records an audit entry
@@ -996,7 +1000,7 @@ func (h *handler) register(c *gin.Context) {
 		PasswordHash: string(hashed),
 		Level:        store.LevelUser,
 		Role:         store.RoleUser,
-		Groups:       []string{"User", store.MonthlyFreeQuotaLimitGroup},
+		Groups:       []string{"User", store.OneTimeTrialQuotaGroup},
 		// Active must be set explicitly. The column defaults to TRUE in the
 		// schema, but CreateUser always writes it, so the zero value would
 		// persist an account that login accepts and every protected endpoint
@@ -1033,8 +1037,8 @@ func (h *handler) register(c *gin.Context) {
 			return
 		}
 	}
-	if err := h.provisionFreeEntitlement(c.Request.Context(), user.ID); err != nil {
-		slog.Error("failed to provision free entitlement for new account", "err", err, "userID", user.ID)
+	if err := h.provisionOnboardingEntitlement(c.Request.Context(), user.ID); err != nil {
+		slog.Error("failed to provision onboarding entitlement for new account", "err", err, "userID", user.ID)
 		respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "account was created but its default plan could not be initialized")
 		return
 	}
@@ -1587,13 +1591,6 @@ func (h *handler) login(c *gin.Context) {
 		return
 	}
 
-	// Sandbox user is not allowed to login by password/totp.
-	// Root can only assume into sandbox via the admin assume endpoint.
-	if strings.EqualFold(strings.TrimSpace(user.Email), sandboxUserEmail) {
-		respondError(c, http.StatusForbidden, "sandbox_no_login", "sandbox login is disabled")
-		return
-	}
-
 	if password != "" {
 		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 			respondError(c, http.StatusUnauthorized, "invalid_credentials", "invalid credentials")
@@ -1973,11 +1970,6 @@ func (h *handler) session(c *gin.Context) {
 	}
 	if h.rejectIfBillingSuspended(c, user.ID) {
 		return
-	}
-
-	// Sandbox access metadata renews hourly; keep the UUID stable for Portal/Xray identity.
-	if err := h.ensureSandboxProxyUUID(c.Request.Context(), user); err != nil {
-		slog.Warn("failed to renew sandbox proxy access", "err", err, "userID", user.ID)
 	}
 
 	sanitized, err := h.buildSessionUser(c.Request.Context(), h.resolveTenantHost(c), user)
@@ -3520,15 +3512,15 @@ func (h *handler) oauthCallback(c *gin.Context) {
 			EmailVerified: true,
 			Level:         store.LevelUser,
 			Role:          store.RoleUser,
-			Groups:        []string{"User", store.MonthlyFreeQuotaLimitGroup},
+			Groups:        []string{"User", store.OneTimeTrialQuotaGroup},
 			Active:        true,
 		}
 		if err := h.store.CreateUser(ctx, user); err != nil {
 			respondError(c, http.StatusInternalServerError, "user_creation_failed", "failed to create user")
 			return
 		}
-		if err := h.provisionFreeEntitlement(ctx, user.ID); err != nil {
-			slog.Error("failed to provision free entitlement for OAuth account", "err", err, "userID", user.ID)
+		if err := h.provisionOnboardingEntitlement(ctx, user.ID); err != nil {
+			slog.Error("failed to provision onboarding entitlement for OAuth account", "err", err, "userID", user.ID)
 			respondError(c, http.StatusInternalServerError, "default_entitlement_unavailable", "account was created but its default plan could not be initialized")
 			return
 		}
@@ -3745,21 +3737,46 @@ func (h *handler) updateUserGroups(c *gin.Context) {
 		respondError(c, 403, "root_required", "only root can change team administrator groups")
 		return
 	}
+	hasWhitelistBefore := store.IsWhitelistFreeMember(user)
+	hasTrialBefore := store.IsOneTimeTrialMember(user)
 	currentPlanGroup := store.MonthlyQuotaGroup(user)
 	if err := h.validateSubscriptionOverride(c.Request.Context(), actor, user, req.Groups); err != nil {
 		respondError(c, http.StatusBadRequest, "invalid_subscription_override", err.Error())
 		return
 	}
 	for _, requested := range req.Groups {
-		if isMonthlyQuotaGroup(requested) && store.NormalizeMonthlyQuotaGroup(requested) != currentPlanGroup {
+		trimmedReq := strings.TrimSpace(requested)
+		if (isMonthlyQuotaGroup(trimmedReq) && store.NormalizeMonthlyQuotaGroup(trimmedReq) != currentPlanGroup) ||
+			(trimmedReq == store.WhitelistFreeQuotaGroup && !hasWhitelistBefore) ||
+			(trimmedReq == store.OneTimeTrialQuotaGroup && !hasTrialBefore) {
 			respondError(c, http.StatusBadRequest, "plan_group_requires_plan_id", "managed quota groups must be changed through plan-group operations")
 			return
 		}
+	}
+	requestedHasWhitelist := false
+	requestedHasTrial := false
+	for _, g := range req.Groups {
+		switch strings.TrimSpace(g) {
+		case store.WhitelistFreeQuotaGroup:
+			requestedHasWhitelist = true
+		case store.OneTimeTrialQuotaGroup:
+			requestedHasTrial = true
+		}
+	}
+	if (hasWhitelistBefore && !requestedHasWhitelist) || (hasTrialBefore && !requestedHasTrial) {
+		respondError(c, http.StatusBadRequest, "plan_group_requires_plan_id", "managed quota groups must be changed through plan-group operations")
+		return
 	}
 	sourcePlan := store.SubscriptionSourcePlan(user.Groups)
 	user.Groups = store.WithSubscriptionSourcePlan(store.PreserveRegistrationGroups(user.Groups, normalizeGroups(req.Groups)), sourcePlan)
 	if currentPlanGroup != "" {
 		user.Groups = replaceMonthlyQuotaGroup(user.Groups, currentPlanGroup)
+	}
+	if hasWhitelistBefore {
+		user.Groups = normalizeGroups(append(user.Groups, store.WhitelistFreeQuotaGroup))
+	}
+	if hasTrialBefore {
+		user.Groups = normalizeGroups(append(user.Groups, store.OneTimeTrialQuotaGroup))
 	}
 	if err := h.store.UpdateUser(c.Request.Context(), user); err != nil {
 		respondError(c, http.StatusInternalServerError, "update_failed", "failed to update user")
@@ -3828,15 +3845,8 @@ func (h *handler) isReadOnlyAccount(user *store.User) bool {
 		}
 	}
 
-	// Standard Sandbox users are always read-only
-	name := strings.TrimSpace(user.Name)
-	if strings.EqualFold(name, "sandbox") ||
-		strings.EqualFold(user.Email, sandboxUserEmail) {
-		return true
-	}
-
 	// Default policy: Allow modification for regular users.
-	// We only restrict explicitly flagged "demo" or "sandbox" identities or users assigned to a specific "ReadOnly Role".
+	// Only users explicitly assigned to a specific "ReadOnly Role" are read-only.
 	return false
 }
 

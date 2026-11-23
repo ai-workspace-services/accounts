@@ -33,7 +33,10 @@ func userLastActivity(user *store.User) time.Time {
 // intentionally lazy/event-driven, so adding this policy does not require a
 // new worker or an Xray/Caddy restart. Paid/subscribed users are protected.
 func (h *handler) archiveInactiveFreeUser(ctx context.Context, user *store.User) error {
-	if user == nil || !user.Active || store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup {
+	if user == nil || !user.Active || store.IsWhitelistFreeMember(user) {
+		return nil
+	}
+	if !store.IsOneTimeTrialMember(user) && store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup {
 		return nil
 	}
 	lastActivity := userLastActivity(user)

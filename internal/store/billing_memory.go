@@ -83,7 +83,7 @@ func (s *memoryStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan) 
 			if profile.PricingRuleVersion != "plan:"+stored.PlanID {
 				continue
 			}
-			if record := s.subscriptionRecords[id]; stored.PlanID != BillingPlanFree && (record.MonthlyQuotaBytes > 0 || record.AnnualQuotaBytes > 0) {
+			if record := s.subscriptionRecords[id]; stored.PlanID != BillingPlanFree && stored.PlanID != BillingPlanWhitelistFree && (record.MonthlyQuotaBytes > 0 || record.AnnualQuotaBytes > 0) {
 				continue
 			}
 			quota := s.accountQuotaStates[id]
@@ -114,11 +114,15 @@ func (s *memoryStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan) 
 			}
 			if profile.IncludedQuotaBytes != stored.IncludedQuotaBytes || quota.RemainingIncludedQuota != remaining ||
 				profile.HighSpeedQuotaBytes != stored.HighSpeedQuotaBytes || quota.RemainingHighSpeedQuota != hsRemaining {
+				wasExhaustedPaused := quota.RemainingIncludedQuota <= 0 && quota.ProxyAccessState == "paused"
 				profile.IncludedQuotaBytes = stored.IncludedQuotaBytes
 				profile.HighSpeedQuotaBytes = stored.HighSpeedQuotaBytes
 				profile.UpdatedAt = now
 				quota.RemainingIncludedQuota = remaining
 				quota.RemainingHighSpeedQuota = hsRemaining
+				if strings.EqualFold(stored.PlanID, BillingPlanWhitelistFree) && quota.SuspendState != "suspended" && wasExhaustedPaused && remaining > 0 {
+					quota.ProxyAccessState = "active"
+				}
 				quota.UpdatedAt = now
 			}
 		}

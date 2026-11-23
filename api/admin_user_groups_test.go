@@ -212,8 +212,16 @@ func TestUpdateUserGroups(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected expired user to remain, got: %v", err)
 		}
-		if store.MonthlyQuotaGroup(stored) != store.MonthlyFreeQuotaLimitGroup {
-			t.Fatalf("expected expired user to downgrade to Free 3GB, got groups %v", stored.Groups)
+		if store.MonthlyQuotaGroup(stored) != "" {
+			t.Fatalf("expected expired user to drop Plus group and pause traffic, got groups %v", stored.Groups)
+		}
+		profile, err := st.GetAccountBillingProfile(context.Background(), target.ID)
+		if err != nil || profile.PackageName != "paused" {
+			t.Fatalf("expected expired user profile paused, got %+v err=%v", profile, err)
+		}
+		quotaState, err := st.GetAccountQuotaState(context.Background(), target.ID)
+		if err != nil || quotaState.ProxyAccessState != "paused" {
+			t.Fatalf("expected expired user traffic paused, got %+v err=%v", quotaState, err)
 		}
 		if stored.SubscriptionValidUntil == nil || stored.SubscriptionValidUntil.Format("2006-01-02") != past {
 			t.Fatalf("expected validity to persist, got %#v", stored.SubscriptionValidUntil)

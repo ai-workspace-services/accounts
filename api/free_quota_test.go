@@ -11,13 +11,19 @@ func TestFreeQuotaExhaustionAndCalendarRecovery(t *testing.T) {
 	ctx := context.Background()
 	st := store.NewMemoryStore()
 	h := &handler{store: st}
-	u := &store.User{Name: "monthly-free", Email: "monthly-free@example.invalid", Active: true, Groups: []string{store.MonthlyFreeQuotaLimitGroup}}
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{
+		PlanID: store.BillingPlanWhitelistFree, DisplayName: "Whitelist Free", Kind: "whitelist_group",
+		PackageName: "whitelist", IncludedQuotaBytes: 5 << 30, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	u := &store.User{Name: "whitelist-free", Email: "whitelist-free@example.invalid", Active: true, Groups: []string{store.WhitelistFreeQuotaGroup}}
 	if err := st.CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	end := start.AddDate(0, 1, 0)
-	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: u.ID, IncludedQuotaBytes: defaultFreeQuotaBytes, PricingRuleVersion: "plan:FREE"}); err != nil {
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: u.ID, PackageName: "whitelist", IncludedQuotaBytes: 5 << 30, PricingRuleVersion: "plan:" + store.BillingPlanWhitelistFree}); err != nil {
 		t.Fatal(err)
 	}
 	for _, remaining := range []int64{1, 0, -1} {
@@ -33,8 +39,8 @@ func TestFreeQuotaExhaustionAndCalendarRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	q, _ := st.GetAccountQuotaState(ctx, u.ID)
-	if q.RemainingIncludedQuota != 5<<30 {
-		t.Fatalf("new month grant: %d", q.RemainingIncludedQuota)
+	if q.RemainingIncludedQuota != 5<<30 || q.ProxyAccessState != "active" {
+		t.Fatalf("new month grant: %+v", q)
 	}
 	if exhausted, err := h.quotaExhaustedForUser(ctx, u); err != nil || exhausted {
 		t.Fatalf("new month did not recover: %v %v", exhausted, err)

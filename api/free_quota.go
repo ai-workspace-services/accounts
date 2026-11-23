@@ -65,6 +65,10 @@ func (h *handler) quotaExhaustedForAgentScope(ctx context.Context, user *store.U
 	if hasMediaPassthroughAgentGroup(groups) {
 		return false, nil
 	}
+	// One-time 5GB trial shares a single IncludedQuotaBytes bucket across all public pools.
+	if store.IsOneTimeTrialMember(user) {
+		return h.quotaExhaustedForUser(ctx, user)
+	}
 	if dualBucketProGateEnabled() && scope.ResourceClass == agentResourcePro {
 		return h.highSpeedQuotaExhaustedForUser(ctx, user)
 	}
@@ -151,6 +155,12 @@ func (h *handler) evaluateDualBucketQuotaForUser(ctx context.Context, user *stor
 		return status, err
 	}
 	status.vpsExhausted = vpsExhausted
+	if store.IsOneTimeTrialMember(user) {
+		status.hasHighSpeedBucket = false
+		status.highSpeedExhausted = vpsExhausted
+		status.fullyExhausted = vpsExhausted
+		return status, nil
+	}
 	if !status.gateEnabled {
 		status.fullyExhausted = vpsExhausted
 		return status, nil

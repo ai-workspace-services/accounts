@@ -50,10 +50,10 @@ func TestPublicPlanCatalogReturnsExplicitMaximumTraffic(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode plans: %v", err)
 	}
-	want := map[string]int64{"FREE": fiveGiB, "PLUS": twentyGiB}
+	want := map[string]int64{"PLUS": twentyGiB}
 	for _, plan := range response.Plans {
-		if plan.PlanID == "UNLIMITED-BETA" {
-			t.Errorf("internal_only plan %s must not be exposed publicly", plan.PlanID)
+		if plan.PlanID == "UNLIMITED-BETA" || plan.PlanID == "FREE" || plan.PlanID == "WHITELIST-FREE" {
+			t.Errorf("internal/retired plan %s must not be exposed publicly", plan.PlanID)
 		}
 		if expected, ok := want[plan.PlanID]; ok {
 			if plan.IncludedQuotaBytes != expected || plan.MaxTrafficBytes != expected {
@@ -69,40 +69,35 @@ func TestPublicPlanCatalogReturnsExplicitMaximumTraffic(t *testing.T) {
 
 func TestAccountPlanContractSeparatesAssignmentFromDefaultReference(t *testing.T) {
 	st := store.NewMemoryStore()
-	const fiveGiB = int64(3 * 1024 * 1024 * 1024)
-	seedQuotaPlan(t, st, "FREE", "Free", "free", fiveGiB, map[string]any{"quota_cycle": "natural_month", "fast_lane": map[string]any{"mode": "quota"}})
+	const fiveGiB = int64(5 * 1024 * 1024 * 1024)
+	seedQuotaPlan(t, st, "WHITELIST-FREE", "Whitelist Free", "whitelist", fiveGiB, map[string]any{"internal_only": true, "quota_cycle": "natural_month"})
 	h := &handler{store: st}
 
 	contract, err := h.accountPlanContract(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("resolve unassigned plan contract: %v", err)
 	}
-	if contract.AssignmentStatus != "unassigned" || contract.CurrentPlan != nil {
-		t.Fatalf("default reference must not appear assigned: %+v", contract)
-	}
-	if contract.DefaultPlan == nil || contract.DefaultPlan.PlanID != store.BillingPlanFree || contract.DefaultPlan.MaxTrafficBytes != fiveGiB || contract.DefaultPlan.Assigned {
-		t.Fatalf("default Free plan must clearly expose its 3GiB limit as reference data: %+v", contract.DefaultPlan)
+	if contract.AssignmentStatus != "unassigned" || contract.CurrentPlan != nil || contract.DefaultPlan != nil {
+		t.Fatalf("unassigned account must not expose default FREE reference: %+v", contract)
 	}
 
 	profile := &store.AccountBillingProfile{
-		PackageName: "free", IncludedQuotaBytes: fiveGiB, PricingRuleVersion: "plan:FREE",
+		PackageName: "trial", IncludedQuotaBytes: fiveGiB, PricingRuleVersion: "plan:" + store.BillingPlanTrialOnce5GB,
 	}
 	contract, err = h.accountPlanContract(context.Background(), profile)
 	if err != nil {
-		t.Fatalf("resolve assigned plan contract: %v", err)
+		t.Fatalf("resolve assigned trial plan contract: %v", err)
 	}
 	if contract.AssignmentStatus != "assigned" || contract.CurrentPlan == nil || !contract.CurrentPlan.Assigned {
 		t.Fatalf("account plan assignment not reflected: %+v", contract)
 	}
-	if contract.CurrentPlan.MaxTrafficBytes != fiveGiB || contract.CurrentPlan.CatalogMaxTrafficBytes != fiveGiB {
-		t.Fatalf("assigned plan limit mismatch: %+v", contract.CurrentPlan)
+	if contract.CurrentPlan.PlanID != store.BillingPlanTrialOnce5GB || contract.CurrentPlan.MaxTrafficBytes != fiveGiB || contract.CurrentPlan.QuotaCycle != "one_time" {
+		t.Fatalf("assigned trial plan mismatch: %+v", contract.CurrentPlan)
 	}
 }
 
 func TestLegacyDefaultBillingProfileRemainsUnassigned(t *testing.T) {
 	st := store.NewMemoryStore()
-	const freeQuota = int64(3 * 1024 * 1024 * 1024)
-	seedQuotaPlan(t, st, "FREE", "Free", "free", freeQuota, map[string]any{"quota_cycle": "natural_month", "fast_lane": map[string]any{"mode": "quota"}})
 	h := &handler{store: st}
 
 	contract, err := h.accountPlanContract(context.Background(), &store.AccountBillingProfile{
@@ -111,11 +106,8 @@ func TestLegacyDefaultBillingProfileRemainsUnassigned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve legacy default profile: %v", err)
 	}
-	if contract.AssignmentStatus != "unassigned" || contract.CurrentPlan != nil {
-		t.Fatalf("legacy default profile must not be relabeled as Free: %+v", contract)
-	}
-	if contract.DefaultPlan == nil || contract.DefaultPlan.MaxTrafficBytes != freeQuota || contract.DefaultPlan.Assigned {
-		t.Fatalf("Free 3GiB should remain reference-only for this legacy account: %+v", contract.DefaultPlan)
+	if contract.AssignmentStatus != "unassigned" || contract.CurrentPlan != nil || contract.DefaultPlan != nil {
+		t.Fatalf("legacy default profile must remain unassigned without FREE reference: %+v", contract)
 	}
 }
 

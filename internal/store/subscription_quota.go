@@ -28,6 +28,15 @@ func (s *memoryStore) ActivateSubscriptionDualQuota(_ context.Context, id string
 	return s.changeSubscriptionQuota(id, previousIncluded, targetIncluded, previousHighSpeed, targetHighSpeed, start, end, true, true)
 }
 
+func isBaselinePlanRule(rule string) bool {
+	switch rule {
+	case "plan:" + BillingPlanFree, "plan:" + BillingPlanTrialOnce5GB, "plan:" + BillingPlanWhitelistFree, "plan:" + BillingPlanPaused:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *memoryStore) changeSubscriptionQuota(id string, previous, target, prevHS, targetHS int64, start, end time.Time, activation, dual bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -38,18 +47,19 @@ func (s *memoryStore) changeSubscriptionQuota(id string, previous, target, prevH
 	if p.IncludedQuotaBytes == target && (!dual || p.HighSpeedQuotaBytes == targetHS) {
 		return nil
 	}
-	if activation && p.PricingRuleVersion != "plan:FREE" {
+	if activation && !isBaselinePlanRule(p.PricingRuleVersion) {
 		return ErrSubscriptionQuotaConflict
 	}
 	month := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
-	restoringFree := p.PricingRuleVersion == "plan:FREE" && q != nil && q.PeriodStart != nil && q.PeriodEnd != nil && q.PeriodStart.Equal(month) && q.PeriodEnd.Equal(month.AddDate(0, 1, 0))
+	wasUnboundedBaseline := isBaselinePlanRule(p.PricingRuleVersion) && q != nil && q.PeriodEnd == nil
+	restoringBaseline := isBaselinePlanRule(p.PricingRuleVersion) && q != nil && (q.PeriodEnd == nil || (q.PeriodStart != nil && q.PeriodStart.Equal(month) && q.PeriodEnd.Equal(month.AddDate(0, 1, 0))))
 	increased := target > previous || (dual && targetHS > prevHS)
-	if !increased || target < previous || (dual && targetHS < prevHS) || !end.After(start) || p.IncludedQuotaBytes != previous || (dual && p.HighSpeedQuotaBytes != prevHS) || q == nil || q.RemainingIncludedQuota > previous || (dual && prevHS > 0 && q.RemainingHighSpeedQuota > prevHS) {
+	if (!activation && (!increased || target < previous || (dual && targetHS < prevHS))) || !end.After(start) || p.IncludedQuotaBytes != previous || (dual && p.HighSpeedQuotaBytes != prevHS) || q == nil || q.RemainingIncludedQuota > previous || (dual && prevHS > 0 && q.RemainingHighSpeedQuota > prevHS) {
 		return ErrSubscriptionQuotaConflict
 	}
 	resetPeriod := q.PeriodStart != nil && q.PeriodEnd != nil && start.Equal(month) && end.Equal(month.AddDate(0, 1, 0)) && q.PeriodStart.After(start) && q.PeriodStart.Before(end) && q.PeriodEnd.Equal(end)
 	rollover := q.PeriodStart != nil && q.PeriodEnd != nil && q.PeriodEnd.After(*q.PeriodStart) && !q.PeriodEnd.After(start)
-	if !activation && !resetPeriod && !rollover && (q.PeriodStart == nil || q.PeriodEnd == nil || ((!q.PeriodStart.Equal(start) || !q.PeriodEnd.Equal(end)) && !restoringFree)) {
+	if !activation && !resetPeriod && !rollover && !restoringBaseline && (q.PeriodStart == nil || q.PeriodEnd == nil || !q.PeriodStart.Equal(start) || !q.PeriodEnd.Equal(end)) {
 		return ErrSubscriptionQuotaConflict
 	}
 	q.RemainingIncludedQuota += target - previous
@@ -59,13 +69,15 @@ func (s *memoryStore) changeSubscriptionQuota(id string, previous, target, prevH
 			q.RemainingHighSpeedQuota = 0
 		}
 	}
-	if activation || rollover {
+	if activation || rollover || wasUnboundedBaseline {
 		q.RemainingIncludedQuota = target
 		if dual {
 			q.RemainingHighSpeedQuota = targetHS
 		}
 		q.Arrears, q.ArrearsSince = false, nil
-		q.ThrottleState, q.SuspendState = "normal", "active"
+		q.ThrottleState, q.SuspendState, q.ProxyAccessState = "normal", "active", "active"
+	} else if q.RemainingIncludedQuota > 0 || (dual && q.RemainingHighSpeedQuota > 0) {
+		q.ProxyAccessState = "active"
 	}
 	if dual && targetHS == 0 {
 		q.RemainingHighSpeedQuota = 0
@@ -120,34 +132,36 @@ func (s *postgresStore) changeSubscriptionQuota(ctx context.Context, id string, 
 	if included == target && (!dual || highSpeed == targetHS) {
 		return tx.Commit()
 	}
-	if activation && rule != "plan:FREE" {
+	if activation && !isBaselinePlanRule(rule) {
 		return ErrSubscriptionQuotaConflict
 	}
 	increased := target > previous || (dual && targetHS > prevHS)
-	if !increased || target < previous || (dual && targetHS < prevHS) || !end.After(start) || included != previous || (dual && highSpeed != prevHS) {
+	if (!activation && (!increased || target < previous || (dual && targetHS < prevHS))) || !end.After(start) || included != previous || (dual && highSpeed != prevHS) {
 		return ErrSubscriptionQuotaConflict
 	}
 	month := time.Date(time.Now().UTC().Year(), time.Now().UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
 	var result sql.Result
 	if dual {
 		result, err = tx.ExecContext(ctx, `UPDATE public.account_quota_states SET
-		 remaining_included_quota=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN $10 ELSE remaining_included_quota+$2 END,
-		 remaining_high_speed_quota=CASE WHEN $12 = 0 THEN 0 WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN $12 ELSE GREATEST(0, remaining_high_speed_quota+$11) END,
-		 arrears=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN false ELSE arrears END,
-		 arrears_since=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN NULL ELSE arrears_since END,
-		 throttle_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN 'normal' ELSE throttle_state END,
-		 suspend_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN 'active' ELSE suspend_state END,
+		 remaining_included_quota=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN $10 ELSE remaining_included_quota+$2 END,
+		 remaining_high_speed_quota=CASE WHEN $12 = 0 THEN 0 WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN $12 ELSE GREATEST(0, remaining_high_speed_quota+$11) END,
+		 arrears=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN false ELSE arrears END,
+		 arrears_since=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN NULL ELSE arrears_since END,
+		 throttle_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN 'normal' ELSE throttle_state END,
+		 suspend_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN 'active' ELSE suspend_state END,
+		 proxy_access_state='active',
 		 period_start=CASE WHEN NOT $9 AND period_start >= $3 AND period_start < $4 AND period_end=$4 THEN period_start ELSE $3 END,period_end=$4,effective_at=now(),updated_at=now()
-		 WHERE account_uuid=$1 AND ($9 OR (period_end>period_start AND period_end<=$3) OR ((period_start=$3 AND period_end=$4) OR ($3=$7 AND $4=$8 AND period_start>$3 AND period_start<$4 AND period_end=$4)) OR ($6 AND period_start=$7 AND period_end=$8)) AND remaining_included_quota<=$5 AND ($13 <= 0 OR remaining_high_speed_quota<=$13)`, id, target-previous, start.UTC(), end.UTC(), previous, rule == "plan:FREE", month, month.AddDate(0, 1, 0), activation, target, targetHS-prevHS, targetHS, prevHS)
+		 WHERE account_uuid=$1 AND ($9 OR (period_end>period_start AND period_end<=$3) OR ((period_start=$3 AND period_end=$4) OR ($3=$7 AND $4=$8 AND period_start>$3 AND period_start<$4 AND period_end=$4)) OR ($6 AND ((period_start=$7 AND period_end=$8) OR period_end IS NULL))) AND remaining_included_quota<=$5 AND ($13 <= 0 OR remaining_high_speed_quota<=$13)`, id, target-previous, start.UTC(), end.UTC(), previous, isBaselinePlanRule(rule), month, month.AddDate(0, 1, 0), activation, target, targetHS-prevHS, targetHS, prevHS)
 	} else {
 		result, err = tx.ExecContext(ctx, `UPDATE public.account_quota_states SET
-		 remaining_included_quota=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN $10 ELSE remaining_included_quota+$2 END,
-		 arrears=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN false ELSE arrears END,
-		 arrears_since=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN NULL ELSE arrears_since END,
-		 throttle_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN 'normal' ELSE throttle_state END,
-		 suspend_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) THEN 'active' ELSE suspend_state END,
+		 remaining_included_quota=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN $10 ELSE remaining_included_quota+$2 END,
+		 arrears=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN false ELSE arrears END,
+		 arrears_since=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN NULL ELSE arrears_since END,
+		 throttle_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN 'normal' ELSE throttle_state END,
+		 suspend_state=CASE WHEN $9 OR (period_end>period_start AND period_end<=$3) OR ($6 AND period_end IS NULL) THEN 'active' ELSE suspend_state END,
+		 proxy_access_state='active',
 		 period_start=CASE WHEN NOT $9 AND period_start >= $3 AND period_start < $4 AND period_end=$4 THEN period_start ELSE $3 END,period_end=$4,effective_at=now(),updated_at=now()
-		 WHERE account_uuid=$1 AND ($9 OR (period_end>period_start AND period_end<=$3) OR ((period_start=$3 AND period_end=$4) OR ($3=$7 AND $4=$8 AND period_start>$3 AND period_start<$4 AND period_end=$4)) OR ($6 AND period_start=$7 AND period_end=$8)) AND remaining_included_quota<=$5`, id, target-previous, start.UTC(), end.UTC(), previous, rule == "plan:FREE", month, month.AddDate(0, 1, 0), activation, target)
+		 WHERE account_uuid=$1 AND ($9 OR (period_end>period_start AND period_end<=$3) OR ((period_start=$3 AND period_end=$4) OR ($3=$7 AND $4=$8 AND period_start>$3 AND period_start<$4 AND period_end=$4)) OR ($6 AND ((period_start=$7 AND period_end=$8) OR period_end IS NULL))) AND remaining_included_quota<=$5`, id, target-previous, start.UTC(), end.UTC(), previous, isBaselinePlanRule(rule), month, month.AddDate(0, 1, 0), activation, target)
 	}
 	if err != nil {
 		return err

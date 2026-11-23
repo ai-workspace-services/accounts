@@ -1,12 +1,12 @@
 {
   "format": 1,
-  "migration_version": 2026112101,
+  "migration_version": 2026112301,
   "schema_sha256": "6d76daecc76cc71b958a95d654df4e6822660c3186a09e952b950d2ad2857798",
   "business_table_count": 80,
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "87d05cf4d65b0b718cb07bb2ca8ebc81954fafc6bd1391ffbe91defbdcfc551f"
+      "sha256": "f8ad7ee399b7030b70851b51741839329ed3cd116ecb9fdc65552613af99d90f"
     },
     {
       "path": "internal/model/admin_setting.go",
@@ -155,6 +155,10 @@
     {
       "path": "sql/migrations/2026112101_dual_bucket_high_speed_quota.up.sql",
       "sha256": "775243cd9eff3fae4fc72b698238c79ff0ebf00280920f3dc69bd281674ae827"
+    },
+    {
+      "path": "sql/migrations/2026112301_decommission_free_payg_whitelist.up.sql",
+      "sha256": "a2fb6a64cb0358d2d38847eaff9a5d6308590a22f3586fa6781573d4fdb6cf76"
     },
     {
       "path": "sql/schema.sql",

@@ -139,23 +139,6 @@ func (h *handler) creditTopUpBalance(ctx context.Context, userID string, session
 	} else {
 		h.publishBillingEvent(ctx, &store.BillingEvent{Type: "balance_topped_up", UserID: userID})
 	}
-	if !h.hasActivePaidSubscription(ctx, userID) {
-		paygPlan, paygErr := h.store.GetBillingPlan(ctx, "PAYG")
-		if paygErr == nil && paygPlan != nil {
-			if err := h.applyPlanEntitlements(ctx, userID, paygPlan); err != nil {
-				return err
-			}
-		}
-		if state, stateErr := h.store.GetAccountQuotaState(ctx, userID); stateErr == nil && state != nil && state.RemainingIncludedQuota != 0 {
-			state.RemainingIncludedQuota = 0
-			state.EffectiveAt = now
-			if err := h.store.UpsertAccountQuotaState(ctx, state); err != nil {
-				return err
-			}
-		} else if stateErr != nil && !errors.Is(stateErr, store.ErrUserNotFound) {
-			return stateErr
-		}
-	}
 	slog.Info("credited top-up to currency wallet", "userID", userID, "amount", amount, "currency", currency)
 	return nil
 }
@@ -180,20 +163,8 @@ func (h *handler) hasActivePaidSubscription(ctx context.Context, userID string) 
 }
 
 func (h *handler) validateBillingModeCheckout(ctx context.Context, userID string, req stripeCheckoutRequest) error {
-	if req.Mode == "payment" {
-		if h.hasActivePaidSubscription(ctx, userID) {
-			return errors.New("按量付费与有效订阅互斥；请先取消并等待订阅到期")
-		}
-		return nil
-	}
-	// CNY is the metered usage wallet. USD is kept as a separate balance and is
-	// not automatically converted or charged against CNY usage.
-	cnyBalance, err := h.store.GetWalletBalance(ctx, userID, "CNY")
-	if err != nil {
-		return errors.New("无法确认按量付费余额，请稍后重试")
-	}
-	if cnyBalance != 0 {
-		return errors.New("请先结清人民币按量余额，再开通订阅；两种计费方式不叠加")
+	if isPaygDiscontinuedPlanID(req.PlanID, req.ProductSlug) {
+		return errors.New("pay-as-you-go plans have been retired")
 	}
 	return nil
 }

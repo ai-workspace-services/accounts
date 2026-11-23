@@ -304,7 +304,7 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 				fee = existing.FeeMinor
 			}
 		}
-		if kind != "" && kind != "month" && kind != "year" && kind != "payg" {
+		if kind != "" && kind != "month" && kind != "year" {
 			return nil, fmt.Errorf("row %d: invalid subscription type", sourceRow)
 		}
 		plan := strings.ToUpper(cell(row, "plan", "套餐"))
@@ -316,12 +316,12 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 			if paid {
 				plan = store.BillingPlanPlus
 			} else {
-				plan = store.BillingPlanFree
+				plan = store.BillingPlanPaused
 			}
 		}
 		if plan != "CUSTOM" {
 			if _, err := planIDToQuotaGroup(plan); err != nil {
-				return nil, fmt.Errorf("row %d: invalid plan %q (allowed: free, plus, pro, custom)", sourceRow, plan)
+				return nil, fmt.Errorf("row %d: invalid plan %q (allowed: plus, pro, custom, paused)", sourceRow, plan)
 			}
 		}
 		sourcePlan := plan
@@ -340,11 +340,11 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 			return nil, fmt.Errorf("row %d: invalid payment status", sourceRow)
 		}
 		if payment != "" && !paid {
-			plan = store.BillingPlanFree
+			plan = store.BillingPlanPaused
 		}
 		// An expired or not-yet-started commercial subscription grants no paid access.
 		if until != nil && until.Before(now.Truncate(24*time.Hour)) || from != nil && from.After(now) {
-			plan = store.BillingPlanFree
+			plan = store.BillingPlanPaused
 		}
 		record := &store.SubscriptionRecord{PlanCode: sourcePlan, UserID: user.ID, SubscriptionType: kind, MonthlyQuotaBytes: monthly, AnnualQuotaBytes: annual, FeeMinor: fee, PaymentStatus: payment, Note: note, ValidFrom: from, ValidUntil: until}
 		start, _ := json.Marshal(adminPlanDateString(from))
@@ -367,7 +367,7 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 			}
 			// Removing membership is reversible: retain historical commercial facts,
 			// validity and payment records. Only the effective plan/cohort changes.
-			updates = append(updates, adminPlanGroupUpdate{UserID: user.ID, PlanID: store.BillingPlanFree})
+			updates = append(updates, adminPlanGroupUpdate{UserID: user.ID, PlanID: store.BillingPlanPaused})
 		}
 	}
 	return updates, nil
@@ -469,7 +469,7 @@ func (h *handler) adminListSubscriptionRecords(c *gin.Context) {
 			plan = existingPlanID(profile)
 		}
 		if plan == "" {
-			plan = store.BillingPlanFree
+			plan = store.BillingPlanPaused
 		}
 		_ = writer.Write([]string{exportCSVCell(user.Email), exportCSVCell(user.Name), strings.ToLower(plan), exportCSVCell(record.SubscriptionType), strconv.FormatInt(record.MonthlyQuotaBytes, 10), strconv.FormatInt(record.AnnualQuotaBytes, 10), strconv.FormatInt(record.FeeMinor, 10), exportCSVCell(record.PaymentStatus), subscriptionCSVDate(record.ValidFrom), subscriptionCSVDate(record.ValidUntil), exportCSVCell(record.Note), strconv.FormatBool(store.HasSubscriptionUnlimitedOverride(&user, time.Now()))})
 	}

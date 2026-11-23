@@ -317,8 +317,8 @@ func (h *handler) selfCancelFreeAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.isRootAccount(user) || store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup {
-		respondError(c, http.StatusForbidden, "free_account_only", "only Free 5GB accounts can self-cancel")
+	if h.isRootAccount(user) || (!store.IsWhitelistFreeMember(user) && !store.IsOneTimeTrialMember(user) && store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup) {
+		respondError(c, http.StatusForbidden, "free_account_only", "only trial or whitelist accounts can self-cancel")
 		return
 	}
 	user.Active = false

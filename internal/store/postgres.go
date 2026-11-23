@@ -1147,7 +1147,17 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 			if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_billing_profiles (account_uuid, package_name, included_quota_bytes, high_speed_quota_bytes, base_price_per_byte, region_multiplier, line_multiplier, peak_multiplier, offpeak_multiplier, pricing_rule_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (account_uuid) DO UPDATE SET package_name=EXCLUDED.package_name, included_quota_bytes=EXCLUDED.included_quota_bytes, high_speed_quota_bytes=EXCLUDED.high_speed_quota_bytes, region_multiplier=EXCLUDED.region_multiplier, line_multiplier=EXCLUDED.line_multiplier, peak_multiplier=EXCLUDED.peak_multiplier, offpeak_multiplier=EXCLUDED.offpeak_multiplier, pricing_rule_version=EXCLUDED.pricing_rule_version, updated_at=now()`, change.UserID, change.PackageName, change.IncludedQuotaBytes, change.HighSpeedQuotaBytes, state.profile.BasePricePerByte, change.RegionMultiplier, change.LineMultiplier, change.PeakMultiplier, change.OffPeakMultiplier, change.PricingRuleVersion); err != nil {
 				return nil, false, err
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_quota_states (account_uuid, remaining_included_quota, remaining_high_speed_quota, effective_at) VALUES ($1,$2,$3,$4) ON CONFLICT (account_uuid) DO UPDATE SET remaining_included_quota=EXCLUDED.remaining_included_quota, remaining_high_speed_quota=EXCLUDED.remaining_high_speed_quota, effective_at=EXCLUDED.effective_at, updated_at=now()`, change.UserID, remaining, hsRemaining, now); err != nil {
+			proxyAccessState := ""
+			if strings.EqualFold(strings.TrimSpace(change.PackageName), "paused") || strings.EqualFold(strings.TrimSpace(change.PlanID), BillingPlanPaused) {
+				proxyAccessState = "paused"
+			} else if remaining > 0 || hsRemaining > 0 || strings.EqualFold(strings.TrimSpace(change.PackageName), "unlimited") || strings.EqualFold(strings.TrimSpace(change.PackageName), "custom") {
+				proxyAccessState = "active"
+			}
+			if proxyAccessState != "" {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_quota_states (account_uuid, remaining_included_quota, remaining_high_speed_quota, proxy_access_state, effective_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (account_uuid) DO UPDATE SET remaining_included_quota=EXCLUDED.remaining_included_quota, remaining_high_speed_quota=EXCLUDED.remaining_high_speed_quota, proxy_access_state=EXCLUDED.proxy_access_state, effective_at=EXCLUDED.effective_at, updated_at=now()`, change.UserID, remaining, hsRemaining, proxyAccessState, now); err != nil {
+					return nil, false, err
+				}
+			} else if _, err := tx.ExecContext(ctx, `INSERT INTO public.account_quota_states (account_uuid, remaining_included_quota, remaining_high_speed_quota, effective_at) VALUES ($1,$2,$3,$4) ON CONFLICT (account_uuid) DO UPDATE SET remaining_included_quota=EXCLUDED.remaining_included_quota, remaining_high_speed_quota=EXCLUDED.remaining_high_speed_quota, effective_at=EXCLUDED.effective_at, updated_at=now()`, change.UserID, remaining, hsRemaining, now); err != nil {
 				return nil, false, err
 			}
 		}
@@ -1156,7 +1166,7 @@ func (s *postgresStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch Admi
 		changes[i].HighSpeedUsedBytesPreserved = hsUsed
 		changes[i].HighSpeedRemainingAfter = hsRemaining
 		before, _ := json.Marshal(map[string]any{"subscription_record": previousSubscription, "groups": state.groups, "valid_from": state.validFrom, "valid_until": state.validUntil, "included_quota_bytes": state.profile.IncludedQuotaBytes, "high_speed_quota_bytes": state.profile.HighSpeedQuotaBytes, "remaining_included_quota": state.quota.RemainingIncludedQuota, "remaining_high_speed_quota": state.quota.RemainingHighSpeedQuota})
-		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "subscription_record": change.SubscriptionRecord, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "high_speed_quota_bytes": change.HighSpeedQuotaBytes, "used_bytes_preserved": used, "high_speed_used_bytes_preserved": hsUsed, "remaining_included_quota": remaining, "remaining_high_speed_quota": hsRemaining, "configuration_sync_paused": change.IncludedQuotaBytes > 0 && remaining == 0})
+		after, _ := json.Marshal(map[string]any{"groups": change.Groups, "valid_from": validFrom, "valid_until": validUntil, "subscription_record": change.SubscriptionRecord, "plan_id": change.PlanID, "included_quota_bytes": change.IncludedQuotaBytes, "high_speed_quota_bytes": change.HighSpeedQuotaBytes, "used_bytes_preserved": used, "high_speed_used_bytes_preserved": hsUsed, "remaining_included_quota": remaining, "remaining_high_speed_quota": hsRemaining, "configuration_sync_paused": strings.EqualFold(strings.TrimSpace(change.PackageName), "paused") || (change.IncludedQuotaBytes > 0 && remaining == 0)})
 		details, _ := json.Marshal(map[string]any{"target_uuid": change.UserID, "reason": batch.Reason, "request_id": batch.RequestID, "preview_token_hash": batch.PreviewTokenHash, "before": json.RawMessage(before), "after": json.RawMessage(after)})
 		if _, err := tx.ExecContext(ctx, `INSERT INTO public.audit_logs (uuid, action, actor_uuid, details, created_at) VALUES ($1,$2,$3,$4,$5)`, uuid.NewString(), AuditActionPlanGroupUpdate, batch.ActorUUID, details, now); err != nil {
 			return nil, false, err

@@ -150,6 +150,8 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		billingProfile.IncludedQuotaBytes > 0 && store.IsMonthlyQuotaLimitMember(user) && remainingQuota <= 0
 	highSpeedQuotaExhausted := billingProfile != nil &&
 		billingProfile.HighSpeedQuotaBytes > 0 && store.IsMonthlyQuotaLimitMember(user) && remainingHighSpeedQuota <= 0
+	isWhitelistFree := store.IsWhitelistFreeMember(user)
+	isOneTimeTrial := store.IsOneTimeTrialMember(user) && !isWhitelistFree
 	if store.HasSubscriptionUnlimitedOverride(user, time.Now()) && planContract.CurrentPlan != nil {
 		planContract.CurrentPlan.Unlimited = true
 		planContract.CurrentPlan.Source = "temporary_subscription_override"
@@ -163,13 +165,26 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	switch {
 	case proxyAccessState == "paused":
 		networkAccessState = "paused"
-		networkAccessReason = "operator_paused"
+		switch {
+		case isOneTimeTrial:
+			networkAccessReason = "trial_exhausted"
+		case billingProfile != nil && strings.EqualFold(strings.TrimSpace(billingProfile.PackageName), "paused"):
+			networkAccessReason = "subscription_required"
+		case accessQuotaExhausted:
+			networkAccessReason = "quota_exhausted"
+		default:
+			networkAccessReason = "operator_paused"
+		}
 	case suspendState == "suspended":
 		networkAccessState = "paused"
 		networkAccessReason = "billing_suspended"
 	case accessQuotaExhausted:
 		networkAccessState = "paused"
-		networkAccessReason = "quota_exhausted"
+		if isOneTimeTrial {
+			networkAccessReason = "trial_exhausted"
+		} else {
+			networkAccessReason = "quota_exhausted"
+		}
 	}
 
 	syncDelaySeconds := 0
@@ -214,6 +229,8 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		"throttleState":           throttleState,
 		"quotaExhausted":          quotaExhausted,
 		"temporaryUnlimited":      store.HasSubscriptionUnlimitedOverride(user, time.Now()),
+		"isWhitelistFree":         isWhitelistFree,
+		"isOneTimeTrial":          isOneTimeTrial,
 		"networkAccessState":      networkAccessState,
 		"networkAccessReason":     networkAccessReason,
 		"arrears":                 arrears,

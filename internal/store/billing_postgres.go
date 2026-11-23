@@ -172,11 +172,11 @@ func (s *postgresStore) UpsertBillingPlan(ctx context.Context, plan *BillingPlan
 // committed with the catalog, so readers cannot observe a partially saved plan.
 func syncCatalogQuota(ctx context.Context, tx *sql.Tx, plan *BillingPlan) error {
 	rows, err := tx.QueryContext(ctx, `SELECT p.account_uuid::text, p.included_quota_bytes, p.high_speed_quota_bytes,
-		q.remaining_included_quota, q.remaining_high_speed_quota, q.period_start, q.period_end
+		q.remaining_included_quota, q.remaining_high_speed_quota, q.period_start, q.period_end, q.proxy_access_state, q.suspend_state
 		FROM account_billing_profiles p JOIN account_quota_states q USING (account_uuid)
 		WHERE p.pricing_rule_version = $1
 		AND NOT EXISTS (SELECT 1 FROM public.users u WHERE u.uuid::text=p.account_uuid::text AND u.groups ? 'subscription:source-plan:custom')
-        AND ($2 = 'FREE' OR NOT EXISTS (SELECT 1 FROM subscription_records r
+        AND ($2 IN ('FREE', 'WHITELIST-FREE') OR NOT EXISTS (SELECT 1 FROM subscription_records r
 		  WHERE r.user_uuid = p.account_uuid AND (r.monthly_quota_bytes > 0 OR r.annual_quota_bytes > 0)))
 		ORDER BY p.account_uuid FOR UPDATE OF p, q`, "plan:"+normalizePlanID(plan.PlanID), normalizePlanID(plan.PlanID))
 	if err != nil {
@@ -187,11 +187,13 @@ func syncCatalogQuota(ctx context.Context, tx *sql.Tx, plan *BillingPlan) error 
 		included, highSpeed     int64
 		remaining, remHighSpeed int64
 		start, end              sql.NullTime
+		proxyAccessState        string
+		suspendState            string
 	}
 	var snapshots []snapshot
 	for rows.Next() {
 		var item snapshot
-		if err := rows.Scan(&item.id, &item.included, &item.highSpeed, &item.remaining, &item.remHighSpeed, &item.start, &item.end); err != nil {
+		if err := rows.Scan(&item.id, &item.included, &item.highSpeed, &item.remaining, &item.remHighSpeed, &item.start, &item.end, &item.proxyAccessState, &item.suspendState); err != nil {
 			rows.Close()
 			return err
 		}
@@ -226,7 +228,14 @@ func syncCatalogQuota(ctx context.Context, tx *sql.Tx, plan *BillingPlan) error 
 		if _, err := tx.ExecContext(ctx, `UPDATE account_billing_profiles SET included_quota_bytes=$2, high_speed_quota_bytes=$3, updated_at=now() WHERE account_uuid=$1`, item.id, plan.IncludedQuotaBytes, plan.HighSpeedQuotaBytes); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE account_quota_states SET remaining_included_quota=$2, remaining_high_speed_quota=$3, updated_at=now() WHERE account_uuid=$1`, item.id, remaining, hsRemaining); err != nil {
+		proxyState := strings.TrimSpace(item.proxyAccessState)
+		if proxyState == "" {
+			proxyState = "active"
+		}
+		if strings.EqualFold(normalizePlanID(plan.PlanID), BillingPlanWhitelistFree) && strings.TrimSpace(item.suspendState) != "suspended" && item.remaining <= 0 && proxyState == "paused" && remaining > 0 {
+			proxyState = "active"
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE account_quota_states SET remaining_included_quota=$2, remaining_high_speed_quota=$3, proxy_access_state=$4, updated_at=now() WHERE account_uuid=$1`, item.id, remaining, hsRemaining, proxyState); err != nil {
 			return err
 		}
 	}
