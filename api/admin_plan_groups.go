@@ -257,31 +257,48 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			respondError(c, http.StatusBadRequest, "invalid_plan", err.Error())
 			return
 		}
-		plan, err := h.store.GetBillingPlan(ctx, planID)
-		if planID == "PRO" && update.SubscriptionRecord != nil && errors.Is(err, store.ErrBillingPlanNotFound) {
-			base, e := h.store.GetBillingPlan(ctx, store.BillingPlanPlus)
-			if e == nil && base != nil && base.Active {
-				copy := *base
-				copy.PlanID = "PRO"
-				copy.PackageName = "pro"
-				copy.DisplayName = "Pro"
-				copy.IncludedQuotaBytes = 50 << 30
-				copy.HighSpeedQuotaBytes = store.DefaultProHighSpeedQuotaBytes
-				copy.Features = map[string]any{}
-				if existing, e := h.store.GetAccountBillingProfile(ctx, user.ID); e == nil && existing != nil {
-					copy.PriceMultipliers = map[string]float64{"region": existing.RegionMultiplier, "line": existing.LineMultiplier, "peak": existing.PeakMultiplier, "offpeak": existing.OffPeakMultiplier}
-				}
-				plan = &copy
-				err = nil
-			}
-		}
-		if err != nil || plan == nil || !plan.Active {
-			if errors.Is(err, store.ErrBillingPlanNotFound) || (err == nil && plan != nil && !plan.Active) {
-				respondError(c, http.StatusBadRequest, "plan_unavailable", "selected plan is not active in the billing catalog")
+		var plan *store.BillingPlan
+		if planID == store.BillingPlanPaused {
+			if store.IsWhitelistFreeMember(user) {
+				plan = h.resolveWhitelistFreePlan(ctx)
 			} else {
-				respondError(c, http.StatusInternalServerError, "plan_lookup_failed", "failed to load selected plan")
+				plan = &store.BillingPlan{
+					PlanID:              store.BillingPlanPaused,
+					DisplayName:         "暂停流量",
+					Kind:                "subscription",
+					PackageName:         "paused",
+					IncludedQuotaBytes:  0,
+					HighSpeedQuotaBytes: 0,
+					Active:              true,
+				}
 			}
-			return
+		} else {
+			plan, err = h.store.GetBillingPlan(ctx, planID)
+			if planID == "PRO" && update.SubscriptionRecord != nil && errors.Is(err, store.ErrBillingPlanNotFound) {
+				base, e := h.store.GetBillingPlan(ctx, store.BillingPlanPlus)
+				if e == nil && base != nil && base.Active {
+					copy := *base
+					copy.PlanID = "PRO"
+					copy.PackageName = "pro"
+					copy.DisplayName = "Pro"
+					copy.IncludedQuotaBytes = 50 << 30
+					copy.HighSpeedQuotaBytes = store.DefaultProHighSpeedQuotaBytes
+					copy.Features = map[string]any{}
+					if existing, e := h.store.GetAccountBillingProfile(ctx, user.ID); e == nil && existing != nil {
+						copy.PriceMultipliers = map[string]float64{"region": existing.RegionMultiplier, "line": existing.LineMultiplier, "peak": existing.PeakMultiplier, "offpeak": existing.OffPeakMultiplier}
+					}
+					plan = &copy
+					err = nil
+				}
+			}
+			if err != nil || plan == nil || !plan.Active {
+				if errors.Is(err, store.ErrBillingPlanNotFound) || (err == nil && plan != nil && !plan.Active) {
+					respondError(c, http.StatusBadRequest, "plan_unavailable", "selected plan is not active in the billing catalog")
+				} else {
+					respondError(c, http.StatusInternalServerError, "plan_lookup_failed", "failed to load selected plan")
+				}
+				return
+			}
 		}
 		change := store.AdminPlanGroupChange{
 			UserID: user.ID, PlanID: plan.PlanID, SetEntitlement: true, Groups: replaceMonthlyQuotaGroup(user.Groups, group),
@@ -291,28 +308,36 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 			PricingRuleVersion: fmt.Sprintf("plan:%s", plan.PlanID),
 		}
 		change.SubscriptionRecord = update.SubscriptionRecord
-		if planID == store.BillingPlanFree {
+		if planID == store.BillingPlanPaused || planID == store.BillingPlanFree {
 			labels := make([]string, 0, len(change.Groups)+1)
 			for _, label := range change.Groups {
 				switch label {
-				case store.SubscriptionListedGroup, store.SubscriptionUnlimitedOverrideGroup, "segment:subscribed", "segment:monthly", "segment:yearly", "segment:subscription:monthly", "segment:subscription:yearly":
+				case store.SubscriptionListedGroup, store.SubscriptionUnlimitedOverrideGroup,
+					"segment:free", store.OneTimeTrialQuotaGroup, store.MonthlyFreeQuotaLimitGroup,
+					"segment:subscribed", "segment:monthly", "segment:yearly",
+					"segment:subscription:monthly", "segment:subscription:yearly":
 					continue
 				}
 				labels = append(labels, label)
 			}
-			change.Groups = normalizeGroups(append(labels, "segment:free"))
+			if store.IsWhitelistFreeMember(user) {
+				labels = append(labels, store.WhitelistFreeQuotaGroup)
+			}
+			change.Groups = normalizeGroups(labels)
 		}
 		if record := change.SubscriptionRecord; record != nil {
 			labels := make([]string, 0, len(change.Groups)+2)
 			for _, label := range change.Groups {
 				switch label {
-				case "segment:free", "segment:registered", "segment:subscribed", "segment:monthly", "segment:yearly":
+				case "segment:free", "segment:registered", store.OneTimeTrialQuotaGroup, "segment:subscribed", "segment:monthly", "segment:yearly":
 					continue
 				}
 				labels = append(labels, label)
 			}
-			if planID == store.BillingPlanFree {
-				labels = append(labels, "segment:free")
+			if planID == store.BillingPlanPaused || planID == store.BillingPlanFree {
+				if store.IsWhitelistFreeMember(user) {
+					labels = append(labels, store.WhitelistFreeQuotaGroup)
+				}
 			} else {
 				labels = append(labels, "segment:subscribed", store.SubscriptionListedGroup)
 				switch record.SubscriptionType {
@@ -339,7 +364,7 @@ func (h *handler) adminChangePlanGroups(c *gin.Context, pathUserIDs []string) {
 		if change.SubscriptionRecord != nil {
 			change.Groups = normalizeGroups(store.WithSubscriptionSourcePlan(change.Groups, change.SubscriptionRecord.PlanCode))
 		}
-		if change.SubscriptionRecord != nil && planID != store.BillingPlanFree && change.SubscriptionRecord.MonthlyQuotaBytes > 0 {
+		if change.SubscriptionRecord != nil && planID != store.BillingPlanFree && planID != store.BillingPlanPaused && change.SubscriptionRecord.MonthlyQuotaBytes > 0 {
 			change.IncludedQuotaBytes = change.SubscriptionRecord.MonthlyQuotaBytes
 		}
 		if err := setPlanValidity(&change, user, update); err != nil {
@@ -508,14 +533,16 @@ func isMonthlyQuotaGroup(group string) bool {
 
 func planIDToQuotaGroup(planID string) (string, error) {
 	switch strings.ToUpper(strings.TrimSpace(planID)) {
-	case store.BillingPlanFree:
-		return store.MonthlyFreeQuotaLimitGroup, nil
-	case store.BillingPlanPlus, "PRO":
+	case store.BillingPlanPaused:
+		return "", nil
+	case store.BillingPlanWhitelistFree:
+		return store.WhitelistFreeQuotaGroup, nil
+	case store.BillingPlanPlus, store.BillingPlanPlusMonthly2026, "PRO", store.BillingPlanProMonthlyV2, store.BillingPlanProYearlyV2:
 		return store.MonthlyPlusQuotaLimitGroup, nil
 	case store.BillingPlanUnlimitedBeta:
 		return store.MonthlyUnlimitedBetaQuotaGroup, nil
 	default:
-		return "", errors.New("planId must be FREE, PLUS, PRO or UNLIMITED-BETA")
+		return "", errors.New("planId must be PLUS, PRO or PAUSED")
 	}
 }
 

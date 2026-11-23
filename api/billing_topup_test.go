@@ -123,44 +123,32 @@ func TestCreditCustomTopUpRejectsOutOfRangeOrForgedMetadata(t *testing.T) {
 	}
 }
 
-func TestCheckoutEnforcesMutuallyExclusiveBillingModes(t *testing.T) {
+func TestPaygRetiredButWalletCreditDoesNotBlockSubscriptions(t *testing.T) {
 	ctx := context.Background()
 	h, st, user := topupHandler(t)
-	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "PRO-MONTHLY", Kind: "subscription", Active: true}); err != nil {
+	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "PRO-MONTHLY-V2", Kind: "subscription", PackageName: "pro", Active: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpsertBillingPlan(ctx, &store.BillingPlan{PlanID: "PAYG-TOPUP-50", Kind: "paygo_topup", PriceAmount: 5000, PriceCurrency: "CNY", PriceUnit: "once", StripePriceID: "price_cny_50", Active: true}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: user.ID, PackageName: "free", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, PricingRuleVersion: "plan:FREE"}); err != nil {
+	if err := st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{AccountUUID: user.ID, PackageName: "trial", IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, PricingRuleVersion: "plan:" + store.BillingPlanTrialOnce5GB}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpsertAccountQuotaState(ctx, &store.AccountQuotaState{AccountUUID: user.ID, RemainingIncludedQuota: 5 * 1024 * 1024 * 1024}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.validateBillingModeCheckout(ctx, user.ID, stripeCheckoutRequest{Mode: "payment"}); err != nil {
-		t.Fatalf("free account should be able to switch to PAYG: %v", err)
+	if err := h.validateBillingModeCheckout(ctx, user.ID, stripeCheckoutRequest{PlanID: "PAYG-TOPUP-50", Mode: "payment"}); err == nil {
+		t.Fatal("retired PAYG topup checkout must be rejected")
 	}
+	// Historical webhook replay credits wallet ledger without mutating included quota into a dead plan:PAYG profile.
 	if err := h.creditTopUpBalance(ctx, user.ID, paidSession("pi_mode", 5000)); err != nil {
 		t.Fatal(err)
 	}
 	profile, err := st.GetAccountBillingProfile(ctx, user.ID)
 	state, stateErr := st.GetAccountQuotaState(ctx, user.ID)
-	if err != nil || stateErr != nil || profile.PackageName != "payg" || profile.IncludedQuotaBytes != 0 || state.RemainingIncludedQuota != 0 {
-		t.Fatalf("PAYG should replace included quota: profile=%+v state=%+v errors=%v/%v", profile, state, err, stateErr)
+	if err != nil || stateErr != nil || profile.PackageName != "trial" || profile.IncludedQuotaBytes != 5*1024*1024*1024 || state.RemainingIncludedQuota != 5*1024*1024*1024 {
+		t.Fatalf("webhook replay must not clobber profile/quota: profile=%+v state=%+v errors=%v/%v", profile, state, err, stateErr)
 	}
-	if err := h.validateBillingModeCheckout(ctx, user.ID, stripeCheckoutRequest{Mode: "subscription"}); err == nil {
-		t.Fatal("subscription checkout must be blocked while CNY PAYG balance remains")
-	}
-	state.CurrentBalance = 0
-	if err := st.UpsertAccountQuotaState(ctx, state); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.UpsertSubscription(ctx, &store.Subscription{UserID: user.ID, Provider: "stripe", Kind: "subscription", Status: "active", PlanID: "PRO-MONTHLY", ExternalID: "sub_active"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.validateBillingModeCheckout(ctx, user.ID, stripeCheckoutRequest{Mode: "payment"}); err == nil {
-		t.Fatal("PAYG checkout must be blocked while subscription is active")
+	if err := h.validateBillingModeCheckout(ctx, user.ID, stripeCheckoutRequest{PlanID: "PRO-MONTHLY-V2", Mode: "subscription"}); err != nil {
+		t.Fatalf("subscription checkout must not be blocked after PAYG retirement: %v", err)
 	}
 }
 

@@ -311,8 +311,43 @@ func (h *handler) adminAssignPlan(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "plan_id_required", "planId is required")
 		return
 	}
+	if isPaygDiscontinuedPlanID(planID, "") {
+		respondError(c, http.StatusGone, "payg_discontinued", "pay-as-you-go plans have been retired")
+		return
+	}
+	if strings.EqualFold(planID, store.BillingPlanFree) {
+		respondError(c, http.StatusBadRequest, "free_plan_retired", "FREE plan has been retired; use WHITELIST-FREE or PAUSED")
+		return
+	}
 
 	ctx := c.Request.Context()
+	if strings.EqualFold(planID, store.BillingPlanPaused) {
+		before := map[string]any{}
+		if existing, err := h.store.GetAccountBillingProfile(ctx, user.ID); err == nil && existing != nil {
+			before["package_name"] = existing.PackageName
+			before["included_quota_bytes"] = existing.IncludedQuotaBytes
+			before["high_speed_quota_bytes"] = existing.HighSpeedQuotaBytes
+			before["pricing_rule_version"] = existing.PricingRuleVersion
+		}
+		if err := h.pauseTrafficOrFallbackWhitelist(ctx, user.ID); err != nil {
+			respondError(c, http.StatusInternalServerError, "entitlement_apply_failed", "failed to pause account traffic")
+			return
+		}
+		after := map[string]any{
+			"plan_id":                store.BillingPlanPaused,
+			"package_name":           "paused",
+			"included_quota_bytes":   int64(0),
+			"high_speed_quota_bytes": int64(0),
+		}
+		if err := h.recordAudit(ctx, actor.ID, store.AuditActionEntitlementGrant,
+			auditDetails(user.ID, reason, before, after)); err != nil {
+			respondError(c, http.StatusInternalServerError, "audit_write_failed",
+				"entitlements were applied but the audit entry could not be written")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"applied": true, "planId": store.BillingPlanPaused})
+		return
+	}
 	plan, err := h.store.GetBillingPlan(ctx, planID)
 	if err != nil {
 		if errors.Is(err, store.ErrBillingPlanNotFound) {

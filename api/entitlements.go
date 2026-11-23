@@ -92,10 +92,14 @@ func (h *handler) applyPlanEntitlements(ctx context.Context, userID string, plan
 	return h.store.UpsertAccountBillingProfile(ctx, profile)
 }
 
-// provisionFreeEntitlement is used only after a new account has been created.
+// provisionOnboardingEntitlement initializes new accounts created via email or OAuth:
+// whitelist members receive the configurable whitelist monthly free allowance
+// (Media-Pool only); all other newly registered accounts receive a one-time
+// 5 GiB experience quota across all public pools (Media-Pool + Pro-EC2-Pool)
+// that permanently pauses traffic once exhausted until a paid subscription activates.
 // Read models must not call it: existing accounts without an assignment are
 // intentionally left for an administrator to classify.
-func (h *handler) provisionFreeEntitlement(ctx context.Context, userID string) error {
+func (h *handler) provisionOnboardingEntitlement(ctx context.Context, userID string) error {
 	if strings.TrimSpace(userID) == "" {
 		return nil
 	}
@@ -112,37 +116,103 @@ func (h *handler) provisionFreeEntitlement(ctx context.Context, userID string) e
 		return nil
 	}
 
-	plan, err := h.store.GetBillingPlan(ctx, store.BillingPlanFree)
-	if err != nil {
-		if !errors.Is(err, store.ErrBillingPlanNotFound) {
+	user, userErr := h.store.GetUserByID(ctx, userID)
+	if userErr != nil && !errors.Is(userErr, store.ErrUserNotFound) {
+		return userErr
+	}
+
+	if user != nil && store.IsWhitelistFreeMember(user) {
+		plan := h.resolveWhitelistFreePlan(ctx)
+		if !plan.Active {
+			return nil
+		}
+		if profile == nil {
+			if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+				return err
+			}
+		}
+		if quota != nil {
+			return nil
+		}
+		periodStart, periodEnd := naturalMonthPeriod(time.Now().UTC())
+		return h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd)
+	}
+
+	trialPlan := &store.BillingPlan{
+		PlanID:              store.BillingPlanTrialOnce5GB,
+		PackageName:         "trial",
+		IncludedQuotaBytes:  store.DefaultOneTimeTrialQuotaBytes,
+		HighSpeedQuotaBytes: 0,
+		Active:              true,
+	}
+	if configuredTrial, err := h.store.GetBillingPlan(ctx, store.BillingPlanTrialOnce5GB); err == nil && configuredTrial != nil && configuredTrial.Active && configuredTrial.IncludedQuotaBytes > 0 {
+		trialPlan = configuredTrial
+	}
+
+	if user != nil && !store.IsOneTimeTrialMember(user) {
+		groups := make([]string, 0, len(user.Groups)+1)
+		for _, g := range user.Groups {
+			if store.IsMonthlyFreeQuotaGroup(g) || g == "segment:free" {
+				continue
+			}
+			groups = append(groups, g)
+		}
+		groups = append(groups, store.OneTimeTrialQuotaGroup)
+		user.Groups = normalizeGroups(groups)
+		if err := h.store.UpdateUser(ctx, user); err != nil {
 			return err
 		}
-		// Keep newly-created Free accounts enforceable even while the catalog
-		// migration is rolling out. An operator-created FREE plan still wins.
-		plan = &store.BillingPlan{
-			PlanID:             store.BillingPlanFree,
-			PackageName:        "default",
-			IncludedQuotaBytes: defaultFreeQuotaBytes,
-			Active:             true,
-		}
 	}
-	if !plan.Active {
-		return nil
-	}
+
 	if profile == nil {
-		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+		if err := h.applyPlanEntitlements(ctx, userID, trialPlan); err != nil {
 			return err
 		}
 	}
 	if quota != nil {
 		return nil
 	}
-	periodStart, periodEnd := naturalMonthPeriod(time.Now())
-	return h.resetQuotaForPlan(ctx, userID, plan, periodStart, periodEnd)
+	now := time.Now().UTC()
+	state := &store.AccountQuotaState{
+		AccountUUID:             userID,
+		RemainingIncludedQuota:  trialPlan.IncludedQuotaBytes,
+		RemainingHighSpeedQuota: 0,
+		Arrears:                 false,
+		ThrottleState:           "normal",
+		SuspendState:            "active",
+		ProxyAccessState:        "active",
+		PeriodStart:             &now,
+		PeriodEnd:               nil, // One-time allowance: never resets on calendar rollover.
+		EffectiveAt:             now,
+	}
+	return h.store.UpsertAccountQuotaState(ctx, state)
+}
+
+func (h *handler) provisionFreeEntitlement(ctx context.Context, userID string) error {
+	return h.provisionOnboardingEntitlement(ctx, userID)
+}
+
+func (h *handler) resolveWhitelistFreePlan(ctx context.Context) *store.BillingPlan {
+	if plan, err := h.store.GetBillingPlan(ctx, store.BillingPlanWhitelistFree); err == nil && plan != nil {
+		copyPlan := *plan
+		if strings.TrimSpace(copyPlan.PackageName) == "" {
+			copyPlan.PackageName = "whitelist"
+		}
+		return &copyPlan
+	}
+	return &store.BillingPlan{
+		PlanID:              store.BillingPlanWhitelistFree,
+		DisplayName:         "白名单免费组",
+		Kind:                "whitelist_group",
+		PackageName:         "whitelist",
+		IncludedQuotaBytes:  defaultFreeQuotaBytes,
+		HighSpeedQuotaBytes: 0,
+		Active:              true,
+	}
 }
 
 // resetQuotaForPlan re-arms the quota state for a fresh billing period
-// (subscription activation or invoice.paid renewal) and clears dunning flags.
+// (subscription activation or invoice.paid renewal) and clears dunning/pause flags.
 // periodBounds bound the grant so usage/summary can report "used this period"
 // and a reset date. Production callers pass exactly two values. The optional
 // form keeps older internal tests/callers source-compatible and uses the
@@ -162,6 +232,7 @@ func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *st
 	state.ArrearsSince = nil
 	state.ThrottleState = "normal"
 	state.SuspendState = "active"
+	state.ProxyAccessState = "active"
 	periodStart, periodEnd := naturalMonthPeriod(now)
 	if len(periodBounds) == 2 && periodBounds[1].After(periodBounds[0]) {
 		periodStart = periodBounds[0].UTC()
@@ -180,13 +251,14 @@ func (h *handler) resetQuotaForPlan(ctx context.Context, userID string, plan *st
 // change. A genuinely new period still receives its allowance.
 func (h *handler) resetQuotaForPlanOnce(ctx context.Context, userID string, plan *store.BillingPlan, start, end time.Time) error {
 	if state, err := h.store.GetAccountQuotaState(ctx, userID); err == nil && state != nil && state.PeriodStart != nil && state.PeriodEnd != nil && !state.PeriodStart.Before(start.UTC()) && state.PeriodStart.Before(end.UTC()) && state.PeriodEnd.Equal(end.UTC()) {
-		if !state.Arrears && state.ArrearsSince == nil && state.ThrottleState == "normal" && state.SuspendState == "active" {
+		if !state.Arrears && state.ArrearsSince == nil && state.ThrottleState == "normal" && state.SuspendState == "active" && state.ProxyAccessState == "active" {
 			return nil
 		}
 		state.Arrears = false
 		state.ArrearsSince = nil
 		state.ThrottleState = "normal"
 		state.SuspendState = "active"
+		state.ProxyAccessState = "active"
 		state.EffectiveAt = time.Now().UTC()
 		return h.store.UpsertAccountQuotaState(ctx, state)
 	} else if err != nil && !errors.Is(err, store.ErrUserNotFound) {
@@ -225,27 +297,37 @@ func (h *handler) clampDowngradedHighSpeedQuota(ctx context.Context, userID stri
 	return h.store.UpsertAccountQuotaState(ctx, state)
 }
 
-// restoreQuotaGroupForPlan reverses only a prior Free quota-group downgrade;
-// unrelated operator-managed groups are preserved.
+// restoreQuotaGroupForPlan transitions an account from trial, free, whitelist,
+// or paused state into the paid monthly quota group while preserving unrelated
+// operator-managed labels (including segment:whitelist:free membership).
 func (h *handler) restoreQuotaGroupForPlan(ctx context.Context, userID string, plan *store.BillingPlan) error {
-	if plan == nil || plan.IncludedQuotaBytes <= defaultFreeQuotaBytes {
+	if plan == nil {
+		return nil
+	}
+	pkg := strings.ToLower(strings.TrimSpace(plan.PackageName))
+	if pkg == "free" || pkg == "trial" || pkg == "whitelist" || pkg == "paused" {
 		return nil
 	}
 	user, err := h.store.GetUserByID(ctx, userID)
 	if err != nil {
 		return err
 	}
-	if store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup {
+	currentGroup := store.MonthlyQuotaGroup(user)
+	if currentGroup == store.MonthlyPlusQuotaLimitGroup && !store.IsOneTimeTrialMember(user) {
 		return nil
 	}
 	groups := make([]string, 0, len(user.Groups)+1)
 	for _, group := range user.Groups {
-		if store.IsMonthlyQuotaGroup(group) {
+		if store.IsMonthlyQuotaGroup(group) || group == store.OneTimeTrialQuotaGroup || group == "segment:free" {
 			continue
 		}
 		groups = append(groups, group)
 	}
-	groups = append(groups, store.MonthlyPlusQuotaLimitGroup)
+	if currentGroup == store.MonthlyUnlimitedBetaQuotaGroup {
+		groups = append(groups, store.MonthlyUnlimitedBetaQuotaGroup)
+	} else {
+		groups = append(groups, store.MonthlyPlusQuotaLimitGroup)
+	}
 	user.Groups = normalizeGroups(groups)
 	return h.store.UpdateUser(ctx, user)
 }
@@ -286,9 +368,11 @@ func (h *handler) markAccountArrears(ctx context.Context, userID string) error {
 	return h.store.UpsertAccountQuotaState(ctx, state)
 }
 
-// downgradeToFreePlan applies the FREE catalog entry (or a zeroed default
-// profile when the catalog has none) after a subscription ends.
-func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error {
+// pauseTrafficOrFallbackWhitelist ends a paid subscription: whitelist free
+// group members revert to their configured monthly whitelist allowance, while
+// all other accounts enter permanent "paused traffic" mode (proxy_access_state='paused',
+// never downgraded to Free) while keeping console login active so they can resubscribe.
+func (h *handler) pauseTrafficOrFallbackWhitelist(ctx context.Context, userID string) error {
 	if strings.TrimSpace(userID) == "" {
 		return nil
 	}
@@ -296,36 +380,27 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 	if userErr != nil && !errors.Is(userErr, store.ErrUserNotFound) {
 		return userErr
 	}
+	isWhitelist := user != nil && store.IsWhitelistFreeMember(user)
 	if user != nil {
-		groups := make([]string, 0, len(user.Groups)+2)
+		groups := make([]string, 0, len(user.Groups))
 		for _, group := range user.Groups {
 			switch group {
-			case store.MonthlyFreeQuotaLimitGroup, store.MonthlyPlusQuotaLimitGroup,
-				store.MonthlyUnlimitedBetaQuotaGroup, store.SubscriptionListedGroup,
+			case store.MonthlyFreeQuotaLimitGroup, store.MonthlyFreeQuota5GBAliasGroup,
+				store.MonthlyPlusQuotaLimitGroup, store.MonthlyUnlimitedBetaQuotaGroup,
+				store.SubscriptionListedGroup, store.SubscriptionUnlimitedOverrideGroup,
+				store.OneTimeTrialQuotaGroup, "segment:free",
 				"segment:subscribed", "segment:monthly", "segment:yearly",
 				"segment:subscription:monthly", "segment:subscription:yearly":
 				continue
 			}
 			groups = append(groups, group)
 		}
-		groups = append(groups, store.MonthlyFreeQuotaLimitGroup, "segment:free")
 		user.Groups = normalizeGroups(groups)
 		if err := h.store.UpdateUser(ctx, user); err != nil {
 			return err
 		}
 	}
-	plan, err := h.store.GetBillingPlan(ctx, store.BillingPlanFree)
-	if err != nil {
-		if !errors.Is(err, store.ErrBillingPlanNotFound) {
-			return err
-		}
-		plan = &store.BillingPlan{
-			PlanID:             store.BillingPlanFree,
-			PackageName:        "default",
-			IncludedQuotaBytes: defaultFreeQuotaBytes,
-			Active:             true,
-		}
-	}
+
 	existingProfile, profileErr := h.store.GetAccountBillingProfile(ctx, userID)
 	if profileErr != nil && !errors.Is(profileErr, store.ErrUserNotFound) {
 		return profileErr
@@ -334,51 +409,110 @@ func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error 
 	if quotaErr != nil && !errors.Is(quotaErr, store.ErrUserNotFound) {
 		return quotaErr
 	}
-	periodStart, periodEnd := naturalMonthPeriod(time.Now().UTC())
-	freePackage := strings.TrimSpace(plan.PackageName)
-	if freePackage == "" {
-		freePackage = "default"
-	}
-	if existingProfile != nil && existingProfile.PricingRuleVersion == fmt.Sprintf("plan:%s", store.BillingPlanFree) && existingProfile.PackageName == freePackage && existingProfile.IncludedQuotaBytes == plan.IncludedQuotaBytes && existingProfile.HighSpeedQuotaBytes == plan.HighSpeedQuotaBytes {
-		if existingQuota != nil && existingQuota.PeriodStart != nil && existingQuota.PeriodEnd != nil && existingQuota.PeriodStart.Equal(periodStart) && existingQuota.PeriodEnd.Equal(periodEnd) {
-			return nil
+
+	now := time.Now().UTC()
+	if isWhitelist {
+		plan := h.resolveWhitelistFreePlan(ctx)
+		periodStart, periodEnd := naturalMonthPeriod(now)
+		pkg := strings.TrimSpace(plan.PackageName)
+		if pkg == "" {
+			pkg = "whitelist"
 		}
-	}
-	remaining := plan.IncludedQuotaBytes
-	if existingProfile != nil && existingQuota != nil {
-		alreadyFree := existingProfile.PricingRuleVersion == fmt.Sprintf("plan:%s", store.BillingPlanFree) && existingQuota.PeriodStart != nil && existingQuota.PeriodEnd != nil && !existingQuota.PeriodEnd.After(periodStart)
-		if !alreadyFree {
-			used := existingProfile.IncludedQuotaBytes - existingQuota.RemainingIncludedQuota
-			if used < 0 {
-				used = 0
+		if existingProfile != nil && existingProfile.PricingRuleVersion == fmt.Sprintf("plan:%s", plan.PlanID) && existingProfile.PackageName == pkg && existingProfile.IncludedQuotaBytes == plan.IncludedQuotaBytes && existingProfile.HighSpeedQuotaBytes == 0 {
+			if existingQuota != nil && existingQuota.PeriodStart != nil && existingQuota.PeriodEnd != nil && existingQuota.PeriodStart.Equal(periodStart) && existingQuota.PeriodEnd.Equal(periodEnd) {
+				return nil
 			}
-			remaining = plan.IncludedQuotaBytes - used
 		}
-	} else if existingQuota != nil && existingQuota.RemainingIncludedQuota < remaining {
-		// Without an old profile, retain the more restrictive recorded balance;
-		// never turn missing snapshot data into a fresh monthly grant.
-		remaining = existingQuota.RemainingIncludedQuota
+		remaining := plan.IncludedQuotaBytes
+		if existingProfile != nil && existingQuota != nil {
+			alreadyWL := existingProfile.PricingRuleVersion == fmt.Sprintf("plan:%s", plan.PlanID) && existingQuota.PeriodStart != nil && existingQuota.PeriodEnd != nil && !existingQuota.PeriodEnd.After(periodStart)
+			if !alreadyWL {
+				used := existingProfile.IncludedQuotaBytes - existingQuota.RemainingIncludedQuota
+				if used < 0 {
+					used = 0
+				}
+				remaining = plan.IncludedQuotaBytes - used
+				if remaining < 0 {
+					remaining = 0
+				}
+			}
+		} else if existingQuota != nil && existingQuota.RemainingIncludedQuota < remaining {
+			remaining = existingQuota.RemainingIncludedQuota
+		}
+		if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+			return err
+		}
+		state := existingQuota
+		if state == nil {
+			state = &store.AccountQuotaState{AccountUUID: userID}
+		}
+		state.RemainingIncludedQuota = remaining
+		state.RemainingHighSpeedQuota = 0
+		state.Arrears = false
+		state.ArrearsSince = nil
+		state.ThrottleState = "normal"
+		if state.SuspendState != "suspended" {
+			state.SuspendState = "active"
+		}
+		if remaining > 0 {
+			state.ProxyAccessState = "active"
+		} else {
+			state.ProxyAccessState = "paused"
+		}
+		state.PeriodStart = &periodStart
+		state.PeriodEnd = &periodEnd
+		state.EffectiveAt = now
+		return h.store.UpsertAccountQuotaState(ctx, state)
 	}
-	if err := h.applyPlanEntitlements(ctx, userID, plan); err != nil {
+
+	if existingProfile != nil &&
+		existingProfile.PricingRuleVersion == "plan:"+store.BillingPlanPaused &&
+		existingProfile.PackageName == "paused" &&
+		existingProfile.IncludedQuotaBytes == 0 &&
+		existingProfile.HighSpeedQuotaBytes == 0 &&
+		existingQuota != nil &&
+		existingQuota.RemainingIncludedQuota == 0 &&
+		existingQuota.RemainingHighSpeedQuota == 0 &&
+		!existingQuota.Arrears &&
+		existingQuota.ArrearsSince == nil &&
+		existingQuota.ThrottleState == "normal" &&
+		existingQuota.ProxyAccessState == "paused" &&
+		existingQuota.PeriodStart == nil &&
+		existingQuota.PeriodEnd == nil {
+		return nil
+	}
+
+	pausedPlan := &store.BillingPlan{
+		PlanID:              store.BillingPlanPaused,
+		PackageName:         "paused",
+		IncludedQuotaBytes:  0,
+		HighSpeedQuotaBytes: 0,
+		Active:              true,
+	}
+	if err := h.applyPlanEntitlements(ctx, userID, pausedPlan); err != nil {
 		return err
 	}
 	state := existingQuota
 	if state == nil {
 		state = &store.AccountQuotaState{AccountUUID: userID}
 	}
-	state.RemainingIncludedQuota = remaining
-	state.RemainingHighSpeedQuota = plan.HighSpeedQuotaBytes
+	state.RemainingIncludedQuota = 0
+	state.RemainingHighSpeedQuota = 0
 	state.Arrears = false
 	state.ArrearsSince = nil
 	state.ThrottleState = "normal"
-	// A plan downgrade does not settle an explicit billing suspension.
 	if state.SuspendState != "suspended" {
 		state.SuspendState = "active"
 	}
-	state.PeriodStart = &periodStart
-	state.PeriodEnd = &periodEnd
-	state.EffectiveAt = time.Now().UTC()
+	state.ProxyAccessState = "paused"
+	state.PeriodStart = nil
+	state.PeriodEnd = nil
+	state.EffectiveAt = now
 	return h.store.UpsertAccountQuotaState(ctx, state)
+}
+
+func (h *handler) downgradeToFreePlan(ctx context.Context, userID string) error {
+	return h.pauseTrafficOrFallbackWhitelist(ctx, userID)
 }
 
 // revokeRefundedSubscription drops paid access only when the explicitly

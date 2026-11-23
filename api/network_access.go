@@ -105,6 +105,9 @@ func agentResourceScopeAllowsUser(scope agentproto.UserScope, access networkAcce
 	}
 	class := effectiveAgentResourceClass(access, user, packageName)
 	if scope.ResourceClass == agentResourceCustom {
+		if store.IsOneTimeTrialMember(user) || strings.EqualFold(strings.TrimSpace(packageName), "trial") {
+			return false
+		}
 		return class == agentResourceCustom || class == agentResourcePlus || class == agentResourcePro || (scope.CustomAllowFree && class == agentResourceFree)
 	}
 	return publicAgentResourceClassAllows(scope.ResourceClass, class)
@@ -459,8 +462,8 @@ func (h *handler) getNetworkTeam(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	quotaPlans := make([]networkQuotaPlan, 0, 3)
-	for _, entry := range []struct{ value, planID string }{{"3gb", store.BillingPlanFree}, {"20gb", store.BillingPlanPlus}, {"unlimited", store.BillingPlanUnlimitedBeta}} {
-		plan, err := h.store.GetBillingPlan(c.Request.Context(), entry.planID)
+	for _, value := range []string{"3gb", "20gb", "unlimited"} {
+		plan, err := h.resolveTeamQuotaPlan(c.Request.Context(), value)
 		if errors.Is(err, store.ErrBillingPlanNotFound) {
 			continue
 		}
@@ -469,7 +472,7 @@ func (h *handler) getNetworkTeam(c *gin.Context) {
 			return
 		}
 		if plan != nil && plan.Active {
-			quotaPlans = append(quotaPlans, networkQuotaPlan{Value: entry.value, PlanID: plan.PlanID, Name: plan.DisplayName, IncludedQuotaBytes: plan.IncludedQuotaBytes})
+			quotaPlans = append(quotaPlans, networkQuotaPlan{Value: value, PlanID: plan.PlanID, Name: plan.DisplayName, IncludedQuotaBytes: plan.IncludedQuotaBytes})
 		}
 	}
 	c.JSON(http.StatusOK, networkTeamPayload{Team: team, Members: members, CanManage: true, QuotaPlans: quotaPlans, QuotaGroups: []string{"3gb", "20gb", "unlimited"}})
@@ -555,8 +558,7 @@ func (h *handler) updateNetworkTeamMember(c *gin.Context) {
 			respondError(c, http.StatusBadRequest, "invalid_quota_group", "unsupported quota group")
 			return
 		}
-		planID := map[string]string{"3gb": store.BillingPlanFree, "20gb": store.BillingPlanPlus, "unlimited": store.BillingPlanUnlimitedBeta}[request.QuotaGroup]
-		plan, err := h.store.GetBillingPlan(c.Request.Context(), planID)
+		plan, err := h.resolveTeamQuotaPlan(c.Request.Context(), strings.ToLower(strings.TrimSpace(request.QuotaGroup)))
 		if err != nil || plan == nil || !plan.Active {
 			respondError(c, http.StatusBadRequest, "plan_unavailable", "selected quota plan is unavailable")
 			return
@@ -965,12 +967,61 @@ func (h *handler) resolveAgentIdentity(c *gin.Context, credential agentserver.Id
 	return h.agentRegistry.RegisterAgent(requested, credential.Groups), true
 }
 
+func (h *handler) resolveTeamQuotaPlan(ctx context.Context, value string) (*store.BillingPlan, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "3gb", "5gb":
+		if p, err := h.store.GetBillingPlan(ctx, store.BillingPlanFree); err == nil && p != nil && p.Active {
+			return p, nil
+		} else if err != nil && !errors.Is(err, store.ErrBillingPlanNotFound) {
+			return nil, err
+		}
+		return &store.BillingPlan{
+			PlanID:             "TEAM-5GB",
+			DisplayName:        "Team Starter 5GB",
+			Kind:               "subscription",
+			PackageName:        "team",
+			IncludedQuotaBytes: store.DefaultOneTimeTrialQuotaBytes,
+			Active:             true,
+		}, nil
+	case "20gb":
+		if p, err := h.store.GetBillingPlan(ctx, store.BillingPlanPlus); err == nil && p != nil && p.Active {
+			return p, nil
+		} else if err != nil && !errors.Is(err, store.ErrBillingPlanNotFound) {
+			return nil, err
+		}
+		return &store.BillingPlan{
+			PlanID:             store.BillingPlanPlus,
+			DisplayName:        "Plus",
+			Kind:               "subscription",
+			PackageName:        "plus",
+			IncludedQuotaBytes: 20 * 1024 * 1024 * 1024,
+			Active:             true,
+		}, nil
+	case "unlimited":
+		if p, err := h.store.GetBillingPlan(ctx, store.BillingPlanUnlimitedBeta); err == nil && p != nil && p.Active {
+			return p, nil
+		} else if err != nil && !errors.Is(err, store.ErrBillingPlanNotFound) {
+			return nil, err
+		}
+		return &store.BillingPlan{
+			PlanID:             "TEAM-UNLIMITED",
+			DisplayName:        "无限",
+			Kind:               "subscription",
+			PackageName:        "unlimited",
+			IncludedQuotaBytes: 0,
+			Active:             true,
+		}, nil
+	default:
+		return nil, store.ErrBillingPlanNotFound
+	}
+}
+
 func (h *handler) networkAccessForUser(ctx context.Context, user *store.User) (networkAccess, error) {
 	access, err := h.networkAccessFor(ctx, user.ID)
 	if err != nil {
 		return access, err
 	}
-	if !user.Active || (!store.AccountAccessVerified(user) && !strings.EqualFold(user.Email, sandboxUserEmail)) {
+	if !user.Active || !store.AccountAccessVerified(user) {
 		access.Allowed = false
 		return access, nil
 	}

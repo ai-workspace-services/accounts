@@ -1,34 +1,54 @@
 {
-  "_comment": [
-    "The billing_plans rows we publish. Read by scripts/seed-billing-plans.sh,",
-    "and checked against scripts/stripe-catalog.yaml by",
-    "internal/billingcatalog/catalog_test.go -- the storefront must quote the",
-    "amount Stripe actually charges.",
-    "",
-    "Only 4 plan families exist: free, plus, pro, custom.",
-    "No trial plans and no Pay-As-You-Go plans. Arrears grace period is 3 days."
-  ],
   "plans": [
     {
-      "planId": "FREE",
-      "displayName": "Free",
-      "kind": "subscription",
+      "planId": "WHITELIST-FREE",
+      "displayName": "白名单免费体验组",
+      "kind": "whitelist_group",
       "includedQuotaBytes": 5368709120,
-      "packageName": "free",
+      "highSpeedQuotaBytes": 0,
+      "packageName": "whitelist",
       "priceAmount": 0,
       "priceCurrency": "CNY",
       "priceUnit": "month",
       "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
       "features": {
-        "family": "free",
+        "family": "whitelist",
         "tier_rank": 0,
+        "internal_only": true,
         "sla": "none",
         "session_persistence": false,
-        "fast_lane": { "mode": "quota", "fallback": "vps" },
+        "allowed_pools": ["Media-Pool"],
+        "fast_lane": { "mode": "none" },
         "quota_cycle": "natural_month",
         "dunning": { "policy": "none", "grace_days": 3 },
+        "description": "白名单免费用户默认仅开放基础共享节点（Media-Pool），月度免费额度可在管理台调整。"
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 5
+    },
+    {
+      "planId": "PLUS",
+      "displayName": "Plus · 20 GB",
+      "kind": "subscription",
+      "includedQuotaBytes": 21474836480,
+      "highSpeedQuotaBytes": 0,
+      "packageName": "plus",
+      "priceAmount": 2000,
+      "priceCurrency": "CNY",
+      "priceUnit": "month",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "family": "plus",
+        "tier_rank": 10,
+        "audience": "订阅用户",
+        "sla": "standard",
+        "session_persistence": true,
+        "fast_lane": { "mode": "none" },
+        "quota_cycle": "natural_month",
+        "dunning": { "policy": "pause_traffic", "grace_days": 3 },
         "comparison_matrix": {
-          "resources": "共享资源池",
+          "resources": "Media-Pool 共享资源池",
           "exit_ip": "共享出口"
         }
       },
@@ -38,9 +58,10 @@
     },
     {
       "planId": "PLUS-MONTHLY-2026",
-      "displayName": "Plus",
+      "displayName": "Plus · 30 GB",
       "kind": "subscription",
       "includedQuotaBytes": 32212254720,
+      "highSpeedQuotaBytes": 0,
       "packageName": "plus",
       "priceAmount": 3000,
       "priceCurrency": "CNY",
@@ -52,21 +73,21 @@
         "audience": "订阅用户",
         "sla": "standard",
         "session_persistence": true,
-        "fast_lane": { "mode": "quota" },
+        "fast_lane": { "mode": "none" },
         "quota_cycle": "natural_month",
-        "dunning": { "policy": "downgrade_to_free", "grace_days": 3 },
+        "dunning": { "policy": "pause_traffic", "grace_days": 3 },
         "comparison_matrix": {
-          "resources": "共享资源池",
+          "resources": "Media-Pool 共享资源池",
           "exit_ip": "共享出口"
         }
       },
       "trialDays": 0,
       "active": true,
-      "sortOrder": 20
+      "sortOrder": 15
     },
     {
-      "planId": "PRO-MONTHLY-2026",
-      "displayName": "Pro",
+      "planId": "PRO-MONTHLY-V2",
+      "displayName": "Pro 月付",
       "kind": "subscription",
       "includedQuotaBytes": 53687091200,
       "highSpeedQuotaBytes": 32212254720,
@@ -84,15 +105,44 @@
         "session_persistence": true,
         "fast_lane": { "mode": "quota" },
         "quota_cycle": "natural_month",
-        "dunning": { "policy": "downgrade_to_free", "grace_days": 3 },
+        "dunning": { "policy": "pause_traffic", "grace_days": 3 },
         "comparison_matrix": {
-          "resources": "PRO专属资源池",
-          "exit_ip": "Pro专属节点"
+          "resources": "50GB Media-Pool + 30GB Pro-EC2-Pool",
+          "exit_ip": "Pro 专属高速节点"
         }
       },
       "trialDays": 0,
       "active": true,
-      "sortOrder": 30
+      "sortOrder": 20
+    },
+    {
+      "planId": "PRO-YEARLY-V2",
+      "displayName": "Pro 年付",
+      "kind": "subscription",
+      "includedQuotaBytes": 53687091200,
+      "highSpeedQuotaBytes": 32212254720,
+      "packageName": "pro",
+      "priceAmount": 50000,
+      "priceCurrency": "CNY",
+      "priceUnit": "year",
+      "priceMultipliers": { "fast_lane_cny_per_gb": 0, "vps_lane_cny_per_gb": 0 },
+      "features": {
+        "family": "pro",
+        "tier_rank": 20,
+        "audience": "订阅用户",
+        "sla": "standard",
+        "session_persistence": true,
+        "fast_lane": { "mode": "quota" },
+        "quota_cycle": "natural_month",
+        "dunning": { "policy": "pause_traffic", "grace_days": 3 },
+        "comparison_matrix": {
+          "resources": "50GB/月 Media-Pool + 30GB/月 Pro-EC2-Pool",
+          "exit_ip": "Pro 专属高速节点"
+        }
+      },
+      "trialDays": 0,
+      "active": true,
+      "sortOrder": 25
     },
     {
       "planId": "CUSTOM-NODE-MONTHLY-2026",
@@ -110,7 +160,7 @@
         "checkout_mode": "subscription",
         "audience": "订阅用户",
         "quota_label": "独享IP · 独享节点",
-        "dunning": { "policy": "downgrade_to_free", "grace_days": 3 },
+        "dunning": { "policy": "pause_traffic", "grace_days": 3 },
         "comparison_matrix": {
           "resources": "独享节点",
           "exit_ip": "独享IP",

@@ -115,7 +115,7 @@ func TestAdminPlanGroupPreviewApplyUsesOneTimeTokenAndSynchronizesQuota(t *testi
 		t.Fatalf("quota state not synchronized or period reset: %+v err=%v", quota, err)
 	}
 
-	downPreview := putAdminPlanGroup(t, router, token, path, map[string]any{"mode": "preview", "requestId": "plan-downgrade-1", "reason": "downgrade test", "updates": []map[string]any{{"planId": store.BillingPlanFree}}})
+	downPreview := putAdminPlanGroup(t, router, token, path, map[string]any{"mode": "preview", "requestId": "plan-downgrade-1", "reason": "downgrade test", "updates": []map[string]any{{"planId": store.BillingPlanPaused}}})
 	if downPreview.Code != http.StatusOK {
 		t.Fatalf("downgrade preview: %d %s", downPreview.Code, downPreview.Body.String())
 	}

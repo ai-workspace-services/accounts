@@ -274,13 +274,18 @@ func TestActiveTeamProtectsInfrequentFreeMembersFromArchival(t *testing.T) {
 }
 
 func TestFreeQuotaAliasReconciliationAndCustomDedicatedIsolation(t *testing.T) {
-	// 1. free-3gb / free-5gb alias reconciliation
+	// 1. whitelist and trial group classification vs legacy team free alias
+	wl := &store.User{Groups: []string{"segment:keep", store.WhitelistFreeQuotaGroup}}
+	if !store.IsMonthlyFreeQuotaLimitMember(wl) || !store.IsMonthlyQuotaLimitMember(wl) {
+		t.Fatal("whitelist group must be recognized as monthly free quota member")
+	}
+	trial := &store.User{Groups: []string{"segment:keep", store.OneTimeTrialQuotaGroup}}
+	if store.IsMonthlyFreeQuotaLimitMember(trial) || !store.IsMonthlyQuotaLimitMember(trial) {
+		t.Fatal("trial group must be quota limited without monthly reset")
+	}
 	free5 := &store.User{Groups: []string{"segment:keep", store.MonthlyFreeQuota5GBAliasGroup}}
 	if got := store.MonthlyQuotaGroup(free5); got != store.MonthlyFreeQuotaLimitGroup {
 		t.Fatalf("MonthlyQuotaGroup(free-5gb) = %q, want %q", got, store.MonthlyFreeQuotaLimitGroup)
-	}
-	if !store.IsMonthlyFreeQuotaLimitMember(free5) || !store.IsMonthlyQuotaLimitMember(free5) {
-		t.Fatal("free-5gb alias must be recognized as Free monthly quota member")
 	}
 	if group, label := teamQuotaGroup(free5); group != "3gb" || label != "Free" {
 		t.Fatalf("teamQuotaGroup(free-5gb) = %q %q, want 3gb Free", group, label)

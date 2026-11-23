@@ -188,34 +188,16 @@ func (h *handler) authorizedAgentClientsWithPolicy(ctx context.Context, groups [
 		if blocked[strings.TrimSpace(u.ID)] || blockedEmails[strings.ToLower(strings.TrimSpace(u.Email))] {
 			continue
 		}
-		email := strings.ToLower(strings.TrimSpace(u.Email))
 
 		if exhausted, err := h.quotaExhaustedForAgentScope(ctx, &u, scope, groups); err != nil {
 			return nil, nil, "", err
 		} else if exhausted {
 			continue
 		}
-		// Sandbox is a special demo identity with expiring access metadata.
-		// Its client ID remains the canonical account UUID across every node.
-		if email == sandboxUserEmail {
-			sandboxUser := u
-			_ = h.ensureSandboxProxyUUID(ctx, &sandboxUser)
-
-			id := strings.TrimSpace(sandboxUser.ProxyUUID)
-			if id != "" {
-				clients = append(clients, xrayconfig.Client{
-					ID:    id,
-					Email: strings.ToLower(strings.TrimSpace(sandboxUser.Email)),
-					Flow:  xrayconfig.DefaultFlow,
-				})
-			}
-			continue
-		}
 
 		// Full proxy access requires a verified email (which also activates the
-		// trial). OAuth users are Active immediately but stay EmailVerified=false
-		// until they complete the email round trip, so they get no xray client
-		// until then. Sandbox is exempt (handled above).
+		// one-time trial or whitelist entitlement). OAuth users are Active immediately
+		// until they complete verification if required.
 		if !store.AccountAccessVerified(&u) {
 			continue
 		}

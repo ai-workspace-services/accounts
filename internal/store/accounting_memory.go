@@ -344,6 +344,15 @@ func (s *memoryStore) UpsertAccountQuotaState(ctx context.Context, state *Accoun
 	if copy == nil {
 		return errors.New("quota state is required")
 	}
+	if strings.TrimSpace(copy.ProxyAccessState) == "" {
+		copy.ProxyAccessState = "active"
+	}
+	if strings.TrimSpace(copy.ThrottleState) == "" {
+		copy.ThrottleState = "normal"
+	}
+	if strings.TrimSpace(copy.SuspendState) == "" {
+		copy.SuspendState = "active"
+	}
 	copy.UpdatedAt = time.Now().UTC()
 	if copy.EffectiveAt.IsZero() {
 		copy.EffectiveAt = copy.UpdatedAt

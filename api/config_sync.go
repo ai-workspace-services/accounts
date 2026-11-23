@@ -45,6 +45,13 @@ func (h *handler) respondSyncConfigSnapshot(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "subscription_downgrade_failed", "failed to apply expired subscription downgrade")
 		return
 	}
+	if blocked, err := h.proxyAccountBlocked(c.Request.Context(), user); err != nil {
+		respondError(c, 503, "network_access_unavailable", "network access is unavailable")
+		return
+	} else if blocked {
+		respondError(c, 403, "proxy_access_blocked", "proxy access is blocked")
+		return
+	}
 	if strings.TrimSpace(user.ProxyUUID) == "" {
 		respondError(c, http.StatusServiceUnavailable, "proxy_uuid_unavailable", "proxy UUID is not provisioned for this account")
 		return

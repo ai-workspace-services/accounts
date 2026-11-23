@@ -108,27 +108,11 @@ func (h *handler) resolveUserNodes(c *gin.Context) (*userNodesContext, bool) {
 	}
 
 	if user.ProxyUUIDExpiresAt != nil && time.Now().UTC().After(*user.ProxyUUIDExpiresAt) {
-		// Sandbox renews access metadata hourly; never block it on expiry.
-		if strings.EqualFold(strings.TrimSpace(user.Email), sandboxUserEmail) {
-			if err := h.ensureSandboxProxyUUID(c.Request.Context(), user); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "sandbox_uuid_rotation_failed"})
-				return nil, false
-			}
-			proxyUUID = strings.TrimSpace(user.ProxyUUID)
-			if proxyUUID == "" {
-				c.JSON(http.StatusServiceUnavailable, gin.H{
-					"error":   "proxy_uuid_unavailable",
-					"message": "proxy UUID is not provisioned for this account",
-				})
-				return nil, false
-			}
-		} else {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error":   "proxy_uuid_expired",
-				"message": "proxy access has expired, please renew",
-			})
-			return nil, false
-		}
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":   "proxy_uuid_expired",
+			"message": "proxy access has expired, please renew",
+		})
+		return nil, false
 	}
 
 	access, err := h.networkAccessForUser(c.Request.Context(), user)
@@ -298,9 +282,10 @@ func (h *handler) getSubscription(c *gin.Context) {
 		return
 	}
 
-	allowCustom := resolved.resourceClass == agentResourceCustom ||
+	isTrial := store.IsOneTimeTrialMember(resolved.user) || strings.EqualFold(strings.TrimSpace(resolved.packageName), "trial")
+	allowCustom := !isTrial && (resolved.resourceClass == agentResourceCustom ||
 		resolved.resourceClass == agentResourceTeam ||
-		(resolved.access.Mode != "dedicated" && isCustomDedicatedUser(resolved.user, resolved.packageName))
+		(resolved.access.Mode != "dedicated" && isCustomDedicatedUser(resolved.user, resolved.packageName)))
 	allowPro := resolved.resourceClass == agentResourcePro && !resolved.highSpeedQuotaExhausted
 	body, contentType, err := subscription.Render(format, subscription.RenderInput{
 		UserID:      resolved.user.ID,
@@ -344,25 +329,6 @@ func (h *handler) resolveAgentNodeUser(c *gin.Context) (*store.User, bool) {
 		}
 	}
 	if token == "" {
-		// Console Guest/Demo path: allow the trusted Console BFF to resolve the
-		// sandbox user without requiring an end-user session.
-		if isInternalServiceRequest(c) {
-			sandboxUser, err := h.store.GetUserByEmail(c.Request.Context(), sandboxUserEmail)
-			if err != nil {
-				if errors.Is(err, store.ErrUserNotFound) {
-					c.JSON(http.StatusNotFound, gin.H{"error": "sandbox_missing"})
-					return nil, false
-				}
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "sandbox_lookup_failed"})
-				return nil, false
-			}
-			if err := h.ensureSandboxProxyUUID(c.Request.Context(), sandboxUser); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "sandbox_uuid_rotation_failed"})
-				return nil, false
-			}
-			return sandboxUser, true
-		}
-
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "session_token_required", "message": "session token is required"})
 		return nil, false
 	}

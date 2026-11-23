@@ -626,7 +626,6 @@ func TestAccountUsageSummaryKeepsLegacyAccountUnassigned(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode usage summary: %v", err)
 	}
-	const freeQuota = int64(3 * 1024 * 1024 * 1024)
 	if payload.IncludedQuotaBytes != 0 || payload.RemainingIncludedQuota != 0 {
 		t.Fatalf("legacy account must remain unassigned, got included=%d remaining=%d", payload.IncludedQuotaBytes, payload.RemainingIncludedQuota)
 	}
@@ -636,8 +635,8 @@ func TestAccountUsageSummaryKeepsLegacyAccountUnassigned(t *testing.T) {
 	if payload.PlanAssignmentStatus != "unassigned" || payload.CurrentPlan != nil {
 		t.Fatalf("expected an unassigned legacy account, status=%q current=%+v", payload.PlanAssignmentStatus, payload.CurrentPlan)
 	}
-	if payload.DefaultPlan == nil || payload.DefaultPlan.PlanID != store.BillingPlanFree || payload.DefaultPlan.MaxTrafficBytes != freeQuota || payload.DefaultPlan.Assigned {
-		t.Fatalf("expected Free 3GiB to be reference-only default plan, got %+v", payload.DefaultPlan)
+	if payload.DefaultPlan != nil {
+		t.Fatalf("expected nil defaultPlan after Free retirement, got %+v", payload.DefaultPlan)
 	}
 	if _, err := st.GetAccountBillingProfile(ctx, user.ID); err == nil {
 		t.Fatal("usage GET must not create a billing profile for a legacy account")

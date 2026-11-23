@@ -21,7 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const FullBusinessVersion = 2026112101
+const FullBusinessVersion = 2026112301
 const FullBusinessBillingSHA256 = "a7133f3ef2ea9013a055cfd1442a7488d2b837f289e0f5d9b61624d4fde9bc53"
 const fullBusinessBatch = 1000
 

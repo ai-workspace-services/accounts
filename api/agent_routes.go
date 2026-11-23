@@ -16,15 +16,19 @@ const agentResourceTeam = "team"
 
 // effectiveAgentResourceClass is the single control-plane decision used when
 // rendering a subscription path. Team access wins over personal plans;
-// custom whitelist wins over public tiers; otherwise the billing package
-// selects Pro, quota groups select Plus, and Free is the safe fallback.
-// The agent independently enforces this scope.
+// custom whitelist wins over public tiers; active one-time trial accounts get
+// access to all public pools (Media-Pool + Pro-EC2-Pool); otherwise the billing
+// package selects Pro, quota groups select Plus, and Free/Whitelist falls back
+// to Media-Pool only. The agent independently enforces this scope.
 func effectiveAgentResourceClass(access networkAccess, user *store.User, packageName string) string {
 	if access.Mode == "dedicated" {
 		return agentResourceTeam
 	}
 	if isCustomDedicatedUser(user, packageName) {
 		return agentResourceCustom
+	}
+	if store.IsOneTimeTrialMember(user) || strings.EqualFold(strings.TrimSpace(packageName), "trial") {
+		return agentResourcePro
 	}
 	group := store.MonthlyQuotaGroup(user)
 	if strings.EqualFold(strings.TrimSpace(packageName), agentResourcePro) &&
@@ -104,13 +108,16 @@ func regionalPoolsForUser(reader agentStatusReader, access networkAccess, user *
 		if region == "" || entry == "" {
 			continue
 		}
+		isTrial := store.IsOneTimeTrialMember(user) || strings.EqualFold(strings.TrimSpace(packageName), "trial")
 		isCustomPool := resourceClass == agentResourceCustom ||
 			strings.EqualFold(strings.TrimSpace(report.Xray.RoutingPool), routingpolicy.RoutingPoolCustomDedicated)
 		var classAllowed bool
 		if resourceClass == agentResourceTeam {
 			classAllowed = wantClass == agentResourceTeam && wantTeam != "" && teamID == wantTeam
 		} else if isCustomPool {
-			if resourceClass == agentResourceCustom {
+			if isTrial {
+				classAllowed = false
+			} else if resourceClass == agentResourceCustom {
 				if len(customEmails) > 0 {
 					classAllowed = scopeValid && (customAllowed || wantClass == agentResourcePlus || wantClass == agentResourcePro || (scope.CustomAllowFree && wantClass == agentResourceFree) || tempFreeAllowed)
 				} else {

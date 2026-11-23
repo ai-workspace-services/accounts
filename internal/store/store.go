@@ -51,6 +51,8 @@ const (
 	MonthlyFreeQuota5GBAliasGroup  = "segment:quota:free-5gb"
 	MonthlyPlusQuotaLimitGroup     = "segment:quota:plus-20gb"
 	MonthlyUnlimitedBetaQuotaGroup = "segment:quota:unlimited-beta"
+	WhitelistFreeQuotaGroup        = "segment:whitelist:free"
+	OneTimeTrialQuotaGroup         = "segment:trial:once-5gb"
 	// Independent, reversible operator override. Never replaces the paid plan.
 	SubscriptionUnlimitedOverrideGroup = "segment:subscription:unlimited"
 	SubscriptionListedGroup            = "segment:subscription:listed"
@@ -103,13 +105,47 @@ func MonthlyQuotaGroup(user *User) string {
 	return ""
 }
 
+func IsWhitelistFreeMember(user *User) bool {
+	if user == nil {
+		return false
+	}
+	for _, group := range user.Groups {
+		if strings.TrimSpace(group) == WhitelistFreeQuotaGroup {
+			return true
+		}
+	}
+	return false
+}
+
+func IsOneTimeTrialMember(user *User) bool {
+	if user == nil {
+		return false
+	}
+	for _, group := range user.Groups {
+		if strings.TrimSpace(group) == OneTimeTrialQuotaGroup {
+			return true
+		}
+	}
+	return false
+}
+
+// IsMonthlyFreeQuotaLimitMember reports whether the account is currently
+// governed by the configurable whitelist free monthly allowance.
+// Legacy free accounts and one-time 5GB trial accounts never reset monthly.
 func IsMonthlyFreeQuotaLimitMember(user *User) bool {
-	return MonthlyQuotaGroup(user) == MonthlyFreeQuotaLimitGroup
+	if !IsWhitelistFreeMember(user) {
+		return false
+	}
+	group := MonthlyQuotaGroup(user)
+	return group != MonthlyPlusQuotaLimitGroup && group != MonthlyUnlimitedBetaQuotaGroup
 }
 
 func IsMonthlyQuotaLimitMember(user *User) bool {
 	if HasSubscriptionUnlimitedOverride(user, time.Now()) {
 		return false
+	}
+	if IsWhitelistFreeMember(user) || IsOneTimeTrialMember(user) {
+		return true
 	}
 	group := MonthlyQuotaGroup(user)
 	return group == MonthlyFreeQuotaLimitGroup || group == MonthlyPlusQuotaLimitGroup
@@ -1487,6 +1523,11 @@ func (s *memoryStore) ApplyAdminPlanGroupBatch(ctx context.Context, batch AdminP
 			quota.RemainingHighSpeedQuota = change.HighSpeedQuotaBytes - hsUsed
 			if quota.RemainingHighSpeedQuota < 0 || change.HighSpeedQuotaBytes <= 0 {
 				quota.RemainingHighSpeedQuota = 0
+			}
+			if strings.EqualFold(strings.TrimSpace(change.PackageName), "paused") || strings.EqualFold(strings.TrimSpace(change.PlanID), BillingPlanPaused) {
+				quota.ProxyAccessState = "paused"
+			} else if quota.RemainingIncludedQuota > 0 || quota.RemainingHighSpeedQuota > 0 || strings.EqualFold(strings.TrimSpace(change.PackageName), "unlimited") || strings.EqualFold(strings.TrimSpace(change.PackageName), "custom") {
+				quota.ProxyAccessState = "active"
 			}
 			quota.EffectiveAt = time.Now().UTC()
 		}

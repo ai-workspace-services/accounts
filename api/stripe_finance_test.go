@@ -154,12 +154,12 @@ func TestCloverFullRefundRevokesOnlyAfterAllPaymentsAreRefunded(t *testing.T) {
 		t.Fatalf("full refund did not revoke access: %#v", subs)
 	}
 	storedUser, _ := st.GetUserByID(ctx, user.ID)
-	if store.MonthlyQuotaGroup(storedUser) != store.MonthlyFreeQuotaLimitGroup || !slices.Contains(storedUser.Groups, "operator:keep") {
-		t.Fatalf("full refund did not restore Free quota group or removed unrelated group: %#v", storedUser.Groups)
+	if store.MonthlyQuotaGroup(storedUser) != "" || !slices.Contains(storedUser.Groups, "operator:keep") {
+		t.Fatalf("full refund did not remove paid quota group or removed unrelated group: %#v", storedUser.Groups)
 	}
 	profile, err := st.GetAccountBillingProfile(ctx, user.ID)
-	if err != nil || profile.PricingRuleVersion != "plan:FREE" {
-		t.Fatalf("full refund did not restore Free billing profile: %#v %v", profile, err)
+	if err != nil || profile.PricingRuleVersion != "plan:"+store.BillingPlanPaused || profile.PackageName != "paused" {
+		t.Fatalf("full refund did not pause billing profile: %#v %v", profile, err)
 	}
 
 	source := &stripeSubscription{ID: sub.ExternalID, Status: "active", LatestInvoice: "in_full", Metadata: map[string]string{"user_id": user.ID}}
@@ -276,12 +276,12 @@ func TestProcessedFullRefundEventRepairsEntitlementsWhenChargeHasNoInvoice(t *te
 		t.Fatalf("processed refund replay failed: %d %s", rec.Code, rec.Body.String())
 	}
 	profile, err := st.GetAccountBillingProfile(ctx, user.ID)
-	if err != nil || profile.PricingRuleVersion != "plan:"+store.BillingPlanFree {
-		t.Fatalf("full refund did not restore Free profile: %#v %v", profile, err)
+	if err != nil || profile.PricingRuleVersion != "plan:"+store.BillingPlanPaused || profile.PackageName != "paused" {
+		t.Fatalf("full refund did not pause billing profile: %#v %v", profile, err)
 	}
 	storedUser, err := st.GetUserByID(ctx, user.ID)
-	if err != nil || store.MonthlyQuotaGroup(storedUser) != store.MonthlyFreeQuotaLimitGroup {
-		t.Fatalf("full refund did not restore Free quota group: %#v %v", storedUser, err)
+	if err != nil || store.MonthlyQuotaGroup(storedUser) != "" {
+		t.Fatalf("full refund did not clear paid quota group: %#v %v", storedUser, err)
 	}
 }
 

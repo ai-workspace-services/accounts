@@ -280,7 +280,7 @@ func (h *handler) reconcileProcessedStripeRefund(ctx context.Context, event stri
 	if profileErr != nil && !errors.Is(profileErr, store.ErrUserNotFound) {
 		return profileErr
 	}
-	if !wasReconciled || profile == nil || !strings.EqualFold(profile.PricingRuleVersion, "plan:"+store.BillingPlanFree) {
+	if !wasReconciled || profile == nil || (!strings.EqualFold(profile.PricingRuleVersion, "plan:"+store.BillingPlanFree) && !strings.EqualFold(profile.PricingRuleVersion, "plan:"+store.BillingPlanPaused) && !strings.EqualFold(profile.PricingRuleVersion, "plan:"+store.BillingPlanWhitelistFree)) {
 		h.publishBillingEvent(ctx, &store.BillingEvent{Type: "subscription_refunded", UserID: payment.AccountUUID, PlanID: local.PlanID, ExternalID: local.ExternalID})
 	}
 	return nil

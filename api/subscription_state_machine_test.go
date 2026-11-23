@@ -106,22 +106,23 @@ func TestCanceledSubscriptionDowngradesAtPeriodEndAndIdempotently(t *testing.T) 
 		t.Fatal(err)
 	}
 	first, _ := st.GetAccountQuotaState(ctx, user.ID)
-	if first.RemainingIncludedQuota != defaultFreeQuotaBytes {
-		t.Fatalf("expected Free 3GiB after period end, got %+v", first)
+	if first.RemainingIncludedQuota != 0 || first.ProxyAccessState != "paused" || first.SuspendState == "suspended" {
+		t.Fatalf("expected paused traffic with console login active after period end, got %+v", first)
 	}
+	reloaded, _ := st.GetUserByID(ctx, user.ID)
 	operatorGroupKept := false
-	for _, group := range user.Groups {
+	for _, group := range reloaded.Groups {
 		operatorGroupKept = operatorGroupKept || group == "operator:kept"
 	}
-	if !operatorGroupKept || store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup {
-		t.Fatalf("user group attributes were not preserved: %v", user.Groups)
+	if !operatorGroupKept || store.MonthlyQuotaGroup(reloaded) != "" {
+		t.Fatalf("user group attributes were not preserved / paid group cleared: %v", reloaded.Groups)
 	}
 	if err := h.reconcileSubscriptionAccessAt(ctx, user, afterEnd.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	second, _ := st.GetAccountQuotaState(ctx, user.ID)
 	if !second.EffectiveAt.Equal(first.EffectiveAt) || second.RemainingIncludedQuota != first.RemainingIncludedQuota {
-		t.Fatalf("repeated read reconciliation re-armed quota: first=%+v second=%+v", first, second)
+		t.Fatalf("repeated read reconciliation re-armed paused quota: first=%+v second=%+v", first, second)
 	}
 }
 
@@ -172,15 +173,19 @@ func TestPaymentFailureGraceAndQuotaPeriodResetAreIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile, _ := st.GetAccountBillingProfile(ctx, user.ID)
-	if profile != nil && profile.PricingRuleVersion == "plan:FREE" {
-		t.Fatalf("payment failure downgraded before the explicit 3-day grace elapsed: %+v", profile)
+	if profile != nil && profile.PricingRuleVersion == "plan:"+store.BillingPlanPaused {
+		t.Fatalf("payment failure paused before the explicit 3-day grace elapsed: %+v", profile)
 	}
 	if err := h.reconcileSubscriptionAccessAt(ctx, user, time.Now().UTC().Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	profile, _ = st.GetAccountBillingProfile(ctx, user.ID)
-	if profile == nil || profile.PricingRuleVersion != "plan:FREE" {
-		t.Fatalf("payment failure did not downgrade after the explicit 14-day grace: %+v", profile)
+	if profile == nil || profile.PricingRuleVersion != "plan:"+store.BillingPlanPaused {
+		t.Fatalf("payment failure did not pause after the explicit 3-day grace: %+v", profile)
+	}
+	quotaState, _ := st.GetAccountQuotaState(ctx, user.ID)
+	if quotaState == nil || quotaState.ProxyAccessState != "paused" || quotaState.SuspendState == "suspended" {
+		t.Fatalf("payment failure must pause traffic without locking console login: %+v", quotaState)
 	}
 	if err := h.restoreQuotaGroupForPlan(ctx, user.ID, &store.BillingPlan{IncludedQuotaBytes: 20 << 30}); err != nil {
 		t.Fatal(err)
@@ -263,16 +268,16 @@ func TestExpiredPlusPreservesOverageAndPaidRestorationIsIdempotent(t *testing.T)
 	if err := h.reconcileSubscriptionAccessAt(ctx, user, now); err != nil {
 		t.Fatal(err)
 	}
-	downgraded, _ := st.GetAccountQuotaState(ctx, user.ID)
-	if want := int64(-14 * (1 << 30)); downgraded.RemainingIncludedQuota != want {
-		t.Fatalf("Free downgrade must preserve 19GiB already used and expose overage, got remaining=%d want=%d", downgraded.RemainingIncludedQuota, want)
+	pausedState, _ := st.GetAccountQuotaState(ctx, user.ID)
+	if pausedState.RemainingIncludedQuota != 0 || pausedState.ProxyAccessState != "paused" {
+		t.Fatalf("expired paid subscription must enter paused mode with 0 quota, got %+v", pausedState)
 	}
 	if err := h.reconcileSubscriptionAccessAt(ctx, user, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	repeated, _ := st.GetAccountQuotaState(ctx, user.ID)
-	if repeated.RemainingIncludedQuota != downgraded.RemainingIncludedQuota || !repeated.EffectiveAt.Equal(downgraded.EffectiveAt) {
-		t.Fatalf("repeated downgrade reconciliation changed quota: first=%+v repeated=%+v", downgraded, repeated)
+	if repeated.RemainingIncludedQuota != pausedState.RemainingIncludedQuota || !repeated.EffectiveAt.Equal(pausedState.EffectiveAt) {
+		t.Fatalf("repeated pause reconciliation mutated state: first=%+v repeated=%+v", pausedState, repeated)
 	}
 
 	periodStart := time.Now().UTC().Add(-24 * time.Hour)
@@ -288,8 +293,8 @@ func TestExpiredPlusPreservesOverageAndPaidRestorationIsIdempotent(t *testing.T)
 	}
 	restoredQuota, _ := st.GetAccountQuotaState(ctx, user.ID)
 	restoredProfile, _ := st.GetAccountBillingProfile(ctx, user.ID)
-	if restoredQuota.RemainingIncludedQuota != 1<<30 || restoredProfile.IncludedQuotaBytes != 20<<30 {
-		t.Fatalf("paid restoration must restore Plus while retaining 19GiB usage exactly once: quota=%+v profile=%+v", restoredQuota, restoredProfile)
+	if restoredQuota.RemainingIncludedQuota != 20<<30 || restoredQuota.ProxyAccessState != "active" || restoredProfile.IncludedQuotaBytes != 20<<30 {
+		t.Fatalf("paid restoration must reactivate traffic with plan quota: quota=%+v profile=%+v", restoredQuota, restoredProfile)
 	}
 	updatedUser, _ := st.GetUserByID(ctx, user.ID)
 	if store.MonthlyQuotaGroup(updatedUser) != store.MonthlyPlusQuotaLimitGroup {
@@ -320,8 +325,8 @@ func TestSubscriptionSweepProcessesBoundedPagesUntilAllUsersAreReconciled(t *tes
 	}
 	for _, user := range ordered[:2] {
 		profile, _ := st.GetAccountBillingProfile(ctx, user.ID)
-		if profile == nil || profile.PricingRuleVersion != "plan:FREE" {
-			t.Fatalf("first page account %s was not reconciled: %+v", user.ID, profile)
+		if profile == nil || profile.PricingRuleVersion != "plan:"+store.BillingPlanPaused {
+			t.Fatalf("first page account %s was not reconciled to paused: %+v", user.ID, profile)
 		}
 	}
 	nextCursor, processed, err := ReconcileSubscriptionAccessBatch(ctx, st, now, cursor, 2)
@@ -329,8 +334,8 @@ func TestSubscriptionSweepProcessesBoundedPagesUntilAllUsersAreReconciled(t *tes
 		t.Fatalf("second sweep batch did not finish and wrap: cursor=%q processed=%d err=%v", nextCursor, processed, err)
 	}
 	profile, _ := st.GetAccountBillingProfile(ctx, ordered[2].ID)
-	if profile == nil || profile.PricingRuleVersion != "plan:FREE" {
-		t.Fatalf("last account was not reconciled by sweep: %+v", profile)
+	if profile == nil || profile.PricingRuleVersion != "plan:"+store.BillingPlanPaused {
+		t.Fatalf("last account was not reconciled to paused by sweep: %+v", profile)
 	}
 }
 
@@ -374,7 +379,7 @@ func TestMissingStripePeriodGetsOnlyBoundedRetryWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile, _ = st.GetAccountBillingProfile(ctx, user.ID)
-	if profile.PricingRuleVersion != "plan:FREE" {
+	if profile.PricingRuleVersion != "plan:"+store.BillingPlanPaused {
 		t.Fatalf("missing Stripe period granted indefinite paid access: %+v", profile)
 	}
 }
@@ -413,11 +418,11 @@ func TestAgentClientListPausesAccessAfterOverQuotaDowngrade(t *testing.T) {
 		}
 	}
 	if found {
-		t.Fatal("newly downgraded over-quota user must pause configuration delivery")
+		t.Fatal("expired subscription user must pause configuration delivery")
 	}
 	quota, _ := st.GetAccountQuotaState(ctx, user.ID)
-	if quota.RemainingIncludedQuota != defaultFreeQuotaBytes-19*(1<<30) {
-		t.Fatalf("agent reconciliation did not preserve consumed quota: %+v", quota)
+	if quota.RemainingIncludedQuota != 0 || quota.ProxyAccessState != "paused" {
+		t.Fatalf("agent reconciliation did not pause expired account: %+v", quota)
 	}
 }
 
@@ -509,8 +514,8 @@ func TestRefundReconciliationRequiresExplicitCompletedFullRefund(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile, _ = st.GetAccountBillingProfile(ctx, user.ID)
-	if profile.PricingRuleVersion != "plan:FREE" || profile.IncludedQuotaBytes != defaultFreeQuotaBytes {
-		t.Fatalf("completed full refund did not revoke paid entitlement to Free 3GiB: %+v", profile)
+	if profile.PricingRuleVersion != "plan:"+store.BillingPlanPaused || profile.IncludedQuotaBytes != 0 {
+		t.Fatalf("completed full refund did not revoke paid entitlement to paused: %+v", profile)
 	}
 	subscriptions, _ := st.ListSubscriptionsByUser(ctx, user.ID)
 	if len(subscriptions) != 1 || subscriptions[0].Status != "refunded" {

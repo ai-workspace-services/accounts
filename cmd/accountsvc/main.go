@@ -326,45 +326,6 @@ func (a *metricsAdapter) FetchSubscriptionStates(ctx context.Context, userIDs []
 	return states, nil
 }
 
-func ensureSandboxUser(ctx context.Context, st store.Store, logger *slog.Logger) error {
-	sandboxUser, err := st.GetUserByEmail(ctx, SandboxEmail)
-	if err != nil && !errors.Is(err, store.ErrUserNotFound) {
-		return fmt.Errorf("lookup sandbox user: %w", err)
-	}
-
-	if sandboxUser != nil {
-		return nil
-	}
-
-	hashed, err := bcrypt.GenerateFromPassword([]byte("Sandbox123!"), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash sandbox password: %w", err)
-	}
-
-	expiresAt := time.Now().UTC().Add(time.Hour)
-	if sandboxUser == nil {
-		user := &store.User{
-			Name:               "Sandbox",
-			Email:              SandboxEmail,
-			EmailVerified:      true,
-			PasswordHash:       string(hashed),
-			Level:              store.LevelUser,
-			Role:               store.RoleReadOnly,
-			Groups:             []string{"User", "Sandbox", "ReadOnly Role"},
-			Permissions:        []string{},
-			Active:             true,
-			ProxyUUIDExpiresAt: &expiresAt,
-		}
-		if err := st.CreateUser(ctx, user); err != nil {
-			return fmt.Errorf("create sandbox user: %w", err)
-		}
-		if logger != nil {
-			logger.Info("sandbox experience user created", "email", SandboxEmail)
-		}
-	}
-	return nil
-}
-
 func ensureRootUser(ctx context.Context, st store.Store, logger *slog.Logger) error {
 	users, err := st.ListUsers(ctx)
 	if err != nil {
@@ -910,22 +871,45 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 
 	defaults := []store.BillingPlan{
 		{
-			PlanID:             store.BillingPlanFree,
-			DisplayName:        "Free",
-			Kind:               "subscription",
-			IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, // 5 GiB per natural month
-			PackageName:        "free",
+			PlanID:             store.BillingPlanWhitelistFree,
+			DisplayName:        "白名单免费体验组",
+			Kind:               "whitelist_group",
+			IncludedQuotaBytes: 5 * 1024 * 1024 * 1024, // 5 GiB per natural month (configurable)
+			PackageName:        "whitelist",
 			PriceAmount:        0,
 			PriceCurrency:      "CNY",
 			PriceUnit:          "month",
 			Features: map[string]any{
-				"family":      "free",
-				"tier_rank":   0,
+				"family":        "whitelist",
+				"tier_rank":     0,
+				"internal_only": true,
+				"quota_cycle":   "natural_month",
+				"allowed_pools": []string{"Media-Pool"},
+				"fast_lane":     map[string]any{"mode": "none"},
+				"dunning":       map[string]any{"policy": "none", "grace_days": 3},
+				"description":   "白名单免费用户默认仅开放基础共享节点（Media-Pool），月度免费额度可在管理台调整。",
+			},
+			Active:    true,
+			SortOrder: 5,
+		},
+		{
+			PlanID:             store.BillingPlanPlus,
+			DisplayName:        "Plus · 20 GB",
+			Kind:               "subscription",
+			IncludedQuotaBytes: 20 * 1024 * 1024 * 1024, // 20 GiB per month
+			PackageName:        "plus",
+			PriceAmount:        2000,
+			PriceCurrency:      "CNY",
+			PriceUnit:          "month",
+			Features: map[string]any{
+				"family":      "plus",
+				"tier_rank":   10,
 				"quota_cycle": "natural_month",
-				"fast_lane":   map[string]any{"mode": "quota"},
-				"dunning":     map[string]any{"grace_days": 3},
+				"fast_lane":   map[string]any{"mode": "none"},
+				"dunning":     map[string]any{"policy": "pause_traffic", "grace_days": 3},
+				"audience":    "订阅用户",
 				"comparison_matrix": map[string]any{
-					"resources": "共享资源池",
+					"resources": "Media-Pool 共享资源池",
 					"exit_ip":   "共享出口",
 				},
 			},
@@ -933,8 +917,8 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 			SortOrder: 10,
 		},
 		{
-			PlanID:             "PLUS-MONTHLY-2026",
-			DisplayName:        "Plus",
+			PlanID:             store.BillingPlanPlusMonthly2026,
+			DisplayName:        "Plus · 30 GB",
 			Kind:               "subscription",
 			IncludedQuotaBytes: 30 * 1024 * 1024 * 1024, // 30 GiB per month
 			PackageName:        "plus",
@@ -945,20 +929,20 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 				"family":      "plus",
 				"tier_rank":   10,
 				"quota_cycle": "natural_month",
-				"fast_lane":   map[string]any{"mode": "quota"},
-				"dunning":     map[string]any{"grace_days": 3},
+				"fast_lane":   map[string]any{"mode": "none"},
+				"dunning":     map[string]any{"policy": "pause_traffic", "grace_days": 3},
 				"audience":    "订阅用户",
 				"comparison_matrix": map[string]any{
-					"resources": "共享资源池",
+					"resources": "Media-Pool 共享资源池",
 					"exit_ip":   "共享出口",
 				},
 			},
 			Active:    true,
-			SortOrder: 20,
+			SortOrder: 15,
 		},
 		{
-			PlanID:              "PRO-MONTHLY-2026",
-			DisplayName:         "Pro",
+			PlanID:              store.BillingPlanProMonthlyV2,
+			DisplayName:         "Pro 月付",
 			Kind:                "subscription",
 			IncludedQuotaBytes:  50 * 1024 * 1024 * 1024, // 50 GiB VPS per month
 			HighSpeedQuotaBytes: 30 * 1024 * 1024 * 1024, // 30 GiB high-speed per month
@@ -971,16 +955,41 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 				"tier_rank":   20,
 				"quota_cycle": "natural_month",
 				"fast_lane":   map[string]any{"mode": "quota"},
-				"dunning":     map[string]any{"grace_days": 3},
+				"dunning":     map[string]any{"policy": "pause_traffic", "grace_days": 3},
 				"audience":    "订阅用户",
 				"highlight":   true,
 				"comparison_matrix": map[string]any{
-					"resources": "PRO专属资源池",
-					"exit_ip":   "Pro专属节点",
+					"resources": "50GB Media-Pool + 30GB Pro-EC2-Pool",
+					"exit_ip":   "Pro 专属高速节点",
 				},
 			},
 			Active:    true,
-			SortOrder: 30,
+			SortOrder: 20,
+		},
+		{
+			PlanID:              store.BillingPlanProYearlyV2,
+			DisplayName:         "Pro 年付",
+			Kind:                "subscription",
+			IncludedQuotaBytes:  50 * 1024 * 1024 * 1024, // 50 GiB VPS per natural month
+			HighSpeedQuotaBytes: 30 * 1024 * 1024 * 1024, // 30 GiB high-speed per natural month
+			PackageName:         "pro",
+			PriceAmount:         50000,
+			PriceCurrency:       "CNY",
+			PriceUnit:           "year",
+			Features: map[string]any{
+				"family":      "pro",
+				"tier_rank":   20,
+				"quota_cycle": "natural_month",
+				"fast_lane":   map[string]any{"mode": "quota"},
+				"dunning":     map[string]any{"policy": "pause_traffic", "grace_days": 3},
+				"audience":    "订阅用户",
+				"comparison_matrix": map[string]any{
+					"resources": "50GB/月 Media-Pool + 30GB/月 Pro-EC2-Pool",
+					"exit_ip":   "Pro 专属高速节点",
+				},
+			},
+			Active:    true,
+			SortOrder: 25,
 		},
 		{
 			PlanID:             "CUSTOM-NODE-MONTHLY-2026",
@@ -997,7 +1006,7 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 				"checkout_mode": "subscription",
 				"audience":      "订阅用户",
 				"quota_label":   "独享IP · 独享节点",
-				"dunning":       map[string]any{"grace_days": 3},
+				"dunning":       map[string]any{"policy": "pause_traffic", "grace_days": 3},
 				"comparison_matrix": map[string]any{
 					"resources":  "独享节点",
 					"exit_ip":    "独享IP",
@@ -1023,7 +1032,7 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 				"price_unit_label": "小时/次",
 				"audience":         "面向非订阅用户的付费服务",
 				"description":      "支持：MacOS Windows Linux IOS Android，不支持：国产华为纯血鸿蒙系统",
-				"dunning":          map[string]any{"grace_days": 3},
+				"dunning":          map[string]any{"policy": "none", "grace_days": 3},
 				"comparison_matrix": map[string]any{
 					"support": "MacOS / Windows / Linux / IOS / Android（不支持国产华为纯血鸿蒙系统）",
 				},
@@ -1207,9 +1216,6 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			return err
 		}
 
-		if err := ensureSandboxUser(ctx, st, logger); err != nil {
-			logger.Warn("failed to ensure sandbox user", "err", err)
-		}
 		if err := ensureReviewUser(ctx, st, cfg.ReviewAccount, logger); err != nil {
 			logger.Warn("failed to ensure review user", "err", err)
 		}

@@ -11,6 +11,9 @@ import (
 )
 
 func planChangeQuotaPaused(change store.AdminPlanGroupChange) bool {
+	if change.SetEntitlement && (strings.EqualFold(strings.TrimSpace(change.PackageName), "paused") || strings.EqualFold(strings.TrimSpace(change.PlanID), store.BillingPlanPaused)) {
+		return true
+	}
 	from, until := change.ExpectedValidFrom, change.ExpectedValidUntil
 	if change.SetValidFrom {
 		from = change.ValidFrom

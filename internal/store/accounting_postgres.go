@@ -416,6 +416,18 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 	if state.PeriodEnd != nil {
 		periodEnd = state.PeriodEnd.UTC()
 	}
+	proxyAccessState := strings.TrimSpace(state.ProxyAccessState)
+	if proxyAccessState == "" {
+		proxyAccessState = "active"
+	}
+	throttleState := strings.TrimSpace(state.ThrottleState)
+	if throttleState == "" {
+		throttleState = "normal"
+	}
+	suspendState := strings.TrimSpace(state.SuspendState)
+	if suspendState == "" {
+		suspendState = "active"
+	}
 	return s.db.QueryRowContext(
 		ctx,
 		query,
@@ -425,9 +437,9 @@ func (s *postgresStore) UpsertAccountQuotaState(ctx context.Context, state *Acco
 		state.CurrentBalance,
 		state.Arrears,
 		arrearsSince,
-		strings.TrimSpace(state.ThrottleState),
-		strings.TrimSpace(state.SuspendState),
-		strings.TrimSpace(state.ProxyAccessState),
+		throttleState,
+		suspendState,
+		proxyAccessState,
 		state.LastRatedBucketAt,
 		periodStart,
 		periodEnd,

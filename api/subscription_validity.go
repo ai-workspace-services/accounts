@@ -233,23 +233,7 @@ func (h *handler) reconcileSubscriptionAccessAt(ctx context.Context, user *store
 		return nil
 	}
 
-	if store.MonthlyQuotaGroup(user) != store.MonthlyFreeQuotaLimitGroup {
-		groups := make([]string, 0, len(user.Groups)+1)
-		for _, group := range user.Groups {
-			if store.IsMonthlyQuotaGroup(group) || group == "segment:subscribed" || group == "segment:monthly" || group == "segment:yearly" {
-				continue
-			}
-			groups = append(groups, group)
-		}
-		groups = append(groups, store.MonthlyFreeQuotaLimitGroup, "segment:free")
-		user.Groups = normalizeGroups(groups)
-		if err := h.store.UpdateUser(ctx, user); err != nil {
-			return err
-		}
-	}
-	// The group controls config eligibility; the billing profile must also be
-	// reset so an expired paid account receives the actual Free catalog allowance.
-	return h.downgradeToFreePlan(ctx, user.ID)
+	return h.pauseTrafficOrFallbackWhitelist(ctx, user.ID)
 }
 
 func subscriptionMetaTime(meta map[string]any, key string) time.Time {

@@ -92,12 +92,12 @@ func TestRegisterCreatesActiveAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load new account billing profile: %v", err)
 	}
-	const freeQuota = int64(3 * 1024 * 1024 * 1024)
-	if profile.PackageName != "free" || profile.IncludedQuotaBytes != freeQuota || profile.PricingRuleVersion != "plan:FREE" {
-		t.Fatalf("new registration must receive catalog Free 3GiB: %+v", profile)
+	const trialQuota = store.DefaultOneTimeTrialQuotaBytes
+	if profile.PackageName != "trial" || profile.IncludedQuotaBytes != trialQuota || profile.PricingRuleVersion != "plan:"+store.BillingPlanTrialOnce5GB {
+		t.Fatalf("new registration must receive 5GiB one-time trial: %+v", profile)
 	}
 	quota, err := spy.GetAccountQuotaState(context.Background(), created.ID)
-	if err != nil || quota.RemainingIncludedQuota != freeQuota {
-		t.Fatalf("new registration quota mismatch: state=%+v err=%v", quota, err)
+	if err != nil || quota.RemainingIncludedQuota != trialQuota || quota.PeriodEnd != nil {
+		t.Fatalf("new registration trial quota mismatch: state=%+v err=%v", quota, err)
 	}
 }

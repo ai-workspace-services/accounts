@@ -11,47 +11,19 @@ import (
 	"account/internal/store"
 )
 
-// internalSandboxGuest returns the sandbox user's proxy access metadata for the
-// Console Guest/Demo experience.
+// internalSandboxGuest returns 410 Gone because the sandbox account has been retired.
 //
 // Protected by InternalAuthMiddleware via /api/internal.
 func (h *handler) internalSandboxGuest(c *gin.Context) {
-	if h == nil || h.store == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "store_not_configured"})
-		return
-	}
-
-	user, err := h.store.GetUserByEmail(c.Request.Context(), sandboxUserEmail)
-	if err != nil {
-		if errors.Is(err, store.ErrUserNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "sandbox_missing"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "sandbox_lookup_failed"})
-		return
-	}
-
-	if err := h.ensureSandboxProxyUUID(c.Request.Context(), user); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "sandbox_uuid_rotation_failed"})
-		return
-	}
-
-	proxyUUID := strings.TrimSpace(user.ProxyUUID)
-	expiresAt := ""
-	if user.ProxyUUIDExpiresAt != nil {
-		expiresAt = user.ProxyUUIDExpiresAt.UTC().Format(time.RFC3339)
-	}
-	if proxyUUID == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error":   "proxy_uuid_unavailable",
-			"message": "proxy UUID is not provisioned for the sandbox account",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"email":              sandboxUserEmail,
-		"proxyUuid":          proxyUUID,
-		"proxyUuidExpiresAt": expiresAt,
+	c.JSON(http.StatusGone, gin.H{
+		"error":   "sandbox_retired",
+		"message": "sandbox demo account has been retired",
 	})
 }
+
+var (
+	_ = errors.New
+	_ = strings.TrimSpace
+	_ = time.Now
+	_ = store.ErrUserNotFound
+)
