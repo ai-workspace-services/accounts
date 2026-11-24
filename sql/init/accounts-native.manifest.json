@@ -6,7 +6,7 @@
   "source_files": [
     {
       "path": "cmd/accountsvc/main.go",
-      "sha256": "f8ad7ee399b7030b70851b51741839329ed3cd116ecb9fdc65552613af99d90f"
+      "sha256": "a29d2db228a8628dd82d54a0ed2d6616b29aea4016b9d389fb11b4d560ea029d"
     },
     {
       "path": "internal/model/admin_setting.go",
@@ -158,7 +158,7 @@
     },
     {
       "path": "sql/migrations/2026112301_decommission_free_payg_whitelist.up.sql",
-      "sha256": "a2fb6a64cb0358d2d38847eaff9a5d6308590a22f3586fa6781573d4fdb6cf76"
+      "sha256": "b47098fe41ff4dc872d9c8158ec1fc67f2f1e07146cc17d7317ed13c3abe02c7"
     },
     {
       "path": "sql/schema.sql",
