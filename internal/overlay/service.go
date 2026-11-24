@@ -1917,7 +1917,7 @@ func (s *Service) PolicyArtifact(ctx context.Context, enrollmentToken string, ge
 	if err != nil {
 		return nil, err
 	}
-	raw, err := json.Marshal(policy)
+	raw, err := json.Marshal(clientPolicyArtifact(policy))
 	if err != nil {
 		return nil, err
 	}
@@ -1959,7 +1959,7 @@ func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, 
 		if err != nil {
 			return SignedConfig{}, "", err
 		}
-		raw, err := json.Marshal(policy)
+		raw, err := json.Marshal(clientPolicyArtifact(policy))
 		if err != nil {
 			return SignedConfig{}, "", err
 		}
@@ -1994,6 +1994,14 @@ func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, 
 
 func defaultPolicyArtifact(networkID string, generation uint64) PolicyArtifact {
 	return PolicyArtifact{SchemaVersion: 1, CompilerVersion: PolicyCompilerVersion, NetworkID: networkID, Revision: generation, DefaultAction: "deny", ProtectedFlows: []string{"control:controller-session", "control:gateway-apply-result", "control:gateway-heartbeat", "control:gateway-policy-artifact", "control:gateway-snapshot"}, Rules: []PolicyRule{}}
+}
+
+// clientPolicyArtifact projects a network's gateway policy into the strict
+// canonical artifact contract expected by XConnect-One's policy.Consume
+// (which requires default_action="deny" and does not enforce gateway forwarding
+// rules locally). Gateways receive the full PolicyArtifact via GatewayConfig.
+func clientPolicyArtifact(policy PolicyArtifact) PolicyArtifact {
+	return defaultPolicyArtifact(policy.NetworkID, policy.Revision)
 }
 
 func (s *Service) policyArtifact(network NetworkRecord) (PolicyArtifact, error) {
