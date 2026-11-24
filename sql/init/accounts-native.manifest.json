@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "migration_version": 2026112301,
+  "migration_version": 2026112401,
   "schema_sha256": "6d76daecc76cc71b958a95d654df4e6822660c3186a09e952b950d2ad2857798",
   "business_table_count": 80,
   "source_files": [
@@ -159,6 +159,10 @@
     {
       "path": "sql/migrations/2026112301_decommission_free_payg_whitelist.up.sql",
       "sha256": "b47098fe41ff4dc872d9c8158ec1fc67f2f1e07146cc17d7317ed13c3abe02c7"
+    },
+    {
+      "path": "sql/migrations/2026112401_cleanup_legacy_free_profiles_and_segments.up.sql",
+      "sha256": "c8d847f8bf63001e6c05c11a4917e76526e194bbe87707d5915080322fb4a064"
     },
     {
       "path": "sql/schema.sql",
