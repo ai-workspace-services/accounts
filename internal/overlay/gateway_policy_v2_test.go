@@ -386,3 +386,94 @@ func TestAdminUpdatePolicyValidation(t *testing.T) {
 		t.Fatalf("expected non-null empty rules array in JSON: %s err=%v", raw, err)
 	}
 }
+
+func TestClientPolicyArtifactCompatibilityWithDefaultAllow(t *testing.T) {
+	service, router, _ := newOverlayHTTPTest(t)
+	owner := "11111111-2222-4333-8444-555555555555"
+	gwKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+
+	gwJoin, err := service.AdminCreateInvite(t.Context(), owner, "https://accounts.example.test", AdminInviteRequest{
+		NetworkID: "sit-private",
+		DeviceID:  "gw-sit-1",
+		Platform:  "linux",
+		Role:      RoleGateway,
+		ExpiresAt: service.now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gwToken := strings.TrimPrefix(strings.Split(gwJoin.JoinURI, "?")[0], "xconnect://join/")
+	gwExchange, err := service.Exchange(t.Context(), ExchangeRequest{
+		JoinToken:          gwToken,
+		DeviceID:           "gw-sit-1",
+		Platform:           "linux",
+		Role:               RoleGateway,
+		WireGuardPublicKey: gwKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oneEnroll, err := service.UserEnrollDevice(t.Context(), owner, UserEnrollRequest{
+		NetworkID:          "sit-private",
+		DeviceID:           "one-client-compat",
+		Platform:           "darwin",
+		WireGuardPublicKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{11}, 32)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.AdminUpdatePolicy(t.Context(), owner, "sit-private", PolicyArtifact{
+		DefaultAction: "allow",
+		Rules: []PolicyRule{
+			{
+				ID:                 "allow-all-peers",
+				Action:             "allow",
+				SourceDevices:      []string{"*"},
+				DestinationDevices: []string{"*"},
+				Protocols:          []string{"all"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("AdminUpdatePolicy(default=allow) error: %v", err)
+	}
+
+	// Gateway receives full V2 policy with default_action="allow" and wildcard rule.
+	gwCfg, _, err := service.GatewayConfig(t.Context(), gwExchange.EnrollmentToken, true)
+	if err != nil {
+		t.Fatalf("GatewayConfig(v2) error: %v", err)
+	}
+	if gwCfg.Policy == nil || gwCfg.Policy.DefaultAction != "allow" || len(gwCfg.Policy.Rules) != 1 {
+		t.Fatalf("expected gateway policy default_action=allow with 1 rule, got %#v", gwCfg.Policy)
+	}
+
+	// XConnect-One client receives canonical default_action="deny" artifact whose digest matches SignedConfig.Policy.
+	oneReq := httptest.NewRequest(http.MethodGet, "/api/overlay/v1/enrollment/signed-config?device_id=one-client-compat&network_id=sit-private", nil)
+	oneReq.Header.Set("Authorization", "Bearer "+oneEnroll.EnrollmentToken)
+	oneReq.Header.Set("Accept", SignedConfigV2MediaType)
+	oneResp := httptest.NewRecorder()
+	router.ServeHTTP(oneResp, oneReq)
+	if oneResp.Code != http.StatusOK {
+		t.Fatalf("enrollment signed-config v2 status=%d body=%s", oneResp.Code, oneResp.Body.String())
+	}
+	var oneCfg SignedConfig
+	if err := json.Unmarshal(oneResp.Body.Bytes(), &oneCfg); err != nil || oneCfg.Policy == nil {
+		t.Fatalf("decode enrollment signed-config v2 err=%v cfg=%#v", err, oneCfg)
+	}
+
+	artReq := httptest.NewRequest(http.MethodGet, oneCfg.Policy.Path, nil)
+	artReq.Header.Set("Authorization", "Bearer "+oneEnroll.EnrollmentToken)
+	artResp := httptest.NewRecorder()
+	router.ServeHTTP(artResp, artReq)
+	if artResp.Code != http.StatusOK || artResp.Header().Get("Content-Type") != PolicyMediaType {
+		t.Fatalf("policy artifact status=%d ct=%q body=%s", artResp.Code, artResp.Header().Get("Content-Type"), artResp.Body.String())
+	}
+	var clientPolicy PolicyArtifact
+	if err := json.Unmarshal(artResp.Body.Bytes(), &clientPolicy); err != nil {
+		t.Fatalf("decode client policy artifact: %v", err)
+	}
+	if clientPolicy.DefaultAction != "deny" || len(clientPolicy.Rules) != 0 || clientPolicy.Revision != oneCfg.Generation {
+		t.Fatalf("expected canonical client policy artifact (default=deny, rules=[], rev=%d), got %#v", oneCfg.Generation, clientPolicy)
+	}
+}
