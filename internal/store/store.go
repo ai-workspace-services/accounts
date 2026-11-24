@@ -388,6 +388,16 @@ type TrafficMinuteBucket struct {
 	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
+// AccountTrafficNodeSummary aggregates traffic counters for one account grouped by node and pool.
+type AccountTrafficNodeSummary struct {
+	NodeID        string
+	RoutingPool   string
+	UplinkBytes   int64
+	DownlinkBytes int64
+	TotalBytes    int64
+	LastBucketAt  *time.Time
+}
+
 type BillingLedgerEntry struct {
 	ID                 string    `json:"id"`
 	AccountUUID        string    `json:"accountUuid"`
@@ -886,6 +896,19 @@ type Store interface {
 	GetTenantMembership(ctx context.Context, tenantID, userID string) (*TenantMembership, error)
 	GetXWorkmateProfile(ctx context.Context, tenantID, userID, scope string) (*XWorkmateProfile, error)
 	UpsertXWorkmateProfile(ctx context.Context, profile *XWorkmateProfile) error
+}
+
+// TrafficSummaryStore is optionally implemented by stores that aggregate account
+// traffic buckets in storage without loading every minute bucket into memory.
+type TrafficSummaryStore interface {
+	SummarizeTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time) ([]AccountTrafficNodeSummary, error)
+	CountTrafficMinuteBuckets(ctx context.Context) (int64, error)
+}
+
+// CompactTrafficBucketsStore is optionally implemented by stores that filter
+// zero-byte buckets and roll up older minute buckets into hourly buckets.
+type CompactTrafficBucketsStore interface {
+	ListCompactTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time, minutePrecisionAfter time.Time) ([]TrafficMinuteBucket, error)
 }
 
 // Domain level errors returned by the store implementation.

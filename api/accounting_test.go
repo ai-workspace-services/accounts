@@ -738,3 +738,189 @@ func TestInternalNetworkIdentitiesEndpoint(t *testing.T) {
 		t.Fatalf("expected exporter identity in payload, got %#v", payload.Identities)
 	}
 }
+
+func TestAccountUsageBucketsCompactsZeroRowsAndRollsUpOlderHours(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+
+	if err := st.CreateUser(ctx, &store.User{
+		Name:          "Compact Buckets User",
+		Email:         "compact-usage@example.com",
+		PasswordHash:  "hashed",
+		EmailVerified: true,
+		Role:          store.RoleUser,
+		Level:         store.LevelUser,
+		Active:        true,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	user, err := st.GetUserByEmail(ctx, "compact-usage@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	sessionToken := "compact-usage-session"
+	if err := st.CreateSession(ctx, sessionToken, user.ID, time.Now().UTC().Add(time.Hour)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	oldHour := now.Add(-48 * time.Hour).Truncate(time.Hour)
+	recentMinuteA := now.Add(-2 * time.Hour)
+	recentMinuteB := now.Add(-90 * time.Minute)
+
+	seedBuckets := []store.TrafficMinuteBucket{
+		// Two non-zero rows in the same old hour (>25h ago) -> rolled into 1 hourly row
+		{
+			BucketStart:   oldHour.Add(5 * time.Minute),
+			NodeID:        "node-jp-1",
+			AccountUUID:   user.ID,
+			Region:        "jp",
+			RoutingPool:   "VIP-Edge-Pool",
+			UplinkBytes:   100,
+			DownlinkBytes: 200,
+			TotalBytes:    300,
+			Multiplier:    1.0,
+			RatingStatus:  store.RatingStatusRated,
+		},
+		{
+			BucketStart:   oldHour.Add(25 * time.Minute),
+			NodeID:        "node-jp-1",
+			AccountUUID:   user.ID,
+			Region:        "jp",
+			RoutingPool:   "VIP-Edge-Pool",
+			UplinkBytes:   50,
+			DownlinkBytes: 150,
+			TotalBytes:    200,
+			Multiplier:    1.0,
+			RatingStatus:  store.RatingStatusRated,
+		},
+		// Zero-byte idle heartbeat row in old hour -> stripped by default
+		{
+			BucketStart: oldHour.Add(40 * time.Minute),
+			NodeID:      "node-jp-1",
+			AccountUUID: user.ID,
+			Region:      "jp",
+			RoutingPool: "VIP-Edge-Pool",
+		},
+		// Two recent non-zero rows (<=25h ago) -> preserved at 1-minute precision
+		{
+			BucketStart:   recentMinuteA,
+			NodeID:        "node-jp-1",
+			AccountUUID:   user.ID,
+			Region:        "jp",
+			RoutingPool:   "VIP-Edge-Pool",
+			UplinkBytes:   400,
+			DownlinkBytes: 600,
+			TotalBytes:    1000,
+			Multiplier:    1.0,
+			RatingStatus:  store.RatingStatusRated,
+		},
+		{
+			BucketStart:   recentMinuteB,
+			NodeID:        "node-jp-1",
+			AccountUUID:   user.ID,
+			Region:        "jp",
+			RoutingPool:   "VIP-Edge-Pool",
+			UplinkBytes:   150,
+			DownlinkBytes: 250,
+			TotalBytes:    400,
+			Multiplier:    1.0,
+			RatingStatus:  store.RatingStatusRated,
+		},
+		// Recent zero-byte idle row -> stripped by default
+		{
+			BucketStart: now.Add(-15 * time.Minute),
+			NodeID:      "node-jp-1",
+			AccountUUID: user.ID,
+			Region:      "jp",
+			RoutingPool: "VIP-Edge-Pool",
+		},
+	}
+	for i := range seedBuckets {
+		if err := st.UpsertTrafficMinuteBucket(ctx, &seedBuckets[i]); err != nil {
+			t.Fatalf("seed bucket %d: %v", i, err)
+		}
+	}
+
+	router := gin.New()
+	RegisterRoutes(router, WithStore(st), WithEmailVerification(false))
+
+	// 1. Default compact mode should strip zero-byte rows, merge oldHour into 1 row, and keep 2 recent rows (= 3 total).
+	bucketsReq := httptest.NewRequest(http.MethodGet, "/api/account/usage/buckets", nil)
+	bucketsReq.Header.Set("Authorization", "Bearer "+sessionToken)
+	bucketsRec := httptest.NewRecorder()
+	router.ServeHTTP(bucketsRec, bucketsReq)
+	if bucketsRec.Code != http.StatusOK {
+		t.Fatalf("compact buckets status=%d body=%s", bucketsRec.Code, bucketsRec.Body.String())
+	}
+	var compactPayload struct {
+		Buckets []store.TrafficMinuteBucket `json:"buckets"`
+	}
+	if err := json.Unmarshal(bucketsRec.Body.Bytes(), &compactPayload); err != nil {
+		t.Fatalf("decode compact buckets: %v", err)
+	}
+	if len(compactPayload.Buckets) != 3 {
+		t.Fatalf("expected 3 compacted non-zero buckets, got %d (%+v)", len(compactPayload.Buckets), compactPayload.Buckets)
+	}
+	var sumTotal, sumUp, sumDown int64
+	for _, b := range compactPayload.Buckets {
+		if b.TotalBytes == 0 && b.UplinkBytes == 0 && b.DownlinkBytes == 0 {
+			t.Fatalf("unexpected zero-byte bucket returned in compact mode: %+v", b)
+		}
+		sumTotal += b.TotalBytes
+		sumUp += b.UplinkBytes
+		sumDown += b.DownlinkBytes
+	}
+	if sumTotal != 1900 || sumUp != 700 || sumDown != 1200 {
+		t.Fatalf("compact rollup changed totals: total=%d up=%d down=%d", sumTotal, sumUp, sumDown)
+	}
+
+	// 2. Summary must match exact totals AND track latest bucket timestamp (including the recent zero-byte heartbeat).
+	summaryReq := httptest.NewRequest(http.MethodGet, "/api/account/usage/summary", nil)
+	summaryReq.Header.Set("Authorization", "Bearer "+sessionToken)
+	summaryRec := httptest.NewRecorder()
+	router.ServeHTTP(summaryRec, summaryReq)
+	if summaryRec.Code != http.StatusOK {
+		t.Fatalf("summary status=%d body=%s", summaryRec.Code, summaryRec.Body.String())
+	}
+	var summaryPayload struct {
+		TotalBytes    int64 `json:"totalBytes"`
+		UplinkBytes   int64 `json:"uplinkBytes"`
+		DownlinkBytes int64 `json:"downlinkBytes"`
+		LastBucketAt  *time.Time `json:"lastBucketAt"`
+		PoolBreakdown map[string]struct {
+			TotalBytes int64 `json:"totalBytes"`
+		} `json:"poolUsageBreakdown"`
+	}
+	if err := json.Unmarshal(summaryRec.Body.Bytes(), &summaryPayload); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if summaryPayload.TotalBytes != 1900 || summaryPayload.UplinkBytes != 700 || summaryPayload.DownlinkBytes != 1200 {
+		t.Fatalf("unexpected summary totals: %+v", summaryPayload)
+	}
+	if summaryPayload.LastBucketAt == nil || !summaryPayload.LastBucketAt.Equal(now.Add(-15*time.Minute)) {
+		t.Fatalf("expected lastBucketAt=%v, got %v", now.Add(-15*time.Minute), summaryPayload.LastBucketAt)
+	}
+	if summaryPayload.PoolBreakdown["VIP-Edge-Pool"].TotalBytes != 1900 {
+		t.Fatalf("unexpected pool breakdown: %+v", summaryPayload.PoolBreakdown)
+	}
+
+	// 3. ?raw=true preserves all 6 uncompacted rows.
+	rawReq := httptest.NewRequest(http.MethodGet, "/api/account/usage/buckets?raw=true", nil)
+	rawReq.Header.Set("Authorization", "Bearer "+sessionToken)
+	rawRec := httptest.NewRecorder()
+	router.ServeHTTP(rawRec, rawReq)
+	if rawRec.Code != http.StatusOK {
+		t.Fatalf("raw buckets status=%d body=%s", rawRec.Code, rawRec.Body.String())
+	}
+	var rawPayload struct {
+		Buckets []store.TrafficMinuteBucket `json:"buckets"`
+	}
+	if err := json.Unmarshal(rawRec.Body.Bytes(), &rawPayload); err != nil {
+		t.Fatalf("decode raw buckets: %v", err)
+	}
+	if len(rawPayload.Buckets) != 6 {
+		t.Fatalf("expected 6 raw buckets, got %d", len(rawPayload.Buckets))
+	}
+}

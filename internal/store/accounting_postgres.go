@@ -191,6 +191,173 @@ func (s *postgresStore) ListTrafficMinuteBucketsByAccount(ctx context.Context, a
 	return result, rows.Err()
 }
 
+func (s *postgresStore) SummarizeTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time) ([]AccountTrafficNodeSummary, error) {
+	query := `
+		SELECT
+			COALESCE(node_id, ''),
+			COALESCE(routing_pool, ''),
+			COALESCE(SUM(uplink_bytes), 0)::bigint,
+			COALESCE(SUM(downlink_bytes), 0)::bigint,
+			COALESCE(SUM(total_bytes), 0)::bigint,
+			MAX(bucket_start)
+		FROM traffic_minute_buckets
+		WHERE account_uuid = $1`
+	args := []any{strings.TrimSpace(accountUUID)}
+	if !start.IsZero() {
+		query += " AND bucket_start >= $" + strconv.Itoa(len(args)+1)
+		args = append(args, start.UTC())
+	}
+	if !end.IsZero() {
+		query += " AND bucket_start <= $" + strconv.Itoa(len(args)+1)
+		args = append(args, end.UTC())
+	}
+	query += " GROUP BY COALESCE(node_id, ''), COALESCE(routing_pool, '')"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]AccountTrafficNodeSummary, 0)
+	for rows.Next() {
+		var item AccountTrafficNodeSummary
+		var lastBucket sql.NullTime
+		if err := rows.Scan(
+			&item.NodeID,
+			&item.RoutingPool,
+			&item.UplinkBytes,
+			&item.DownlinkBytes,
+			&item.TotalBytes,
+			&lastBucket,
+		); err != nil {
+			return nil, err
+		}
+		if lastBucket.Valid {
+			ts := lastBucket.Time.UTC()
+			item.LastBucketAt = &ts
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (s *postgresStore) CountTrafficMinuteBuckets(ctx context.Context) (int64, error) {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM traffic_minute_buckets`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *postgresStore) ListCompactTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time, minutePrecisionAfter time.Time) ([]TrafficMinuteBucket, error) {
+	baseFilter := "account_uuid = $1 AND (total_bytes > 0 OR uplink_bytes > 0 OR downlink_bytes > 0)"
+	args := []any{strings.TrimSpace(accountUUID)}
+	if !start.IsZero() {
+		baseFilter += " AND bucket_start >= $" + strconv.Itoa(len(args)+1)
+		args = append(args, start.UTC())
+	}
+	if !end.IsZero() {
+		baseFilter += " AND bucket_start <= $" + strconv.Itoa(len(args)+1)
+		args = append(args, end.UTC())
+	}
+
+	var query string
+	if minutePrecisionAfter.IsZero() {
+		query = `
+			SELECT
+				bucket_start,
+				COALESCE(node_id, ''),
+				account_uuid,
+				COALESCE(region, ''),
+				COALESCE(line_code, ''),
+				COALESCE(routing_pool, ''),
+				uplink_bytes,
+				downlink_bytes,
+				total_bytes,
+				multiplier,
+				COALESCE(rating_status, ''),
+				COALESCE(source_revision, ''),
+				created_at,
+				updated_at
+			FROM traffic_minute_buckets
+			WHERE ` + baseFilter + `
+			ORDER BY bucket_start ASC, node_id ASC`
+	} else {
+		cutoffParam := "$" + strconv.Itoa(len(args)+1)
+		args = append(args, minutePrecisionAfter.UTC().Truncate(time.Hour))
+		query = `
+			SELECT
+				MIN(bucket_start) AS bucket_start,
+				COALESCE(node_id, '') AS node_id,
+				account_uuid,
+				COALESCE(region, '') AS region,
+				COALESCE(line_code, '') AS line_code,
+				COALESCE(routing_pool, '') AS routing_pool,
+				COALESCE(SUM(uplink_bytes), 0)::bigint AS uplink_bytes,
+				COALESCE(SUM(downlink_bytes), 0)::bigint AS downlink_bytes,
+				COALESCE(SUM(total_bytes), 0)::bigint AS total_bytes,
+				COALESCE(MAX(multiplier), 1)::double precision AS multiplier,
+				COALESCE(MAX(rating_status), '') AS rating_status,
+				''::text AS source_revision,
+				MIN(created_at) AS created_at,
+				MAX(updated_at) AS updated_at
+			FROM traffic_minute_buckets
+			WHERE ` + baseFilter + ` AND bucket_start < ` + cutoffParam + `
+			GROUP BY date_trunc('hour', bucket_start AT TIME ZONE 'UTC'), COALESCE(node_id, ''), account_uuid, COALESCE(region, ''), COALESCE(line_code, ''), COALESCE(routing_pool, '')
+			UNION ALL
+			SELECT
+				bucket_start,
+				COALESCE(node_id, '') AS node_id,
+				account_uuid,
+				COALESCE(region, '') AS region,
+				COALESCE(line_code, '') AS line_code,
+				COALESCE(routing_pool, '') AS routing_pool,
+				uplink_bytes,
+				downlink_bytes,
+				total_bytes,
+				multiplier,
+				COALESCE(rating_status, '') AS rating_status,
+				COALESCE(source_revision, '') AS source_revision,
+				created_at,
+				updated_at
+			FROM traffic_minute_buckets
+			WHERE ` + baseFilter + ` AND bucket_start >= ` + cutoffParam + `
+			ORDER BY bucket_start ASC, node_id ASC`
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]TrafficMinuteBucket, 0)
+	for rows.Next() {
+		var record TrafficMinuteBucket
+		if err := rows.Scan(
+			&record.BucketStart,
+			&record.NodeID,
+			&record.AccountUUID,
+			&record.Region,
+			&record.LineCode,
+			&record.RoutingPool,
+			&record.UplinkBytes,
+			&record.DownlinkBytes,
+			&record.TotalBytes,
+			&record.Multiplier,
+			&record.RatingStatus,
+			&record.SourceRevision,
+			&record.CreatedAt,
+			&record.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, record)
+	}
+	return result, rows.Err()
+}
+
 func (s *postgresStore) ListTrafficMinuteBuckets(ctx context.Context) ([]TrafficMinuteBucket, error) {
 	const query = `
 		SELECT bucket_start, node_id, account_uuid, region, line_code, routing_pool, uplink_bytes, downlink_bytes, total_bytes, multiplier, rating_status, source_revision, created_at, updated_at

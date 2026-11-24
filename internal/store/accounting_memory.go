@@ -200,6 +200,166 @@ func (s *memoryStore) ListTrafficMinuteBucketsByAccount(ctx context.Context, acc
 	return result, nil
 }
 
+func (s *memoryStore) SummarizeTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time) ([]AccountTrafficNodeSummary, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type summaryKey struct {
+		nodeID      string
+		routingPool string
+	}
+	targetAccount := strings.TrimSpace(accountUUID)
+	grouped := make(map[summaryKey]*AccountTrafficNodeSummary)
+	for _, bucket := range s.trafficMinuteBuckets {
+		if bucket.AccountUUID != targetAccount {
+			continue
+		}
+		if !start.IsZero() && bucket.BucketStart.Before(start) {
+			continue
+		}
+		if !end.IsZero() && bucket.BucketStart.After(end) {
+			continue
+		}
+		key := summaryKey{
+			nodeID:      strings.TrimSpace(bucket.NodeID),
+			routingPool: strings.TrimSpace(bucket.RoutingPool),
+		}
+		entry := grouped[key]
+		if entry == nil {
+			entry = &AccountTrafficNodeSummary{
+				NodeID:      key.nodeID,
+				RoutingPool: key.routingPool,
+			}
+			grouped[key] = entry
+		}
+		entry.UplinkBytes += bucket.UplinkBytes
+		entry.DownlinkBytes += bucket.DownlinkBytes
+		entry.TotalBytes += bucket.TotalBytes
+		ts := bucket.BucketStart.UTC()
+		if entry.LastBucketAt == nil || ts.After(*entry.LastBucketAt) {
+			entry.LastBucketAt = &ts
+		}
+	}
+
+	result := make([]AccountTrafficNodeSummary, 0, len(grouped))
+	for _, entry := range grouped {
+		result = append(result, *entry)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].NodeID != result[j].NodeID {
+			return result[i].NodeID < result[j].NodeID
+		}
+		return result[i].RoutingPool < result[j].RoutingPool
+	})
+	return result, nil
+}
+
+func (s *memoryStore) CountTrafficMinuteBuckets(ctx context.Context) (int64, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.trafficMinuteBuckets)), nil
+}
+
+func (s *memoryStore) ListCompactTrafficMinuteBucketsByAccount(ctx context.Context, accountUUID string, start, end time.Time, minutePrecisionAfter time.Time) ([]TrafficMinuteBucket, error) {
+	_ = ctx
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	targetAccount := strings.TrimSpace(accountUUID)
+	hasCutoff := !minutePrecisionAfter.IsZero()
+	cutoff := minutePrecisionAfter.UTC().Truncate(time.Hour)
+
+	type rollupKey struct {
+		hourStart   time.Time
+		nodeID      string
+		accountUUID string
+		region      string
+		lineCode    string
+		routingPool string
+	}
+	rolledUp := make(map[rollupKey]*TrafficMinuteBucket)
+	result := make([]TrafficMinuteBucket, 0)
+
+	for _, bucket := range s.trafficMinuteBuckets {
+		if bucket.AccountUUID != targetAccount {
+			continue
+		}
+		if bucket.TotalBytes == 0 && bucket.UplinkBytes == 0 && bucket.DownlinkBytes == 0 {
+			continue
+		}
+		if !start.IsZero() && bucket.BucketStart.Before(start) {
+			continue
+		}
+		if !end.IsZero() && bucket.BucketStart.After(end) {
+			continue
+		}
+		if hasCutoff && bucket.BucketStart.Before(cutoff) {
+			ts := bucket.BucketStart.UTC()
+			key := rollupKey{
+				hourStart:   ts.Truncate(time.Hour),
+				nodeID:      strings.TrimSpace(bucket.NodeID),
+				accountUUID: bucket.AccountUUID,
+				region:      strings.TrimSpace(bucket.Region),
+				lineCode:    strings.TrimSpace(bucket.LineCode),
+				routingPool: strings.TrimSpace(bucket.RoutingPool),
+			}
+			agg := rolledUp[key]
+			if agg == nil {
+				agg = &TrafficMinuteBucket{
+					BucketStart:   ts,
+					NodeID:        key.nodeID,
+					AccountUUID:   key.accountUUID,
+					Region:        key.region,
+					LineCode:      key.lineCode,
+					RoutingPool:   key.routingPool,
+					UplinkBytes:   bucket.UplinkBytes,
+					DownlinkBytes: bucket.DownlinkBytes,
+					TotalBytes:    bucket.TotalBytes,
+					Multiplier:    bucket.Multiplier,
+					RatingStatus:  bucket.RatingStatus,
+					CreatedAt:     bucket.CreatedAt,
+					UpdatedAt:     bucket.UpdatedAt,
+				}
+				rolledUp[key] = agg
+				continue
+			}
+			if ts.Before(agg.BucketStart) {
+				agg.BucketStart = ts
+			}
+			agg.UplinkBytes += bucket.UplinkBytes
+			agg.DownlinkBytes += bucket.DownlinkBytes
+			agg.TotalBytes += bucket.TotalBytes
+			if bucket.Multiplier > agg.Multiplier {
+				agg.Multiplier = bucket.Multiplier
+			}
+			if bucket.RatingStatus > agg.RatingStatus {
+				agg.RatingStatus = bucket.RatingStatus
+			}
+			if !bucket.CreatedAt.IsZero() && (agg.CreatedAt.IsZero() || bucket.CreatedAt.Before(agg.CreatedAt)) {
+				agg.CreatedAt = bucket.CreatedAt
+			}
+			if bucket.UpdatedAt.After(agg.UpdatedAt) {
+				agg.UpdatedAt = bucket.UpdatedAt
+			}
+			continue
+		}
+		result = append(result, *cloneBucket(bucket))
+	}
+
+	for _, agg := range rolledUp {
+		result = append(result, *agg)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].BucketStart.Equal(result[j].BucketStart) {
+			return result[i].BucketStart.Before(result[j].BucketStart)
+		}
+		return result[i].NodeID < result[j].NodeID
+	})
+	return result, nil
+}
+
 func (s *memoryStore) ListTrafficMinuteBuckets(ctx context.Context) ([]TrafficMinuteBucket, error) {
 	_ = ctx
 	s.mu.RLock()

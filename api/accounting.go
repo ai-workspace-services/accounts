@@ -49,6 +49,47 @@ func parseOptionalTime(value string) (time.Time, error) {
 	return time.Parse("2006-01-02T15:04", trimmed)
 }
 
+func (h *handler) summarizeAccountTraffic(ctx context.Context, accountUUID string, start, end time.Time) ([]store.AccountTrafficNodeSummary, error) {
+	if summaryStore, ok := h.store.(store.TrafficSummaryStore); ok {
+		return summaryStore.SummarizeTrafficMinuteBucketsByAccount(ctx, accountUUID, start, end)
+	}
+	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(ctx, accountUUID, start, end)
+	if err != nil {
+		return nil, err
+	}
+	type groupKey struct {
+		nodeID      string
+		routingPool string
+	}
+	grouped := make(map[groupKey]*store.AccountTrafficNodeSummary)
+	for _, bucket := range buckets {
+		key := groupKey{
+			nodeID:      strings.TrimSpace(bucket.NodeID),
+			routingPool: strings.TrimSpace(bucket.RoutingPool),
+		}
+		entry := grouped[key]
+		if entry == nil {
+			entry = &store.AccountTrafficNodeSummary{
+				NodeID:      key.nodeID,
+				RoutingPool: key.routingPool,
+			}
+			grouped[key] = entry
+		}
+		entry.UplinkBytes += bucket.UplinkBytes
+		entry.DownlinkBytes += bucket.DownlinkBytes
+		entry.TotalBytes += bucket.TotalBytes
+		timestamp := bucket.BucketStart.UTC()
+		if entry.LastBucketAt == nil || timestamp.After(*entry.LastBucketAt) {
+			entry.LastBucketAt = &timestamp
+		}
+	}
+	result := make([]store.AccountTrafficNodeSummary, 0, len(grouped))
+	for _, entry := range grouped {
+		result = append(result, *entry)
+	}
+	return result, nil
+}
+
 func (h *handler) accountUsageSummary(c *gin.Context) {
 	user, ok := h.requireAuthenticatedUser(c)
 	if !ok {
@@ -58,7 +99,7 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 		respondError(c, 503, "quota_unavailable", "failed to reconcile quota period")
 		return
 	}
-	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, time.Time{}, time.Time{})
+	summaries, err := h.summarizeAccountTraffic(c.Request.Context(), user.ID, time.Time{}, time.Time{})
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "usage_summary_unavailable", "failed to load usage summary")
 		return
@@ -69,26 +110,28 @@ func (h *handler) accountUsageSummary(c *gin.Context) {
 	poolUsageBreakdown := make(map[string]poolUsageSummary)
 	var agentPools, snapshotPools map[string]string
 	var metadataLoaded bool
-	for _, bucket := range buckets {
-		totalBytes += bucket.TotalBytes
-		uplinkBytes += bucket.UplinkBytes
-		downlinkBytes += bucket.DownlinkBytes
-		timestamp := bucket.BucketStart.UTC()
-		if lastBucketAt == nil || timestamp.After(*lastBucketAt) {
-			lastBucketAt = &timestamp
+	for _, summary := range summaries {
+		totalBytes += summary.TotalBytes
+		uplinkBytes += summary.UplinkBytes
+		downlinkBytes += summary.DownlinkBytes
+		if summary.LastBucketAt != nil {
+			timestamp := summary.LastBucketAt.UTC()
+			if lastBucketAt == nil || timestamp.After(*lastBucketAt) {
+				lastBucketAt = &timestamp
+			}
 		}
-		poolName := strings.TrimSpace(bucket.RoutingPool)
+		poolName := strings.TrimSpace(summary.RoutingPool)
 		if poolName == "" {
 			if !metadataLoaded {
 				agentPools, snapshotPools = h.loadNodeRoutingPoolMaps(c.Request.Context())
 				metadataLoaded = true
 			}
-			poolName = resolveBucketRoutingPool(bucket.NodeID, agentPools, snapshotPools)
+			poolName = resolveBucketRoutingPool(summary.NodeID, agentPools, snapshotPools)
 		}
 		entry := poolUsageBreakdown[poolName]
-		entry.UplinkBytes += bucket.UplinkBytes
-		entry.DownlinkBytes += bucket.DownlinkBytes
-		entry.TotalBytes += bucket.TotalBytes
+		entry.UplinkBytes += summary.UplinkBytes
+		entry.DownlinkBytes += summary.DownlinkBytes
+		entry.TotalBytes += summary.TotalBytes
 		poolUsageBreakdown[poolName] = entry
 	}
 
@@ -311,10 +354,35 @@ func (h *handler) accountUsageBuckets(c *gin.Context) {
 		return
 	}
 
-	buckets, err := h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, start, end)
+	raw := strings.EqualFold(strings.TrimSpace(c.Query("raw")), "true")
+	includeZero := strings.EqualFold(strings.TrimSpace(c.Query("includeZero")), "true")
+	var buckets []store.TrafficMinuteBucket
+	if !raw && !includeZero {
+		if compactStore, ok := h.store.(store.CompactTrafficBucketsStore); ok {
+			minutePrecisionAfter := time.Now().UTC().Add(-25 * time.Hour).Truncate(time.Hour)
+			buckets, err = compactStore.ListCompactTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, start, end, minutePrecisionAfter)
+		} else {
+			buckets, err = h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, start, end)
+		}
+	} else {
+		buckets, err = h.store.ListTrafficMinuteBucketsByAccount(c.Request.Context(), user.ID, start, end)
+	}
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "usage_buckets_unavailable", "failed to load usage buckets")
 		return
+	}
+	if !includeZero && !raw && len(buckets) > 0 {
+		filtered := make([]store.TrafficMinuteBucket, 0, len(buckets))
+		for _, bucket := range buckets {
+			if bucket.TotalBytes == 0 && bucket.UplinkBytes == 0 && bucket.DownlinkBytes == 0 {
+				continue
+			}
+			filtered = append(filtered, bucket)
+		}
+		buckets = filtered
+	}
+	if buckets == nil {
+		buckets = make([]store.TrafficMinuteBucket, 0)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -449,10 +517,21 @@ func (h *handler) adminCollectorStatus(c *gin.Context) {
 		respondError(c, http.StatusInternalServerError, "collector_status_unavailable", "failed to load collector checkpoints")
 		return
 	}
-	buckets, err := h.store.ListTrafficMinuteBuckets(c.Request.Context())
-	if err != nil {
-		respondError(c, http.StatusInternalServerError, "collector_status_unavailable", "failed to load collector buckets")
-		return
+	var minuteBucketCount int64
+	if summaryStore, ok := h.store.(store.TrafficSummaryStore); ok {
+		count, countErr := summaryStore.CountTrafficMinuteBuckets(c.Request.Context())
+		if countErr != nil {
+			respondError(c, http.StatusInternalServerError, "collector_status_unavailable", "failed to load collector buckets")
+			return
+		}
+		minuteBucketCount = count
+	} else {
+		buckets, listErr := h.store.ListTrafficMinuteBuckets(c.Request.Context())
+		if listErr != nil {
+			respondError(c, http.StatusInternalServerError, "collector_status_unavailable", "failed to load collector buckets")
+			return
+		}
+		minuteBucketCount = int64(len(buckets))
 	}
 
 	var latestCheckpointAt *time.Time
@@ -465,7 +544,7 @@ func (h *handler) adminCollectorStatus(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"checkpointCount":    len(checkpoints),
-		"minuteBucketCount":  len(buckets),
+		"minuteBucketCount":  minuteBucketCount,
 		"latestCheckpointAt": latestCheckpointAt,
 	})
 }
