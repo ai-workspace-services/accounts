@@ -54,7 +54,7 @@ VALUES
    '{"family":"custom","tier_rank":30,"checkout_mode":"subscription","audience":"订阅用户","quota_label":"独享IP · 独享节点","dunning":{"policy":"pause_traffic","grace_days":3},"comparison_matrix":{"resources":"独享节点","exit_ip":"独享IP","ip_changes":"每个月免费更换一次，再次更换10元/次"}}'::jsonb,
    0, true, 40),
 
-  ('CUSTOM-AI-CONSULT-2026', NULL, 'AI 工具咨询，电脑环境配置', 'service', 0, 0,
+  ('CUSTOM-AI-CONSULT-2026', NULL, '开源解决方案/AI工具咨询', 'service', 0, 0,
    'custom', 10000, 'CNY', 'once',
    '{}'::jsonb,
    '{"family":"custom","tier_rank":30,"checkout_mode":"payment","price_unit_label":"小时/次","audience":"面向非订阅用户的付费服务","description":"支持：MacOS Windows Linux IOS Android，不支持：国产华为纯血鸿蒙系统","dunning":{"policy":"none","grace_days":3},"comparison_matrix":{"support":"MacOS / Windows / Linux / IOS / Android（不支持国产华为纯血鸿蒙系统）"}}'::jsonb,
@@ -135,7 +135,9 @@ BEGIN
     DELETE FROM public.network_team_members WHERE user_uuid = v_sandbox_uuid;
     DELETE FROM public.account_lifecycle_events WHERE user_uuid = v_sandbox_uuid;
     DELETE FROM public.mfa_recovery_codes WHERE user_uuid = v_sandbox_uuid;
-    DELETE FROM public.mfa_reset_requests WHERE user_uuid = v_sandbox_uuid OR reviewer_uuid = v_sandbox_uuid;
+    IF to_regclass('public.mfa_reset_requests') IS NOT NULL THEN
+      EXECUTE 'DELETE FROM public.mfa_reset_requests WHERE user_uuid = $1 OR reviewer_uuid = $1' USING v_sandbox_uuid;
+    END IF;
     DELETE FROM public.password_recovery_challenges WHERE user_uuid = v_sandbox_uuid;
     DELETE FROM public.subscription_lifecycle_states WHERE account_uuid = v_sandbox_uuid;
 
@@ -155,7 +157,21 @@ BEGIN
   LIMIT 1;
 
   IF v_haitao_uuid IS NOT NULL THEN
-    DELETE FROM public.subscriptions WHERE user_uuid = v_haitao_uuid;
+    DELETE FROM public.subscriptions s
+    WHERE s.user_uuid = v_haitao_uuid
+      AND NOT EXISTS (
+        SELECT 1 FROM public.finance_invoices fi WHERE fi.subscription_uuid = s.uuid
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM public.subscription_extension_ledger sel WHERE sel.subscription_uuid = s.uuid
+      );
+
+    UPDATE public.subscriptions
+    SET status = CASE WHEN lower(status) IN ('refunded', 'canceled') THEN status ELSE 'canceled' END,
+        updated_at = now()
+    WHERE user_uuid = v_haitao_uuid
+      AND lower(status) NOT IN ('refunded', 'canceled');
+
     DELETE FROM public.subscription_records WHERE user_uuid = v_haitao_uuid;
 
     UPDATE public.users

@@ -49,7 +49,7 @@ VALUES
    '{"family":"custom","tier_rank":30,"checkout_mode":"subscription","audience":"订阅用户","quota_label":"独享IP · 独享节点","dunning":{"policy":"pause_traffic","grace_days":3},"comparison_matrix":{"resources":"独享节点","exit_ip":"独享IP","ip_changes":"每个月免费更换一次，再次更换10元/次"}}'::jsonb,
    0, true, 40),
 
-  ('CUSTOM-AI-CONSULT-2026', NULL, 'AI 工具咨询，电脑环境配置', 'service', 0, 0,
+  ('CUSTOM-AI-CONSULT-2026', NULL, '开源解决方案/AI工具咨询', 'service', 0, 0,
    'custom', 10000, 'CNY', 'once',
    '{}'::jsonb,
    '{"family":"custom","tier_rank":30,"checkout_mode":"payment","price_unit_label":"小时/次","audience":"面向非订阅用户的付费服务","description":"支持：MacOS Windows Linux IOS Android，不支持：国产华为纯血鸿蒙系统","dunning":{"policy":"none","grace_days":3},"comparison_matrix":{"support":"MacOS / Windows / Linux / IOS / Android（不支持国产华为纯血鸿蒙系统）"}}'::jsonb,

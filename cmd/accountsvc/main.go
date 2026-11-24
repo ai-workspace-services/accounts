@@ -1018,7 +1018,7 @@ func ensureDefaultBillingPlans(ctx context.Context, st store.Store) error {
 		},
 		{
 			PlanID:             "CUSTOM-AI-CONSULT-2026",
-			DisplayName:        "AI 工具咨询，电脑环境配置",
+			DisplayName:        "开源解决方案/AI工具咨询",
 			Kind:               "service",
 			IncludedQuotaBytes: 0,
 			PackageName:        "custom",

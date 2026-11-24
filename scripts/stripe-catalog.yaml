@@ -48,7 +48,7 @@ products:
         recurring_interval: month
 
   - key: custom-ai-consult
-    name: "AI 工具咨询，电脑环境配置"
+    name: "开源解决方案/AI工具咨询"
     description: "面向非订阅用户的付费服务：100元/小时/次（支持：MacOS Windows Linux IOS Android，不支持：国产华为纯血鸿蒙系统）"
     prices:
       - key: custom-ai-consult-2026  # gitleaks:allow

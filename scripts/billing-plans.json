@@ -173,7 +173,7 @@
     },
     {
       "planId": "CUSTOM-AI-CONSULT-2026",
-      "displayName": "AI 工具咨询，电脑环境配置",
+      "displayName": "开源解决方案/AI工具咨询",
       "kind": "service",
       "includedQuotaBytes": 0,
       "packageName": "custom",
