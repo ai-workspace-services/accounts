@@ -288,9 +288,13 @@ func (r *Repository) DeleteNetwork(ctx context.Context, ownerUserID, networkID s
 	}
 	return r.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var network NetworkRecord
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND owner_user_id = ?", networkID, ownerUserID).
-			First(&network).Error; err != nil {
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		if isRootAdmin(ctx) {
+			query = query.Where("id = ?", networkID)
+		} else {
+			query = query.Where("id = ? AND owner_user_id = ?", networkID, ownerUserID)
+		}
+		if err := query.First(&network).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -343,7 +347,13 @@ func (r *Repository) DeleteNetwork(ctx context.Context, ownerUserID, networkID s
 				return err
 			}
 		}
-		result := tx.Where("id = ? AND owner_user_id = ?", networkID, ownerUserID).Delete(&NetworkRecord{})
+		deleteQuery := tx
+		if isRootAdmin(ctx) {
+			deleteQuery = deleteQuery.Where("id = ?", networkID)
+		} else {
+			deleteQuery = deleteQuery.Where("id = ? AND owner_user_id = ?", networkID, ownerUserID)
+		}
+		result := deleteQuery.Delete(&NetworkRecord{})
 		if result.Error != nil {
 			return result.Error
 		}
