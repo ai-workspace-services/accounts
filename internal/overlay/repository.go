@@ -377,11 +377,23 @@ func (r *Repository) peekInvite(ctx context.Context, tokenHash string) (InviteRe
 
 func (r *Repository) network(ctx context.Context, id string) (NetworkRecord, error) {
 	var record NetworkRecord
-	err := r.DB.WithContext(ctx).Where("id = ?", id).First(&record).Error
+	err := r.DB.WithContext(ctx).Omit("policy_json").Where("id = ?", id).First(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return record, ErrNotFound
 	}
 	return record, err
+}
+
+func (r *Repository) networkPolicyJSON(ctx context.Context, id string) (uint64, string, error) {
+	var record struct {
+		ConfigGeneration uint64 `gorm:"column:config_generation"`
+		PolicyJSON       string `gorm:"column:policy_json"`
+	}
+	err := r.DB.WithContext(ctx).Model(&NetworkRecord{}).Select("config_generation", "policy_json").Where("id = ?", id).First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, "", ErrNotFound
+	}
+	return record.ConfigGeneration, record.PolicyJSON, err
 }
 
 func (r *Repository) allocateAddress(tx *gorm.DB, network NetworkRecord) (string, error) {

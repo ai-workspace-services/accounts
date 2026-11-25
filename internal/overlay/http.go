@@ -112,6 +112,10 @@ func (h *HTTPHandler) GatewayConfig(c *gin.Context) {
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("Vary", "Accept")
 	c.Header("ETag", etag)
+	if etagMatches(c.GetHeader("If-None-Match"), etag) {
+		c.Status(http.StatusNotModified)
+		return
+	}
 	if config.SchemaVersion >= 2 {
 		c.Data(http.StatusOK, GatewaySignedConfigV2MediaType, mustJSON(config))
 		return
@@ -160,8 +164,14 @@ func (h *HTTPHandler) PolicyArtifact(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
+	etag := `"` + strings.TrimSpace(c.Param("digest")) + `"`
 	c.Header("Content-Type", PolicyMediaType)
 	c.Header("Cache-Control", "private, no-store")
+	c.Header("ETag", etag)
+	if etagMatches(c.GetHeader("If-None-Match"), etag) {
+		c.Status(http.StatusNotModified)
+		return
+	}
 	c.Data(http.StatusOK, PolicyMediaType, raw)
 }
 
@@ -284,10 +294,29 @@ func writeSignedConfig(c *gin.Context, config SignedConfig, etag string) {
 	c.Header("ETag", etag)
 	if config.SchemaVersion == 2 {
 		c.Header("Vary", "Accept")
+	}
+	if etagMatches(c.GetHeader("If-None-Match"), etag) {
+		c.Status(http.StatusNotModified)
+		return
+	}
+	if config.SchemaVersion == 2 {
 		c.Data(http.StatusOK, SignedConfigV2MediaType, mustJSON(config))
 		return
 	}
 	c.Data(http.StatusOK, "application/json", mustJSON(config))
+}
+
+func etagMatches(headerValue, etag string) bool {
+	if strings.TrimSpace(headerValue) == "" || strings.TrimSpace(etag) == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(headerValue, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == etag || strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 func noStore(c *gin.Context) { c.Header("Cache-Control", "no-store") }

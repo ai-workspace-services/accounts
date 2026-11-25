@@ -81,10 +81,11 @@ func (s *Service) meshDevices(ctx context.Context, network NetworkRecord) ([]Dev
 	if e != nil {
 		return nil, PolicyArtifact{}, e
 	}
-	policy, e := s.policyArtifact(network)
+	entry, e := s.cachedPolicy(ctx, network)
 	if e != nil {
-		return nil, policy, e
+		return nil, PolicyArtifact{}, e
 	}
+	policy := entry.gatewayPolicy
 	var result []DeviceRecord
 	for _, d := range devices {
 		if meshCapable(d) {
