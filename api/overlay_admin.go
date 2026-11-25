@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -106,10 +107,11 @@ func (h *handler) registerOverlayAdminRoutes(r *gin.Engine) {
 }
 
 func (h *handler) overlayAdminOverview(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead)
+	if !ok {
 		return
 	}
-	value, err := h.overlayService.AdminOverview(c.Request.Context(), auth.GetUserID(c))
+	value, err := h.overlayService.AdminOverview(overlayAdminContext(c, user), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero overview")
 		return
@@ -118,10 +120,11 @@ func (h *handler) overlayAdminOverview(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminTelemetry(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead)
+	if !ok {
 		return
 	}
-	value, err := h.overlayService.AdminTelemetry(c.Request.Context(), auth.GetUserID(c))
+	value, err := h.overlayService.AdminTelemetry(overlayAdminContext(c, user), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero telemetry")
 		return
@@ -131,7 +134,8 @@ func (h *handler) overlayAdminTelemetry(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminUpdateNetworkMode(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
 	var request overlayAdminUpdateNetworkModeRequest
@@ -147,7 +151,7 @@ func (h *handler) overlayAdminUpdateNetworkMode(c *gin.Context) {
 	if mode == "" {
 		mode = alt
 	}
-	value, err := h.overlayService.AdminUpdateNetworkMode(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"), mode)
+	value, err := h.overlayService.AdminUpdateNetworkMode(overlayAdminContext(c, user), auth.GetUserID(c), c.Param("networkID"), mode)
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -157,10 +161,11 @@ func (h *handler) overlayAdminUpdateNetworkMode(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminNetworkMembers(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead)
+	if !ok {
 		return
 	}
-	members, err := h.overlayService.AdminNetworkMembers(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"))
+	members, err := h.overlayService.AdminNetworkMembers(overlayAdminContext(c, user), auth.GetUserID(c), c.Param("networkID"))
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -169,7 +174,8 @@ func (h *handler) overlayAdminNetworkMembers(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminBindNetworkMember(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
 	var request overlayAdminBindNetworkMemberRequest
@@ -183,7 +189,7 @@ func (h *handler) overlayAdminBindNetworkMember(c *gin.Context) {
 		return
 	}
 	if targetUserID == "" && targetEmail != "" {
-		user, err := h.store.GetUserByEmail(c.Request.Context(), targetEmail)
+		user, err := h.store.GetUserByEmail(overlayAdminContext(c, user), targetEmail)
 		if err != nil || user == nil {
 			respondError(c, http.StatusNotFound, "user_not_found", "target user was not found")
 			return
@@ -191,11 +197,11 @@ func (h *handler) overlayAdminBindNetworkMember(c *gin.Context) {
 		targetUserID = strings.TrimSpace(user.ID)
 		targetEmail = strings.TrimSpace(user.Email)
 	} else if targetUserID != "" && targetEmail == "" {
-		if user, err := h.store.GetUserByID(c.Request.Context(), targetUserID); err == nil && user != nil {
+		if user, err := h.store.GetUserByID(overlayAdminContext(c, user), targetUserID); err == nil && user != nil {
 			targetEmail = strings.TrimSpace(user.Email)
 		}
 	}
-	member, err := h.overlayService.AdminBindNetworkMember(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"), targetUserID, targetEmail)
+	member, err := h.overlayService.AdminBindNetworkMember(overlayAdminContext(c, user), auth.GetUserID(c), c.Param("networkID"), targetUserID, targetEmail)
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -205,12 +211,13 @@ func (h *handler) overlayAdminBindNetworkMember(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminRemoveNetworkMember(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
 	networkID := strings.TrimSpace(c.Param("networkID"))
 	targetUserID := strings.TrimSpace(c.Param("userID"))
-	if err := h.overlayService.AdminRemoveNetworkMember(c.Request.Context(), auth.GetUserID(c), networkID, targetUserID); err != nil {
+	if err := h.overlayService.AdminRemoveNetworkMember(overlayAdminContext(c, user), auth.GetUserID(c), networkID, targetUserID); err != nil {
 		respondOverlayAdminError(c, err)
 		return
 	}
@@ -223,10 +230,11 @@ func (h *handler) overlayAdminRemoveNetworkMember(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminNetworks(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead)
+	if !ok {
 		return
 	}
-	value, err := h.overlayService.AdminNetworks(c.Request.Context(), auth.GetUserID(c))
+	value, err := h.overlayService.AdminNetworks(overlayAdminContext(c, user), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero networks")
 		return
@@ -235,7 +243,8 @@ func (h *handler) overlayAdminNetworks(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminDeleteNetwork(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
@@ -250,7 +259,7 @@ func (h *handler) overlayAdminDeleteNetwork(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero network deletion request")
 		return
 	}
-	if err := h.overlayService.AdminDeleteNetwork(c.Request.Context(), auth.GetUserID(c), c.Param("networkID")); err != nil {
+	if err := h.overlayService.AdminDeleteNetwork(overlayAdminContext(c, user), auth.GetUserID(c), c.Param("networkID")); err != nil {
 		respondOverlayAdminError(c, err)
 		return
 	}
@@ -258,10 +267,11 @@ func (h *handler) overlayAdminDeleteNetwork(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminDevices(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead)
+	if !ok {
 		return
 	}
-	value, err := h.overlayService.AdminDevices(c.Request.Context(), auth.GetUserID(c))
+	value, err := h.overlayService.AdminDevices(overlayAdminContext(c, user), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero devices")
 		return
@@ -270,10 +280,11 @@ func (h *handler) overlayAdminDevices(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminInvites(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead)
+	if !ok {
 		return
 	}
-	value, err := h.overlayService.AdminInvites(c.Request.Context(), auth.GetUserID(c))
+	value, err := h.overlayService.AdminInvites(overlayAdminContext(c, user), auth.GetUserID(c))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "overlay_admin_read_failed", "failed to load XConnect Zero invites")
 		return
@@ -282,7 +293,8 @@ func (h *handler) overlayAdminInvites(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminCreateInvite(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
 	var request overlay.AdminInviteRequest
@@ -290,7 +302,7 @@ func (h *handler) overlayAdminCreateInvite(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero invitation request")
 		return
 	}
-	result, err := h.overlayService.AdminCreateInvite(c.Request.Context(), auth.GetUserID(c), request.ControllerURL, request)
+	result, err := h.overlayService.AdminCreateInvite(overlayAdminContext(c, user), auth.GetUserID(c), request.ControllerURL, request)
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -300,10 +312,11 @@ func (h *handler) overlayAdminCreateInvite(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminRegistrations(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
-	registrations, err := h.overlayService.AdminRegistrations(c.Request.Context(), auth.GetUserID(c), c.Query("cursor"))
+	registrations, err := h.overlayService.AdminRegistrations(overlayAdminContext(c, user), auth.GetUserID(c), c.Query("cursor"))
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -312,14 +325,15 @@ func (h *handler) overlayAdminRegistrations(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminApproveRegistration(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
 	var request overlay.ApproveRegistrationRequest
 	if !decodeOverlayAdminJSON(c, &request) {
 		return
 	}
-	registration, err := h.overlayService.AdminApproveRegistration(c.Request.Context(), auth.GetUserID(c), c.Param("registrationID"), request.NetworkID)
+	registration, err := h.overlayService.AdminApproveRegistration(overlayAdminContext(c, user), auth.GetUserID(c), c.Param("registrationID"), request.NetworkID)
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -328,7 +342,8 @@ func (h *handler) overlayAdminApproveRegistration(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminRejectRegistration(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
 	// Reject has no request contract, but still bounds and rejects an accidental
@@ -337,7 +352,7 @@ func (h *handler) overlayAdminRejectRegistration(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "XConnect Zero registration rejection does not accept a request body")
 		return
 	}
-	registration, err := h.overlayService.AdminRejectRegistration(c.Request.Context(), auth.GetUserID(c), c.Param("registrationID"))
+	registration, err := h.overlayService.AdminRejectRegistration(overlayAdminContext(c, user), auth.GetUserID(c), c.Param("registrationID"))
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -365,7 +380,8 @@ func decodeOverlayAdminJSONLimit(c *gin.Context, target any, limit int64) bool {
 }
 
 func (h *handler) overlayAdminBootstrap(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
 	var request overlayAdminBootstrapRequest
@@ -373,7 +389,7 @@ func (h *handler) overlayAdminBootstrap(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid XConnect Zero bootstrap request")
 		return
 	}
-	result, err := h.overlayService.AdminBootstrap(c.Request.Context(), overlayBootstrapConfig(request, auth.GetUserID(c)), request.ControllerURL, "")
+	result, err := h.overlayService.AdminBootstrap(overlayAdminContext(c, user), overlayBootstrapConfig(request, auth.GetUserID(c)), request.ControllerURL, "")
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -448,10 +464,11 @@ func overlayBootstrapConfig(request overlayAdminBootstrapRequest, ownerUserID st
 }
 
 func (h *handler) overlayAdminRevokeDevice(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroManage)
+	if !ok {
 		return
 	}
-	if err := h.overlayService.AdminRevokeDevice(c.Request.Context(), auth.GetUserID(c), c.Param("deviceID")); err != nil {
+	if err := h.overlayService.AdminRevokeDevice(overlayAdminContext(c, user), auth.GetUserID(c), c.Param("deviceID")); err != nil {
 		respondOverlayAdminError(c, err)
 		return
 	}
@@ -459,10 +476,11 @@ func (h *handler) overlayAdminRevokeDevice(c *gin.Context) {
 }
 
 func (h *handler) overlayAdminPolicy(c *gin.Context) {
-	if _, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead); !ok {
+	user, ok := h.requireXConnectZeroAccess(c, permissionXConnectZeroRead)
+	if !ok {
 		return
 	}
-	value, err := h.overlayService.AdminPolicy(c.Request.Context(), auth.GetUserID(c), c.Param("networkID"))
+	value, err := h.overlayService.AdminPolicy(overlayAdminContext(c, user), auth.GetUserID(c), c.Param("networkID"))
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -483,7 +501,7 @@ func (h *handler) overlayAdminExplainPolicy(c *gin.Context) {
 	if actorID == "" && user != nil {
 		actorID = strings.TrimSpace(user.ID)
 	}
-	value, err := h.overlayService.AdminExplainPolicy(c.Request.Context(), actorID, c.Param("networkID"), request)
+	value, err := h.overlayService.AdminExplainPolicy(overlayAdminContext(c, user), actorID, c.Param("networkID"), request)
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -507,7 +525,7 @@ func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
 		actorID = strings.TrimSpace(user.ID)
 	}
 	var before map[string]any
-	if prev, prevErr := h.overlayService.AdminPolicy(c.Request.Context(), actorID, networkID); prevErr == nil {
+	if prev, prevErr := h.overlayService.AdminPolicy(overlayAdminContext(c, user), actorID, networkID); prevErr == nil {
 		before = map[string]any{
 			"network_id":     prev.NetworkID,
 			"revision":       prev.Revision,
@@ -515,7 +533,7 @@ func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
 			"rule_count":     len(prev.Rules),
 		}
 	}
-	value, err := h.overlayService.AdminUpdatePolicy(c.Request.Context(), actorID, networkID, policy)
+	value, err := h.overlayService.AdminUpdatePolicy(overlayAdminContext(c, user), actorID, networkID, policy)
 	if err != nil {
 		respondOverlayAdminError(c, err)
 		return
@@ -531,7 +549,7 @@ func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
 	details["revision"] = value.Revision
 	details["default_action"] = value.DefaultAction
 	details["rule_count"] = len(value.Rules)
-	if err := h.recordAudit(c.Request.Context(), actorID, store.AuditActionOverlayPolicyUpdate, details); err != nil {
+	if err := h.recordAudit(overlayAdminContext(c, user), actorID, store.AuditActionOverlayPolicyUpdate, details); err != nil {
 		respondError(c, http.StatusInternalServerError, "audit_write_failed", "network policy was updated but the audit entry could not be written")
 		return
 	}
@@ -542,6 +560,14 @@ func (h *handler) overlayAdminUpdatePolicy(c *gin.Context) {
 // requireXConnectZeroAccess makes Zero a self-service user feature. Resource
 // ownership is still enforced in every service query, so this grants no
 // cross-user administrative view.
+func overlayAdminContext(c *gin.Context, user *store.User) context.Context {
+	ctx := c.Request.Context()
+	if user != nil && store.IsRootRole(user.Role) {
+		return overlay.WithRootAdmin(ctx)
+	}
+	return ctx
+}
+
 func (h *handler) requireXConnectZeroAccess(c *gin.Context, permission string) (*store.User, bool) {
 	var user *store.User
 	if userID := auth.GetUserID(c); userID != "" {

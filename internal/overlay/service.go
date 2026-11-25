@@ -26,6 +26,25 @@ import (
 	"account/internal/agentproto"
 )
 
+type rootAdminContextKey struct{}
+
+// WithRootAdmin marks ctx as an authenticated root-admin control-plane call,
+// allowing full management across all XConnect Zero resources.
+func WithRootAdmin(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, rootAdminContextKey{}, true)
+}
+
+func isRootAdmin(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	v, _ := ctx.Value(rootAdminContextKey{}).(bool)
+	return v
+}
+
 var (
 	overlayDeviceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 	policyRuleIDPattern    = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,64}$`)
@@ -210,7 +229,11 @@ func (s *Service) AdminOverview(ctx context.Context, ownerUserID string) (AdminO
 		return AdminOverview{}, ErrInvalidInput
 	}
 	var networks int64
-	if err := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Where("owner_user_id = ?", ownerUserID).Count(&networks).Error; err != nil {
+	networkQuery := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{})
+	if !isRootAdmin(ctx) {
+		networkQuery = networkQuery.Where("owner_user_id = ?", ownerUserID)
+	}
+	if err := networkQuery.Count(&networks).Error; err != nil {
 		return AdminOverview{}, err
 	}
 	adminDevices, err := s.AdminDevices(ctx, ownerUserID)
@@ -271,7 +294,11 @@ func overlayResourceStatus(activeCount, connectedCount, networkCount int64) stri
 
 func (s *Service) AdminNetworks(ctx context.Context, ownerUserID string) ([]Network, error) {
 	var records []NetworkRecord
-	if err := s.repo.DB.WithContext(ctx).Where("owner_user_id = ?", strings.TrimSpace(ownerUserID)).Order("id ASC").Find(&records).Error; err != nil {
+	query := s.repo.DB.WithContext(ctx)
+	if !isRootAdmin(ctx) {
+		query = query.Where("owner_user_id = ?", strings.TrimSpace(ownerUserID))
+	}
+	if err := query.Order("id ASC").Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]Network, 0, len(records))
@@ -292,9 +319,13 @@ func (s *Service) AdminNetworkMembers(ctx context.Context, callerUserID, network
 		return nil, ErrInvalidInput
 	}
 	var network NetworkRecord
-	if err := s.repo.DB.WithContext(ctx).
-		Where("id = ? AND owner_user_id = ?", networkID, callerUserID).
-		First(&network).Error; err != nil {
+	networkQuery := s.repo.DB.WithContext(ctx)
+	if isRootAdmin(ctx) {
+		networkQuery = networkQuery.Where("id = ?", networkID)
+	} else {
+		networkQuery = networkQuery.Where("id = ? AND owner_user_id = ?", networkID, callerUserID)
+	}
+	if err := networkQuery.First(&network).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -325,9 +356,13 @@ func (s *Service) AdminBindNetworkMember(ctx context.Context, callerUserID, netw
 	var bound NetworkMemberRecord
 	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var network NetworkRecord
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND owner_user_id = ?", networkID, callerUserID).
-			First(&network).Error; err != nil {
+		networkQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		if isRootAdmin(ctx) {
+			networkQuery = networkQuery.Where("id = ?", networkID)
+		} else {
+			networkQuery = networkQuery.Where("id = ? AND owner_user_id = ?", networkID, callerUserID)
+		}
+		if err := networkQuery.First(&network).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -371,9 +406,13 @@ func (s *Service) AdminRemoveNetworkMember(ctx context.Context, callerUserID, ne
 	}
 	return s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var network NetworkRecord
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND owner_user_id = ?", networkID, callerUserID).
-			First(&network).Error; err != nil {
+		networkQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		if isRootAdmin(ctx) {
+			networkQuery = networkQuery.Where("id = ?", networkID)
+		} else {
+			networkQuery = networkQuery.Where("id = ? AND owner_user_id = ?", networkID, callerUserID)
+		}
+		if err := networkQuery.First(&network).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -404,7 +443,11 @@ func toNetworkMemberSummary(record NetworkMemberRecord) NetworkMemberSummary {
 func (s *Service) AdminDevices(ctx context.Context, ownerUserID string) ([]AdminDevice, error) {
 	ownerUserID = strings.TrimSpace(ownerUserID)
 	var networks []NetworkRecord
-	if err := s.repo.DB.WithContext(ctx).Where("owner_user_id = ?", ownerUserID).Order("id ASC").Find(&networks).Error; err != nil {
+	networkQuery := s.repo.DB.WithContext(ctx)
+	if !isRootAdmin(ctx) {
+		networkQuery = networkQuery.Where("owner_user_id = ?", ownerUserID)
+	}
+	if err := networkQuery.Order("id ASC").Find(&networks).Error; err != nil {
 		return nil, err
 	}
 	if len(networks) == 0 {
@@ -427,11 +470,13 @@ func (s *Service) AdminDevices(ctx context.Context, ownerUserID string) ([]Admin
 	}
 
 	var acks []AckRecord
-	if err := s.repo.DB.WithContext(ctx).
+	ackQuery := s.repo.DB.WithContext(ctx).
 		Model(&AckRecord{}).
-		Joins("JOIN overlay_networks ON overlay_networks.id = overlay_signed_config_acks.network_id").
-		Where("overlay_networks.owner_user_id = ?", ownerUserID).
-		Find(&acks).Error; err != nil {
+		Joins("JOIN overlay_networks ON overlay_networks.id = overlay_signed_config_acks.network_id")
+	if !isRootAdmin(ctx) {
+		ackQuery = ackQuery.Where("overlay_networks.owner_user_id = ?", ownerUserID)
+	}
+	if err := ackQuery.Find(&acks).Error; err != nil {
 		return nil, err
 	}
 	currentACK := make(map[string]time.Time, len(acks))
@@ -676,7 +721,11 @@ func (s *Service) AdminTelemetry(ctx context.Context, ownerUserID string) (Admin
 		return AdminTelemetry{}, ErrInvalidInput
 	}
 	var networks []NetworkRecord
-	if err := s.repo.DB.WithContext(ctx).Where("owner_user_id = ?", ownerUserID).Order("id ASC").Find(&networks).Error; err != nil {
+	networkQuery := s.repo.DB.WithContext(ctx)
+	if !isRootAdmin(ctx) {
+		networkQuery = networkQuery.Where("owner_user_id = ?", ownerUserID)
+	}
+	if err := networkQuery.Order("id ASC").Find(&networks).Error; err != nil {
 		return AdminTelemetry{}, err
 	}
 	if len(networks) == 0 {
@@ -830,9 +879,13 @@ func (s *Service) AdminUpdateNetworkMode(ctx context.Context, ownerUserID, netwo
 	var updated NetworkRecord
 	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var network NetworkRecord
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND owner_user_id = ?", networkID, ownerUserID).
-			First(&network).Error; err != nil {
+		networkQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		if isRootAdmin(ctx) {
+			networkQuery = networkQuery.Where("id = ?", networkID)
+		} else {
+			networkQuery = networkQuery.Where("id = ? AND owner_user_id = ?", networkID, ownerUserID)
+		}
+		if err := networkQuery.First(&network).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -1129,8 +1182,12 @@ func adminDeviceACKKey(networkID, deviceID string) string { return networkID + "
 
 func (s *Service) AdminInvites(ctx context.Context, ownerUserID string) ([]InviteSummary, error) {
 	var records []InviteRecord
-	ownedNetworks := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Select("id").Where("owner_user_id = ?", strings.TrimSpace(ownerUserID))
-	if err := s.repo.DB.WithContext(ctx).Where("network_id IN (?)", ownedNetworks).Order("created_at DESC").Find(&records).Error; err != nil {
+	query := s.repo.DB.WithContext(ctx)
+	if !isRootAdmin(ctx) {
+		ownedNetworks := s.repo.DB.WithContext(ctx).Model(&NetworkRecord{}).Select("id").Where("owner_user_id = ?", strings.TrimSpace(ownerUserID))
+		query = query.Where("network_id IN (?)", ownedNetworks)
+	}
+	if err := query.Order("created_at DESC").Find(&records).Error; err != nil {
 		return nil, err
 	}
 	result := make([]InviteSummary, 0, len(records))
@@ -1166,7 +1223,13 @@ func (s *Service) AdminCreateInvite(ctx context.Context, ownerUserID, controller
 	}
 
 	var network NetworkRecord
-	if err := s.repo.DB.WithContext(ctx).Where("id = ? AND owner_user_id = ?", request.NetworkID, ownerUserID).First(&network).Error; err != nil {
+	networkQuery := s.repo.DB.WithContext(ctx)
+	if isRootAdmin(ctx) {
+		networkQuery = networkQuery.Where("id = ?", request.NetworkID)
+	} else {
+		networkQuery = networkQuery.Where("id = ? AND owner_user_id = ?", request.NetworkID, ownerUserID)
+	}
+	if err := networkQuery.First(&network).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return AdminInviteResult{}, ErrNotFound
 		}
@@ -1274,8 +1337,12 @@ func (s *Service) AdminRevokeDevice(ctx context.Context, ownerUserID, deviceID s
 	}
 	now := s.now()
 	return s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		ownedNetworks := tx.Model(&NetworkRecord{}).Select("id").Where("owner_user_id = ?", ownerUserID)
-		result := tx.Model(&DeviceRecord{}).Where("id = ? AND network_id IN (?) AND status = ?", deviceID, ownedNetworks, "active").Updates(map[string]any{"status": "revoked", "updated_at": now})
+		query := tx.Model(&DeviceRecord{}).Where("id = ? AND status = ?", deviceID, "active")
+		if !isRootAdmin(ctx) {
+			ownedNetworks := tx.Model(&NetworkRecord{}).Select("id").Where("owner_user_id = ?", ownerUserID)
+			query = query.Where("network_id IN (?)", ownedNetworks)
+		}
+		result := query.Updates(map[string]any{"status": "revoked", "updated_at": now})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -1302,7 +1369,13 @@ func (s *Service) AdminRevokeDevice(ctx context.Context, ownerUserID, deviceID s
 
 func (s *Service) AdminPolicy(ctx context.Context, ownerUserID, networkID string) (PolicyArtifact, error) {
 	var network NetworkRecord
-	if err := s.repo.DB.WithContext(ctx).Where("id = ? AND owner_user_id = ?", strings.TrimSpace(networkID), strings.TrimSpace(ownerUserID)).First(&network).Error; err != nil {
+	query := s.repo.DB.WithContext(ctx)
+	if isRootAdmin(ctx) {
+		query = query.Where("id = ?", strings.TrimSpace(networkID))
+	} else {
+		query = query.Where("id = ? AND owner_user_id = ?", strings.TrimSpace(networkID), strings.TrimSpace(ownerUserID))
+	}
+	if err := query.First(&network).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return PolicyArtifact{}, ErrNotFound
 		}
@@ -1320,7 +1393,13 @@ func (s *Service) AdminUpdatePolicy(ctx context.Context, ownerUserID, networkID 
 	var result PolicyArtifact
 	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var network NetworkRecord
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ?", networkID, ownerUserID).First(&network).Error; err != nil {
+		networkQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		if isRootAdmin(ctx) {
+			networkQuery = networkQuery.Where("id = ?", networkID)
+		} else {
+			networkQuery = networkQuery.Where("id = ? AND owner_user_id = ?", networkID, ownerUserID)
+		}
+		if err := networkQuery.First(&network).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -1568,21 +1647,30 @@ func (s *Service) AdminRegistrations(ctx context.Context, ownerUserID, cursor st
 	now := s.now()
 	// An approved request still has an absolute exchange deadline. Mark both
 	// actionable states expired for a stable owner-facing read model.
-	if err := s.repo.DB.WithContext(ctx).Model(&RegistrationRecord{}).
-		Where("owner_user_id = ? AND status IN ? AND expires_at <= ?", ownerUserID, []string{RegistrationStatusPending, RegistrationStatusApproved}, now).
-		Updates(map[string]any{"status": RegistrationStatusExpired, "updated_at": now}).Error; err != nil {
+	expireQuery := s.repo.DB.WithContext(ctx).Model(&RegistrationRecord{}).
+		Where("status IN ? AND expires_at <= ?", []string{RegistrationStatusPending, RegistrationStatusApproved}, now)
+	if !isRootAdmin(ctx) {
+		expireQuery = expireQuery.Where("owner_user_id = ?", ownerUserID)
+	}
+	if err := expireQuery.Updates(map[string]any{"status": RegistrationStatusExpired, "updated_at": now}).Error; err != nil {
 		return RegistrationPage{}, err
 	}
 	query := s.repo.DB.WithContext(ctx).Model(&RegistrationRecord{}).
 		Select("overlay_registrations.*").
-		Joins("JOIN overlay_networks ON overlay_networks.id = overlay_registrations.network_id").
-		Where("overlay_registrations.owner_user_id = ? AND overlay_networks.owner_user_id = ?", ownerUserID, ownerUserID)
+		Joins("JOIN overlay_networks ON overlay_networks.id = overlay_registrations.network_id")
+	if !isRootAdmin(ctx) {
+		query = query.Where("overlay_registrations.owner_user_id = ? AND overlay_networks.owner_user_id = ?", ownerUserID, ownerUserID)
+	}
 	if cursor != "" {
 		var anchor RegistrationRecord
-		if err := s.repo.DB.WithContext(ctx).Model(&RegistrationRecord{}).
-			Joins("JOIN overlay_networks ON overlay_networks.id = overlay_registrations.network_id").
-			Where("overlay_registrations.id = ? AND overlay_registrations.owner_user_id = ? AND overlay_networks.owner_user_id = ?", cursor, ownerUserID, ownerUserID).
-			First(&anchor).Error; err != nil {
+		anchorQuery := s.repo.DB.WithContext(ctx).Model(&RegistrationRecord{}).
+			Joins("JOIN overlay_networks ON overlay_networks.id = overlay_registrations.network_id")
+		if isRootAdmin(ctx) {
+			anchorQuery = anchorQuery.Where("overlay_registrations.id = ?", cursor)
+		} else {
+			anchorQuery = anchorQuery.Where("overlay_registrations.id = ? AND overlay_registrations.owner_user_id = ? AND overlay_networks.owner_user_id = ?", cursor, ownerUserID, ownerUserID)
+		}
+		if err := anchorQuery.First(&anchor).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return RegistrationPage{}, ErrNotFound
 			}
@@ -1624,7 +1712,13 @@ func (s *Service) adminTransitionRegistration(ctx context.Context, ownerUserID, 
 	terminalErr := error(nil)
 	err := s.repo.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var registration RegistrationRecord
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ?", registrationID, ownerUserID).First(&registration).Error; err != nil {
+		regQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		if isRootAdmin(ctx) {
+			regQuery = regQuery.Where("id = ?", registrationID)
+		} else {
+			regQuery = regQuery.Where("id = ? AND owner_user_id = ?", registrationID, ownerUserID)
+		}
+		if err := regQuery.First(&registration).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -1633,7 +1727,13 @@ func (s *Service) adminTransitionRegistration(ctx context.Context, ownerUserID, 
 		if nextStatus == RegistrationStatusApproved && requestedNetworkID != registration.NetworkID {
 			return ErrNotFound
 		}
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND owner_user_id = ?", registration.NetworkID, ownerUserID).First(&NetworkRecord{}).Error; err != nil {
+		networkQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"})
+		if isRootAdmin(ctx) {
+			networkQuery = networkQuery.Where("id = ?", registration.NetworkID)
+		} else {
+			networkQuery = networkQuery.Where("id = ? AND owner_user_id = ?", registration.NetworkID, ownerUserID)
+		}
+		if err := networkQuery.First(&NetworkRecord{}).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
