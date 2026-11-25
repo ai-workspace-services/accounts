@@ -270,10 +270,11 @@ func (s *Service) AdminExplainPolicy(ctx context.Context, ownerUserID, networkID
 		return PolicyExplainResponse{}, ErrInvalidInput
 	}
 
-	policy, err := s.policyArtifact(network)
+	entry, err := s.cachedPolicy(ctx, network)
 	if err != nil {
 		return PolicyExplainResponse{}, err
 	}
+	policy := entry.gatewayPolicy
 	devices, err := s.repo.devices(ctx, network.ID)
 	if err != nil {
 		return PolicyExplainResponse{}, err

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -52,6 +53,17 @@ var (
 
 const maxPolicyRules = 200
 
+type policyCacheKey struct {
+	networkID  string
+	generation uint64
+}
+
+type cachedPolicyEntry struct {
+	gatewayPolicy PolicyArtifact
+	clientRaw     []byte
+	clientDigest  string
+}
+
 type Service struct {
 	meshNetworks    map[string]bool
 	repo            *Repository
@@ -62,6 +74,8 @@ type Service struct {
 	signedConfigTTL time.Duration
 	localProxyPort  int
 	clock           func() time.Time
+	policyCacheMu   sync.RWMutex
+	policyCache     map[policyCacheKey]cachedPolicyEntry
 }
 
 const adminDeviceACKRecentWindow = 5 * time.Minute
@@ -118,7 +132,18 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 			meshNetworks[id] = true
 		}
 	}
-	return &Service{meshNetworks: meshNetworks, repo: repo, keyID: cfg.SigningKeyID, privateKey: key, enrollmentTTL: cfg.EnrollmentTTL, credentialTTL: cfg.CredentialTTL, signedConfigTTL: cfg.SignedConfigTTL, localProxyPort: cfg.LocalProxyPort, clock: cfg.Clock}, nil
+	return &Service{
+		meshNetworks:    meshNetworks,
+		repo:            repo,
+		keyID:           cfg.SigningKeyID,
+		privateKey:      key,
+		enrollmentTTL:   cfg.EnrollmentTTL,
+		credentialTTL:   cfg.CredentialTTL,
+		signedConfigTTL: cfg.SignedConfigTTL,
+		localProxyPort:  cfg.LocalProxyPort,
+		clock:           cfg.Clock,
+		policyCache:     make(map[policyCacheKey]cachedPolicyEntry),
+	}, nil
 }
 
 // ConfigFromEnv is intended for the account service entrypoint. The private
@@ -294,7 +319,7 @@ func overlayResourceStatus(activeCount, connectedCount, networkCount int64) stri
 
 func (s *Service) AdminNetworks(ctx context.Context, ownerUserID string) ([]Network, error) {
 	var records []NetworkRecord
-	query := s.repo.DB.WithContext(ctx)
+	query := s.repo.DB.WithContext(ctx).Omit("policy_json")
 	if !isRootAdmin(ctx) {
 		query = query.Where("owner_user_id = ?", strings.TrimSpace(ownerUserID))
 	}
@@ -921,6 +946,7 @@ func (s *Service) UserGateways(ctx context.Context, userID string) ([]UserGatewa
 	userDevicesSubquery := s.repo.DB.WithContext(ctx).Model(&DeviceRecord{}).Select("network_id").Where("user_id = ? AND status = ?", userID, "active")
 	networkMembersSubquery := s.repo.DB.WithContext(ctx).Model(&NetworkMemberRecord{}).Select("network_id").Where("user_id = ?", userID)
 	if err := s.repo.DB.WithContext(ctx).
+		Omit("policy_json").
 		Where("owner_user_id = ? OR id IN (?) OR id IN (?)", userID, userDevicesSubquery, networkMembersSubquery).
 		Order("id ASC").
 		Find(&networks).Error; err != nil {
@@ -1424,6 +1450,9 @@ func (s *Service) AdminUpdatePolicy(ctx context.Context, ownerUserID, networkID 
 		result = normalized
 		return nil
 	})
+	if err == nil {
+		s.evictPolicyCache(networkID)
+	}
 	return result, err
 }
 
@@ -1854,7 +1883,7 @@ func (s *Service) EnrollmentConfig(ctx context.Context, enrollmentToken, deviceI
 	if strings.TrimSpace(deviceID) != device.ID || networkID != "" && networkID != network.ID {
 		return SignedConfig{}, "", ErrForbidden
 	}
-	return s.buildSignedConfig(device, network, v2)
+	return s.buildSignedConfigWithContext(ctx, device, network, v2)
 }
 
 func (s *Service) UserConfig(ctx context.Context, userID, deviceID, networkID string, v2 bool) (SignedConfig, string, error) {
@@ -1865,7 +1894,7 @@ func (s *Service) UserConfig(ctx context.Context, userID, deviceID, networkID st
 	if networkID != "" && networkID != network.ID {
 		return SignedConfig{}, "", ErrForbidden
 	}
-	return s.buildSignedConfig(device, network, v2)
+	return s.buildSignedConfigWithContext(ctx, device, network, v2)
 }
 
 func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string, v2 bool) (GatewaySignedConfig, string, error) {
@@ -1933,10 +1962,11 @@ func (s *Service) GatewayConfig(ctx context.Context, enrollmentToken string, v2 
 		}
 	}
 	if v2 {
-		policy, err := s.policyArtifact(network)
+		entry, err := s.cachedPolicy(ctx, network)
 		if err != nil {
 			return GatewaySignedConfig{}, "", err
 		}
+		policy := entry.gatewayPolicy
 		config.Policy = &policy
 	}
 	payload, err := gatewaySigningBytes(config)
@@ -2013,22 +2043,21 @@ func (s *Service) PolicyArtifact(ctx context.Context, enrollmentToken string, ge
 	if generation != network.ConfigGeneration || device.Status != "active" {
 		return nil, ErrForbidden
 	}
-	policy, err := s.policyArtifact(network)
+	entry, err := s.cachedPolicy(ctx, network)
 	if err != nil {
 		return nil, err
 	}
-	raw, err := json.Marshal(clientPolicyArtifact(policy))
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(raw)
-	if hex.EncodeToString(sum[:]) != digest {
+	if entry.clientDigest != digest {
 		return nil, ErrNotFound
 	}
-	return raw, nil
+	return entry.clientRaw, nil
 }
 
 func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, v2 bool) (SignedConfig, string, error) {
+	return s.buildSignedConfigWithContext(context.Background(), device, network, v2)
+}
+
+func (s *Service) buildSignedConfigWithContext(ctx context.Context, device DeviceRecord, network NetworkRecord, v2 bool) (SignedConfig, string, error) {
 	now := canonicalTime(s.now())
 	expires := canonicalTime(now.Add(s.signedConfigTTL))
 	generation := network.ConfigGeneration
@@ -2055,21 +2084,16 @@ func (s *Service) buildSignedConfig(device DeviceRecord, network NetworkRecord, 
 		},
 	}
 	if v2 {
-		policy, err := s.policyArtifact(network)
+		entry, err := s.cachedPolicy(ctx, network)
 		if err != nil {
 			return SignedConfig{}, "", err
 		}
-		raw, err := json.Marshal(clientPolicyArtifact(policy))
-		if err != nil {
-			return SignedConfig{}, "", err
-		}
-		sum := sha256.Sum256(raw)
-		digest := hex.EncodeToString(sum[:])
+		digest := entry.clientDigest
 		config.SchemaVersion = 2
 		config.Policy = &PolicyReference{Generation: generation, Digest: digest, Path: fmt.Sprintf("/api/overlay/v1/enrollment/policy-artifacts/%d/%s", generation, digest), MediaType: PolicyMediaType}
 	}
 	if v2 && s.meshNetworks[network.ID] {
-		mesh, err := s.oneMeshSpec(context.Background(), device, network)
+		mesh, err := s.oneMeshSpec(ctx, device, network)
 		config.Mesh = mesh
 		if config.Mesh != nil {
 			config.WireGuard.MTU = 1280
@@ -2102,6 +2126,68 @@ func defaultPolicyArtifact(networkID string, generation uint64) PolicyArtifact {
 // rules locally). Gateways receive the full PolicyArtifact via GatewayConfig.
 func clientPolicyArtifact(policy PolicyArtifact) PolicyArtifact {
 	return defaultPolicyArtifact(policy.NetworkID, policy.Revision)
+}
+
+func (s *Service) cachedPolicy(ctx context.Context, network NetworkRecord) (cachedPolicyEntry, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hasInlinePolicy := strings.TrimSpace(network.PolicyJSON) != ""
+	key := policyCacheKey{networkID: network.ID, generation: network.ConfigGeneration}
+	if !hasInlinePolicy {
+		s.policyCacheMu.RLock()
+		entry, ok := s.policyCache[key]
+		s.policyCacheMu.RUnlock()
+		if ok {
+			return entry, nil
+		}
+	}
+	loaded := network
+	if !hasInlinePolicy && s.repo != nil && s.repo.DB != nil {
+		dbGen, dbPolicyJSON, err := s.repo.networkPolicyJSON(ctx, network.ID)
+		if err != nil {
+			return cachedPolicyEntry{}, err
+		}
+		if dbGen == network.ConfigGeneration {
+			loaded.PolicyJSON = dbPolicyJSON
+		}
+	}
+	policy, err := s.policyArtifact(loaded)
+	if err != nil {
+		return cachedPolicyEntry{}, err
+	}
+	clientRaw, err := json.Marshal(clientPolicyArtifact(policy))
+	if err != nil {
+		return cachedPolicyEntry{}, err
+	}
+	sum := sha256.Sum256(clientRaw)
+	entry := cachedPolicyEntry{
+		gatewayPolicy: policy,
+		clientRaw:     clientRaw,
+		clientDigest:  hex.EncodeToString(sum[:]),
+	}
+	s.policyCacheMu.Lock()
+	if s.policyCache == nil {
+		s.policyCache = make(map[policyCacheKey]cachedPolicyEntry)
+	}
+	for existingKey := range s.policyCache {
+		if existingKey.networkID == network.ID && existingKey.generation < network.ConfigGeneration {
+			delete(s.policyCache, existingKey)
+		}
+	}
+	s.policyCache[key] = entry
+	s.policyCacheMu.Unlock()
+	return entry, nil
+}
+
+func (s *Service) evictPolicyCache(networkID string) {
+	s.policyCacheMu.Lock()
+	for key := range s.policyCache {
+		if key.networkID == networkID {
+			delete(s.policyCache, key)
+		}
+	}
+	s.policyCacheMu.Unlock()
 }
 
 func (s *Service) policyArtifact(network NetworkRecord) (PolicyArtifact, error) {
