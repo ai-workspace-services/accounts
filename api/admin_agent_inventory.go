@@ -10,13 +10,17 @@ import (
 )
 
 type agentInventoryEntry struct {
-	ID            string     `json:"id"`
-	NodeID        string     `json:"nodeId,omitempty"`
-	Name          string     `json:"name,omitempty"`
-	ResourceClass string     `json:"resourceClass"`
-	Status        string     `json:"status"`
-	LastHeartbeat *time.Time `json:"lastHeartbeat,omitempty"`
-	LastSync      *time.Time `json:"lastSync,omitempty"`
+	Capacity      *store.AgentNodeCapacity `json:"capacity,omitempty"`
+	ClientCount   *int                     `json:"clientCount,omitempty"`
+	Provider      string                   `json:"provider,omitempty"`
+	Product       string                   `json:"product,omitempty"`
+	ID            string                   `json:"id"`
+	NodeID        string                   `json:"nodeId,omitempty"`
+	Name          string                   `json:"name,omitempty"`
+	ResourceClass string                   `json:"resourceClass"`
+	Status        string                   `json:"status"`
+	LastHeartbeat *time.Time               `json:"lastHeartbeat,omitempty"`
+	LastSync      *time.Time               `json:"lastSync,omitempty"`
 }
 
 func (h *handler) adminAgentInventory(c *gin.Context) {
@@ -39,14 +43,11 @@ func (h *handler) adminAgentInventory(c *gin.Context) {
 	entries := make([]agentInventoryEntry, 0, len(snapshots))
 	now := time.Now().UTC()
 	for _, snapshot := range snapshots {
-		role := snapshot.Report.Role
-		if snapshot.Agent.ID == "" || snapshot.Agent.ID == "*" || (role != "" && role != "agent-proxy") {
+		if !proxyInventoryAgent(snapshot) {
 			continue
 		}
 		class, _ := reportedResourceClass(snapshot)
-		if class == "" || class == agentResourceTeam || managedTeam(snapshot.Agent.Groups) {
-			continue
-		}
+
 		entry := agentInventoryEntry{
 			ID:            snapshot.Agent.ID,
 			NodeID:        snapshot.Agent.NodeID,
@@ -54,8 +55,14 @@ func (h *handler) adminAgentInventory(c *gin.Context) {
 			ResourceClass: class,
 			Status:        "unknown",
 			LastSync:      snapshot.Report.Xray.LastSync,
+			Provider:      snapshot.Report.Xray.Provider,
+			Product:       snapshot.Report.Xray.Product,
 		}
+		entry.Capacity = h.readAgentCapacity(c, entry.ID, now)
 		if !snapshot.UpdatedAt.IsZero() {
+			if snapshot.Report.Xray.LastSync != nil {
+				entry.ClientCount = &snapshot.Report.Xray.Clients
+			}
 			entry.LastHeartbeat = &snapshot.UpdatedAt
 			switch {
 			case snapshot.UpdatedAt.After(now) || now.Sub(snapshot.UpdatedAt) >= regionalHeartbeatTTL:

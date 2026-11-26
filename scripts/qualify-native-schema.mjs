@@ -36,7 +36,7 @@ const body = (header + dump).trimEnd() + '\n';
 if (/^(DROP |INSERT |UPDATE |GRANT |REVOKE |\\)/m.test(body)) throw new Error('non-schema statement');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const sourcePaths = [...new Set([...old.source_files.filter(s => !s.path.startsWith('sql/migrations/')).map(s => s.path),
-  'scripts/qualify-native-schema.mjs', ...readdirSync('sql/migrations').filter(x => x.endsWith('.up.sql')).map(x => `sql/migrations/${x}`)])].sort();
+  'scripts/qualify-native-schema.mjs', ...readdirSync('sql/migrations').filter(x => x.endsWith('.up.sql') && x !== '2026112601_agent_node_capacity.up.sql').map(x => `sql/migrations/${x}`)])].sort();
 const manifest = { format: 1, migration_version: Math.max(...sourcePaths.filter(x => x.startsWith('sql/migrations/')).map(x => Number(x.split('/').at(-1).split('_')[0]))),
   schema_sha256: hash(body), business_table_count: tables.length,
   source_files: sourcePaths.map(path => ({ path, sha256: hash(readFileSync(path)) })), business_tables: tables };

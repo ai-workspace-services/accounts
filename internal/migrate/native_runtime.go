@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	schema "account/sql"
 )
 
 // VerifyNativeRuntime checks the same compiled 55-table contract used by the
@@ -63,6 +65,25 @@ func VerifiedNativeRuntimeVersion(ctx context.Context, db *sql.DB) (uint, error)
 }
 
 func verifyCatalogCheckpoint(ctx context.Context, tx *sql.Tx, version uint) error {
+	if version == schema.AgentCapacityMigrationVersion {
+		var from uint
+		var checksum string
+		if err := tx.QueryRowContext(ctx, `SELECT from_version, sql_sha256 FROM public.accounts_controlled_migration_history WHERE to_version=$1`, version).Scan(&from, &checksum); err != nil ||
+			from != FullBusinessVersion || checksum != schema.AgentCapacityMigrationSHA256 {
+			return errors.New("native runtime node capacity migration receipt differs")
+		}
+		var accessible bool
+		if err := tx.QueryRowContext(ctx, `SELECT has_schema_privilege(current_user,'accounts_node_capacity','USAGE') AND
+            has_table_privilege(current_user,'accounts_node_capacity.agent_node_capacity','SELECT') AND
+            has_table_privilege(current_user,'accounts_node_capacity.agent_node_capacity','INSERT') AND
+            has_table_privilege(current_user,'accounts_node_capacity.agent_node_capacity','UPDATE') AND
+            has_table_privilege(current_user,'accounts_node_capacity.agent_node_monthly_traffic','SELECT') AND
+            has_table_privilege(current_user,'accounts_node_capacity.agent_node_monthly_traffic','INSERT') AND
+            has_table_privilege(current_user,'accounts_node_capacity.agent_node_monthly_traffic','UPDATE')`).Scan(&accessible); err != nil || !accessible {
+			return errors.New("native runtime node capacity privileges are missing")
+		}
+		return nil
+	}
 	if version == FullBusinessVersion {
 		return nil
 	}

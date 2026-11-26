@@ -174,10 +174,15 @@ func (h *handler) adminListTeamAgents(c *gin.Context) {
 	}
 	type row struct {
 		store.TeamAgentEnrollment
-		Online        bool      `json:"online"`
-		LastHeartbeat time.Time `json:"lastHeartbeat"`
-		Region        string    `json:"region"`
-		EntryPoint    string    `json:"entryPoint"`
+		Capacity        *store.AgentNodeCapacity `json:"capacity,omitempty"`
+		Provider        string                   `json:"provider,omitempty"`
+		Product         string                   `json:"product,omitempty"`
+		ClientCount     *int                     `json:"clientCount,omitempty"`
+		CanEditCapacity bool                     `json:"canEditCapacity,omitempty"`
+		Online          bool                     `json:"online"`
+		LastHeartbeat   time.Time                `json:"lastHeartbeat"`
+		Region          string                   `json:"region"`
+		EntryPoint      string                   `json:"entryPoint"`
 	}
 	out := make([]row, 0, len(rows))
 	for _, e := range rows {
@@ -188,7 +193,8 @@ func (h *handler) adminListTeamAgents(c *gin.Context) {
 		if !root {
 			e.SuggestedTeamID = ""
 		}
-		v := row{TeamAgentEnrollment: e}
+		v := row{TeamAgentEnrollment: e, CanEditCapacity: root}
+		v.Capacity = h.readAgentCapacity(c, e.AgentID, time.Now().UTC())
 		if h.agentStatusReader != nil {
 			for _, s := range h.agentStatusReader.Statuses() {
 				if s.Agent.ID == e.AgentID {
@@ -196,6 +202,11 @@ func (h *handler) adminListTeamAgents(c *gin.Context) {
 					v.Online = !s.UpdatedAt.IsZero() && time.Since(s.UpdatedAt) < regionalHeartbeatTTL
 					v.Region = s.Report.Xray.Region
 					v.EntryPoint = s.Report.Xray.EntryPoint
+					v.Provider = s.Report.Xray.Provider
+					v.Product = s.Report.Xray.Product
+					if s.Report.Xray.LastSync != nil {
+						v.ClientCount = &s.Report.Xray.Clients
+					}
 				}
 			}
 		}

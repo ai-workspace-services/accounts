@@ -31,8 +31,16 @@ type NativeManifest struct {
 	} `json:"source_files"`
 }
 
+// Node capacity is installed after the reviewed native business snapshot. Its
+// separate schema is outside the frozen public-table transfer contract.
+const (
+	AgentCapacityMigrationVersion = 2026112601
+	AgentCapacityMigrationSHA256  = "28fa065b4733072723b49802c715d5a566a734cf0eb979631adcb4f739892703"
+	agentCapacityMigrationFile    = "migrations/2026112601_agent_node_capacity.up.sql"
+)
+
 // NativeArtifact verifies the compiled SQL and its complete migration boundary.
-// New migrations must qualify a new native snapshot before empty DB deployment.
+// New public business migrations require a new native snapshot qualification.
 func NativeArtifact() ([]byte, NativeManifest, error) {
 	var manifest NativeManifest
 	raw, err := nativeFiles.ReadFile("init/accounts-native.manifest.json")
@@ -57,6 +65,7 @@ func NativeArtifact() ([]byte, NativeManifest, error) {
 			expected[strings.TrimPrefix(source.Path, "sql/")] = source.SHA256
 		}
 	}
+	expected[agentCapacityMigrationFile] = AgentCapacityMigrationSHA256
 	files, err := nativeFiles.ReadDir("migrations")
 	if err != nil {
 		return nil, manifest, err
@@ -75,6 +84,12 @@ func NativeArtifact() ([]byte, NativeManifest, error) {
 		checksum := sha256.Sum256(body)
 		if parseErr != nil || expected[name] != hex.EncodeToString(checksum[:]) {
 			return nil, manifest, fmt.Errorf("native schema migration checksum differs")
+		}
+		if name == agentCapacityMigrationFile {
+			if uint(version) != AgentCapacityMigrationVersion || uint(version) <= manifest.MigrationVersion {
+				return nil, manifest, fmt.Errorf("native post-bootstrap migration version differs")
+			}
+			continue
 		}
 		if uint(version) > latest {
 			latest = uint(version)

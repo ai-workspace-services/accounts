@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,12 @@ const (
 )
 
 func (s *postgresStore) InsertAuditLog(ctx context.Context, entry *AuditLog) error {
+	return insertAuditLog(ctx, s.db, entry)
+}
+
+func insertAuditLog(ctx context.Context, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, entry *AuditLog) error {
 	if entry == nil {
 		return errors.New("audit entry is required")
 	}
@@ -51,7 +58,7 @@ func (s *postgresStore) InsertAuditLog(ctx context.Context, entry *AuditLog) err
 		VALUES ($1, $2, $3, $4)
 		RETURNING created_at`
 
-	return s.db.QueryRowContext(ctx, query, entry.UUID, action, actor, encoded).
+	return db.QueryRowContext(ctx, query, entry.UUID, action, actor, encoded).
 		Scan(&entry.CreatedAt)
 }
 

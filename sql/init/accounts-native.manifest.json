@@ -46,7 +46,7 @@
     },
     {
       "path": "scripts/qualify-native-schema.mjs",
-      "sha256": "82d22ac870e52232f4d394c84c046659f0ea457128b3607c0450657445be5707"
+      "sha256": "2b41b28a84bbf3a8fc5e464d6818dbf792f3f92d39f0c1fdb81f921c060db5ec"
     },
     {
       "path": "sql/migrations/2026081201_bridge_credentials.up.sql",
