@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/crypto/bcrypt"
+	gintrace "github.com/DataDog/dd-trace-go/contrib/gin-gonic/gin/v2"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -1082,13 +1083,13 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		logger = slog.Default()
 	}
 	logger = logger.With(observability.RuntimeLogAttrs("web-saas-accounts")...)
-	shutdownTracing, err := observability.Configure(ctx, "web-saas-accounts")
+	shutdownTracing, tracingProvider, err := observability.ConfigureTracing(ctx, "web-saas-accounts")
 	if err != nil {
-		logger.Warn("OTLP tracing disabled", "err", err)
+		logger.Warn("tracing disabled", "err", err)
 	} else {
 		defer func() {
 			if err := shutdownTracing(context.Background()); err != nil {
-				logger.Warn("failed to flush OTLP traces", "err", err)
+				logger.Warn("failed to flush traces", "err", err)
 			}
 		}()
 	}
@@ -1267,7 +1268,12 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}
 
 	r := gin.New()
-	r.Use(otelgin.Middleware("web-saas-accounts"))
+	switch tracingProvider {
+	case observability.ProviderOTel:
+		r.Use(otelgin.Middleware("web-saas-accounts"))
+	case observability.ProviderDDTrace:
+		r.Use(gintrace.Middleware(observability.DDTraceServiceName("web-saas-accounts")))
+	}
 	corsConfig := buildCORSConfig(logger, cfg.Server, st)
 	if corsConfig.AllowAllOrigins {
 		logger.Info("configured cors", "allowAllOrigins", true)

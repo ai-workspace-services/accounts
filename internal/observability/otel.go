@@ -91,7 +91,7 @@ func firstNonEmpty(values ...string) string {
 func TraceLogAttrs(ctx context.Context) []any {
 	spanContext := trace.SpanContextFromContext(ctx)
 	if !spanContext.IsValid() {
-		return nil
+		return DDTraceSpanAttrs(ctx, "web-saas-accounts")
 	}
 	attrs := RuntimeLogAttrs("web-saas-accounts")
 	return append(attrs,
@@ -101,8 +101,8 @@ func TraceLogAttrs(ctx context.Context) []any {
 }
 
 func RuntimeLogAttrs(defaultService string) []any {
-	serviceName := firstNonEmpty(os.Getenv("OTEL_SERVICE_NAME"), defaultService)
-	environment := firstNonEmpty(os.Getenv("OTEL_ENVIRONMENT"), os.Getenv("DEPLOY_ENV"), os.Getenv("RUNTIME_ENV"), os.Getenv("ENVIRONMENT"))
+	serviceName := firstNonEmpty(os.Getenv("DD_SERVICE"), os.Getenv("OTEL_SERVICE_NAME"), defaultService)
+	environment := firstNonEmpty(os.Getenv("DD_ENV"), os.Getenv("OTEL_ENVIRONMENT"), os.Getenv("DEPLOY_ENV"), os.Getenv("RUNTIME_ENV"), os.Getenv("ENVIRONMENT"))
 	instance := firstNonEmpty(os.Getenv("OTEL_SERVICE_INSTANCE_ID"), os.Getenv("INSTANCE"), os.Getenv("HOSTNAME"), serviceName)
 	return []any{"service.name", serviceName, "service_name", serviceName, "environment", environment, "instance", instance}
 }
