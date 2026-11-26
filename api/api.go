@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -446,6 +447,27 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	r.GET("/.well-known/jwks.json", func(c *gin.Context) {
+		jwks := auth.JWKS{Keys: []auth.JWK{}}
+		if h.tokenService != nil {
+			jwks = h.tokenService.JWKS()
+		}
+		payload, err := json.Marshal(jwks)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "jwks_marshal_failed"})
+			return
+		}
+		sum := sha256.Sum256(payload)
+		etag := `"` + hex.EncodeToString(sum[:]) + `"`
+		c.Header("Cache-Control", "public, max-age=300")
+		c.Header("ETag", etag)
+		if trimMatch := strings.TrimSpace(c.GetHeader("If-None-Match")); trimMatch == etag || trimMatch == "W/"+etag {
+			c.Status(http.StatusNotModified)
+			return
+		}
+		c.Data(http.StatusOK, "application/json", payload)
 	})
 
 	r.GET("/readyz", func(c *gin.Context) {
