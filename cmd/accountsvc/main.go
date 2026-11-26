@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
@@ -1345,14 +1346,23 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			refreshExpiry = 168 * time.Hour // 7 days
 		}
 
+		jwtSigningCfg, err := auth.LoadJWTSigningConfigFromEnv()
+		if err != nil {
+			return err
+		}
+
 		tokenService = auth.NewTokenService(auth.TokenConfig{
-			PublicToken:   cfg.Auth.Token.PublicToken,
-			RefreshSecret: cfg.Auth.Token.RefreshSecret,
-			AccessSecret:  cfg.Auth.Token.AccessSecret,
-			AccessExpiry:  accessExpiry,
-			RefreshExpiry: refreshExpiry,
+			PublicToken:              cfg.Auth.Token.PublicToken,
+			RefreshSecret:            cfg.Auth.Token.RefreshSecret,
+			AccessSecret:             cfg.Auth.Token.AccessSecret,
+			AccessExpiry:             accessExpiry,
+			RefreshExpiry:            refreshExpiry,
+			SigningKeyID:             jwtSigningCfg.SigningKeyID,
+			SigningPrivateKey:        jwtSigningCfg.SigningPrivateKey,
+			PreviousSigningKeyID:     jwtSigningCfg.PreviousSigningKeyID,
+			PreviousSigningPublicKey: jwtSigningCfg.PreviousSigningPublicKey,
 		})
-		logger.Info("token service initialized", "auth_enabled", cfg.Auth.Enable)
+		logger.Info("token service initialized", "auth_enabled", cfg.Auth.Enable, "eddsa_jwks_enabled", len(jwtSigningCfg.SigningPrivateKey) == ed25519.PrivateKeySize)
 	}
 
 	if !cfg.DatabaseRuntime.Managed() {
