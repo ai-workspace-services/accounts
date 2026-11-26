@@ -1194,24 +1194,34 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}
 
 	service.SetDB(gormDB)
-	overlayConfig, err := overlay.ConfigFromEnv()
-	if err != nil {
-		return err
+	enableLegacyOverlay := false
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ACCOUNTS_ENABLE_LEGACY_OVERLAY_ROUTES"))) {
+	case "1", "true", "yes", "on":
+		enableLegacyOverlay = true
 	}
-	overlayConfig.SchemaManaged = cfg.DatabaseRuntime.Managed()
-	overlayService, err := overlay.NewService(gormDB, overlayConfig)
-	if err != nil {
-		return err
-	}
-	overlayService.StartSessionCleanup(ctx, overlay.DefaultSessionCleanupInterval, overlay.DefaultEnrollmentRetention, func(deleted int64, err error) {
+	var overlayService *overlay.Service
+	if enableLegacyOverlay {
+		overlayConfig, cfgErr := overlay.ConfigFromEnv()
+		if cfgErr != nil {
+			return cfgErr
+		}
+		overlayConfig.SchemaManaged = cfg.DatabaseRuntime.Managed()
+		overlayService, err = overlay.NewService(gormDB, overlayConfig)
 		if err != nil {
-			logger.Warn("overlay enrollment session cleanup failed", "err", err)
-			return
+			return err
 		}
-		if deleted > 0 {
-			logger.Info("pruned expired overlay enrollment sessions", "deleted", deleted)
-		}
-	})
+		overlayService.StartSessionCleanup(ctx, overlay.DefaultSessionCleanupInterval, overlay.DefaultEnrollmentRetention, func(deleted int64, cleanupErr error) {
+			if cleanupErr != nil {
+				logger.Warn("overlay enrollment session cleanup failed", "err", cleanupErr)
+				return
+			}
+			if deleted > 0 {
+				logger.Info("pruned expired overlay enrollment sessions", "deleted", deleted)
+			}
+		})
+	} else {
+		logger.Info("legacy overlay control-plane routes disabled; served by xconnect-controller")
+	}
 
 	if !cfg.DatabaseRuntime.Managed() {
 		// The root-account check below reads public.users. Bootstrap the core
@@ -1629,7 +1639,11 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			return sqlDB.PingContext(probeCtx)
 		}))
 	}
-	options = append(options, api.WithOverlayService(overlayService))
+	if enableLegacyOverlay && overlayService != nil {
+		options = append(options, api.WithOverlayService(overlayService))
+	} else {
+		options = append(options, api.WithDisableLegacyOverlayRoutes(true))
+	}
 
 	// Pre-load sandbox bindings from database into the registry
 	if agentRegistry != nil {

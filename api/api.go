@@ -134,6 +134,7 @@ type handler struct {
 	agentRegistry             agentRegistry
 	agentManagedConfigPath    string
 	overlayService            *overlay.Service
+	disableLegacyOverlayRoutes bool
 	db                        *gorm.DB
 	dbHealth                  func(context.Context) error
 	stripe                    *stripeClient
@@ -397,6 +398,14 @@ func WithDBHealth(probe func(context.Context) error) Option {
 func WithOverlayService(service *overlay.Service) Option {
 	return func(h *handler) {
 		h.overlayService = service
+	}
+}
+
+// WithDisableLegacyOverlayRoutes disables the legacy Overlay control-plane
+// endpoints that have been split out into standalone xconnect-controller.
+func WithDisableLegacyOverlayRoutes(disabled bool) Option {
+	return func(h *handler) {
+		h.disableLegacyOverlayRoutes = disabled
 	}
 }
 
@@ -763,10 +772,12 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup.POST("/bridge/credentials/introspect", h.introspectBridgeCredential)
 	internalGroup.GET("/policy/:accountUUID", h.internalAccountPolicy)
 	internalGroup.POST("/nodes/heartbeat", h.internalNodeHeartbeat)
-	internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
-	if h.overlayService != nil {
-		internalGroup.POST("/overlay/networks/bootstrap", h.overlayInternalBootstrap)
-		internalGroup.POST("/overlay/gateways/reconcile-stable-owner", h.overlayInternalReconcileStableGateway)
+	if !h.disableLegacyOverlayRoutes {
+		internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
+		if h.overlayService != nil {
+			internalGroup.POST("/overlay/networks/bootstrap", h.overlayInternalBootstrap)
+			internalGroup.POST("/overlay/gateways/reconcile-stable-owner", h.overlayInternalReconcileStableGateway)
+		}
 	}
 
 	r.POST("/api/admin/migration/authorize", h.authorizeMigration)
@@ -784,12 +795,14 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	apiGroup.GET("/users", h.listUsers)
 	registerAdminRoutes(apiGroup, h)
 
-	overlayGroup := r.Group("/api/overlay")
-	if h.tokenService != nil {
-		overlayGroup.Use(h.tokenService.AuthMiddleware())
-		overlayGroup.Use(auth.RequireActiveUser(h.store))
+	if !h.disableLegacyOverlayRoutes {
+		overlayGroup := r.Group("/api/overlay")
+		if h.tokenService != nil {
+			overlayGroup.Use(h.tokenService.AuthMiddleware())
+			overlayGroup.Use(auth.RequireActiveUser(h.store))
+		}
+		h.registerOverlayRoutes(overlayGroup)
 	}
-	h.registerOverlayRoutes(overlayGroup)
 
 	// Canonical user-facing agent routes.
 	// These endpoints use session-based auth in handler logic and intentionally
@@ -814,8 +827,10 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	agentGroup := r.Group("/api/agent")
 	agentGroup.GET("/nodes", h.listAgentNodes)
 
-	h.registerOverlayV1Routes(r)
-	h.registerOverlayAdminRoutes(r)
+	if !h.disableLegacyOverlayRoutes {
+		h.registerOverlayV1Routes(r)
+		h.registerOverlayAdminRoutes(r)
+	}
 	h.startEmailWorker()
 }
 
