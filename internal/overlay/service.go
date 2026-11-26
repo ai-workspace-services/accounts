@@ -2080,7 +2080,7 @@ func (s *Service) buildSignedConfigWithContext(ctx context.Context, device Devic
 		},
 		WireGuard: WireGuard{
 			InterfaceName: "xconone0", Addresses: []string{device.WireGuardAddress}, MTU: 1420,
-			Peers: []WireGuardPeer{{GatewayID: network.GatewayID, PublicKey: network.GatewayWireGuardKey, AllowedIPs: []string{network.CIDR}, Endpoint: Endpoint{Host: "127.0.0.1", Port: s.localProxyPort}, PersistentKeepaliveSeconds: 25}},
+			Peers: []WireGuardPeer{{GatewayID: network.GatewayID, PublicKey: network.GatewayWireGuardKey, AllowedIPs: []string{network.CIDR}, Endpoint: Endpoint{Host: "127.0.0.1", Port: s.localProxyPort}, PersistentKeepaliveSeconds: 12}},
 		},
 	}
 	if v2 {
