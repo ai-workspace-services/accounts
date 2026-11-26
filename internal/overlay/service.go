@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -65,17 +66,20 @@ type cachedPolicyEntry struct {
 }
 
 type Service struct {
-	meshNetworks    map[string]bool
-	repo            *Repository
-	keyID           string
-	privateKey      ed25519.PrivateKey
-	enrollmentTTL   time.Duration
-	credentialTTL   time.Duration
-	signedConfigTTL time.Duration
-	localProxyPort  int
-	clock           func() time.Time
-	policyCacheMu   sync.RWMutex
-	policyCache     map[policyCacheKey]cachedPolicyEntry
+	meshNetworks        map[string]bool
+	repo                *Repository
+	keyID               string
+	privateKey          ed25519.PrivateKey
+	previousKeyID       string
+	previousPublicKey   ed25519.PublicKey
+	previousKeyNotAfter time.Time
+	enrollmentTTL       time.Duration
+	credentialTTL       time.Duration
+	signedConfigTTL     time.Duration
+	localProxyPort      int
+	clock               func() time.Time
+	policyCacheMu       sync.RWMutex
+	policyCache         map[policyCacheKey]cachedPolicyEntry
 }
 
 const adminDeviceACKRecentWindow = 5 * time.Minute
@@ -113,6 +117,9 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 	}
 	key := append(ed25519.PrivateKey(nil), cfg.SigningPrivateKey...)
 	if len(key) == 0 {
+		if cfg.RequireSigningKey {
+			return nil, errors.New("overlay signing private key is required (set XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY)")
+		}
 		var err error
 		_, key, err = ed25519.GenerateKey(rand.Reader)
 		if err != nil {
@@ -121,6 +128,19 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 	}
 	if len(key) != ed25519.PrivateKeySize {
 		return nil, errors.New("overlay signing key must be an Ed25519 private key")
+	}
+	prevPub := append(ed25519.PublicKey(nil), cfg.PreviousSigningPublicKey...)
+	prevKeyID := strings.TrimSpace(cfg.PreviousSigningKeyID)
+	if len(prevPub) > 0 {
+		if len(prevPub) != ed25519.PublicKeySize {
+			return nil, errors.New("overlay previous signing key must be an Ed25519 public key")
+		}
+		if prevKeyID == "" {
+			prevKeyID = "zero-signing-previous"
+		}
+		if prevKeyID == cfg.SigningKeyID {
+			return nil, errors.New("overlay previous signing key id must differ from current signing key id")
+		}
 	}
 	repo, err := NewRepository(db)
 	if err != nil {
@@ -133,23 +153,59 @@ func NewService(db *gorm.DB, cfg Config) (*Service, error) {
 		}
 	}
 	return &Service{
-		meshNetworks:    meshNetworks,
-		repo:            repo,
-		keyID:           cfg.SigningKeyID,
-		privateKey:      key,
-		enrollmentTTL:   cfg.EnrollmentTTL,
-		credentialTTL:   cfg.CredentialTTL,
-		signedConfigTTL: cfg.SignedConfigTTL,
-		localProxyPort:  cfg.LocalProxyPort,
-		clock:           cfg.Clock,
-		policyCache:     make(map[policyCacheKey]cachedPolicyEntry),
+		meshNetworks:        meshNetworks,
+		repo:                repo,
+		keyID:               cfg.SigningKeyID,
+		privateKey:          key,
+		previousKeyID:       prevKeyID,
+		previousPublicKey:   prevPub,
+		previousKeyNotAfter: cfg.PreviousSigningKeyNotAfter,
+		enrollmentTTL:       cfg.EnrollmentTTL,
+		credentialTTL:       cfg.CredentialTTL,
+		signedConfigTTL:     cfg.SignedConfigTTL,
+		localProxyPort:      cfg.LocalProxyPort,
+		clock:               cfg.Clock,
+		policyCache:         make(map[policyCacheKey]cachedPolicyEntry),
 	}, nil
+}
+
+func decodeBase64Flexible(raw string) ([]byte, error) {
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		decoded, err = base64.RawStdEncoding.DecodeString(raw)
+	}
+	return decoded, err
+}
+
+func parseEd25519PrivateKeyEnv(raw string) (ed25519.PrivateKey, error) {
+	decoded, err := decodeBase64Flexible(raw)
+	if err != nil {
+		return nil, err
+	}
+	switch len(decoded) {
+	case ed25519.PrivateKeySize:
+		return ed25519.PrivateKey(decoded), nil
+	case ed25519.SeedSize:
+		return ed25519.NewKeyFromSeed(decoded), nil
+	default:
+		return nil, errors.New("invalid Ed25519 private key length")
+	}
+}
+
+func parseBoolEnv(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // ConfigFromEnv is intended for the account service entrypoint. The private
 // key is injected by the deployment secret manager (Vault in production),
-// encoded as unpadded or padded base64. Development may omit it and receives
-// an ephemeral key, which makes the limitation explicit at the boundary.
+// encoded as unpadded or padded base64 (either 64-byte Ed25519 private key or
+// 32-byte seed). Setting XCONNECT_OVERLAY_REQUIRE_SIGNING_KEY=true enforces
+// fail-fast startup when no signing private key is configured.
 func ConfigFromEnv() (Config, error) {
 	localProxyPort := 0
 	if value := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_LOCAL_PROXY_PORT")); value != "" {
@@ -159,18 +215,43 @@ func ConfigFromEnv() (Config, error) {
 		}
 		localProxyPort = parsed
 	}
-	keyText := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY"))
-	if keyText == "" {
-		return Config{MeshNetworks: strings.Split(os.Getenv("XCONNECT_OVERLAY_MESH_NETWORKS"), ","), SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), LocalProxyPort: localProxyPort}, nil
+	cfg := Config{
+		MeshNetworks:         strings.Split(os.Getenv("XCONNECT_OVERLAY_MESH_NETWORKS"), ","),
+		SigningKeyID:         strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")),
+		PreviousSigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_PREVIOUS_SIGNING_KEY_ID")),
+		RequireSigningKey:    parseBoolEnv(os.Getenv("XCONNECT_OVERLAY_REQUIRE_SIGNING_KEY")),
+		LocalProxyPort:       localProxyPort,
 	}
-	key, err := base64.StdEncoding.DecodeString(keyText)
-	if err != nil {
-		key, err = base64.RawStdEncoding.DecodeString(keyText)
+	if keyText := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY")); keyText != "" {
+		key, err := parseEd25519PrivateKeyEnv(keyText)
+		if err != nil {
+			return Config{}, errors.New("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY must be base64 Ed25519 private key")
+		}
+		cfg.SigningPrivateKey = key
+	} else if cfg.RequireSigningKey {
+		return Config{}, errors.New("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY is required when XCONNECT_OVERLAY_REQUIRE_SIGNING_KEY is enabled")
 	}
-	if err != nil || len(key) != ed25519.PrivateKeySize {
-		return Config{}, errors.New("XCONNECT_OVERLAY_SIGNING_PRIVATE_KEY must be base64 Ed25519 private key")
+	if prevPubText := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_PREVIOUS_SIGNING_PUBLIC_KEY")); prevPubText != "" {
+		pub, err := decodeBase64Flexible(prevPubText)
+		if err != nil || len(pub) != ed25519.PublicKeySize {
+			return Config{}, errors.New("XCONNECT_OVERLAY_PREVIOUS_SIGNING_PUBLIC_KEY must be base64 Ed25519 public key")
+		}
+		cfg.PreviousSigningPublicKey = ed25519.PublicKey(pub)
+	} else if prevPrivText := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_PREVIOUS_SIGNING_PRIVATE_KEY")); prevPrivText != "" {
+		prevPriv, err := parseEd25519PrivateKeyEnv(prevPrivText)
+		if err != nil {
+			return Config{}, errors.New("XCONNECT_OVERLAY_PREVIOUS_SIGNING_PRIVATE_KEY must be base64 Ed25519 private key")
+		}
+		cfg.PreviousSigningPublicKey = prevPriv.Public().(ed25519.PublicKey)
 	}
-	return Config{MeshNetworks: strings.Split(os.Getenv("XCONNECT_OVERLAY_MESH_NETWORKS"), ","), SigningKeyID: strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_SIGNING_KEY_ID")), SigningPrivateKey: ed25519.PrivateKey(key), LocalProxyPort: localProxyPort}, nil
+	if notAfterText := strings.TrimSpace(os.Getenv("XCONNECT_OVERLAY_PREVIOUS_SIGNING_NOT_AFTER")); notAfterText != "" {
+		parsed, err := time.Parse(time.RFC3339, notAfterText)
+		if err != nil {
+			return Config{}, errors.New("XCONNECT_OVERLAY_PREVIOUS_SIGNING_NOT_AFTER must be RFC3339 timestamp")
+		}
+		cfg.PreviousSigningKeyNotAfter = canonicalTime(parsed)
+	}
+	return cfg, nil
 }
 
 func (s *Service) Repository() *Repository { return s.repo }
@@ -1090,7 +1171,11 @@ func (s *Service) UserEnrollDevice(ctx context.Context, userID string, request U
 		var existing DeviceRecord
 		existingErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", request.DeviceID).First(&existing).Error
 		if existingErr == nil {
-			if existing.NetworkID != networkRecord.ID || existing.UserID != userID || existing.Role != RoleOne {
+			sameOwner := existing.UserID == userID ||
+				(strings.TrimSpace(existing.UserID) == "" && strings.TrimSpace(existing.UserUUID) == userID) ||
+				strings.TrimSpace(networkRecord.OwnerUserID) == userID ||
+				isRootAdmin(ctx)
+			if existing.NetworkID != networkRecord.ID || existing.Role != RoleOne || !sameOwner {
 				return ErrDeviceConflict
 			}
 			var keyConflict int64
@@ -1462,7 +1547,34 @@ func (s *Service) Seed(ctx context.Context, cfg BootstrapConfig, joinToken strin
 
 func (s *Service) SigningKeys(now time.Time) []SigningKey {
 	now = canonicalTime(now)
-	return []SigningKey{{KeyID: s.keyID, Algorithm: "Ed25519", PublicKey: base64.StdEncoding.EncodeToString(s.privateKey.Public().(ed25519.PublicKey)), Status: "current", NotBefore: now.Add(-time.Minute)}}
+	currentPub := s.privateKey.Public().(ed25519.PublicKey)
+	keys := []SigningKey{
+		{
+			KeyID:     s.keyID,
+			Algorithm: "Ed25519",
+			PublicKey: base64.StdEncoding.EncodeToString(currentPub),
+			Status:    "current",
+			NotBefore: now.Add(-time.Minute),
+		},
+	}
+	if len(s.previousPublicKey) == ed25519.PublicKeySize && !bytes.Equal(s.previousPublicKey, currentPub) {
+		notAfter := s.previousKeyNotAfter
+		if notAfter.IsZero() {
+			notAfter = now.Add(24 * time.Hour)
+		}
+		notAfter = canonicalTime(notAfter)
+		if notAfter.After(now) {
+			keys = append(keys, SigningKey{
+				KeyID:     s.previousKeyID,
+				Algorithm: "Ed25519",
+				PublicKey: base64.StdEncoding.EncodeToString(s.previousPublicKey),
+				Status:    "previous",
+				NotBefore: now.Add(-time.Minute),
+				NotAfter:  &notAfter,
+			})
+		}
+	}
+	return keys
 }
 
 // Register records a request for an owner to approve a One identity. This is

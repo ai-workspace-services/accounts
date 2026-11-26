@@ -144,13 +144,14 @@ func TestAdminExplainPolicyEvaluationAndValidation(t *testing.T) {
 	if err != nil || dbUDP.Decision != "allow" || dbUDP.MatchedRuleID != "allow-db-ports-any-proto" || dbUDP.SourceAddress != "" || dbUDP.DestinationAddress != dbRes.Device.WireGuardAddress {
 		t.Fatalf("unexpected empty-proto-with-port explain response: %#v err=%v", dbUDP, err)
 	}
+	// ICMP is allowed by default unless explicitly denied by a matching rule.
 	dbICMP, err := service.AdminExplainPolicy(t.Context(), owner, "sit-private", PolicyExplainRequest{
 		SourceDeviceID:      "macbook",
 		DestinationDeviceID: "postgres-db",
 		Protocol:            "icmp",
 	})
-	if err != nil || dbICMP.Decision != "deny" || dbICMP.Reason != "default_action" || dbICMP.MatchedRuleIndex != nil {
-		t.Fatalf("expected icmp to postgres-db to fall back to deny, got %#v err=%v", dbICMP, err)
+	if err != nil || dbICMP.Decision != "allow" || dbICMP.Reason != "default_icmp_allow" || dbICMP.MatchedRuleIndex != nil {
+		t.Fatalf("expected unmatched icmp to postgres-db to default-allow, got %#v err=%v", dbICMP, err)
 	}
 
 	// Wildcard source matches even when source device is not enrolled yet.

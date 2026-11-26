@@ -312,6 +312,11 @@ func (s *Service) AdminExplainPolicy(ctx context.Context, ownerUserID, networkID
 		}
 	}
 
+	if req.Protocol == "icmp" && resp.Decision == "deny" {
+		resp.Decision = "allow"
+		resp.Reason = "default_icmp_allow"
+	}
+
 	return resp, nil
 }
 

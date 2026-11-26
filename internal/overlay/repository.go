@@ -454,27 +454,94 @@ func (r *Repository) createDevice(ctx context.Context, tokenHash string, request
 		var existing DeviceRecord
 		existingErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND network_id = ?", request.DeviceID, invite.NetworkID).First(&existing).Error
 		if existingErr == nil {
-			// A Gateway's local state can outlive a UAT control-plane reset. Permit
-			// a fresh, device-bound Gateway invitation to rotate only its credential
-			// when the network's pinned WireGuard identity is unchanged. One devices
-			// deliberately retain strict single-enrollment semantics.
-			if invite.Role != RoleGateway || existing.Role != RoleGateway || existing.Status != "active" ||
-				existing.WireGuardPublicKey != request.WireGuardPublicKey || existing.ID != network.GatewayID {
+			switch invite.Role {
+			case RoleGateway:
+				// A Gateway's local state can outlive a control-plane reset. Permit
+				// a fresh, device-bound Gateway invitation to rotate only its credential
+				// when the network's pinned WireGuard identity is unchanged.
+				if existing.Role != RoleGateway || existing.Status != "active" ||
+					existing.WireGuardPublicKey != request.WireGuardPublicKey || existing.ID != network.GatewayID {
+					return ErrDeviceConflict
+				}
+				if err := tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", existing.ID).Update("revoked_at", now).Error; err != nil {
+					return err
+				}
+				credential.DeviceID = existing.ID
+				enrollment.DeviceID = existing.ID
+				if err := tx.Create(&credential).Error; err != nil {
+					return err
+				}
+				if err := tx.Create(&enrollment).Error; err != nil {
+					return err
+				}
+				device = existing
+				return nil
+			case RoleOne:
+				// Idempotent re-join for an already-bound One node on the same network:
+				// preserve device_id, fixed Overlay WireGuard IP, owner binding, and ACL
+				// policy references; rotate credentials and update WireGuard key if changed.
+				if existing.Role != RoleOne || request.DeviceID == network.GatewayID || request.WireGuardPublicKey == network.GatewayWireGuardKey {
+					return ErrDeviceConflict
+				}
+				var keyConflict int64
+				if err := tx.Model(&DeviceRecord{}).
+					Where("network_id = ? AND id <> ? AND wireguard_public_key = ?", network.ID, existing.ID, request.WireGuardPublicKey).
+					Count(&keyConflict).Error; err != nil {
+					return err
+				}
+				if keyConflict > 0 {
+					return ErrDeviceConflict
+				}
+				address := existing.WireGuardAddress
+				if strings.TrimSpace(address) == "" {
+					var allocErr error
+					address, allocErr = r.allocateAddress(tx, network)
+					if allocErr != nil {
+						return allocErr
+					}
+				}
+				needsGenerationBump := existing.WireGuardPublicKey != request.WireGuardPublicKey ||
+					existing.Status != "active" ||
+					existing.WireGuardAddress != address
+				if err := tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", existing.ID).Update("revoked_at", now).Error; err != nil {
+					return err
+				}
+				if err := tx.Model(&DeviceRecord{}).Where("id = ? AND network_id = ?", existing.ID, network.ID).Updates(map[string]any{
+					"name":                 request.Name,
+					"platform":             request.Platform,
+					"hostname":             request.Hostname,
+					"wireguard_public_key": request.WireGuardPublicKey,
+					"wireguard_address":    address,
+					"status":               "active",
+					"updated_at":           now,
+				}).Error; err != nil {
+					return err
+				}
+				existing.Name = request.Name
+				existing.Platform = request.Platform
+				existing.Hostname = request.Hostname
+				existing.WireGuardPublicKey = request.WireGuardPublicKey
+				existing.WireGuardAddress = address
+				existing.Status = "active"
+				existing.UpdatedAt = now
+				if needsGenerationBump {
+					if err := advanceNetworkGeneration(tx, &network); err != nil {
+						return err
+					}
+				}
+				credential.DeviceID = existing.ID
+				enrollment.DeviceID = existing.ID
+				if err := tx.Create(&credential).Error; err != nil {
+					return err
+				}
+				if err := tx.Create(&enrollment).Error; err != nil {
+					return err
+				}
+				device = existing
+				return nil
+			default:
 				return ErrDeviceConflict
 			}
-			if err := tx.Model(&CredentialRecord{}).Where("device_id = ? AND revoked_at IS NULL", existing.ID).Update("revoked_at", now).Error; err != nil {
-				return err
-			}
-			credential.DeviceID = existing.ID
-			enrollment.DeviceID = existing.ID
-			if err := tx.Create(&credential).Error; err != nil {
-				return err
-			}
-			if err := tx.Create(&enrollment).Error; err != nil {
-				return err
-			}
-			device = existing
-			return nil
 		}
 		if !errors.Is(existingErr, gorm.ErrRecordNotFound) {
 			return existingErr

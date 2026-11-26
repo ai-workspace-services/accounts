@@ -1203,6 +1203,15 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	if err != nil {
 		return err
 	}
+	overlayService.StartSessionCleanup(ctx, overlay.DefaultSessionCleanupInterval, overlay.DefaultEnrollmentRetention, func(deleted int64, err error) {
+		if err != nil {
+			logger.Warn("overlay enrollment session cleanup failed", "err", err)
+			return
+		}
+		if deleted > 0 {
+			logger.Info("pruned expired overlay enrollment sessions", "deleted", deleted)
+		}
+	})
 
 	if !cfg.DatabaseRuntime.Managed() {
 		// The root-account check below reads public.users. Bootstrap the core
