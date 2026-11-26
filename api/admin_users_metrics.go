@@ -219,6 +219,7 @@ func registerAdminRoutes(group *gin.RouterGroup, h *handler) {
 	admin.GET("/users/metrics", h.adminUsersMetrics)
 	admin.GET("/agents/status", h.adminAgentStatus)
 	admin.GET("/agents/inventory", h.adminAgentInventory)
+	admin.PUT("/agents/:agentId/capacity", h.adminPutAgentCapacity)
 	admin.GET("/agents/grants", h.adminListAgentFreeGrants)
 	admin.POST("/agents/grants", h.adminUpsertAgentFreeGrant)
 	admin.PUT("/agents/grants", h.adminUpsertAgentFreeGrant)

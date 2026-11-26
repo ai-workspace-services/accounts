@@ -541,6 +541,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authProtected.GET("/admin/network-teams", h.adminListNetworkTeams)
 	authProtected.PUT("/admin/network-teams/:teamId", h.adminPutNetworkTeam)
 	authProtected.GET("/admin/agents/inventory", h.adminAgentInventory)
+	authProtected.PUT("/admin/agents/:agentId/capacity", h.adminPutAgentCapacity)
 	authProtected.GET("/admin/agents/grants", h.adminListAgentFreeGrants)
 	authProtected.POST("/admin/agents/grants", h.adminUpsertAgentFreeGrant)
 	authProtected.PUT("/admin/agents/grants", h.adminUpsertAgentFreeGrant)

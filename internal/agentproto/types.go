@@ -51,19 +51,30 @@ type UserScope struct {
 // StatusReport captures the runtime state of an agent and the managed Xray
 // instance.
 type StatusReport struct {
-	Overlay          *OverlayStatus    `json:"overlay,omitempty"`
-	GatewayTelemetry *GatewayTelemetry `json:"gatewayTelemetry,omitempty"`
-	AgentID          string            `json:"agentId"` // Self-reported agent ID (e.g., "hk-xhttp.svc.plus")
-	Role             string            `json:"role,omitempty"`
-	Healthy          bool              `json:"healthy"`
-	Message          string            `json:"message,omitempty"`
-	Users            int               `json:"users"`
-	SyncRevision     string            `json:"syncRevision,omitempty"`
-	Xray             XrayStatus        `json:"xray"`
+	NodeTraffic      *NodeTrafficSample `json:"nodeTraffic,omitempty"`
+	Overlay          *OverlayStatus     `json:"overlay,omitempty"`
+	GatewayTelemetry *GatewayTelemetry  `json:"gatewayTelemetry,omitempty"`
+	AgentID          string             `json:"agentId"` // Self-reported agent ID (e.g., "hk-xhttp.svc.plus")
+	Role             string             `json:"role,omitempty"`
+	Healthy          bool               `json:"healthy"`
+	Message          string             `json:"message,omitempty"`
+	Users            int                `json:"users"`
+	SyncRevision     string             `json:"syncRevision,omitempty"`
+	Xray             XrayStatus         `json:"xray"`
+}
+
+type NodeTrafficSample struct {
+	Interface string    `json:"interface"`
+	BootID    string    `json:"bootId"`
+	RXBytes   *int64    `json:"rxBytes"`
+	TXBytes   *int64    `json:"txBytes"`
+	SampledAt time.Time `json:"sampledAt"`
 }
 
 // XrayStatus describes the synchronisation state of the managed Xray process.
 type XrayStatus struct {
+	Provider        string     `json:"provider,omitempty"`
+	Product         string     `json:"product,omitempty"`
 	CustomAllowFree bool       `json:"customAllowFree,omitempty"`
 	AllowedEmails   []string   `json:"allowedEmails,omitempty"`
 	Running         bool       `json:"running"`

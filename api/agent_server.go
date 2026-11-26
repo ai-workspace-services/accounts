@@ -541,6 +541,7 @@ func (h *handler) reportAgentStatus(c *gin.Context) {
 	// Ensure report uses the resolved agent id.
 	report.AgentID = identity.ID
 	h.agentRegistry.ReportStatus(identity, report)
+	h.recordAgentTraffic(c, *credIdentity, identity, report)
 	// A Gateway/One control agent may only refresh liveness for a device which
 	// already exists through signed enrollment. This deliberately never creates
 	// or reassigns an overlay device, so generic Agent telemetry cannot bypass
