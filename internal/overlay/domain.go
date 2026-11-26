@@ -627,20 +627,27 @@ type BootstrapInvite struct {
 }
 
 type Config struct {
-	SchemaManaged     bool
-	MeshNetworks      []string
-	SigningKeyID      string
-	SigningPrivateKey ed25519.PrivateKey
-	LocalProxyPort    int
-	EnrollmentTTL     time.Duration
-	CredentialTTL     time.Duration
-	SignedConfigTTL   time.Duration
-	Clock             func() time.Time
+	SchemaManaged              bool
+	MeshNetworks               []string
+	SigningKeyID               string
+	SigningPrivateKey          ed25519.PrivateKey
+	PreviousSigningKeyID       string
+	PreviousSigningPublicKey   ed25519.PublicKey
+	PreviousSigningKeyNotAfter time.Time
+	RequireSigningKey          bool
+	LocalProxyPort             int
+	EnrollmentTTL              time.Duration
+	CredentialTTL              time.Duration
+	SignedConfigTTL            time.Duration
+	Clock                      func() time.Time
 }
 
 func (c Config) withDefaults() Config {
 	if c.SigningKeyID == "" {
 		c.SigningKeyID = "zero-signing-current"
+	}
+	if len(c.PreviousSigningPublicKey) > 0 && strings.TrimSpace(c.PreviousSigningKeyID) == "" {
+		c.PreviousSigningKeyID = "zero-signing-previous"
 	}
 	if c.EnrollmentTTL <= 0 || c.EnrollmentTTL > 15*time.Minute {
 		c.EnrollmentTTL = 15 * time.Minute

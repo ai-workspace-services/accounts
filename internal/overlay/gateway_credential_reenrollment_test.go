@@ -63,13 +63,16 @@ func TestGatewayInvitationRotatesOnlyMatchingGatewayCredential(t *testing.T) {
 	if devices != 1 || activeCredentials != 1 || revokedCredentials != 1 {
 		t.Fatalf("unexpected credential projection devices=%d active=%d revoked=%d", devices, activeCredentials, revokedCredentials)
 	}
-	// Gateway-only recovery must not weaken One's duplicate-device protection.
+	// Idempotent One re-enrollment with a fresh invite rotates credentials while
+	// preserving device_id and assigned WireGuard address, and still refuses
+	// cross-device key hijacking or Gateway takeover.
 	oneToken := newOpaqueToken("xjt_")
 	if _, err := service.AdminBootstrap(t.Context(), BootstrapConfig{Network: bootstrap.Network, Invite: BootstrapInvite{DeviceID: "one-uat", Platform: "linux", Role: RoleOne, ExpiresAt: now.Add(time.Hour)}}, "https://accounts.example.test", oneToken); err != nil {
 		t.Fatal(err)
 	}
 	one := ExchangeRequest{JoinToken: oneToken, DeviceID: "one-uat", Name: "one", Hostname: "one.example.test", Platform: "linux", Role: RoleOne, WireGuardPublicKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32))}
-	if _, err := service.Exchange(t.Context(), one); err != nil {
+	firstOne, err := service.Exchange(t.Context(), one)
+	if err != nil {
 		t.Fatal(err)
 	}
 	oneRetryToken := newOpaqueToken("xjt_")
@@ -77,7 +80,19 @@ func TestGatewayInvitationRotatesOnlyMatchingGatewayCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	one.JoinToken = oneRetryToken
-	if _, err := service.Exchange(t.Context(), one); err != ErrDeviceConflict {
-		t.Fatalf("One re-enrollment unexpectedly accepted: %v", err)
+	rejoinedOne, err := service.Exchange(t.Context(), one)
+	if err != nil {
+		t.Fatalf("One idempotent re-enrollment failed: %v", err)
+	}
+	if rejoinedOne.Device.ID != firstOne.Device.ID || rejoinedOne.Device.WireGuardAddress != firstOne.Device.WireGuardAddress || rejoinedOne.DeviceCredential.Credential == firstOne.DeviceCredential.Credential {
+		t.Fatalf("expected One re-enrollment to preserve IP and rotate credential: first=%#v rejoined=%#v", firstOne, rejoinedOne)
+	}
+	// A One invite must never be able to overwrite a Gateway device.
+	hijackToken := newOpaqueToken("xjt_")
+	if _, err := service.AdminBootstrap(t.Context(), BootstrapConfig{Network: bootstrap.Network, Invite: BootstrapInvite{DeviceID: "gw-uat", Platform: "linux", Role: RoleOne, ExpiresAt: now.Add(time.Hour)}}, "https://accounts.example.test", hijackToken); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Exchange(t.Context(), ExchangeRequest{JoinToken: hijackToken, DeviceID: "gw-uat", Name: "spoof", Hostname: "spoof.test", Platform: "linux", Role: RoleOne, WireGuardPublicKey: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))}); err != ErrDeviceConflict {
+		t.Fatalf("One invite unexpectedly overwrote Gateway device: %v", err)
 	}
 }
