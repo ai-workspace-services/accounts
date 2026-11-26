@@ -22,6 +22,8 @@ github.com/DataDog/datadog-agent/pkg/version v0.67.0 h1:TB8H8r+laB1Qdttvvc6XJVyL
 github.com/DataDog/datadog-agent/pkg/version v0.67.0/go.mod h1:kvAw/WbI7qLAsDI2wHabZfM7Cv2zraD3JA3323GEB+8=
 github.com/DataDog/datadog-go/v5 v5.6.0 h1:2oCLxjF/4htd55piM75baflj/KoE6VYS7alEUqFvRDw=
 github.com/DataDog/datadog-go/v5 v5.6.0/go.mod h1:K9kcYBlxkcPP8tvvjZZKs/m1edNAUFzBbdpTUKfCsuw=
+github.com/DataDog/dd-trace-go/contrib/database/sql/v2 v2.3.0 h1:ycsA8YyFzpP9b7HmjxUA777saSOWzGsiZ2CbL9pGz48=
+github.com/DataDog/dd-trace-go/contrib/database/sql/v2 v2.3.0/go.mod h1:DAUC2NnXNnvF8y8GlVWWIacYGfyumiD4tybk8FoteQU=
 github.com/DataDog/dd-trace-go/contrib/gin-gonic/gin/v2 v2.3.0 h1:bFT341x8AAiZ8XuNW3brI9W371tEFd5Gvade/DYdTfo=
 github.com/DataDog/dd-trace-go/contrib/gin-gonic/gin/v2 v2.3.0/go.mod h1:oucRmP+5KVKnh3f6LJcZmm8HUTc7BjgsXGEmhHykuf4=
 github.com/DataDog/dd-trace-go/v2 v2.3.0 h1:0Y5kx+Wbod0z8moY0vUbKl6OM0oIV4zAynsVmsq+XT8=

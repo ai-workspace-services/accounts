@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/XSAM/otelsql"
+	"account/internal/observability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -45,7 +45,7 @@ func New(ctx context.Context, cfg Config) (Store, func(context.Context) error, e
 			return nil, nil, errors.New("store dsn is required for postgres driver")
 		}
 
-		db, err := otelsql.Open("pgx", cfg.DSN)
+		db, err := observability.OpenPostgres(cfg.DSN)
 		if err != nil {
 			return nil, nil, err
 		}

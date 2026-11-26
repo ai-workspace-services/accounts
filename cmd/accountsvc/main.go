@@ -21,9 +21,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
-	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"golang.org/x/crypto/bcrypt"
-	gintrace "github.com/DataDog/dd-trace-go/contrib/gin-gonic/gin/v2"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -1268,12 +1266,7 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	}
 
 	r := gin.New()
-	switch tracingProvider {
-	case observability.ProviderOTel:
-		r.Use(otelgin.Middleware("web-saas-accounts"))
-	case observability.ProviderDDTrace:
-		r.Use(gintrace.Middleware(observability.DDTraceServiceName("web-saas-accounts")))
-	}
+	r.Use(observability.GinMiddleware(tracingProvider, "web-saas-accounts"))
 	corsConfig := buildCORSConfig(logger, cfg.Server, st)
 	if corsConfig.AllowAllOrigins {
 		logger.Info("configured cors", "allowAllOrigins", true)
@@ -2022,7 +2015,14 @@ func openAdminSettingsDB(cfg config.Store) (*gorm.DB, func(context.Context) erro
 			if strings.TrimSpace(cfg.DSN) == "" {
 				return nil, nil, errors.New("admin settings database requires a dsn")
 			}
-			db, err = gorm.Open(postgres.Open(cfg.DSN), &gorm.Config{})
+			var openedSQL *sql.DB
+			openedSQL, err = observability.OpenPostgres(cfg.DSN)
+			if err == nil {
+				db, err = gorm.Open(postgres.New(postgres.Config{Conn: openedSQL}), &gorm.Config{})
+				if err != nil {
+					_ = openedSQL.Close()
+				}
+			}
 		default:
 			return nil, nil, fmt.Errorf("unsupported admin settings driver %q", cfg.Driver)
 		}

@@ -16,8 +16,9 @@ RUN go mod download
 COPY . .
 
 # 编译
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o account ./cmd/accountsvc
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o migratectl ./cmd/migratectl
+ARG GO_BUILD_TAGS=""
+RUN CGO_ENABLED=0 go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o account ./cmd/accountsvc
+RUN CGO_ENABLED=0 go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o migratectl ./cmd/migratectl
 
 # ------------------------------
 # Stage 2 — Runtime
