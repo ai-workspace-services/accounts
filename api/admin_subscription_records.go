@@ -325,13 +325,8 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 			}
 		}
 		sourcePlan := plan
-		if sourcePlan == "PRO" {
-			if monthly == 0 {
-				monthly = 50 << 30
-			}
-			if monthly != 50<<30 {
-				return nil, fmt.Errorf("row %d: pro requires 50GB monthly quota", sourceRow)
-			}
+		if sourcePlan == "PRO" && monthly == 0 {
+			monthly = 50 << 30
 		}
 		if sourcePlan == "CUSTOM" && monthly <= 0 {
 			return nil, fmt.Errorf("row %d: custom requires a positive monthly quota", sourceRow)
@@ -439,9 +434,67 @@ func (h *handler) adminListSubscriptionRecords(c *gin.Context) {
 	for _, record := range records {
 		byID[record.UserID] = record
 	}
-	c.Header("Cache-Control", "no-store")
+	type subscriptionRecordExportItem struct {
+		UserID             string     `json:"userId"`
+		Email              string     `json:"email"`
+		Username           string     `json:"username"`
+		Plan               string     `json:"plan"`
+		SubscriptionType   string     `json:"subscriptionType"`
+		MonthlyQuotaBytes  int64      `json:"monthlyQuotaBytes"`
+		AnnualQuotaBytes   int64      `json:"annualQuotaBytes"`
+		FeeMinor           int64      `json:"feeMinor"`
+		PaymentStatus      string     `json:"paymentStatus"`
+		ValidFrom          *time.Time `json:"validFrom"`
+		ValidUntil         *time.Time `json:"validUntil"`
+		Note               string     `json:"note"`
+		TemporaryUnlimited bool       `json:"temporaryUnlimited"`
+		UpdatedAt          time.Time  `json:"updatedAt"`
+	}
+	includeHistory := c.Query("includeHistory") == "true"
 	if c.Query("format") != "csv" {
-		c.JSON(200, gin.H{"records": records})
+		items := make([]subscriptionRecordExportItem, 0, len(records))
+		for _, user := range users {
+			if h.isRootAccount(&user) || (isTeamSubscriptionUser(user.Groups) && (hasActualTeamMembership(user.Groups) || byID[user.ID].PlanCode != "CUSTOM")) {
+				continue
+			}
+			record, exists := byID[user.ID]
+			if !exists {
+				continue
+			}
+			if !slices.Contains(user.Groups, store.SubscriptionListedGroup) && !includeHistory {
+				continue
+			}
+			profile, err := h.store.GetAccountBillingProfile(c.Request.Context(), user.ID)
+			if err != nil && !errors.Is(err, store.ErrUserNotFound) {
+				respondError(c, 500, "billing_profile_unavailable", "failed to load account plan")
+				return
+			}
+			plan := record.PlanCode
+			if plan == "" {
+				plan = existingPlanID(profile)
+			}
+			if plan == "" {
+				plan = store.BillingPlanPaused
+			}
+			items = append(items, subscriptionRecordExportItem{
+				UserID:             user.ID,
+				Email:              user.Email,
+				Username:           user.Name,
+				Plan:               strings.ToLower(plan),
+				SubscriptionType:   record.SubscriptionType,
+				MonthlyQuotaBytes:  record.MonthlyQuotaBytes,
+				AnnualQuotaBytes:   record.AnnualQuotaBytes,
+				FeeMinor:           record.FeeMinor,
+				PaymentStatus:      record.PaymentStatus,
+				ValidFrom:          record.ValidFrom,
+				ValidUntil:         record.ValidUntil,
+				Note:               record.Note,
+				TemporaryUnlimited: store.HasSubscriptionUnlimitedOverride(&user, time.Now()),
+				UpdatedAt:          record.UpdatedAt,
+			})
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(200, gin.H{"records": records, "items": items})
 		return
 	}
 	var body bytes.Buffer

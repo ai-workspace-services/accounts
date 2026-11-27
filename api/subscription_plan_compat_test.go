@@ -97,3 +97,71 @@ func TestImportUnknownSkipPreservesOriginalErrorRow(t *testing.T) {
 		t.Fatalf("wrong source row: %v", err)
 	}
 }
+
+func TestSpreadsheetProExplicitQuotaAndJSONItemsExport(t *testing.T) {
+	router, st, token, target := opsHarness(t)
+	ctx := context.Background()
+	seedAdminPlanGroupCatalog(t, st)
+	_ = st.UpsertAccountBillingProfile(ctx, &store.AccountBillingProfile{
+		AccountUUID:        target.ID,
+		PackageName:        "plus",
+		IncludedQuotaBytes: 20 << 30,
+		PricingRuleVersion: "plan:PLUS",
+	})
+	source := "邮箱,用户名,订阅开始,订阅结束,套餐,订阅类型,月配额,年配额,费用,付费状态,备注\n" +
+		target.Email + ",pro-custom-quota,2026-09-01,2027-08-30,pro,month,30GB,600GB,200元,已付费,12+1赠送一个月"
+	path := "/api/auth/admin/users/plan-groups/batch"
+	w := putAdminPlanGroup(t, router, token, path, gin.H{
+		"mode":      "preview",
+		"requestId": "pro-30gb-preview",
+		"reason":    "google sheets sync",
+		"csv":       source,
+	})
+	if w.Code != 200 {
+		t.Fatalf("preview %d %s", w.Code, w.Body.String())
+	}
+	var preview struct {
+		PreviewToken string `json:"previewToken"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &preview)
+	if preview.PreviewToken == "" {
+		t.Fatalf("missing previewToken: %s", w.Body.String())
+	}
+	w = putAdminPlanGroup(t, router, token, path, gin.H{
+		"mode":         "apply",
+		"requestId":    "pro-30gb-preview",
+		"reason":       "google sheets sync",
+		"previewToken": preview.PreviewToken,
+	})
+	if w.Code != 200 {
+		t.Fatalf("apply %d %s", w.Code, w.Body.String())
+	}
+	profile, err := st.GetAccountBillingProfile(ctx, target.ID)
+	if err != nil || profile.PackageName != "pro" || profile.IncludedQuotaBytes != 30<<30 {
+		t.Fatalf("unexpected pro profile: %+v %v", profile, err)
+	}
+	rec := opsGet(t, router, token, "/api/auth/admin/users/subscription-records?includeHistory=true")
+	if rec.Code != 200 {
+		t.Fatalf("json export: %d %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Records []store.SubscriptionRecord `json:"records"`
+		Items   []struct {
+			UserID            string `json:"userId"`
+			Email             string `json:"email"`
+			Plan              string `json:"plan"`
+			MonthlyQuotaBytes int64  `json:"monthlyQuotaBytes"`
+			AnnualQuotaBytes  int64  `json:"annualQuotaBytes"`
+			FeeMinor          int64  `json:"feeMinor"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode export json: %v", err)
+	}
+	if len(payload.Records) != 1 || len(payload.Items) != 1 {
+		t.Fatalf("expected 1 record & item, got records=%d items=%d", len(payload.Records), len(payload.Items))
+	}
+	if payload.Items[0].Email != target.Email || payload.Items[0].Plan != "pro" || payload.Items[0].MonthlyQuotaBytes != 30<<30 || payload.Items[0].AnnualQuotaBytes != 600<<30 || payload.Items[0].FeeMinor != 20000 {
+		t.Fatalf("unexpected item payload: %+v", payload.Items[0])
+	}
+}
