@@ -30,7 +30,6 @@
 | `GET` | `/api/auth/mfa/status` | `api/api.go` | 公开入口；可用 session 或 MFA token / public entry using session or MFA token | query:`token,identifier,email`; header:`X-MFA-Token`; `Authorization` optional | `200 {"enabled","mfa","user"}` or `{"mfa_enabled":false}` | MFA challenge cache, session store, `store.Store` |
 | `GET` | `/api/auth/sync/config` | `api/config_sync.go` | handler 内要求 session / session enforced in handler | query:`since_version` | `200 {"schema_version","changed","version","updated_at","profiles","nodes","rendered_json","dns","meta","digest","warnings"}` | session store, `store.Store`, agent status reader, xray renderer |
 | `POST` | `/api/auth/sync/ack` | `api/config_sync.go` | handler 内要求 session / session enforced in handler | body:`version,device_id,applied_at` | `200 {"acked","version","device_id","user_id","received_at"}` | session store, `store.Store` |
-| `GET` | `/api/auth/homepage-video` | `api/homepage_video.go` | 公开 / Public | host/header context only | `200 {"resolved":{"videoUrl","posterUrl",...}}` | GORM-backed homepage video settings |
 | `GET` | `/api/auth/sandbox/binding` | `api/sandbox_binding_public.go` | session 或 internal service token / session or internal service token | 无 / None | `200 {"address","updatedAt"}` | session store or internal token, GORM DB |
 
 ## 3. 会话主路径接口 / Session-Centric Protected Routes

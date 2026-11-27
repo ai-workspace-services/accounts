@@ -99,31 +99,15 @@ func setupHomepageVideoTestRouter(t *testing.T) homepageVideoTestEnv {
 	}
 }
 
-func TestHomepageVideoPublicDefaults(t *testing.T) {
+func TestHomepageVideoPublicRetired(t *testing.T) {
 	env := setupHomepageVideoTestRouter(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/homepage-video", nil)
 	req.Header.Set("X-Forwarded-Host", "cn-www.svc.plus")
 	resp := httptest.NewRecorder()
 	env.router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d (%s)", resp.Code, resp.Body.String())
-	}
-
-	var payload struct {
-		Resolved struct {
-			Domain   string `json:"domain"`
-			VideoURL string `json:"videoUrl"`
-		} `json:"resolved"`
-	}
-	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if payload.Resolved.Domain != "cn-www.svc.plus" {
-		t.Fatalf("expected cn override, got %q", payload.Resolved.Domain)
-	}
-	if payload.Resolved.VideoURL == "" {
-		t.Fatalf("expected resolved video url")
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404 after retirement, got %d (%s)", resp.Code, resp.Body.String())
 	}
 }
 
