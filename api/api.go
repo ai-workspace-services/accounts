@@ -131,11 +131,16 @@ type handler struct {
 	publicURL                 string
 	xworkmateVaultService     xworkmateVaultService
 	xrayConfigRenderer        func(*store.User) (string, string, []string, error)
-	agentRegistry             agentRegistry
-	agentManagedConfigPath    string
-	overlayService            *overlay.Service
-	disableLegacyOverlayRoutes bool
-	db                        *gorm.DB
+	agentRegistry                    agentRegistry
+	agentManagedConfigPath           string
+	overlayService                   *overlay.Service
+	disableLegacyOverlayRoutes       bool
+	disableLegacyAgentServerRoutes   bool
+	disableLegacyMarketingEmailRoutes bool
+	agentUsersCacheTTL               time.Duration
+	agentUsersCacheMu                sync.Mutex
+	agentUsersCache                  map[string]cachedAgentUsersEntry
+	db                               *gorm.DB
 	dbHealth                  func(context.Context) error
 	stripe                    *stripeClient
 	bridgeCredentials         map[string]memoryBridgeCredential
@@ -409,6 +414,31 @@ func WithDisableLegacyOverlayRoutes(disabled bool) Option {
 	}
 }
 
+// WithDisableLegacyAgentServerRoutes disables legacy Agent-Server node
+// control-plane endpoints once routed to external xconnect-controller / Workers.
+func WithDisableLegacyAgentServerRoutes(disabled bool) Option {
+	return func(h *handler) {
+		h.disableLegacyAgentServerRoutes = disabled
+	}
+}
+
+// WithDisableLegacyMarketingEmailRoutes disables legacy marketing campaign,
+// onboarding, and email preference endpoints once delegated to marketing-email-service.
+func WithDisableLegacyMarketingEmailRoutes(disabled bool) Option {
+	return func(h *handler) {
+		h.disableLegacyMarketingEmailRoutes = disabled
+	}
+}
+
+// WithAgentUsersCacheTTL configures short-lived response caching for agent client lookups.
+func WithAgentUsersCacheTTL(ttl time.Duration) Option {
+	return func(h *handler) {
+		if ttl > 0 {
+			h.agentUsersCacheTTL = ttl
+		}
+	}
+}
+
 // WithStripeConfig configures Stripe billing integration.
 func WithStripeConfig(cfg StripeConfig) Option {
 	return func(h *handler) {
@@ -547,10 +577,12 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authGroup.GET("/sync/subscription/:format", h.getSubscription)
 	authGroup.POST("/sync/ack", h.syncConfigAck)
 	authGroup.GET("/homepage-video", h.getHomepageVideoPublic)
-	// These endpoints accept a scoped opaque email capability; no login required.
-	authGroup.GET("/email-preferences", emailPreferencePrivacy, h.getEmailPreferences)
-	authGroup.PUT("/email-preferences", emailPreferencePrivacy, h.putEmailPreferences)
-	authGroup.POST("/email-unsubscribe", emailPreferencePrivacy, h.unsubscribeEmail)
+	if !h.disableLegacyMarketingEmailRoutes {
+		// These endpoints accept a scoped opaque email capability; no login required.
+		authGroup.GET("/email-preferences", emailPreferencePrivacy, h.getEmailPreferences)
+		authGroup.PUT("/email-preferences", emailPreferencePrivacy, h.putEmailPreferences)
+		authGroup.POST("/email-unsubscribe", emailPreferencePrivacy, h.unsubscribeEmail)
+	}
 
 	// Sandbox binding read endpoint.
 	// Used by the Console Guest/Demo experience. Must be readable either via a
@@ -633,23 +665,25 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	authProtected.GET("/admin/settings", h.getAdminSettings)
 	authProtected.POST("/admin/settings", h.updateAdminSettings)
-	authProtected.GET("/admin/email-campaigns", h.listEmailCampaigns)
-	authProtected.POST("/admin/email-campaigns", h.createEmailCampaign)
-	authProtected.PUT("/admin/email-campaigns/:campaignId", h.updateEmailCampaign)
-	authProtected.POST("/admin/email-campaigns/:campaignId/preview", h.previewEmailCampaign)
-	authProtected.POST("/admin/email-campaigns/:campaignId/launch", h.launchEmailCampaign)
-	authProtected.POST("/admin/email-campaigns/:campaignId/cancel", h.cancelEmailCampaign)
-	authProtected.GET("/admin/email-campaigns/:campaignId/deliveries", h.emailCampaignDeliveries)
-	authProtected.POST("/admin/email-deliveries/:deliveryId/retry", h.retryEmailDelivery)
-	authProtected.POST("/admin/email-deliveries/:deliveryId/confirm-accepted", h.confirmEmailAcceptance)
-	authProtected.POST("/admin/email-dispatch", h.dispatchEmails)
-	authProtected.GET("/admin/email-onboarding", h.getEmailOnboarding)
-	authProtected.PUT("/admin/email-onboarding/:stepId", h.putEmailOnboarding)
-	authProtected.GET("/admin/email-suppressions", h.manageEmailSuppressions)
-	authProtected.PUT("/admin/email-suppressions", h.manageEmailSuppressions)
-	authProtected.GET("/admin/email-management", emailPreferencePrivacy, h.getEmailManagement)
-	authProtected.PUT("/admin/email-management", emailPreferencePrivacy, h.putEmailManagement)
-	authProtected.POST("/admin/email-management/preview", emailPreferencePrivacy, h.previewMarketingFooter)
+	if !h.disableLegacyMarketingEmailRoutes {
+		authProtected.GET("/admin/email-campaigns", h.listEmailCampaigns)
+		authProtected.POST("/admin/email-campaigns", h.createEmailCampaign)
+		authProtected.PUT("/admin/email-campaigns/:campaignId", h.updateEmailCampaign)
+		authProtected.POST("/admin/email-campaigns/:campaignId/preview", h.previewEmailCampaign)
+		authProtected.POST("/admin/email-campaigns/:campaignId/launch", h.launchEmailCampaign)
+		authProtected.POST("/admin/email-campaigns/:campaignId/cancel", h.cancelEmailCampaign)
+		authProtected.GET("/admin/email-campaigns/:campaignId/deliveries", h.emailCampaignDeliveries)
+		authProtected.POST("/admin/email-deliveries/:deliveryId/retry", h.retryEmailDelivery)
+		authProtected.POST("/admin/email-deliveries/:deliveryId/confirm-accepted", h.confirmEmailAcceptance)
+		authProtected.POST("/admin/email-dispatch", h.dispatchEmails)
+		authProtected.GET("/admin/email-onboarding", h.getEmailOnboarding)
+		authProtected.PUT("/admin/email-onboarding/:stepId", h.putEmailOnboarding)
+		authProtected.GET("/admin/email-suppressions", h.manageEmailSuppressions)
+		authProtected.PUT("/admin/email-suppressions", h.manageEmailSuppressions)
+		authProtected.GET("/admin/email-management", emailPreferencePrivacy, h.getEmailManagement)
+		authProtected.PUT("/admin/email-management", emailPreferencePrivacy, h.putEmailManagement)
+		authProtected.POST("/admin/email-management/preview", emailPreferencePrivacy, h.previewMarketingFooter)
+	}
 	authProtected.GET("/admin/homepage-video", h.getHomepageVideoSettings)
 	authProtected.PUT("/admin/homepage-video", h.updateHomepageVideoSettings)
 
@@ -757,9 +791,11 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	// Internal routes for service-to-service reads.
 	internalGroup := r.Group("/api/internal")
-	// The observability identity resolver has a dedicated narrowly scoped
-	// credential so Grafana never receives the general internal service token.
-	r.POST("/api/observability/internal/xconnect/identity", xconnectObservabilitySearchAuth(), h.resolveXConnectTelemetryIdentity)
+	if !h.disableLegacyAgentServerRoutes {
+		// The observability identity resolver has a dedicated narrowly scoped
+		// credential so Grafana never receives the general internal service token.
+		r.POST("/api/observability/internal/xconnect/identity", xconnectObservabilitySearchAuth(), h.resolveXConnectTelemetryIdentity)
+	}
 
 	r.POST("/api/billing/stripe/webhook", h.stripeWebhook)
 	r.GET("/api/referrals/campaign", h.publicReferralCampaign)
@@ -771,7 +807,9 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	internalGroup.GET("/network/identities", h.internalNetworkIdentities)
 	internalGroup.POST("/bridge/credentials/introspect", h.introspectBridgeCredential)
 	internalGroup.GET("/policy/:accountUUID", h.internalAccountPolicy)
-	internalGroup.POST("/nodes/heartbeat", h.internalNodeHeartbeat)
+	if !h.disableLegacyAgentServerRoutes {
+		internalGroup.POST("/nodes/heartbeat", h.internalNodeHeartbeat)
+	}
 	if !h.disableLegacyOverlayRoutes {
 		internalGroup.POST("/overlay/nodes/heartbeat", h.internalOverlayNodeHeartbeat)
 		if h.overlayService != nil {
@@ -804,17 +842,19 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 		h.registerOverlayRoutes(overlayGroup)
 	}
 
-	// Canonical user-facing agent routes.
-	// These endpoints use session-based auth in handler logic and intentionally
-	// stay outside token middleware to support dashboard session tokens.
-	agentServerGroup := r.Group("/api/agent-server/v1")
-	agentServerGroup.GET("/nodes", h.listAgentNodes)
-	agentServerGroup.GET("/subscription", h.getSubscription)
-	agentServerGroup.GET("/regional-pools", h.listRegionalPools)
-	agentServerGroup.GET("/managed-config", h.getAgentManagedConfig)
-	agentServerGroup.GET("/users", h.listAgentUsers)
-	agentServerGroup.GET("/users/events", h.watchAgentUsers)
-	agentServerGroup.POST("/status", h.reportAgentStatus)
+	if !h.disableLegacyAgentServerRoutes {
+		// Canonical user-facing agent routes.
+		// These endpoints use session-based auth in handler logic and intentionally
+		// stay outside token middleware to support dashboard session tokens.
+		agentServerGroup := r.Group("/api/agent-server/v1")
+		agentServerGroup.GET("/nodes", h.listAgentNodes)
+		agentServerGroup.GET("/subscription", h.getSubscription)
+		agentServerGroup.GET("/regional-pools", h.listRegionalPools)
+		agentServerGroup.GET("/managed-config", h.getAgentManagedConfig)
+		agentServerGroup.GET("/users", h.listAgentUsers)
+		agentServerGroup.GET("/users/events", h.watchAgentUsers)
+		agentServerGroup.POST("/status", h.reportAgentStatus)
+	}
 
 	accountGroup := r.Group("/api/account")
 	accountGroup.GET("/usage/summary", h.accountUsageSummary)
@@ -823,9 +863,11 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	accountGroup.GET("/policy", h.accountPolicy)
 	accountGroup.GET("/service-readiness", h.serviceReadiness)
 
-	// Legacy alias kept for backward compatibility.
-	agentGroup := r.Group("/api/agent")
-	agentGroup.GET("/nodes", h.listAgentNodes)
+	if !h.disableLegacyAgentServerRoutes {
+		// Legacy alias kept for backward compatibility.
+		agentGroup := r.Group("/api/agent")
+		agentGroup.GET("/nodes", h.listAgentNodes)
+	}
 
 	if !h.disableLegacyOverlayRoutes {
 		h.registerOverlayV1Routes(r)

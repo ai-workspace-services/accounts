@@ -184,15 +184,33 @@ func ListOnboardingSteps(ctx context.Context) ([]model.EmailOnboardingStep, erro
 	if d == nil {
 		return nil, ErrServiceDBNotInitialized
 	}
-	defaults := []model.EmailOnboardingStep{
-		{ID: "hello", Version: 1, Enabled: true, Subject: "Hello, welcome to XWorkmate", Body: "Your account is ready. Review account settings, security options and your current plan to get started.", DelayHours: 0, ActivatedAt: time.Now().UTC()},
-		{ID: "first_steps", Version: 1, Enabled: true, Subject: "Your first steps", Body: "Open the regional entry pool, choose an entry available to your account, and connect in the app.", DelayHours: 24, ActivatedAt: time.Now().UTC()},
-		{ID: "discover_more", Version: 1, Enabled: true, Subject: "Discover more", Body: "After basic setup, visit integrations to connect the services you use.", DelayHours: 72, ActivatedAt: time.Now().UTC()},
-	}
-	for i := range defaults {
-		d.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&defaults[i])
-	}
 	rows := []model.EmailOnboardingStep{}
+	if err := d.WithContext(ctx).Order("delay_hours ASC, id ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	existing := make(map[string]struct{}, len(rows))
+	for _, r := range rows {
+		existing[r.ID] = struct{}{}
+	}
+	now := time.Now().UTC()
+	defaults := []model.EmailOnboardingStep{
+		{ID: "hello", Version: 1, Enabled: true, Subject: "Hello, welcome to XWorkmate", Body: "Your account is ready. Review account settings, security options and your current plan to get started.", DelayHours: 0, ActivatedAt: now},
+		{ID: "first_steps", Version: 1, Enabled: true, Subject: "Your first steps", Body: "Open the regional entry pool, choose an entry available to your account, and connect in the app.", DelayHours: 24, ActivatedAt: now},
+		{ID: "discover_more", Version: 1, Enabled: true, Subject: "Discover more", Body: "After basic setup, visit integrations to connect the services you use.", DelayHours: 72, ActivatedAt: now},
+	}
+	inserted := false
+	for i := range defaults {
+		if _, ok := existing[defaults[i].ID]; ok {
+			continue
+		}
+		if createErr := d.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&defaults[i]).Error; createErr == nil {
+			inserted = true
+		}
+	}
+	if !inserted {
+		return rows, nil
+	}
+	rows = []model.EmailOnboardingStep{}
 	err := d.WithContext(ctx).Order("delay_hours ASC, id ASC").Find(&rows).Error
 	return rows, err
 }

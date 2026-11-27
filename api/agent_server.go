@@ -228,12 +228,88 @@ func (h *handler) authorizedAgentClientsWithPolicy(ctx context.Context, groups [
 
 var errCustomEmailsRequired = errors.New("invalid custom emails")
 
+type cachedAgentUsersEntry struct {
+	clients   []xrayconfig.Client
+	policy    *agentproto.RoutingPolicy
+	revision  string
+	expiresAt time.Time
+}
+
+func cloneAgentClients(src []xrayconfig.Client) []xrayconfig.Client {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]xrayconfig.Client, len(src))
+	for i, c := range src {
+		if c.ExpiresAt != nil {
+			exp := *c.ExpiresAt
+			c.ExpiresAt = &exp
+		}
+		out[i] = c
+	}
+	return out
+}
+
+func cloneRoutingPolicy(src *agentproto.RoutingPolicy) *agentproto.RoutingPolicy {
+	if src == nil {
+		return nil
+	}
+	cp := *src
+	cp.PricingGroups = append([]string(nil), src.PricingGroups...)
+	cp.SubPoolTags = append([]string(nil), src.SubPoolTags...)
+	cp.DirectDomains = append([]string(nil), src.DirectDomains...)
+	cp.DirectIPs = append([]string(nil), src.DirectIPs...)
+	cp.MediaDomains = append([]string(nil), src.MediaDomains...)
+	cp.ProWhitelistDomains = append([]string(nil), src.ProWhitelistDomains...)
+	return &cp
+}
+
 func (h *handler) authorizedAgentClientsForIdentity(ctx context.Context, identity agentserver.Identity, rawAllowedEmails string) ([]xrayconfig.Client, string, error) {
 	clients, _, revision, err := h.authorizedAgentClientsForIdentityWithPolicy(ctx, identity, rawAllowedEmails)
 	return clients, revision, err
 }
 
 func (h *handler) authorizedAgentClientsForIdentityWithPolicy(ctx context.Context, identity agentserver.Identity, rawAllowedEmails string) ([]xrayconfig.Client, *agentproto.RoutingPolicy, string, error) {
+	if h.agentUsersCacheTTL > 0 {
+		key := identity.ID + "\x00" + identity.NodeID + "\x00" + strings.Join(identity.Groups, ",") + "\x00" + rawAllowedEmails
+		now := time.Now()
+		h.agentUsersCacheMu.Lock()
+		if entry, ok := h.agentUsersCache[key]; ok && now.Before(entry.expiresAt) {
+			clients := cloneAgentClients(entry.clients)
+			policy := cloneRoutingPolicy(entry.policy)
+			revision := entry.revision
+			h.agentUsersCacheMu.Unlock()
+			return clients, policy, revision, nil
+		}
+		h.agentUsersCacheMu.Unlock()
+
+		clients, policy, revision, err := h.computeAgentClientsForIdentityWithPolicy(ctx, identity, rawAllowedEmails)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		h.agentUsersCacheMu.Lock()
+		if h.agentUsersCache == nil {
+			h.agentUsersCache = make(map[string]cachedAgentUsersEntry)
+		} else if len(h.agentUsersCache) >= 256 {
+			for k, v := range h.agentUsersCache {
+				if !now.Before(v.expiresAt) {
+					delete(h.agentUsersCache, k)
+				}
+			}
+		}
+		h.agentUsersCache[key] = cachedAgentUsersEntry{
+			clients:   cloneAgentClients(clients),
+			policy:    cloneRoutingPolicy(policy),
+			revision:  revision,
+			expiresAt: time.Now().Add(h.agentUsersCacheTTL),
+		}
+		h.agentUsersCacheMu.Unlock()
+		return clients, policy, revision, nil
+	}
+	return h.computeAgentClientsForIdentityWithPolicy(ctx, identity, rawAllowedEmails)
+}
+
+func (h *handler) computeAgentClientsForIdentityWithPolicy(ctx context.Context, identity agentserver.Identity, rawAllowedEmails string) ([]xrayconfig.Client, *agentproto.RoutingPolicy, string, error) {
 	scope, valid := agentResourceScope(identity.Groups)
 	if !valid {
 		return nil, nil, "", errors.New("invalid agent resource scope")

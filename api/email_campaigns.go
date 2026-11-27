@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/textproto"
+	"os"
 	"strings"
 	"time"
 
@@ -461,12 +462,22 @@ func (h *handler) enrollEmailOnboarding(ctx context.Context, u *store.User) erro
 func WithEmailWorkerContext(ctx context.Context) Option {
 	return func(h *handler) { h.emailWorkerContext = ctx }
 }
+func marketingEmailPollInterval() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("ACCOUNTS_MARKETING_EMAIL_POLL_INTERVAL")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 60 * time.Second
+}
+
 func (h *handler) startEmailWorker() {
 	if h.emailWorkerContext == nil || h.db == nil {
 		return
 	}
+	pollInterval := marketingEmailPollInterval()
 	go func() {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
 		var after string
 		for {

@@ -1425,6 +1425,18 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		return err
 	}
 
+	enableLegacyAgentServer := envBoolDefault("ACCOUNTS_ENABLE_LEGACY_AGENT_SERVER_ROUTES", true)
+	enableLegacyMarketingEmail := envBoolDefault("ACCOUNTS_ENABLE_LEGACY_MARKETING_EMAIL_ROUTES", true)
+	enableMarketingEmailWorker := envBoolDefault("ACCOUNTS_ENABLE_MARKETING_EMAIL_WORKER", true)
+	agentUsersCacheTTL := resolveAgentUsersCacheTTL()
+
+	if !enableLegacyAgentServer {
+		logger.Info("legacy agent-server control-plane routes disabled")
+	}
+	if !enableLegacyMarketingEmail {
+		logger.Info("legacy marketing email routes disabled")
+	}
+
 	var agentRegistry *agentserver.Registry
 	if len(cfg.Agents.Credentials) > 0 {
 		creds := make([]agentserver.Credential, 0, len(cfg.Agents.Credentials))
@@ -1488,7 +1500,9 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 			}()
 
 			// Start background cleanup task for stale agents (e.g., those that haven't heartbeated for 10 minutes)
-			go runAgentCleanup(ctx, st, logger)
+			if enableLegacyAgentServer {
+				go runAgentCleanup(ctx, st, logger)
+			}
 		}
 	}
 
@@ -1644,6 +1658,11 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 	} else {
 		options = append(options, api.WithDisableLegacyOverlayRoutes(true))
 	}
+	options = append(options,
+		api.WithDisableLegacyAgentServerRoutes(!enableLegacyAgentServer),
+		api.WithDisableLegacyMarketingEmailRoutes(!enableLegacyMarketingEmail),
+		api.WithAgentUsersCacheTTL(agentUsersCacheTTL),
+	)
 
 	// Pre-load sandbox bindings from database into the registry
 	if agentRegistry != nil {
@@ -1655,9 +1674,16 @@ func runServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) err
 		}
 	}
 
-	if cfg.DatabaseRuntime.MayRunBackgroundWriters() {
+	if enableMarketingEmailWorker && cfg.DatabaseRuntime.MayRunBackgroundWriters() {
 		options = append(options, api.WithEmailWorkerContext(ctx))
 	}
+	logger.Info("account decoupling flags",
+		"legacy_overlay", enableLegacyOverlay,
+		"legacy_agent_server", enableLegacyAgentServer,
+		"legacy_marketing_email", enableLegacyMarketingEmail,
+		"marketing_email_worker", enableMarketingEmailWorker,
+		"agent_users_cache_ttl", agentUsersCacheTTL,
+	)
 	api.RegisterRoutes(r, options...)
 	if cfg.DatabaseRuntime.MayRunBackgroundWriters() {
 		api.StartAnnualQuotaReconciler(ctx, st, logger.With("component", "annual-quota"))
@@ -1931,6 +1957,31 @@ func runAgent(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		Xray:   cfg.Xray,
 	}
 	return agentmode.Run(ctx, options)
+}
+
+func envBoolDefault(key string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func resolveAgentUsersCacheTTL() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("ACCOUNTS_AGENT_USERS_CACHE_TTL"))
+	if raw == "" {
+		return 15 * time.Second
+	}
+	if raw == "0" {
+		return 0
+	}
+	if parsed, err := time.ParseDuration(raw); err == nil && parsed >= 0 {
+		return parsed
+	}
+	return 15 * time.Second
 }
 
 func extractBearerToken(header string) string {
