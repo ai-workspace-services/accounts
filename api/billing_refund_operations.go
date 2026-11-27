@@ -23,6 +23,7 @@ type subscriptionRefundIntent struct {
 	PaymentIntentID string `json:"payment_intent_id"`
 	AmountMinor     int64  `json:"amount_minor"`
 	Currency        string `json:"currency"`
+	StripeProfile   string `json:"stripe_profile,omitempty"`
 }
 
 func subscriptionRefundKey(sub *store.Subscription) string { return "subscription-refund:" + sub.ID }
@@ -55,7 +56,7 @@ func (h *handler) resumeSubscriptionRefund(ctx context.Context, accountID string
 }
 
 func (h *handler) startSubscriptionRefund(ctx context.Context, payment *store.FinancePayment, sub *store.Subscription) error {
-	request, err := json.Marshal(subscriptionRefundIntent{payment.ID, payment.AccountUUID, sub.ID, sub.ExternalID, payment.ProviderPaymentID, payment.AmountMinor, payment.Currency})
+	request, err := json.Marshal(subscriptionRefundIntent{payment.ID, payment.AccountUUID, sub.ID, sub.ExternalID, payment.ProviderPaymentID, payment.AmountMinor, payment.Currency, h.subscriptionStripeProfile(sub)})
 	if err != nil {
 		return err
 	}
@@ -182,7 +183,11 @@ func (h *handler) runSubscriptionRefund(parent context.Context, op *store.Financ
 	if err != nil {
 		return err
 	}
-	refund, err = h.stripe.findOperationRefund(ctx, op, intent)
+	client, _ := h.stripeClientForProfile(intent.StripeProfile)
+	if client == nil || !client.enabled() {
+		return errors.New("stripe is not configured")
+	}
+	refund, err = client.findOperationRefund(ctx, op, intent)
 	if err != nil {
 		return err
 	}
@@ -194,7 +199,7 @@ func (h *handler) runSubscriptionRefund(parent context.Context, op *store.Financ
 		if err := h.store.CheckpointFinanceOperation(ctx, op.ID, op.AttemptCount, json.RawMessage(`{"provider_request_started":true}`)); err != nil {
 			return err
 		}
-		refund, err = h.stripe.refundPaymentIntent(ctx, intent.PaymentIntentID, op.IdempotencyKey, intent.AmountMinor)
+		refund, err = client.refundPaymentIntent(ctx, intent.PaymentIntentID, op.IdempotencyKey, intent.AmountMinor)
 		if err != nil {
 			return err
 		}
@@ -211,7 +216,7 @@ func (h *handler) runSubscriptionRefund(parent context.Context, op *store.Financ
 	if err := h.recordStripeRefund(ctx, refund); err != nil {
 		return err
 	}
-	remote, err := h.stripe.fetchSubscription(ctx, intent.ExternalID)
+	remote, err := client.fetchSubscription(ctx, intent.ExternalID)
 	if err != nil {
 		return err
 	}
@@ -221,7 +226,7 @@ func (h *handler) runSubscriptionRefund(parent context.Context, op *store.Financ
 	// Cancellation may also have succeeded before a lost response. Query its
 	// current state rather than depending on DELETE accepting a second cancel.
 	if remote.Status != "canceled" {
-		if err := h.stripe.cancelSubscription(ctx, intent.ExternalID); err != nil {
+		if err := client.cancelSubscription(ctx, intent.ExternalID); err != nil {
 			return err
 		}
 	}

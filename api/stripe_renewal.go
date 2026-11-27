@@ -46,7 +46,17 @@ func (h *handler) renewalQuote(ctx context.Context, userID, planID string, at in
 	if err != nil || current == nil {
 		return q, errors.New("one active Stripe subscription is required")
 	}
-	sub, err := h.stripe.fetchSubscription(ctx, current.ExternalID)
+	currentProfile := h.subscriptionStripeProfile(current)
+	targetProfile := h.planStripeProfile(plan)
+	if currentProfile != targetProfile {
+		return q, errors.New("cannot schedule renewal across different Stripe entities")
+	}
+	client, _ := h.stripeClientForProfile(currentProfile)
+	if client == nil || !client.enabled() {
+		return q, errors.New("Stripe unavailable")
+	}
+	q.StripeProfile = currentProfile
+	sub, err := client.fetchSubscription(ctx, current.ExternalID)
 	if err != nil {
 		return q, err
 	}
@@ -60,7 +70,7 @@ func (h *handler) renewalQuote(ctx context.Context, userID, planID string, at in
 	if (sub.CurrentPeriodStart <= 0 && sub.Items.Data[0].CurrentPeriodStart <= 0) || !end.After(time.Unix(at, 0)) || start.After(time.Unix(at, 0)) {
 		return q, errors.New("verified subscription period required")
 	}
-	invoice, err := h.stripe.fetchInvoice(ctx, customerIDFromAny(sub.LatestInvoice))
+	invoice, err := client.fetchInvoice(ctx, customerIDFromAny(sub.LatestInvoice))
 	if err != nil || invoice.Status != "paid" || invoiceSubscriptionID(invoice) != sub.ID || !strings.EqualFold(invoice.Currency, plan.PriceCurrency) {
 		return q, errors.New("current subscription invoice must be paid")
 	}
@@ -76,7 +86,7 @@ func (h *handler) renewalQuote(ctx context.Context, userID, planID string, at in
 			Usage    string `json:"usage_type"`
 		} `json:"recurring"`
 	}
-	if err = h.stripe.doJSON(ctx, http.MethodGet, "/prices/"+url.PathEscape(plan.StripePriceID), &price); err != nil {
+	if err = client.doJSON(ctx, http.MethodGet, "/prices/"+url.PathEscape(plan.StripePriceID), &price); err != nil {
 		return q, err
 	}
 	if price.ID != plan.StripePriceID || !price.Active || price.UnitAmount != plan.PriceAmount || !strings.EqualFold(price.Currency, plan.PriceCurrency) || price.Recurring.Interval != plan.PriceUnit || price.Recurring.Count != 1 || price.Recurring.Usage != "licensed" || price.BillingScheme != "per_unit" || (plan.PriceUnit != "month" && plan.PriceUnit != "year") || plan.PriceAmount <= 0 {
@@ -114,23 +124,38 @@ func (h *handler) stripeRenewalPreview(c *gin.Context) {
 		respondError(c, 403, "read_only_account", "demo account is read-only")
 		return
 	}
-	if h.stripe == nil || !h.stripe.enabled() {
-		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
-		return
-	}
+	defaultClient, _ := h.stripeClientForProfile("")
 	var req struct {
 		PlanID string `json:"planId"`
 	}
 	if c.ShouldBindJSON(&req) != nil {
+		if defaultClient == nil || !defaultClient.enabled() {
+			respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+			return
+		}
 		respondError(c, 400, "invalid_request", "planId required")
 		return
 	}
-	q, err := h.renewalQuote(c.Request.Context(), user.ID, strings.TrimSpace(req.PlanID), time.Now().Unix())
+	planID := strings.TrimSpace(req.PlanID)
+	checkClient := defaultClient
+	if plan, pErr := h.store.GetBillingPlan(c.Request.Context(), planID); pErr == nil && plan != nil {
+		checkClient, _ = h.stripeClientForPlan(plan)
+	}
+	if checkClient == nil || !checkClient.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+		return
+	}
+	q, err := h.renewalQuote(c.Request.Context(), user.ID, planID, time.Now().Unix())
 	if err != nil {
 		respondError(c, 409, "renewal_unavailable", "Cannot schedule this subscription or verify the catalog price")
 		return
 	}
-	c.JSON(200, gin.H{"planId": q.PlanID, "amountDue": 0, "renewalAmount": q.RenewalAmount, "currency": q.Currency, "effectiveAt": q.RenewalAt, "previewToken": h.stripe.signSubscriptionQuote(q)})
+	signClient, _ := h.stripeClientForProfile(q.StripeProfile)
+	if signClient == nil || !signClient.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+		return
+	}
+	c.JSON(200, gin.H{"planId": q.PlanID, "amountDue": 0, "renewalAmount": q.RenewalAmount, "currency": q.Currency, "effectiveAt": q.RenewalAt, "previewToken": signClient.signSubscriptionQuote(q)})
 }
 
 func (h *handler) stripeRenewalApply(c *gin.Context) {
@@ -142,18 +167,23 @@ func (h *handler) stripeRenewalApply(c *gin.Context) {
 		respondError(c, 403, "read_only_account", "demo account is read-only")
 		return
 	}
-	if h.stripe == nil || !h.stripe.enabled() {
-		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
-		return
-	}
+	defaultClient, _ := h.stripeClientForProfile("")
 	var req struct {
 		Token string `json:"previewToken"`
 	}
 	if c.ShouldBindJSON(&req) != nil {
+		if defaultClient == nil || !defaultClient.enabled() {
+			respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+			return
+		}
 		respondError(c, 400, "invalid_request", "previewToken required")
 		return
 	}
-	q, err := h.stripe.readSubscriptionQuote(req.Token, user.ID)
+	q, client, err := h.readSubscriptionQuoteAcrossProfiles(req.Token, user.ID)
+	if client == nil || !client.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+		return
+	}
 	if err != nil || q.Action != "renewal" {
 		respondError(c, 409, "preview_required", "Preview the renewal change again")
 		return
@@ -188,7 +218,7 @@ func (h *handler) stripeRenewalApply(c *gin.Context) {
 		respondError(c, 409, "renewal_reconciliation_required", "The original provider operation needs reconciliation")
 		return
 	}
-	schedule, err := h.stripe.scheduleRenewal(c.Request.Context(), q, key)
+	schedule, err := client.scheduleRenewal(c.Request.Context(), q, key)
 	if err != nil {
 		respondError(c, 502, "renewal_reconciliation_required", "The schedule outcome needs reconciliation; retry the same confirmation")
 		return
@@ -246,20 +276,26 @@ func (h *handler) stripeRenewalStatus(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.stripe == nil || !h.stripe.enabled() {
-		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
-		return
-	}
 	current, err := h.currentPurchaseSubscription(c.Request.Context(), user.ID)
 	if err != nil {
 		respondError(c, 409, "renewal_unavailable", "Subscription requires reconciliation")
 		return
 	}
 	if current == nil {
+		defaultClient, _ := h.stripeClientForProfile("")
+		if defaultClient == nil || !defaultClient.enabled() {
+			respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+			return
+		}
 		c.JSON(200, gin.H{"status": "none"})
 		return
 	}
-	remote, err := h.stripe.fetchSubscription(c.Request.Context(), current.ExternalID)
+	client, _ := h.stripeClientForSubscription(current)
+	if client == nil || !client.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+		return
+	}
+	remote, err := client.fetchSubscription(c.Request.Context(), current.ExternalID)
 	if err != nil || remote.Metadata["user_id"] != user.ID {
 		respondError(c, 503, "renewal_unavailable", "Cannot verify subscription")
 		return
@@ -270,7 +306,7 @@ func (h *handler) stripeRenewalStatus(c *gin.Context) {
 		return
 	}
 	var schedule renewalSchedule
-	if err = h.stripe.doJSON(c.Request.Context(), http.MethodGet, "/subscription_schedules/"+url.PathEscape(id), &schedule); err != nil || schedule.Subscription != remote.ID || schedule.Metadata["portal_renewal_user"] != user.ID || len(schedule.Phases) != 2 {
+	if err = client.doJSON(c.Request.Context(), http.MethodGet, "/subscription_schedules/"+url.PathEscape(id), &schedule); err != nil || schedule.Subscription != remote.ID || schedule.Metadata["portal_renewal_user"] != user.ID || len(schedule.Phases) != 2 {
 		respondError(c, 409, "renewal_unavailable", "Schedule needs reconciliation")
 		return
 	}

@@ -133,3 +133,12 @@ STRIPE_WEBHOOK_SECRET='从 kv/prod/billing-service#PROD_STRIPE_WEBHOOK_SECRET �
 STRIPE_WEBHOOK_URL='从 kv/prod/billing-service#PROD_STRIPE_WEBHOOK_URL 读取' \
 ./scripts/stripe-sync-catalog.sh --env prod --domain-base svc.plus --dry-run
 ```
+
+---
+
+## 6. 多主体混合与平迁（HK + US）
+
+如需在不中断既有 HK 收款的前提下接入 US 主体、或将新主体按业务线隔离，请参阅：
+- [Stripe 多主体混合架构与平迁指南（HK + US）](./stripe-multi-entity-architecture.md)
+- 模板化 Vault KV 路径：`kv/prod/payments/stripe/hk`、`kv/prod/payments/stripe/us`
+- 主体专属 Webhook：`POST /api/billing/stripe/webhook/hk`、`POST /api/billing/stripe/webhook/us`（`/api/billing/stripe/webhook` 继续兼容默认主体）

@@ -13,9 +13,10 @@ const maxReferralReconcileInvoices = 50
 // ReferralReconcileRequest is an explicit, bounded provider-invoice review.
 // Apply defaults to false. This is a package operation, not an HTTP endpoint.
 type ReferralReconcileRequest struct {
-	AccountUUID string
-	InvoiceIDs  []string
-	Apply       bool
+	AccountUUID   string
+	InvoiceIDs    []string
+	Apply         bool
+	StripeProfile string
 }
 
 type ReferralReconcileItem struct {
@@ -34,7 +35,8 @@ type ReferralReconcileItem struct {
 // or changes the provider's billing schedule. Callers must authorize the account
 // and explicitly retain the reviewed invoice IDs before setting Apply.
 func (h *handler) reconcileReferralPaidInvoices(ctx context.Context, req ReferralReconcileRequest) ([]ReferralReconcileItem, error) {
-	if h.stripe == nil || !h.stripe.enabled() {
+	client, _ := h.stripeClientForProfile(req.StripeProfile)
+	if h == nil || client == nil || !client.enabled() {
 		return nil, errors.New("Stripe configuration is unavailable")
 	}
 	account := strings.TrimSpace(req.AccountUUID)
@@ -53,7 +55,7 @@ func (h *handler) reconcileReferralPaidInvoices(ctx context.Context, req Referra
 	}
 	items := make([]ReferralReconcileItem, 0, len(ids))
 	for _, id := range ids {
-		invoice, err := h.stripe.fetchInvoice(ctx, id)
+		invoice, err := client.fetchInvoice(ctx, id)
 		if err != nil {
 			return items, fmt.Errorf("invoice %s: %w", id, err)
 		}
@@ -64,7 +66,7 @@ func (h *handler) reconcileReferralPaidInvoices(ctx context.Context, req Referra
 		if subscriptionID == "" {
 			return items, errors.New("invoice is not a subscription payment")
 		}
-		sub, err := h.stripe.fetchSubscription(ctx, subscriptionID)
+		sub, err := client.fetchSubscription(ctx, subscriptionID)
 		if err != nil {
 			return items, fmt.Errorf("invoice %s: %w", id, err)
 		}
@@ -103,7 +105,7 @@ func (h *handler) reconcileReferralPaidInvoices(ctx context.Context, req Referra
 		if _, err := h.store.GetReferralReferrer(ctx, account); err != nil {
 			return items, err
 		}
-		first, err := h.stripe.isFirstPaidXConnectInvoice(ctx, h.store, customerIDFromAny(invoice.Customer), id, item.PaidAt)
+		first, err := client.isFirstPaidXConnectInvoice(ctx, h.store, customerIDFromAny(invoice.Customer), id, item.PaidAt)
 		if err != nil {
 			return items, err
 		}

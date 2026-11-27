@@ -182,7 +182,14 @@ func (h *handler) recordStripeRefund(ctx context.Context, refund *stripeRefund) 
 // payment-to-subscription link, and Stripe's current subscription still
 // pointing at that refunded invoice before changing access.
 func (h *handler) reconcileProcessedStripeRefund(ctx context.Context, event stripeEvent) error {
-	if h.stripe == nil || !h.stripe.enabled() {
+	return h.reconcileProcessedStripeRefundWithClient(ctx, nil, event)
+}
+
+func (h *handler) reconcileProcessedStripeRefundWithClient(ctx context.Context, client *stripeClient, event stripeEvent) error {
+	if client == nil {
+		client, _ = h.stripeClientForProfile("")
+	}
+	if client == nil || !client.enabled() {
 		return nil
 	}
 	var paymentIntentID string
@@ -265,7 +272,11 @@ func (h *handler) reconcileProcessedStripeRefund(ctx context.Context, event stri
 	if err != nil || !settled {
 		return err
 	}
-	remote, err := h.stripe.fetchSubscription(ctx, local.ExternalID)
+	subClient := client
+	if localClient, _ := h.stripeClientForSubscription(local); localClient != nil && localClient.enabled() {
+		subClient = localClient
+	}
+	remote, err := subClient.fetchSubscription(ctx, local.ExternalID)
 	if err != nil {
 		return err
 	}

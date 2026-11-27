@@ -54,13 +54,48 @@ class SyncTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     receipt = json.loads(output.read_text())
                     self.assertEqual(receipt['stripe_mode'], 'test')
-                    self.assertEqual(len(receipt['prices']), 9)
+                    self.assertEqual(receipt['stripe_profile'], 'hk')
+                    self.assertEqual(len(receipt['prices']), 6)
                     self.assertEqual(output.stat().st_mode & 0o777, 0o600)
         finally:
             server.shutdown(); server.server_close(); worker.join()
 
     def test_test_catalog_receipt(self): self.run_sync()
     def test_conflicting_currency_stops_mapping(self): self.run_sync(mismatch=True)
+
+    def test_stripe_profile_filter_skips_unmatched_profile(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(404 if '/products/' in self.path else 200)
+                self.end_headers()
+                if self.path == '/v1/account':
+                    self.wfile.write(b'{"id":"acct_us_fixture"}')
+                elif self.path.startswith('/v1/webhook_endpoints'):
+                    self.wfile.write(b'{"data":[{"id":"we_us","url":"https://fixture.invalid/api/billing/stripe/webhook/us","enabled_events":["checkout.session.completed","customer.subscription.created","customer.subscription.updated","customer.subscription.deleted","invoice.paid","invoice.payment_failed","charge.refunded","refund.created","refund.updated","charge.dispute.created","charge.dispute.updated","charge.dispute.closed"],"status":"enabled"}]}')
+                elif '/products/' not in self.path:
+                    self.wfile.write(b'{"data":[]}')
+            def do_POST(self):
+                from urllib.parse import parse_qs
+                body = parse_qs(self.rfile.read(int(self.headers['Content-Length'])).decode())
+                self.send_response(200); self.end_headers()
+                if self.path == '/v1/products':
+                    self.wfile.write(json.dumps({'id': body['id'][0]}).encode())
+            def log_message(self, *args): pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / 'us-map.json'
+                env = dict(os.environ, STRIPE_SECRET_KEY='sk_test_fixture', STRIPE_WEBHOOK_SECRET='whsec_fixture', STRIPE_WEBHOOK_URL='https://fixture.invalid/api/billing/stripe/webhook/us', STRIPE_API_BASE=f'http://127.0.0.1:{server.server_port}/v1')
+                result = subprocess.run(['bash', str(ROOT / 'stripe-sync-catalog.sh'), '--env', 'prod-v3', '--domain-base', 'svc.plus', '--expected-account', 'acct_us_fixture', '--stripe-profile', 'us', '--price-map-output', str(output)], env=env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                receipt = json.loads(output.read_text())
+                self.assertEqual(receipt['stripe_profile'], 'us')
+                self.assertEqual(len(receipt['prices']), 0)
+        finally:
+            server.shutdown(); server.server_close(); worker.join()
 
 
 if __name__ == '__main__': unittest.main()
