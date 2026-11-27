@@ -41,6 +41,7 @@ STRIPE_WEBHOOK_URL="${STRIPE_WEBHOOK_URL:-}"
 STRIPE_WEBHOOK_SECRET="${STRIPE_WEBHOOK_SECRET:-}"
 PRICE_MAP_OUTPUT=""
 EXPECTED_ACCOUNT=""
+STRIPE_PROFILE="${STRIPE_PROFILE:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -52,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --accounts-base-url) ACCOUNTS_BASE_URL="$2"; shift 2 ;;
     --price-map-output) PRICE_MAP_OUTPUT="$2"; shift 2 ;;
     --expected-account) EXPECTED_ACCOUNT="$2"; shift 2 ;;
+    --stripe-profile) STRIPE_PROFILE="$(tr '[:upper:]' '[:lower:]' <<<"$2")"; shift 2 ;;
     *) echo "::error::unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -72,9 +74,18 @@ if [[ "${WRITE_CATALOG}" == "true" ]]; then
 fi
 
 command -v jq >/dev/null || { echo "::error::jq is required" >&2; exit 1; }
-python3 -c "import yaml" 2>/dev/null || { echo "::error::python3 + pyyaml is required (pip install pyyaml)" >&2; exit 1; }
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  for candidate in python3 /usr/bin/python3 /opt/homebrew/bin/python3.14; do
+    if command -v "${candidate}" >/dev/null 2>&1 && "${candidate}" -c "import yaml" 2>/dev/null; then
+      PYTHON_BIN="${candidate}"
+      break
+    fi
+  done
+fi
+[[ -n "${PYTHON_BIN}" ]] || { echo "::error::python3 + pyyaml is required (pip install pyyaml)" >&2; exit 1; }
 
-catalog_json="$(python3 -c "import sys, yaml, json; json.dump(yaml.safe_load(open(sys.argv[1])), sys.stdout)" "${CATALOG_FILE}")"
+catalog_json="$("${PYTHON_BIN}" -c "import sys, yaml, json; json.dump(yaml.safe_load(open(sys.argv[1])), sys.stdout)" "${CATALOG_FILE}")"
 
 # Credentials are supplied over stdin, never process arguments or disk files.
 [[ "${STRIPE_SECRET_KEY}" =~ ^[A-Za-z0-9_]+$ ]] || { echo 'invalid Stripe credential format' >&2; exit 1; }
@@ -167,6 +178,11 @@ for ((pi = 0; pi < product_count; pi++)); do
     price="$(jq ".prices[$qi]" <<<"${product}")"
     qkey="$(jq -r '.key' <<<"${price}")"
     plan_id="$(jq -r '.plan_id' <<<"${price}")"
+    price_profile="$(jq -r '.stripe_profile // "hk" | ascii_downcase' <<<"${price}")"
+    if [[ -n "${STRIPE_PROFILE}" && "${price_profile}" != "${STRIPE_PROFILE}" ]]; then
+      echo "price ${qkey}: skipping (stripe_profile=${price_profile}, filter=${STRIPE_PROFILE})"
+      continue
+    fi
     amount="$(jq -r '.unit_amount' <<<"${price}")"
     currency="$(jq -r '.currency' <<<"${price}")"
     interval="$(jq -r '.recurring_interval // ""' <<<"${price}")"
@@ -212,7 +228,7 @@ for ((pi = 0; pi < product_count; pi++)); do
         price_id="(dry-run, not created)"
       fi
     fi
-    price_summary+=("${plan_id}|${price_id}|${actual_amount}|${actual_currency}|${actual_unit}")
+    price_summary+=("${plan_id}|${price_id}|${actual_amount}|${actual_currency}|${actual_unit}|${price_profile}")
   done
 done
 
@@ -220,8 +236,8 @@ if [[ -n "${PRICE_MAP_OUTPUT}" && "${DRY_RUN}" == false ]]; then
   stripe_mode=live
   [[ "${STRIPE_SECRET_KEY}" != sk_test_* ]] || stripe_mode=test
   [[ ! -e "${PRICE_MAP_OUTPUT}" ]] || { echo 'refusing to overwrite price-map receipt' >&2; exit 1; }
-  (umask 077; printf '%s\n' "${price_summary[@]}" | jq -Rn --arg environment "${ENV_NAME}" --arg account "${EXPECTED_ACCOUNT}" --arg mode "${stripe_mode}" \
-    '{environment:$environment, stripe_account:$account, stripe_mode:$mode, prices:[inputs | split("|") | {plan_id:.[0],price_id:.[1],amount:(.[2]|tonumber),currency:(.[3]|ascii_upcase),unit:.[4]}]}' >"${PRICE_MAP_OUTPUT}")
+  (umask 077; printf '%s\n' "${price_summary[@]}" | jq -Rn --arg environment "${ENV_NAME}" --arg account "${EXPECTED_ACCOUNT}" --arg mode "${stripe_mode}" --arg stripe_profile "${STRIPE_PROFILE:-hk}" \
+    '{environment:$environment, stripe_account:$account, stripe_mode:$mode, stripe_profile:$stripe_profile, prices:[inputs | select(length > 0) | split("|") | {plan_id:.[0],price_id:.[1],amount:(.[2]|tonumber),currency:(.[3]|ascii_upcase),unit:.[4],stripe_profile:(.[5]//"hk")}]}' >"${PRICE_MAP_OUTPUT}")
 fi
 
 # --- Webhook endpoint -----------------------------------------------------
@@ -274,10 +290,10 @@ if [[ "${WRITE_CATALOG}" == "true" ]]; then
   fi
 
   for row in "${price_summary[@]}"; do
-    IFS='|' read -r plan_id price_id amount price_currency price_unit <<<"${row}"
+    IFS='|' read -r plan_id price_id amount price_currency price_unit price_profile <<<"${row}"
     [[ "${price_id}" != "(dry-run, not created)" ]] || continue
     if [[ "${DRY_RUN}" == "true" ]]; then
-      echo "dry-run: ${plan_id} -> ${price_id} (${amount} ${price_currency}/${price_unit})"
+      echo "dry-run: ${plan_id} -> ${price_id} (${amount} ${price_currency}/${price_unit}, profile=${price_profile})"
       continue
     fi
 
@@ -291,6 +307,7 @@ if [[ "${WRITE_CATALOG}" == "true" ]]; then
       --arg price_id "${price_id}" \
       --arg currency "$(tr '[:lower:]' '[:upper:]' <<<"${price_currency}")" \
       --arg unit "$(tr '[:upper:]' '[:lower:]' <<<"${price_unit}")" \
+      --arg stripe_profile "${price_profile}" \
       --argjson amount "${amount}" \
       --arg reason "stripe-sync-catalog.sh --env ${ENV_NAME}" \
       '.plans[] | select(.planId == $plan_id)
@@ -298,9 +315,10 @@ if [[ "${WRITE_CATALOG}" == "true" ]]; then
        | .priceAmount = $amount
        | .priceCurrency = $currency
        | .priceUnit = $unit
+       | .stripeProfile = $stripe_profile
        | .reason = $reason' <<<"${plans_response}")"
     accounts_put_plan "${plan_id}" "${payload}" >/dev/null
-    echo "catalog ${plan_id}: ${price_id} (${amount} ${price_currency}/${price_unit})"
+    echo "catalog ${plan_id}: ${price_id} (${amount} ${price_currency}/${price_unit}, profile=${price_profile})"
   done
 fi
 
@@ -308,8 +326,8 @@ fi
 echo
 echo "== billing_plans.stripe_price_id to write =="
 for row in "${price_summary[@]}"; do
-  IFS='|' read -r plan_id pid amount price_currency price_unit <<<"${row}"
-  printf '  %-16s -> %s (%s %s/%s)\n' "${plan_id}" "${pid}" "${amount}" "${price_currency}" "${price_unit}"
+  IFS='|' read -r plan_id pid amount price_currency price_unit price_profile <<<"${row}"
+  printf '  %-16s -> %s (%s %s/%s, profile=%s)\n' "${plan_id}" "${pid}" "${amount}" "${price_currency}" "${price_unit}" "${price_profile}"
 done
 echo
 if [[ "${WRITE_CATALOG}" == "true" ]]; then

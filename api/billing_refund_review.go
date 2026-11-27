@@ -26,6 +26,7 @@ type refundReviewRequest struct {
 	AccountID      string                `json:"accountId"`
 	SubscriptionID string                `json:"subscriptionId"`
 	ExternalID     string                `json:"externalId"`
+	StripeProfile  string                `json:"stripeProfile,omitempty"`
 	RequestedAt    time.Time             `json:"requestedAt"`
 	FirstPaidAt    *time.Time            `json:"firstPaidAt,omitempty"`
 	Payments       []refundReviewPayment `json:"payments"`
@@ -78,7 +79,7 @@ func (h *handler) refundSubscription(c *gin.Context) {
 		respondError(c, 404, "subscription_not_found", "Subscription not found")
 		return
 	}
-	intent := refundReviewRequest{AccountID: user.ID, SubscriptionID: owned.ID, ExternalID: owned.ExternalID, RequestedAt: time.Now().UTC(), Payments: []refundReviewPayment{}}
+	intent := refundReviewRequest{AccountID: user.ID, SubscriptionID: owned.ID, ExternalID: owned.ExternalID, StripeProfile: h.subscriptionStripeProfile(owned), RequestedAt: time.Now().UTC(), Payments: []refundReviewPayment{}}
 	lifecycle, err := h.store.GetSubscriptionLifecycle(ctx, user.ID)
 	if err != nil || lifecycle.OperationID != "" {
 		respondError(c, 409, "subscription_operation_pending", "Wait for the current subscription operation")
@@ -157,17 +158,18 @@ func (h *handler) collectRefundReview(ctx context.Context, intent *refundReviewR
 	if err != nil {
 		return err
 	}
-	if h.stripe == nil || !h.stripe.enabled() {
+	client, _ := h.stripeClientForProfile(intent.StripeProfile)
+	if client == nil || !client.enabled() {
 		return errors.New("provider unavailable")
 	}
-	remote, err := h.stripe.fetchSubscription(ctx, intent.ExternalID)
+	remote, err := client.fetchSubscription(ctx, intent.ExternalID)
 	if err != nil {
 		return err
 	}
 	if remote.ID != intent.ExternalID || remote.Metadata["user_id"] != intent.AccountID || customerIDFromAny(remote.Customer) == "" {
 		return errors.New("unproven provider ownership")
 	}
-	invoices, err := h.stripe.listPaidInvoices(ctx, customerIDFromAny(remote.Customer))
+	invoices, err := client.listPaidInvoices(ctx, customerIDFromAny(remote.Customer))
 	if err != nil {
 		return err
 	}
@@ -178,7 +180,7 @@ func (h *handler) collectRefundReview(ctx context.Context, intent *refundReviewR
 		if invoiceSubscriptionID(&candidate) == "" {
 			continue
 		}
-		invoice, e := h.stripe.fetchInvoice(ctx, candidate.ID)
+		invoice, e := client.fetchInvoice(ctx, candidate.ID)
 		if e != nil {
 			return e
 		}

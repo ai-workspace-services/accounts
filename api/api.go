@@ -138,6 +138,8 @@ type handler struct {
 	db                        *gorm.DB
 	dbHealth                  func(context.Context) error
 	stripe                    *stripeClient
+	stripeDefaultProfile      string
+	stripeProfiles            map[string]*stripeClient
 	bridgeCredentials         map[string]memoryBridgeCredential
 	taskSessions              tasksession.Store
 
@@ -412,7 +414,7 @@ func WithDisableLegacyOverlayRoutes(disabled bool) Option {
 // WithStripeConfig configures Stripe billing integration.
 func WithStripeConfig(cfg StripeConfig) Option {
 	return func(h *handler) {
-		h.stripe = newStripeClient(cfg)
+		h.configureStripe(cfg)
 	}
 }
 
@@ -655,6 +657,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 
 	// Billing plan catalog CRUD (billing P1); reuses admin settings permissions.
 	authProtected.GET("/admin/billing/plans", h.adminListBillingPlans)
+	authProtected.GET("/admin/billing/stripe-profiles", h.adminListStripeProfiles)
 	authProtected.PUT("/admin/billing/plans/:planId", h.adminUpsertBillingPlan)
 	authProtected.DELETE("/admin/billing/plans/:planId", h.adminDeleteBillingPlan)
 	authProtected.GET("/admin/billing/whitelist-groups", h.adminListWhitelistGroups)
@@ -762,6 +765,7 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	r.POST("/api/observability/internal/xconnect/identity", xconnectObservabilitySearchAuth(), h.resolveXConnectTelemetryIdentity)
 
 	r.POST("/api/billing/stripe/webhook", h.stripeWebhook)
+	r.POST("/api/billing/stripe/webhook/:profile", h.stripeWebhookByProfile)
 	r.GET("/api/referrals/campaign", h.publicReferralCampaign)
 	// Public plan catalog for the pricing page (billing P1).
 	r.GET("/api/billing/plans", h.listPublicBillingPlans)
@@ -3267,7 +3271,8 @@ func (h *handler) cancelSubscription(c *gin.Context) {
 	}
 	now := time.Now().UTC()
 	if strings.EqualFold(strings.TrimSpace(sub.Provider), "stripe") && strings.EqualFold(strings.TrimSpace(sub.Kind), "subscription") {
-		if h.stripe == nil || !h.stripe.enabled() {
+		stripeClient, _ := h.stripeClientForSubscription(sub)
+		if stripeClient == nil || !stripeClient.enabled() {
 			respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
 			return
 		}

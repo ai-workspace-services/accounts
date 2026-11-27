@@ -18,6 +18,9 @@ import (
 type billingPlanPayload struct {
 	PlanID              string             `json:"planId"`
 	StripePriceID       string             `json:"stripePriceId,omitempty"`
+	StripeProfile       string             `json:"stripeProfile,omitempty"`
+	BusinessLine        string             `json:"businessLine,omitempty"`
+	MerchantEntity      string             `json:"merchantEntity,omitempty"`
 	DisplayName         string             `json:"displayName"`
 	Kind                string             `json:"kind"`
 	IncludedQuotaBytes  int64              `json:"includedQuotaBytes"`
@@ -43,6 +46,9 @@ type billingPlanPayload struct {
 // an already-published Stripe price with zero values.
 type billingPlanUpsertRequest struct {
 	StripePriceID       string             `json:"stripePriceId,omitempty"`
+	StripeProfile       *string            `json:"stripeProfile,omitempty"`
+	BusinessLine        *string            `json:"businessLine,omitempty"`
+	MerchantEntity      *string            `json:"merchantEntity,omitempty"`
 	DisplayName         string             `json:"displayName"`
 	Kind                string             `json:"kind"`
 	IncludedQuotaBytes  int64              `json:"includedQuotaBytes"`
@@ -201,10 +207,25 @@ func validatePublishedPrice(plan *store.BillingPlan) error {
 	return nil
 }
 
+func billingPlanStringFeature(plan *store.BillingPlan, key string) string {
+	if plan == nil || plan.Features == nil {
+		return ""
+	}
+	raw, _ := plan.Features[key].(string)
+	return strings.TrimSpace(raw)
+}
+
 func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
+	stripeProfile := normalizeStripeProfile(billingPlanStringFeature(plan, "stripe_profile"))
+	if stripeProfile == "" && normalizePlanFamily(plan) != "" {
+		stripeProfile = defaultStripeProfileName
+	}
 	return billingPlanPayload{
 		PlanID:              plan.PlanID,
 		StripePriceID:       plan.StripePriceID,
+		StripeProfile:       stripeProfile,
+		BusinessLine:        billingPlanStringFeature(plan, "business_line"),
+		MerchantEntity:      billingPlanStringFeature(plan, "merchant_entity"),
 		DisplayName:         plan.DisplayName,
 		Kind:                plan.Kind,
 		IncludedQuotaBytes:  plan.IncludedQuotaBytes,
@@ -298,6 +319,10 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_price_id", "stripePriceId must be a Stripe price id")
 		return
 	}
+	if req.StripeProfile != nil && strings.TrimSpace(*req.StripeProfile) != "" && !validStripeProfile(*req.StripeProfile) {
+		respondError(c, http.StatusBadRequest, "invalid_stripe_profile", "stripeProfile must be lowercase alphanumeric, hyphen or underscore")
+		return
+	}
 
 	plan := &store.BillingPlan{
 		PlanID:             planID,
@@ -336,6 +361,36 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 	if req.PriceUnit != nil {
 		plan.PriceUnit = *req.PriceUnit
 	}
+	if req.StripeProfile != nil {
+		if plan.Features == nil {
+			plan.Features = map[string]any{}
+		}
+		if trimmed := normalizeStripeProfile(*req.StripeProfile); trimmed != "" {
+			plan.Features["stripe_profile"] = trimmed
+		} else {
+			delete(plan.Features, "stripe_profile")
+		}
+	}
+	if req.BusinessLine != nil {
+		if plan.Features == nil {
+			plan.Features = map[string]any{}
+		}
+		if trimmed := strings.TrimSpace(*req.BusinessLine); trimmed != "" {
+			plan.Features["business_line"] = trimmed
+		} else {
+			delete(plan.Features, "business_line")
+		}
+	}
+	if req.MerchantEntity != nil {
+		if plan.Features == nil {
+			plan.Features = map[string]any{}
+		}
+		if trimmed := strings.TrimSpace(*req.MerchantEntity); trimmed != "" {
+			plan.Features["merchant_entity"] = trimmed
+		} else {
+			delete(plan.Features, "merchant_entity")
+		}
+	}
 	if kind == "whitelist_group" {
 		plan.PackageName = "whitelist"
 		if plan.Features == nil {
@@ -360,6 +415,9 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		before = map[string]any{
 			"display_name":           existing.DisplayName,
 			"stripe_price_id":        existing.StripePriceID,
+			"stripe_profile":         billingPlanStringFeature(existing, "stripe_profile"),
+			"business_line":          billingPlanStringFeature(existing, "business_line"),
+			"merchant_entity":        billingPlanStringFeature(existing, "merchant_entity"),
 			"included_quota_bytes":   existing.IncludedQuotaBytes,
 			"high_speed_quota_bytes": existing.HighSpeedQuotaBytes,
 			"package_name":           existing.PackageName,
@@ -379,6 +437,9 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 	after := map[string]any{
 		"display_name":           plan.DisplayName,
 		"stripe_price_id":        plan.StripePriceID,
+		"stripe_profile":         billingPlanStringFeature(plan, "stripe_profile"),
+		"business_line":          billingPlanStringFeature(plan, "business_line"),
+		"merchant_entity":        billingPlanStringFeature(plan, "merchant_entity"),
 		"included_quota_bytes":   plan.IncludedQuotaBytes,
 		"high_speed_quota_bytes": plan.HighSpeedQuotaBytes,
 		"package_name":           plan.PackageName,

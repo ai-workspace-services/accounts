@@ -33,6 +33,9 @@ const stripeAPIVersion = "2026-01-28.clover"
 const stripeWebhookTimestampTolerance = 5 * time.Minute
 
 type StripeConfig struct {
+	Profile               string
+	AccountID             string
+	MerchantEntity        string
 	Mode                  string
 	SecretKey             string
 	WebhookSecret         string
@@ -46,6 +49,9 @@ type StripeConfig struct {
 }
 
 type stripeClient struct {
+	profile               string
+	accountID             string
+	merchantEntity        string
 	liveMode              bool
 	configurationValid    bool
 	secretKey             string
@@ -71,7 +77,8 @@ type stripeCheckoutRequest struct {
 }
 
 type stripePortalRequest struct {
-	ReturnPath string `json:"returnPath"`
+	ReturnPath    string `json:"returnPath"`
+	StripeProfile string `json:"stripeProfile,omitempty"`
 }
 
 type stripeSessionResponse struct {
@@ -264,6 +271,9 @@ func newStripeClient(cfg StripeConfig) *stripeClient {
 	}
 
 	return &stripeClient{
+		profile:               normalizeStripeProfile(cfg.Profile),
+		accountID:             strings.TrimSpace(cfg.AccountID),
+		merchantEntity:        strings.TrimSpace(cfg.MerchantEntity),
 		apiBaseURL:            apiBaseURL,
 		liveMode:              liveMode,
 		configurationValid:    configurationValid,
@@ -418,7 +428,8 @@ func (h *handler) validCheckoutPrice(ctx context.Context, priceID string) bool {
 			return false // catalog is authoritative once any active price exists
 		}
 	}
-	return h.stripe.validPriceID(trimmed)
+	client, _ := h.stripeClientForProfile("")
+	return client != nil && client.validPriceID(trimmed)
 }
 
 // validateCheckoutPlan binds all client-supplied checkout fields to one
@@ -480,9 +491,10 @@ func isBaselineNonPaidRule(version string) bool {
 }
 
 func (h *handler) validateCheckoutPlan(ctx context.Context, req stripeCheckoutRequest) bool {
+	defaultClient, _ := h.stripeClientForProfile("")
 	planID := strings.TrimSpace(req.PlanID)
 	priceID := strings.TrimSpace(req.StripePriceID)
-	mode := h.stripe.normalizeMode(req.Mode)
+	mode := defaultClient.normalizeMode(req.Mode)
 	if planID == "" || priceID == "" || isPaygDiscontinuedPlanID(planID, req.ProductSlug) {
 		return false
 	}
@@ -512,7 +524,7 @@ func (h *handler) validateCheckoutPlan(ctx context.Context, req stripeCheckoutRe
 	if len(plans) != 0 {
 		return false
 	}
-	return mode == "subscription" && h.stripe.validPriceID(priceID)
+	return mode == "subscription" && defaultClient != nil && defaultClient.validPriceID(priceID)
 }
 
 func (c *stripeClient) normalizeMode(mode string) string {
@@ -662,12 +674,20 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 		form.Set("subscription_data[metadata][plan_id]", strings.TrimSpace(req.PlanID))
 		form.Set("subscription_data[metadata][product_slug]", strings.TrimSpace(req.ProductSlug))
 		form.Set("subscription_data[metadata][kind]", "subscription")
+		if c.profile != "" {
+			form.Set("metadata[stripe_profile]", c.profile)
+			form.Set("subscription_data[metadata][stripe_profile]", c.profile)
+		}
 	} else {
 		form.Set("payment_intent_data[metadata][user_id]", strings.TrimSpace(user.ID))
 		form.Set("payment_intent_data[metadata][user_email]", strings.TrimSpace(strings.ToLower(user.Email)))
 		form.Set("payment_intent_data[metadata][plan_id]", strings.TrimSpace(req.PlanID))
 		form.Set("payment_intent_data[metadata][product_slug]", strings.TrimSpace(req.ProductSlug))
 		form.Set("payment_intent_data[metadata][kind]", "paygo")
+		if c.profile != "" {
+			form.Set("metadata[stripe_profile]", c.profile)
+			form.Set("payment_intent_data[metadata][stripe_profile]", c.profile)
+		}
 	}
 
 	var session stripeSessionResponse
@@ -953,13 +973,14 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
 		return
 	}
-	if h.stripe == nil || !h.stripe.enabled() {
-		respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
-		return
-	}
+	defaultClient, _ := h.stripeClientForProfile("")
 
 	var req stripeCheckoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		if defaultClient == nil || !defaultClient.enabled() {
+			respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
+			return
+		}
 		respondError(c, http.StatusBadRequest, "invalid_request", "invalid request payload")
 		return
 	}
@@ -968,14 +989,27 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 	req.Currency = strings.ToUpper(strings.TrimSpace(req.Currency))
 	req.ProductSlug = strings.TrimSpace(req.ProductSlug)
 	req.SourcePath = strings.TrimSpace(req.SourcePath)
-	req.Mode = h.stripe.normalizeMode(req.Mode)
+	req.Mode = defaultClient.normalizeMode(req.Mode)
 
 	if isPaygDiscontinuedPlanID(req.PlanID, req.ProductSlug) {
+		if defaultClient == nil || !defaultClient.enabled() {
+			respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
+			return
+		}
 		respondError(c, http.StatusGone, "payg_discontinued", "pay-as-you-go plans have been retired")
 		return
 	}
-	if plan, pErr := h.store.GetBillingPlan(c.Request.Context(), req.PlanID); pErr == nil && plan != nil && (strings.EqualFold(strings.TrimSpace(plan.Kind), "paygo_topup") || strings.EqualFold(strings.TrimSpace(plan.PackageName), "payg")) {
+	plan, pErr := h.store.GetBillingPlan(c.Request.Context(), req.PlanID)
+	if pErr == nil && plan != nil && (strings.EqualFold(strings.TrimSpace(plan.Kind), "paygo_topup") || strings.EqualFold(strings.TrimSpace(plan.PackageName), "payg")) {
 		respondError(c, http.StatusGone, "payg_discontinued", "pay-as-you-go plans have been retired")
+		return
+	}
+	client := defaultClient
+	if pErr == nil && plan != nil {
+		client, _ = h.stripeClientForPlan(plan)
+	}
+	if client == nil || !client.enabled() {
+		respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
 		return
 	}
 	if req.ProductSlug == "" || !h.validateCheckoutPlan(c.Request.Context(), req) {
@@ -995,7 +1029,7 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 		return
 	}
 
-	session, err := h.stripe.createCheckoutSession(c.Request.Context(), user, req)
+	session, err := client.createCheckoutSession(c.Request.Context(), user, req)
 	if err != nil {
 		respondError(c, http.StatusBadGateway, "stripe_checkout_failed", "failed to create stripe checkout session")
 		return
@@ -1013,25 +1047,46 @@ func (h *handler) stripePortal(c *gin.Context) {
 		respondError(c, http.StatusForbidden, "read_only_account", "demo account is read-only")
 		return
 	}
-	if h.stripe == nil || !h.stripe.enabled() {
+
+	var req stripePortalRequest
+	_ = c.ShouldBindJSON(&req)
+
+	var (
+		client     *stripeClient
+		customerID string
+	)
+	if requestedProfile := strings.TrimSpace(req.StripeProfile); requestedProfile != "" {
+		if !validStripeProfile(requestedProfile) {
+			respondError(c, http.StatusBadRequest, "invalid_stripe_profile", "invalid stripe profile")
+			return
+		}
+		client, _ = h.stripeClientForProfile(requestedProfile)
+	} else if active, err := h.currentPurchaseSubscription(c.Request.Context(), user.ID); err == nil && active != nil {
+		client, _ = h.stripeClientForSubscription(active)
+		customerID = strings.TrimSpace(subscriptionMetaString(active.Meta, "customer_id"))
+	} else {
+		client, _ = h.stripeClientForProfile("")
+	}
+	if client == nil || !client.enabled() {
 		respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
 		return
 	}
 
-	var req stripePortalRequest
-	_ = c.ShouldBindJSON(&req)
-	returnURL := h.stripe.buildFrontendURL("/panel/subscription")
+	returnURL := client.buildFrontendURL("/panel/subscription")
 	if path := strings.TrimSpace(req.ReturnPath); path != "" && strings.HasPrefix(path, "/") {
-		returnURL = h.stripe.buildFrontendURL(path)
+		returnURL = client.buildFrontendURL(path)
 	}
 
-	customers, err := h.stripe.listCustomersByEmail(c.Request.Context(), user.Email)
-	if err != nil || len(customers) == 0 {
-		respondError(c, http.StatusNotFound, "stripe_customer_not_found", "stripe customer not found")
-		return
+	if customerID == "" {
+		customers, err := client.listCustomersByEmail(c.Request.Context(), user.Email)
+		if err != nil || len(customers) == 0 {
+			respondError(c, http.StatusNotFound, "stripe_customer_not_found", "stripe customer not found")
+			return
+		}
+		customerID = customers[0].ID
 	}
 
-	session, err := h.stripe.createPortalSession(c.Request.Context(), customers[0].ID, returnURL)
+	session, err := client.createPortalSession(c.Request.Context(), customerID, returnURL)
 	if err != nil {
 		respondError(c, http.StatusBadGateway, "stripe_portal_failed", "failed to create stripe portal session")
 		return
@@ -1041,7 +1096,21 @@ func (h *handler) stripePortal(c *gin.Context) {
 }
 
 func (h *handler) stripeWebhook(c *gin.Context) {
-	if h.stripe == nil || !h.stripe.enabled() {
+	h.handleStripeWebhookRequest(c, "")
+}
+
+func (h *handler) stripeWebhookByProfile(c *gin.Context) {
+	profile := normalizeStripeProfile(c.Param("profile"))
+	if !validStripeProfile(profile) {
+		respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
+		return
+	}
+	h.handleStripeWebhookRequest(c, profile)
+}
+
+func (h *handler) handleStripeWebhookRequest(c *gin.Context, profile string) {
+	client, resolvedProfile := h.stripeClientForProfile(profile)
+	if client == nil || !client.enabled() {
 		respondError(c, http.StatusServiceUnavailable, "stripe_not_configured", "stripe is not configured")
 		return
 	}
@@ -1053,7 +1122,7 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 	}
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 
-	if !h.stripe.verifyWebhook(body, c.GetHeader("Stripe-Signature")) {
+	if !client.verifyWebhook(body, c.GetHeader("Stripe-Signature")) {
 		respondError(c, http.StatusUnauthorized, "invalid_signature", "stripe signature verification failed")
 		return
 	}
@@ -1067,7 +1136,7 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, "invalid_stripe_event", "event ID, type and payment mode are required")
 		return
 	}
-	if *event.Livemode != h.stripe.liveMode {
+	if *event.Livemode != client.liveMode {
 		respondError(c, http.StatusBadRequest, "stripe_mode_mismatch", "event payment mode does not match the configured Stripe mode")
 		return
 	}
@@ -1079,10 +1148,11 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 	// Persist the event before processing: replays of already-processed
 	// events are acknowledged without side effects, and failures leave an
 	// auditable record (billing P1).
-	tracked := strings.TrimSpace(event.ID) != ""
+	eventKey := h.webhookEventStorageKey(resolvedProfile, event.ID)
+	tracked := strings.TrimSpace(eventKey) != ""
 	if tracked {
 		alreadyProcessed, err := h.store.BeginStripeWebhookEvent(c.Request.Context(), &store.StripeWebhookEvent{
-			EventID:   event.ID,
+			EventID:   eventKey,
 			EventType: event.Type,
 			Payload:   json.RawMessage(body),
 		})
@@ -1094,7 +1164,7 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 			// A previous release may have acknowledged a refund event before its
 			// entitlement postcondition was repaired. Reconcile only derived
 			// access state from already-settled, locally recorded refund facts.
-			if err := h.reconcileProcessedStripeRefund(c.Request.Context(), event); err != nil {
+			if err := h.reconcileProcessedStripeRefundWithClient(c.Request.Context(), client, event); err != nil {
 				respondError(c, http.StatusBadGateway, "stripe_refund_reconcile_failed", "failed to reconcile refunded subscription access")
 				return
 			}
@@ -1103,10 +1173,10 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 		}
 	}
 
-	procErr := h.handleStripeEvent(c.Request.Context(), event)
+	procErr := h.handleStripeEventWithClient(c.Request.Context(), client, resolvedProfile, event)
 	if tracked {
-		if err := h.store.FinishStripeWebhookEvent(c.Request.Context(), event.ID, procErr); err != nil {
-			slog.Warn("failed to finalize stripe webhook event record", "err", err, "eventID", event.ID)
+		if err := h.store.FinishStripeWebhookEvent(c.Request.Context(), eventKey, procErr); err != nil {
+			slog.Warn("failed to finalize stripe webhook event record", "err", err, "eventID", eventKey)
 			respondError(c, http.StatusServiceUnavailable, "stripe_event_finalize_failed", "failed to persist stripe event processing result")
 			return
 		}
@@ -1120,6 +1190,18 @@ func (h *handler) stripeWebhook(c *gin.Context) {
 }
 
 func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) error {
+	client, profile := h.stripeClientForProfile("")
+	return h.handleStripeEventWithClient(ctx, client, profile, event)
+}
+
+func (h *handler) handleStripeEventWithClient(ctx context.Context, client *stripeClient, profile string, event stripeEvent) error {
+	resolvedProfile := normalizeStripeProfile(profile)
+	if resolvedProfile == "" && client != nil {
+		resolvedProfile = normalizeStripeProfile(client.profile)
+	}
+	if resolvedProfile == "" {
+		resolvedProfile = h.defaultStripeProfile()
+	}
 	switch event.Type {
 	case "checkout.session.completed":
 		var session stripeCheckoutSession
@@ -1127,12 +1209,12 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			return err
 		}
 		if session.Subscription != "" {
-			sub, err := h.stripe.fetchSubscription(ctx, session.Subscription)
+			sub, err := client.fetchSubscription(ctx, session.Subscription)
 			if err != nil {
 				return err
 			}
 			if strings.TrimSpace(sub.Metadata["user_id"]) == "" {
-				if userID := h.stripe.userIDFromClientReference(session.ClientReferenceID); userID != "" {
+				if userID := client.userIDFromClientReference(session.ClientReferenceID); userID != "" {
 					if sub.Metadata == nil {
 						sub.Metadata = make(map[string]string)
 					}
@@ -1140,18 +1222,29 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 					sub.Metadata["kind"] = "subscription"
 				}
 			}
-			if err := h.upsertStripeSubscription(ctx, sub, session.Customer); err != nil {
+			if err := h.upsertStripeSubscriptionWithClient(ctx, client, resolvedProfile, sub, session.Customer); err != nil {
 				return err
 			}
-			return h.syncSubscriptionEntitlements(ctx, sub, true)
+			return h.syncSubscriptionEntitlementsWithClient(ctx, client, sub, true)
 		}
 
 		userID := strings.TrimSpace(session.Metadata["user_id"])
 		if userID == "" {
-			userID = h.stripe.userIDFromClientReference(session.ClientReferenceID)
+			userID = client.userIDFromClientReference(session.ClientReferenceID)
 		}
 		if userID == "" {
 			return nil
+		}
+		metaFields := map[string]string{
+			"price_id":       "",
+			"customer_id":    session.Customer,
+			"session_id":     session.ID,
+			"product_slug":   session.Metadata["product_slug"],
+			"user_email":     session.Metadata["user_email"],
+			"stripe_profile": resolvedProfile,
+		}
+		if client != nil && strings.TrimSpace(client.accountID) != "" {
+			metaFields["stripe_account_id"] = strings.TrimSpace(client.accountID)
 		}
 		sub := &store.Subscription{
 			UserID:        userID,
@@ -1161,13 +1254,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			PlanID:        strings.TrimSpace(session.Metadata["plan_id"]),
 			ExternalID:    firstNonEmpty(session.PaymentIntent, session.ID),
 			Status:        firstNonEmpty(session.PaymentStatus, "active"),
-			Meta: buildStripeMeta(nil, map[string]string{
-				"price_id":     "",
-				"customer_id":  session.Customer,
-				"session_id":   session.ID,
-				"product_slug": session.Metadata["product_slug"],
-				"user_email":   session.Metadata["user_email"],
-			}),
+			Meta:          buildStripeMeta(nil, metaFields),
 		}
 		if err := h.store.UpsertSubscription(ctx, sub); err != nil {
 			return err
@@ -1180,7 +1267,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		}
 		// Webhooks can arrive out of order. Re-read Stripe's current item and
 		// invoice instead of replaying an obsolete plan from an older event.
-		current, err := h.stripe.fetchSubscription(ctx, subscription.ID)
+		current, err := client.fetchSubscription(ctx, subscription.ID)
 		if err != nil {
 			return err
 		}
@@ -1188,16 +1275,16 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			return errors.New("subscription identity changed")
 		}
 		subscription = *current
-		if err := h.upsertStripeSubscription(ctx, &subscription, customerIDFromAny(subscription.Customer)); err != nil {
+		if err := h.upsertStripeSubscriptionWithClient(ctx, client, resolvedProfile, &subscription, customerIDFromAny(subscription.Customer)); err != nil {
 			return err
 		}
-		return h.syncSubscriptionEntitlements(ctx, &subscription, event.Type == "customer.subscription.created")
+		return h.syncSubscriptionEntitlementsWithClient(ctx, client, &subscription, event.Type == "customer.subscription.created")
 	case "customer.subscription.deleted":
 		var subscription stripeSubscription
 		if err := json.Unmarshal(event.Data.Object, &subscription); err != nil {
 			return err
 		}
-		if err := h.upsertStripeSubscription(ctx, &subscription, customerIDFromAny(subscription.Customer)); err != nil {
+		if err := h.upsertStripeSubscriptionWithClient(ctx, client, resolvedProfile, &subscription, customerIDFromAny(subscription.Customer)); err != nil {
 			return err
 		}
 		if userID := strings.TrimSpace(subscription.Metadata["user_id"]); userID != "" {
@@ -1240,13 +1327,13 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 				return nil // Pending or failed refund states never revoke access.
 			}
 		}
-		if h.stripe == nil {
+		if client == nil {
 			return nil
 		}
 		if invoiceID == "" {
-			return h.reconcileProcessedStripeRefund(ctx, event)
+			return h.reconcileProcessedStripeRefundWithClient(ctx, client, event)
 		}
-		invoice, err := h.stripe.fetchInvoice(ctx, invoiceID)
+		invoice, err := client.fetchInvoice(ctx, invoiceID)
 		if err != nil {
 			return err
 		}
@@ -1255,7 +1342,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if subscriptionID == "" {
 			return nil
 		}
-		subscription, err := h.stripe.fetchSubscription(ctx, subscriptionID)
+		subscription, err := client.fetchSubscription(ctx, subscriptionID)
 		if err != nil {
 			return err
 		}
@@ -1264,7 +1351,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			return nil
 		}
 		subscription.Status = "refunded" // This branch has verified a completed full refund.
-		if err := h.upsertStripeSubscription(ctx, subscription, customerIDFromAny(subscription.Customer)); err != nil {
+		if err := h.upsertStripeSubscriptionWithClient(ctx, client, resolvedProfile, subscription, customerIDFromAny(subscription.Customer)); err != nil {
 			return err
 		}
 		if err := h.revokeRefundedSubscription(ctx, userID, subscriptionID); err != nil {
@@ -1278,10 +1365,10 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			return err
 		}
 		chargeID := customerIDFromAny(dispute.Charge)
-		if chargeID == "" || h.stripe == nil {
+		if chargeID == "" || client == nil {
 			return errors.New("Stripe dispute is missing its charge reference")
 		}
-		charge, err := h.stripe.fetchCharge(ctx, chargeID)
+		charge, err := client.fetchCharge(ctx, chargeID)
 		if err != nil {
 			return err
 		}
@@ -1304,11 +1391,11 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if subscriptionID == "" {
 			return nil
 		}
-		sub, err := h.stripe.fetchSubscription(ctx, subscriptionID)
+		sub, err := client.fetchSubscription(ctx, subscriptionID)
 		if err != nil {
 			return err
 		}
-		if err := h.upsertStripeSubscription(ctx, sub, customerIDFromAny(invoice.Customer)); err != nil {
+		if err := h.upsertStripeSubscriptionWithClient(ctx, client, resolvedProfile, sub, customerIDFromAny(invoice.Customer)); err != nil {
 			return err
 		}
 		userID := strings.TrimSpace(sub.Metadata["user_id"])
@@ -1335,7 +1422,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 			return errors.New("invoice.paid event does not contain a paid invoice")
 		}
 		if invoice.AmountPaid > 0 && customerIDFromAny(invoice.PaymentIntent) == "" {
-			verified, err := h.stripe.fetchInvoice(ctx, invoice.ID)
+			verified, err := client.fetchInvoice(ctx, invoice.ID)
 			if err != nil {
 				return err
 			}
@@ -1350,12 +1437,12 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if refunded, err := h.reconcileRefundedLatestInvoice(ctx, sub); err != nil {
 			return err
 		} else if refunded {
-			return h.recordReferralPaidInvoice(ctx, &invoice, sub, userID)
+			return h.recordReferralPaidInvoiceWithClient(ctx, client, &invoice, sub, userID)
 		}
 		if hasPendingUpdate(sub) || customerIDFromAny(sub.LatestInvoice) != invoice.ID {
 			// A historical payment still qualifies independently of today's
 			// subscription projection. Never reset current quota from this invoice.
-			return h.recordReferralPaidInvoice(ctx, &invoice, sub, userID)
+			return h.recordReferralPaidInvoiceWithClient(ctx, client, &invoice, sub, userID)
 		}
 		// invoice.paid renews the billing period: re-arm quota and clear
 		// arrears from the plan the subscription is on.
@@ -1363,7 +1450,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		if err != nil {
 			if errors.Is(err, store.ErrBillingPlanNotFound) {
 				slog.Warn("stripe invoice.paid without matching billing plan", "userID", userID, "priceID", subscriptionPriceID(sub))
-				return h.recordReferralPaidInvoice(ctx, &invoice, sub, userID)
+				return h.recordReferralPaidInvoiceWithClient(ctx, client, &invoice, sub, userID)
 			}
 			return err
 		}
@@ -1402,7 +1489,7 @@ func (h *handler) handleStripeEvent(ctx context.Context, event stripeEvent) erro
 		// The referral ledger performs extra Stripe history verification and can
 		// fail transiently. Restore the paid subscriber's core entitlements first;
 		// those operations are idempotent across webhook retries.
-		if err := h.recordReferralPaidInvoice(ctx, &invoice, sub, userID); err != nil {
+		if err := h.recordReferralPaidInvoiceWithClient(ctx, client, &invoice, sub, userID); err != nil {
 			return err
 		}
 		h.publishBillingEvent(ctx, &store.BillingEvent{
@@ -1499,6 +1586,11 @@ func (h *handler) recordStripePaidInvoice(ctx context.Context, invoice *stripeIn
 // scoped XConnect subscription product. Catalog price fields are never used as
 // payment evidence or reward inputs.
 func (h *handler) recordReferralPaidInvoice(ctx context.Context, invoice *stripeInvoice, subscription *stripeSubscription, userID string) error {
+	client, _ := h.stripeClientForProfile("")
+	return h.recordReferralPaidInvoiceWithClient(ctx, client, invoice, subscription, userID)
+}
+
+func (h *handler) recordReferralPaidInvoiceWithClient(ctx context.Context, client *stripeClient, invoice *stripeInvoice, subscription *stripeSubscription, userID string) error {
 	if invoice == nil || subscription == nil || strings.TrimSpace(invoice.ID) == "" || invoice.AmountPaid <= 0 || !strings.EqualFold(strings.TrimSpace(invoice.Status), "paid") {
 		return nil
 	}
@@ -1509,11 +1601,14 @@ func (h *handler) recordReferralPaidInvoice(ctx context.Context, invoice *stripe
 	if paymentID == "" {
 		return nil
 	}
+	if client == nil {
+		client, _ = h.stripeClientForProfile("")
+	}
 	// The current subscription metadata can change after this invoice was
 	// issued (for example, a delayed monthly invoice webhook after an upgrade).
 	// Resolve the plan from the immutable invoice line price snapshot instead.
 	if invoice.StatusTransitions.PaidAt <= 0 || len(invoice.Lines.Data) == 0 || invoice.Lines.HasMore {
-		verified, fetchErr := h.stripe.fetchInvoice(ctx, invoice.ID)
+		verified, fetchErr := client.fetchInvoice(ctx, invoice.ID)
 		if fetchErr != nil {
 			return fetchErr
 		}
@@ -1574,11 +1669,11 @@ func (h *handler) recordReferralPaidInvoice(ctx context.Context, invoice *stripe
 		return nil
 	}
 	if isXConnectAnnualPlanID(planID) {
-		if err := h.ensureReferrerPaidPeriod(ctx, userID, paidAt); err != nil {
+		if err := h.ensureReferrerPaidPeriodWithClient(ctx, client, userID, paidAt); err != nil {
 			return err
 		}
 	}
-	firstInvoice, err := h.stripe.isFirstPaidXConnectInvoice(ctx, h.store, customerIDFromAny(invoice.Customer), invoice.ID, paidAt)
+	firstInvoice, err := client.isFirstPaidXConnectInvoice(ctx, h.store, customerIDFromAny(invoice.Customer), invoice.ID, paidAt)
 	if err != nil {
 		return err
 	}
@@ -1653,6 +1748,10 @@ func (h *handler) verifiedReferralFinanceInvoice(ctx context.Context, source *st
 // at the friend's payment time; current subscription metadata is not used as
 // historical payment evidence.
 func (h *handler) ensureReferrerPaidPeriod(ctx context.Context, inviteeUUID string, paidAt time.Time) error {
+	return h.ensureReferrerPaidPeriodWithClient(ctx, nil, inviteeUUID, paidAt)
+}
+
+func (h *handler) ensureReferrerPaidPeriodWithClient(ctx context.Context, fallbackClient *stripeClient, inviteeUUID string, paidAt time.Time) error {
 	referrerUUID, err := h.store.GetReferralReferrer(ctx, inviteeUUID)
 	if errors.Is(err, store.ErrReferralNotFound) {
 		return nil
@@ -1672,7 +1771,14 @@ func (h *handler) ensureReferrerPaidPeriod(ctx context.Context, inviteeUUID stri
 		if customerID == "" {
 			continue
 		}
-		invoices, listErr := h.stripe.listPaidInvoices(ctx, customerID)
+		subClient, _ := h.stripeClientForSubscription(&local)
+		if subClient == nil || !subClient.enabled() {
+			subClient = fallbackClient
+		}
+		if subClient == nil || !subClient.enabled() {
+			continue
+		}
+		invoices, listErr := subClient.listPaidInvoices(ctx, customerID)
 		if listErr != nil {
 			return listErr
 		}
@@ -1680,7 +1786,7 @@ func (h *handler) ensureReferrerPaidPeriod(ctx context.Context, inviteeUUID stri
 			if customerIDFromAny(listed.Subscription) != local.ExternalID || listed.AmountPaid <= 0 || !strings.EqualFold(listed.Status, "paid") {
 				continue
 			}
-			verified, fetchErr := h.stripe.fetchInvoice(ctx, listed.ID)
+			verified, fetchErr := subClient.fetchInvoice(ctx, listed.ID)
 			if fetchErr != nil {
 				return fetchErr
 			}
@@ -1703,7 +1809,7 @@ func (h *handler) ensureReferrerPaidPeriod(ctx context.Context, inviteeUUID stri
 				continue
 			}
 			paymentIntentID := customerIDFromAny(verified.PaymentIntent)
-			charge, chargeErr := h.stripe.fetchPaymentIntentCharge(ctx, paymentIntentID)
+			charge, chargeErr := subClient.fetchPaymentIntentCharge(ctx, paymentIntentID)
 			if chargeErr != nil {
 				return chargeErr
 			}
@@ -1913,6 +2019,11 @@ func subscriptionPeriod(source *stripeSubscription) (time.Time, time.Time) {
 // trialing subscription; freshly created subscriptions also re-arm quota and
 // supersede any live trial.
 func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stripeSubscription, created bool) error {
+	client, _ := h.stripeClientForProfile("")
+	return h.syncSubscriptionEntitlementsWithClient(ctx, client, source, created)
+}
+
+func (h *handler) syncSubscriptionEntitlementsWithClient(ctx context.Context, client *stripeClient, source *stripeSubscription, created bool) error {
 	if refunded, err := h.reconcileRefundedLatestInvoice(ctx, source); err != nil || refunded {
 		return err
 	}
@@ -1931,7 +2042,7 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 	// A subscription update is not proof of payment. In particular, pending
 	// upgrades must never grant their target allowance before settlement.
 	freshActivation := created
-	if h.stripe != nil && h.stripe.enabled() {
+	if client != nil && client.enabled() {
 		if hasPendingUpdate(source) {
 			return nil
 		}
@@ -1939,7 +2050,7 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 		if invoiceID == "" {
 			return errors.New("paid subscription invoice required")
 		}
-		invoice, err := h.stripe.fetchInvoice(ctx, invoiceID)
+		invoice, err := client.fetchInvoice(ctx, invoiceID)
 		if err != nil {
 			return err
 		}
@@ -2016,6 +2127,11 @@ func (h *handler) syncSubscriptionEntitlements(ctx context.Context, source *stri
 }
 
 func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSubscription, customerID string) error {
+	client, profile := h.stripeClientForProfile("")
+	return h.upsertStripeSubscriptionWithClient(ctx, client, profile, source, customerID)
+}
+
+func (h *handler) upsertStripeSubscriptionWithClient(ctx context.Context, client *stripeClient, profile string, source *stripeSubscription, customerID string) error {
 	if refunded, err := h.reconcileRefundedLatestInvoice(ctx, source); err != nil || refunded {
 		return err
 	}
@@ -2027,14 +2143,14 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 	if userID == "" {
 		return nil
 	}
-	if source.Status == "active" && h.stripe != nil && h.stripe.enabled() {
+	if source.Status == "active" && client != nil && client.enabled() {
 		if hasPendingUpdate(source) {
 			return nil
 		}
 		if customerIDFromAny(source.LatestInvoice) == "" {
 			return nil
 		}
-		invoice, err := h.stripe.fetchInvoice(ctx, customerIDFromAny(source.LatestInvoice))
+		invoice, err := client.fetchInvoice(ctx, customerIDFromAny(source.LatestInvoice))
 		if err != nil {
 			return err
 		}
@@ -2063,7 +2179,17 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 	if strings.EqualFold(status, "canceled") {
 		status = "cancelled"
 	}
-	meta := buildStripeMeta(nil, map[string]string{
+	resolvedProfile := normalizeStripeProfile(profile)
+	if resolvedProfile == "" && client != nil {
+		resolvedProfile = normalizeStripeProfile(client.profile)
+	}
+	if resolvedProfile == "" {
+		resolvedProfile = normalizeStripeProfile(source.Metadata["stripe_profile"])
+	}
+	if resolvedProfile == "" {
+		resolvedProfile = h.defaultStripeProfile()
+	}
+	metaFields := map[string]string{
 		"price_id":          priceID,
 		"customer_id":       firstNonEmpty(customerID, customerIDFromAny(source.Customer)),
 		"product_slug":      source.Metadata["product_slug"],
@@ -2071,7 +2197,12 @@ func (h *handler) upsertStripeSubscription(ctx context.Context, source *stripeSu
 		"startsAt":          epochToRFC3339(source.CurrentPeriodStart),
 		"expiresAt":         epochToRFC3339(source.CurrentPeriodEnd),
 		"cancelAtPeriodEnd": strconv.FormatBool(source.CancelAtPeriodEnd),
-	})
+		"stripe_profile":    resolvedProfile,
+	}
+	if client != nil && strings.TrimSpace(client.accountID) != "" {
+		metaFields["stripe_account_id"] = strings.TrimSpace(client.accountID)
+	}
+	meta := buildStripeMeta(nil, metaFields)
 	planID := strings.TrimSpace(source.Metadata["plan_id"])
 	if plan, err := h.store.GetBillingPlanByPriceID(ctx, priceID); err == nil {
 		planID = plan.PlanID // Pending updates cannot change Stripe metadata.

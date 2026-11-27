@@ -24,6 +24,7 @@ type subscriptionQuote struct {
 	PlanID          string `json:"planId"`
 	PriceID         string `json:"priceId"`
 	Action          string `json:"action"`
+	StripeProfile   string `json:"stripeProfile,omitempty"`
 	SubscriptionID  string `json:"subscriptionId,omitempty"`
 	ItemID          string `json:"itemId,omitempty"`
 	FromPriceID     string `json:"fromPriceId,omitempty"`
@@ -77,6 +78,26 @@ func (c *stripeClient) readSubscriptionQuote(token, userID string) (subscription
 		return q, errors.New("quote expired or belongs to another account")
 	}
 	return q, nil
+}
+
+func (h *handler) readSubscriptionQuoteAcrossProfiles(token, userID string) (subscriptionQuote, *stripeClient, error) {
+	var unverified subscriptionQuote
+	parts := strings.Split(token, ".")
+	profileHint := ""
+	if len(parts) == 2 && len(token) <= 8192 {
+		if raw, err := base64.RawURLEncoding.DecodeString(parts[0]); err == nil {
+			_ = json.Unmarshal(raw, &unverified)
+			if validStripeProfile(unverified.StripeProfile) {
+				profileHint = normalizeStripeProfile(unverified.StripeProfile)
+			}
+		}
+	}
+	client, _ := h.stripeClientForProfile(profileHint)
+	if client == nil || !client.enabled() {
+		return unverified, client, errors.New("Stripe unavailable")
+	}
+	q, err := client.readSubscriptionQuote(token, userID)
+	return q, client, err
 }
 func hasPendingUpdate(sub *stripeSubscription) bool {
 	return len(sub.PendingUpdate) > 0 && string(sub.PendingUpdate) != "null"
@@ -164,6 +185,11 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 	if !plan.Active || plan.Kind != "subscription" || plan.PriceAmount <= 0 || plan.StripePriceID == "" || normalizePlanFamily(plan) == "" {
 		return q, errors.New("plan unavailable")
 	}
+	client, targetProfile := h.stripeClientForPlan(plan)
+	if client == nil || !client.enabled() {
+		return q, errors.New("Stripe unavailable")
+	}
+	q.StripeProfile = targetProfile
 	current, err := h.currentPurchaseSubscription(ctx, userID)
 	if err != nil {
 		return q, err
@@ -172,6 +198,9 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 	if current != nil {
 		if current.PlanID == plan.PlanID {
 			return q, errors.New("already subscribed to this plan")
+		}
+		if h.subscriptionStripeProfile(current) != targetProfile {
+			return q, errors.New("cannot upgrade subscription across different Stripe entities")
 		}
 		old, err := h.store.GetBillingPlan(ctx, current.PlanID)
 		if err != nil {
@@ -183,7 +212,7 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 		if !strings.EqualFold(old.PriceUnit, "month") || !strings.EqualFold(plan.PriceUnit, "month") {
 			return q, errors.New("unsupported upgrade currency or period")
 		}
-		sub, err := h.stripe.fetchSubscription(ctx, current.ExternalID)
+		sub, err := client.fetchSubscription(ctx, current.ExternalID)
 		if err != nil {
 			return q, err
 		}
@@ -194,7 +223,7 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 		if invoiceID == "" {
 			return q, errors.New("paid source invoice required")
 		}
-		invoice, err := h.stripe.fetchInvoice(ctx, invoiceID)
+		invoice, err := client.fetchInvoice(ctx, invoiceID)
 		if err != nil {
 			return q, err
 		}
@@ -228,7 +257,7 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 		form.Set("subscription_details[proration_date]", strconv.FormatInt(at, 10))
 	}
 	var invoice stripeInvoice
-	if err = h.stripe.doForm(ctx, http.MethodPost, "/invoices/create_preview", form, &invoice); err != nil {
+	if err = client.doForm(ctx, http.MethodPost, "/invoices/create_preview", form, &invoice); err != nil {
 		return q, err
 	}
 	if !strings.EqualFold(invoice.Currency, plan.PriceCurrency) || invoice.AmountDue < 0 {
@@ -245,7 +274,7 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 	}
 	recurring.Set("preview_mode", "recurring")
 	var renewal stripeInvoice
-	if err = h.stripe.doForm(ctx, http.MethodPost, "/invoices/create_preview", recurring, &renewal); err != nil {
+	if err = client.doForm(ctx, http.MethodPost, "/invoices/create_preview", recurring, &renewal); err != nil {
 		return q, err
 	}
 	if !strings.EqualFold(renewal.Currency, invoice.Currency) || renewal.Total < 0 {
@@ -264,17 +293,27 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 		respondError(c, 403, "read_only_account", "demo account is read-only")
 		return
 	}
-	if h.stripe == nil || !h.stripe.enabled() {
-		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
-		return
-	}
+	defaultClient, _ := h.stripeClientForProfile("")
 	var req stripeCheckoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		if defaultClient == nil || !defaultClient.enabled() {
+			respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+			return
+		}
 		respondError(c, 400, "invalid_billing_plan", "Invalid subscription plan")
 		return
 	}
 	if isPaygDiscontinuedPlanID(req.PlanID, req.ProductSlug) {
 		respondError(c, http.StatusGone, "payg_discontinued", "pay-as-you-go plans have been retired")
+		return
+	}
+	plan, pErr := h.store.GetBillingPlan(c.Request.Context(), req.PlanID)
+	checkClient := defaultClient
+	if pErr == nil && plan != nil {
+		checkClient, _ = h.stripeClientForPlan(plan)
+	}
+	if checkClient == nil || !checkClient.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
 		return
 	}
 	if req.Mode != "subscription" || !h.validateCheckoutPlan(c.Request.Context(), req) {
@@ -289,8 +328,7 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 		respondError(c, 409, "purchase_pending", "Payment or subscription synchronization is in progress")
 		return
 	}
-	plan, err := h.store.GetBillingPlan(c.Request.Context(), req.PlanID)
-	if err != nil || !planSupportsProductSlug(plan, req.ProductSlug) {
+	if pErr != nil || !planSupportsProductSlug(plan, req.ProductSlug) {
 		respondError(c, 400, "invalid_billing_plan", "Plan unavailable")
 		return
 	}
@@ -308,23 +346,29 @@ func (h *handler) stripeSubscriptionPreview(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "subscription_change_blocked", "cooldownUntil": lifecycle.CooldownUntil(), "pendingPlanId": lifecycle.PendingPlanID})
 		return
 	}
-	c.JSON(200, gin.H{"action": quote.Action, "planId": quote.PlanID, "amountDue": quote.AmountDue, "currency": quote.Currency, "renewalAmount": quote.RenewalAmount, "renewalAt": quote.RenewalAt, "effectiveAt": quote.ProrationDate, "expiresAt": quote.ExpiresAt, "previewToken": h.stripe.signSubscriptionQuote(quote), "stateVersion": lifecycle.Version, "cooldownUntil": lifecycle.CooldownUntil()})
+	signClient, _ := h.stripeClientForProfile(quote.StripeProfile)
+	c.JSON(200, gin.H{"action": quote.Action, "planId": quote.PlanID, "amountDue": quote.AmountDue, "currency": quote.Currency, "renewalAmount": quote.RenewalAmount, "renewalAt": quote.RenewalAt, "effectiveAt": quote.ProrationDate, "expiresAt": quote.ExpiresAt, "previewToken": signClient.signSubscriptionQuote(quote), "stateVersion": lifecycle.Version, "cooldownUntil": lifecycle.CooldownUntil()})
 }
 
 func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, req stripeCheckoutRequest) {
 	ctx := c.Request.Context()
-	q, err := h.stripe.readSubscriptionQuote(req.PreviewToken, user.ID)
-	if err != nil || q.PlanID != req.PlanID || q.PriceID != req.StripePriceID {
+	plan, err := h.store.GetBillingPlan(ctx, req.PlanID)
+	if err != nil || !planSupportsProductSlug(plan, req.ProductSlug) {
+		respondError(c, 409, "plan_changed", "Refresh the plan preview")
+		return
+	}
+	client, targetProfile := h.stripeClientForPlan(plan)
+	if client == nil || !client.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+		return
+	}
+	q, err := client.readSubscriptionQuote(req.PreviewToken, user.ID)
+	if err != nil || q.PlanID != req.PlanID || q.PriceID != req.StripePriceID || (q.StripeProfile != "" && normalizeStripeProfile(q.StripeProfile) != targetProfile) {
 		respondError(c, 409, "preview_required", "Preview and confirm the subscription before payment")
 		return
 	}
 	if pending, err := h.reconcileSubscriptionPurchase(ctx, user.ID); err != nil || pending != nil {
 		respondError(c, 409, "purchase_pending", "Payment or subscription synchronization is in progress")
-		return
-	}
-	plan, err := h.store.GetBillingPlan(ctx, req.PlanID)
-	if err != nil || !planSupportsProductSlug(plan, req.ProductSlug) {
-		respondError(c, 409, "plan_changed", "Refresh the plan preview")
 		return
 	}
 	verified, err := h.buildSubscriptionQuote(ctx, user.ID, plan, q.ProrationDate)
@@ -364,18 +408,24 @@ func (h *handler) stripeSubscriptionRetry(c *gin.Context) {
 		respondError(c, 403, "read_only_account", "demo account is read-only")
 		return
 	}
-	if h.stripe == nil || !h.stripe.enabled() {
-		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
-		return
-	}
 	op, err := h.store.PendingSubscriptionPurchase(c.Request.Context(), user.ID)
 	if err != nil || !retryableSubscriptionPurchase(op) {
+		defaultClient, _ := h.stripeClientForProfile("")
+		if defaultClient == nil || !defaultClient.enabled() {
+			respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+			return
+		}
 		respondError(c, 409, "purchase_retry_unavailable", "Resume the existing payment or request reconciliation")
 		return
 	}
 	var stored subscriptionPurchaseRequest
 	if json.Unmarshal(op.Request, &stored) != nil || stored.UserID != user.ID {
 		respondError(c, 409, "purchase_retry_unavailable", "Purchase provenance needs reconciliation")
+		return
+	}
+	client, _ := h.stripeClientForProfile(stored.StripeProfile)
+	if client == nil || !client.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
 		return
 	}
 	current, err := h.currentPurchaseSubscription(c.Request.Context(), user.ID)
@@ -398,10 +448,15 @@ func (h *handler) submitSubscriptionPurchase(c *gin.Context, user *store.User, o
 		return
 	}
 	q := stored.subscriptionQuote
+	client, _ := h.stripeClientForProfile(q.StripeProfile)
+	if client == nil || !client.enabled() {
+		respondError(c, 503, "stripe_not_configured", "Stripe unavailable")
+		return
+	}
 	// A credential/account change must not replay this operation against a
 	// different Stripe authority. Quote expiry was checked before reservation;
 	// this bounded retry checks its original proof, not a newly issued quote.
-	if !hmac.Equal([]byte(stored.QuoteProof), []byte(h.stripe.signSubscriptionQuote(q))) {
+	if !hmac.Equal([]byte(stored.QuoteProof), []byte(client.signSubscriptionQuote(q))) {
 		respondError(c, 409, "purchase_retry_unavailable", "Payment authority changed; reconcile the original request")
 		return
 	}
@@ -412,7 +467,7 @@ func (h *handler) submitSubscriptionPurchase(c *gin.Context, user *store.User, o
 	result := stripeSessionResponse{}
 	providerID := ""
 	if q.Action == "subscribe" {
-		session, e := h.stripe.createCheckoutSession(ctx, &checkoutUser, req)
+		session, e := client.createCheckoutSession(ctx, &checkoutUser, req)
 		err = e
 		if e == nil {
 			result = *session
@@ -421,7 +476,7 @@ func (h *handler) submitSubscriptionPurchase(c *gin.Context, user *store.User, o
 	} else {
 		form := url.Values{"items[0][id]": {q.ItemID}, "items[0][price]": {q.PriceID}, "proration_behavior": {"always_invoice"}, "proration_date": {strconv.FormatInt(q.ProrationDate, 10)}, "payment_behavior": {"pending_if_incomplete"}, "expand[]": {"latest_invoice"}}
 		var sub stripeSubscription
-		err = h.stripe.doForm(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(q.SubscriptionID), form, &sub, op.IdempotencyKey)
+		err = client.doForm(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(q.SubscriptionID), form, &sub, op.IdempotencyKey)
 		if err == nil {
 			if sub.ID != q.SubscriptionID {
 				err = errors.New("provider subscription mismatch")
@@ -431,7 +486,7 @@ func (h *handler) submitSubscriptionPurchase(c *gin.Context, user *store.User, o
 				if invoiceID != "" {
 					providerID = invoiceID
 					var invoice *stripeInvoice
-					invoice, err = h.stripe.fetchInvoice(ctx, invoiceID)
+					invoice, err = client.fetchInvoice(ctx, invoiceID)
 					if err == nil {
 						result.URL = invoice.HostedInvoiceURL
 					}
@@ -461,12 +516,16 @@ func (h *handler) reconcileSubscriptionPurchase(ctx context.Context, userID stri
 	if err != nil || op == nil {
 		return op, err
 	}
-	if op.ProviderOperationID == "" || h.stripe == nil {
+	if op.ProviderOperationID == "" {
 		return op, nil
 	}
 	var q subscriptionQuote
 	if json.Unmarshal(op.Request, &q) != nil || q.UserID != userID {
 		return op, errors.New("purchase provenance mismatch")
+	}
+	client, _ := h.stripeClientForProfile(q.StripeProfile)
+	if client == nil {
+		return op, nil
 	}
 	providerSub := ""
 	var settled *stripeSubscription
@@ -474,7 +533,7 @@ func (h *handler) reconcileSubscriptionPurchase(ctx context.Context, userID stri
 	paid := false
 	if strings.HasPrefix(op.ProviderOperationID, "cs_") {
 		var session stripeCheckoutSession
-		if err = h.stripe.doJSON(ctx, http.MethodGet, "/checkout/sessions/"+url.PathEscape(op.ProviderOperationID), &session); err != nil {
+		if err = client.doJSON(ctx, http.MethodGet, "/checkout/sessions/"+url.PathEscape(op.ProviderOperationID), &session); err != nil {
 			return op, err
 		}
 		if session.ID != op.ProviderOperationID || session.Metadata["user_id"] != userID || session.Metadata["plan_id"] != q.PlanID {
@@ -487,14 +546,14 @@ func (h *handler) reconcileSubscriptionPurchase(ctx context.Context, userID stri
 			op.Response, _ = json.Marshal(stripeSessionResponse{ID: session.ID, URL: session.URL})
 		}
 		if paid {
-			settled, err = h.stripe.fetchSubscription(ctx, providerSub)
+			settled, err = client.fetchSubscription(ctx, providerSub)
 			if err != nil {
 				return op, err
 			}
 			paid = settled.ID == providerSub && settled.Metadata["user_id"] == userID && settled.Status == "active" && subscriptionPriceID(settled) == q.PriceID && !hasPendingUpdate(settled)
 		}
 	} else if strings.HasPrefix(op.ProviderOperationID, "in_") {
-		sub, e := h.stripe.fetchSubscription(ctx, q.SubscriptionID)
+		sub, e := client.fetchSubscription(ctx, q.SubscriptionID)
 		if e != nil {
 			return op, e
 		}
@@ -505,7 +564,7 @@ func (h *handler) reconcileSubscriptionPurchase(ctx context.Context, userID stri
 		settled = sub
 		invoiceID := op.ProviderOperationID
 		if invoiceID != "" {
-			invoice, e := h.stripe.fetchInvoice(ctx, invoiceID)
+			invoice, e := client.fetchInvoice(ctx, invoiceID)
 			if e != nil {
 				return op, e
 			}

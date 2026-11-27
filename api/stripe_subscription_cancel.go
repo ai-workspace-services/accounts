@@ -26,7 +26,11 @@ func (h *handler) cancelStripeSubscription(ctx context.Context, sub *store.Subsc
 	if op.Status == store.FinanceOperationFailed {
 		return errors.New("cancellation requires audited investigation")
 	}
-	remote, err := h.stripe.fetchSubscription(ctx, sub.ExternalID)
+	client, _ := h.stripeClientForSubscription(sub)
+	if client == nil || !client.enabled() {
+		return errors.New("stripe is not configured")
+	}
+	remote, err := client.fetchSubscription(ctx, sub.ExternalID)
 	if err != nil {
 		return err
 	}
@@ -36,20 +40,20 @@ func (h *handler) cancelStripeSubscription(ctx context.Context, sub *store.Subsc
 	if customerIDFromAny(remote.Schedule) != "" {
 		scheduleID := customerIDFromAny(remote.Schedule)
 		var schedule renewalSchedule
-		if err = h.stripe.doJSON(ctx, http.MethodGet, "/subscription_schedules/"+url.PathEscape(scheduleID), &schedule); err != nil {
+		if err = client.doJSON(ctx, http.MethodGet, "/subscription_schedules/"+url.PathEscape(scheduleID), &schedule); err != nil {
 			return err
 		}
 		if schedule.Subscription != remote.ID || schedule.Metadata["portal_renewal_user"] != sub.UserID || schedule.Metadata["portal_renewal_key"] == "" {
 			return errors.New("schedule ownership requires investigation before cancellation")
 		}
 		var released renewalSchedule
-		if err = h.stripe.doForm(ctx, http.MethodPost, "/subscription_schedules/"+url.PathEscape(scheduleID)+"/release", url.Values{"preserve_cancel_date": {"true"}}, &released, key+":release"); err != nil {
+		if err = client.doForm(ctx, http.MethodPost, "/subscription_schedules/"+url.PathEscape(scheduleID)+"/release", url.Values{"preserve_cancel_date": {"true"}}, &released, key+":release"); err != nil {
 			return err
 		}
 		if released.Status != "released" || released.ReleasedSubscription != sub.ExternalID {
 			return errors.New("schedule release not confirmed")
 		}
-		remote, err = h.stripe.fetchSubscription(ctx, sub.ExternalID)
+		remote, err = client.fetchSubscription(ctx, sub.ExternalID)
 		if err != nil {
 			return err
 		}
@@ -61,7 +65,7 @@ func (h *handler) cancelStripeSubscription(ctx context.Context, sub *store.Subsc
 		if time.Since(op.CreatedAt) < 0 || time.Since(op.CreatedAt) > 20*time.Minute {
 			return errors.New("original cancellation requires provider reconciliation")
 		}
-		if err = h.stripe.doForm(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(sub.ExternalID), url.Values{"cancel_at_period_end": {"true"}}, &remote, key); err != nil {
+		if err = client.doForm(ctx, http.MethodPost, "/subscriptions/"+url.PathEscape(sub.ExternalID), url.Values{"cancel_at_period_end": {"true"}}, &remote, key); err != nil {
 			return err
 		}
 	}
