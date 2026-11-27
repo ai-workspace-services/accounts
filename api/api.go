@@ -576,7 +576,6 @@ func RegisterRoutes(r *gin.Engine, opts ...Option) {
 	authGroup.GET("/sync/subscription", h.getSubscription)
 	authGroup.GET("/sync/subscription/:format", h.getSubscription)
 	authGroup.POST("/sync/ack", h.syncConfigAck)
-	authGroup.GET("/homepage-video", h.getHomepageVideoPublic)
 	if !h.disableLegacyMarketingEmailRoutes {
 		// These endpoints accept a scoped opaque email capability; no login required.
 		authGroup.GET("/email-preferences", emailPreferencePrivacy, h.getEmailPreferences)
