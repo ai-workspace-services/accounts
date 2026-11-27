@@ -18,22 +18,50 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func newSubscriptionSpreadsheetReader(source string, allowTabs bool) *csv.Reader {
+	normalized := strings.ReplaceAll(strings.TrimPrefix(source, "\uFEFF"), "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	reader := csv.NewReader(strings.NewReader(normalized))
+	reader.FieldsPerRecord = -1
+	if allowTabs {
+		for _, line := range strings.Split(normalized, "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			if strings.Contains(line, "\t") {
+				reader.Comma = '\t'
+			}
+			break
+		}
+	}
+	reader.TrimLeadingSpace = reader.Comma != '\t'
+	return reader
+}
+
+func isBlankCSVRow(row []string) bool {
+	for _, cell := range row {
+		if strings.TrimSpace(cell) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // prepareSubscriptionImport accepts spreadsheet TSV or CSV and skips unknown emails.
 // Existing validation and the transactional preview remain authoritative.
 func (h *handler) prepareSubscriptionImport(ctx context.Context, source string) (string, []gin.H, error) {
 	if len(source) > 2*1024*1024 {
 		return "", nil, errors.New("import exceeds 2 MiB")
 	}
-	reader := csv.NewReader(strings.NewReader(strings.TrimPrefix(source, "\uFEFF")))
-	first := strings.SplitN(source, "\n", 2)[0]
-	if strings.Contains(first, "\t") {
-		reader.Comma = '\t'
-	}
-	reader.TrimLeadingSpace = reader.Comma != '\t'
+	reader := newSubscriptionSpreadsheetReader(source, true)
 	rows, err := reader.ReadAll()
-	if err != nil || len(rows) < 2 || len(rows) > maxAdminPlanGroupBatch+1 {
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid CSV/TSV format: %w", err)
+	}
+	if len(rows) < 2 || len(rows) > maxAdminPlanGroupBatch+1 {
 		return "", nil, errors.New("import requires a header and 1 to 500 rows")
 	}
+	headerLen := len(rows[0])
 	emailCol := -1
 	for i, header := range rows[0] {
 		key := strings.TrimSpace(header)
@@ -75,12 +103,32 @@ func (h *handler) prepareSubscriptionImport(ctx context.Context, source string) 
 	kept := [][]string{rows[0]}
 	skipped := []gin.H{}
 	for i, row := range rows[1:] {
-		email := strings.ToLower(strings.TrimSpace(row[emailCol]))
+		if isBlankCSVRow(row) {
+			continue
+		}
+		if len(row) > headerLen {
+			for _, extra := range row[headerLen:] {
+				if strings.TrimSpace(extra) != "" {
+					return "", nil, fmt.Errorf("row %d: too many columns", i+2)
+				}
+			}
+			row = row[:headerLen]
+		}
+		padded := make([]string, headerLen+1)
+		copy(padded, row)
+		padded[headerLen] = strconv.Itoa(i + 2)
+		email := ""
+		if emailCol < len(row) {
+			email = strings.ToLower(strings.TrimSpace(row[emailCol]))
+		}
 		if email != "" && !known[email] {
 			skipped = append(skipped, gin.H{"row": i + 2, "email": email, "reason": "user_not_found"})
 			continue
 		}
-		kept = append(kept, append(row, strconv.Itoa(i+2)))
+		kept = append(kept, padded)
+	}
+	if len(kept) == 1 && len(skipped) == 0 {
+		return "", nil, errors.New("import requires a header and 1 to 500 rows")
 	}
 
 	var body bytes.Buffer
@@ -99,8 +147,7 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 	if err == nil || len(source) > 2*1024*1024 {
 		return updates, err
 	}
-	reader := csv.NewReader(strings.NewReader(strings.TrimPrefix(source, "\uFEFF")))
-	reader.TrimLeadingSpace = true
+	reader := newSubscriptionSpreadsheetReader(source, false)
 	rows, parseErr := reader.ReadAll()
 	if parseErr != nil || len(rows) < 2 || len(rows) > maxAdminPlanGroupBatch+1 {
 		return nil, err
@@ -114,6 +161,9 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 		}
 	}
 	for i, row := range rows[1:] {
+		if isBlankCSVRow(row) {
+			continue
+		}
 		sourceRow := i + 2
 		sourceCol := -1
 		for j, h := range rows[0] {
@@ -127,10 +177,15 @@ func (h *handler) subscriptionCSVUpdates(ctx context.Context, source string, rec
 			}
 		}
 		header := append([]string{}, rows[0]...)
-		data := append([]string{}, row...)
+		var data []string
 		if sourceCol < 0 {
+			data = make([]string, len(rows[0])+1)
+			copy(data, row)
 			header = append(header, "__source_row")
-			data = append(data, strconv.Itoa(sourceRow))
+			data[len(rows[0])] = strconv.Itoa(sourceRow)
+		} else {
+			data = make([]string, len(rows[0]))
+			copy(data, row)
 		}
 		var body bytes.Buffer
 		writer := csv.NewWriter(&body)
@@ -161,10 +216,12 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 	if len(source) > 2*1024*1024 {
 		return nil, errors.New("CSV exceeds 2 MiB")
 	}
-	reader := csv.NewReader(strings.NewReader(strings.TrimPrefix(source, "\uFEFF")))
-	reader.TrimLeadingSpace = true
+	reader := newSubscriptionSpreadsheetReader(source, true)
 	rows, err := reader.ReadAll()
-	if err != nil || len(rows) < 2 {
+	if err != nil {
+		return nil, fmt.Errorf("invalid CSV/TSV format: %w", err)
+	}
+	if len(rows) < 2 {
 		return nil, errors.New("CSV must contain a header and at least one data row")
 	}
 	headers := map[string]int{}
@@ -212,6 +269,9 @@ func (h *handler) subscriptionCSVUpdatesValidated(ctx context.Context, source st
 	updates := make([]adminPlanGroupUpdate, 0, len(rows)-1)
 	now := time.Now().UTC()
 	for line, row := range rows[1:] {
+		if isBlankCSVRow(row) {
+			continue
+		}
 		sourceRow := line + 2
 		if n, e := strconv.Atoi(cell(row, "__source_row")); e == nil && n >= 2 {
 			sourceRow = n
