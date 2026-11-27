@@ -8,7 +8,7 @@ CSV and TSV use the same email-keyed parser and transactional preview/apply oper
 - `套餐` / `plan`: `plus`, `pro`, `custom`, `free` (legacy FREE/PLUS/UNLIMITED-BETA are retained). The legacy unnamed column immediately after `订阅结束` is recognized as `套餐`.
 - `订阅类型` / `订阅周期` / `subscription_type`: `month` or `year` (legacy `payg` accepted). Contract validity and payment cycle are independent; a year-long contract does not automatically change `month` to `year`.
 - Validity accepts ISO dates and the existing supported date formats. End dates remain inclusive in UTC. Import records supply validity on native databases without legacy user validity columns.
-- Monthly/annual quotas accept bytes or GB/GiB/MB/MiB. Existing binary unit conversion is retained. PRO uses 50 GiB per month; an explicit conflicting PRO allowance is rejected.
+- Monthly/annual quotas accept bytes or GB/GiB/MB/MiB. Existing binary unit conversion is retained. PRO defaults to 50 GiB per month when omitted and accepts explicit positive monthly quotas from synced spreadsheets.
 - Fees accept yuan amounts or existing `fee_minor` export values. Importing a paid status records a commercial fact; it does not create a Stripe payment or credit a wallet.
 - Empty commercial fields retain existing record values. A zero value explicitly sets numeric fields to zero. Invalid dates, duplicate emails/headers, unknown plan/payment values and oversized files fail validation.
 
@@ -19,4 +19,4 @@ Source plan provenance is stored as a non-entitlement `subscription:source-plan:
 Applied imports preserve consumed usage, including an active monthly usage-reset boundary. Identical reads return `noChanges` and cannot be applied. Existing preview expiry, idempotency and concurrent entitlement/usage change checks remain active. Audit entries retain prior and new commercial records.
 
 
-There is no Google integration or credential requirement. Export the spreadsheet as CSV/TSV and use the existing file-import action.
+Spreadsheet sync uses the same email-keyed preview/apply transaction contract; Portal's Google Drive / Sheets connector fetches and writes back via Google OAuth2 (or exports/imports CSV/TSV directly).
