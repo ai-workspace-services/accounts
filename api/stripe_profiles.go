@@ -292,3 +292,79 @@ func (h *handler) adminListStripeProfiles(c *gin.Context) {
 		"profiles":       items,
 	})
 }
+
+type stripeReconciliationMeta struct {
+	StripeProfile     string
+	StripeAccountID   string
+	BusinessLine      string
+	ReconciliationTag string
+	RegionScope       string
+	MerchantEntity    string
+	PlanFamily        string
+}
+
+func (h *handler) planReconciliationMeta(plan *store.BillingPlan, client *stripeClient) stripeReconciliationMeta {
+	profile := h.planStripeProfile(plan)
+	if profile == "" && client != nil {
+		profile = normalizeStripeProfile(client.profile)
+	}
+	if profile == "" {
+		profile = h.defaultStripeProfile()
+	}
+	family := normalizePlanFamily(plan)
+	businessLine := billingPlanStringFeature(plan, "business_line")
+	reconciliationTag := billingPlanStringFeature(plan, "reconciliation_tag")
+	regionScope := billingPlanStringFeature(plan, "region_scope")
+	merchantEntity := billingPlanStringFeature(plan, "merchant_entity")
+
+	switch {
+	case family == "plus":
+		if businessLine == "" {
+			businessLine = "hk_apac_plus"
+		}
+		if reconciliationTag == "" {
+			reconciliationTag = "FIN-HK-PLUS-APAC"
+		}
+		if regionScope == "" {
+			regionScope = "JP,PH,APAC"
+		}
+	case (family == "pro" || family == "custom") && profile == "us":
+		if businessLine == "" {
+			businessLine = "us_edge_pro"
+		}
+		if reconciliationTag == "" {
+			reconciliationTag = "FIN-US-PRO-EDGE"
+		}
+		if regionScope == "" {
+			regionScope = "US"
+		}
+	case family == "pro" || family == "custom":
+		if businessLine == "" {
+			businessLine = "hk_apac_" + family
+		}
+		if reconciliationTag == "" {
+			reconciliationTag = "FIN-HK-" + strings.ToUpper(family)
+		}
+		if regionScope == "" {
+			regionScope = "APAC"
+		}
+	}
+
+	var accountID string
+	if client != nil {
+		accountID = strings.TrimSpace(client.accountID)
+		if merchantEntity == "" {
+			merchantEntity = strings.TrimSpace(client.merchantEntity)
+		}
+	}
+
+	return stripeReconciliationMeta{
+		StripeProfile:     profile,
+		StripeAccountID:   accountID,
+		BusinessLine:      businessLine,
+		ReconciliationTag: reconciliationTag,
+		RegionScope:       regionScope,
+		MerchantEntity:    merchantEntity,
+		PlanFamily:        family,
+	}
+}

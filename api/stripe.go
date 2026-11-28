@@ -64,16 +64,23 @@ type stripeClient struct {
 }
 
 type stripeCheckoutRequest struct {
-	PlanID           string `json:"planId"`
-	StripePriceID    string `json:"stripePriceId"`
-	AmountMinor      int64  `json:"amountMinor,omitempty"`
-	Currency         string `json:"currency,omitempty"`
-	Mode             string `json:"mode"`
-	ProductSlug      string `json:"productSlug"`
-	SourcePath       string `json:"sourcePath"`
-	PreviewToken     string `json:"previewToken,omitempty"`
-	OperationKey     string `json:"-"`
-	SessionExpiresAt int64  `json:"-"`
+	PlanID                string `json:"planId"`
+	StripePriceID         string `json:"stripePriceId"`
+	AmountMinor           int64  `json:"amountMinor,omitempty"`
+	Currency              string `json:"currency,omitempty"`
+	Mode                  string `json:"mode"`
+	ProductSlug           string `json:"productSlug"`
+	SourcePath            string `json:"sourcePath"`
+	PreviewToken          string `json:"previewToken,omitempty"`
+	OperationKey          string `json:"-"`
+	SessionExpiresAt      int64  `json:"-"`
+	BusinessLine          string `json:"-"`
+	ReconciliationTag     string `json:"-"`
+	RegionScope           string `json:"-"`
+	MerchantEntity        string `json:"-"`
+	PlanFamily            string `json:"-"`
+	ReplaceSubscriptionID string `json:"-"`
+	ReplaceStripeProfile  string `json:"-"`
 }
 
 type stripePortalRequest struct {
@@ -661,6 +668,19 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 	if err == nil {
 		form.Set("client_reference_id", clientReferenceID)
 	}
+	setMetadataTag := func(key, value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		form.Set("metadata["+key+"]", trimmed)
+		if mode == "subscription" {
+			form.Set("subscription_data[metadata]["+key+"]", trimmed)
+		} else {
+			form.Set("payment_intent_data[metadata]["+key+"]", trimmed)
+		}
+	}
+
 	if mode == "subscription" {
 		expires := req.SessionExpiresAt
 		if expires == 0 {
@@ -674,21 +694,21 @@ func (c *stripeClient) createCheckoutSession(ctx context.Context, user *store.Us
 		form.Set("subscription_data[metadata][plan_id]", strings.TrimSpace(req.PlanID))
 		form.Set("subscription_data[metadata][product_slug]", strings.TrimSpace(req.ProductSlug))
 		form.Set("subscription_data[metadata][kind]", "subscription")
-		if c.profile != "" {
-			form.Set("metadata[stripe_profile]", c.profile)
-			form.Set("subscription_data[metadata][stripe_profile]", c.profile)
-		}
 	} else {
 		form.Set("payment_intent_data[metadata][user_id]", strings.TrimSpace(user.ID))
 		form.Set("payment_intent_data[metadata][user_email]", strings.TrimSpace(strings.ToLower(user.Email)))
 		form.Set("payment_intent_data[metadata][plan_id]", strings.TrimSpace(req.PlanID))
 		form.Set("payment_intent_data[metadata][product_slug]", strings.TrimSpace(req.ProductSlug))
 		form.Set("payment_intent_data[metadata][kind]", "paygo")
-		if c.profile != "" {
-			form.Set("metadata[stripe_profile]", c.profile)
-			form.Set("payment_intent_data[metadata][stripe_profile]", c.profile)
-		}
 	}
+	setMetadataTag("stripe_profile", c.profile)
+	setMetadataTag("business_line", req.BusinessLine)
+	setMetadataTag("reconciliation_tag", req.ReconciliationTag)
+	setMetadataTag("region_scope", req.RegionScope)
+	setMetadataTag("merchant_entity", req.MerchantEntity)
+	setMetadataTag("plan_family", req.PlanFamily)
+	setMetadataTag("replace_subscription_id", req.ReplaceSubscriptionID)
+	setMetadataTag("replace_stripe_profile", req.ReplaceStripeProfile)
 
 	var session stripeSessionResponse
 	if err := c.doForm(ctx, http.MethodPost, "/checkout/sessions", form, &session, req.OperationKey); err != nil {
@@ -1028,6 +1048,14 @@ func (h *handler) stripeCheckout(c *gin.Context) {
 		respondError(c, http.StatusConflict, "purchase_pending", "Finish subscription payment reconciliation before changing billing mode")
 		return
 	}
+	if plan != nil {
+		recMeta := h.planReconciliationMeta(plan, client)
+		req.BusinessLine = recMeta.BusinessLine
+		req.ReconciliationTag = recMeta.ReconciliationTag
+		req.RegionScope = recMeta.RegionScope
+		req.MerchantEntity = recMeta.MerchantEntity
+		req.PlanFamily = recMeta.PlanFamily
+	}
 
 	session, err := client.createCheckoutSession(c.Request.Context(), user, req)
 	if err != nil {
@@ -1225,7 +1253,15 @@ func (h *handler) handleStripeEventWithClient(ctx context.Context, client *strip
 			if err := h.upsertStripeSubscriptionWithClient(ctx, client, resolvedProfile, sub, session.Customer); err != nil {
 				return err
 			}
-			return h.syncSubscriptionEntitlementsWithClient(ctx, client, sub, true)
+			if err := h.syncSubscriptionEntitlementsWithClient(ctx, client, sub, true); err != nil {
+				return err
+			}
+			if strings.EqualFold(sub.Status, "active") {
+				if replaceID := strings.TrimSpace(sub.Metadata["replace_subscription_id"]); replaceID != "" && replaceID != sub.ID {
+					return h.retireReplacedSubscription(ctx, strings.TrimSpace(sub.Metadata["user_id"]), sub.ID, resolvedProfile, replaceID, sub.Metadata["replace_stripe_profile"])
+				}
+			}
+			return nil
 		}
 
 		userID := strings.TrimSpace(session.Metadata["user_id"])
@@ -1235,13 +1271,20 @@ func (h *handler) handleStripeEventWithClient(ctx context.Context, client *strip
 		if userID == "" {
 			return nil
 		}
+		planObj, _ := h.store.GetBillingPlan(ctx, strings.TrimSpace(session.Metadata["plan_id"]))
+		recMeta := h.planReconciliationMeta(planObj, client)
 		metaFields := map[string]string{
-			"price_id":       "",
-			"customer_id":    session.Customer,
-			"session_id":     session.ID,
-			"product_slug":   session.Metadata["product_slug"],
-			"user_email":     session.Metadata["user_email"],
-			"stripe_profile": resolvedProfile,
+			"price_id":           "",
+			"customer_id":        session.Customer,
+			"session_id":         session.ID,
+			"product_slug":       session.Metadata["product_slug"],
+			"user_email":         session.Metadata["user_email"],
+			"stripe_profile":     resolvedProfile,
+			"business_line":      firstNonEmpty(session.Metadata["business_line"], recMeta.BusinessLine),
+			"reconciliation_tag": firstNonEmpty(session.Metadata["reconciliation_tag"], recMeta.ReconciliationTag),
+			"region_scope":       firstNonEmpty(session.Metadata["region_scope"], recMeta.RegionScope),
+			"merchant_entity":    firstNonEmpty(session.Metadata["merchant_entity"], recMeta.MerchantEntity),
+			"plan_family":        firstNonEmpty(session.Metadata["plan_family"], recMeta.PlanFamily),
 		}
 		if client != nil && strings.TrimSpace(client.accountID) != "" {
 			metaFields["stripe_account_id"] = strings.TrimSpace(client.accountID)
@@ -1278,7 +1321,15 @@ func (h *handler) handleStripeEventWithClient(ctx context.Context, client *strip
 		if err := h.upsertStripeSubscriptionWithClient(ctx, client, resolvedProfile, &subscription, customerIDFromAny(subscription.Customer)); err != nil {
 			return err
 		}
-		return h.syncSubscriptionEntitlementsWithClient(ctx, client, &subscription, event.Type == "customer.subscription.created")
+		if err := h.syncSubscriptionEntitlementsWithClient(ctx, client, &subscription, event.Type == "customer.subscription.created"); err != nil {
+			return err
+		}
+		if strings.EqualFold(subscription.Status, "active") {
+			if replaceID := strings.TrimSpace(subscription.Metadata["replace_subscription_id"]); replaceID != "" && replaceID != subscription.ID {
+				return h.retireReplacedSubscription(ctx, strings.TrimSpace(subscription.Metadata["user_id"]), subscription.ID, resolvedProfile, replaceID, subscription.Metadata["replace_stripe_profile"])
+			}
+		}
+		return nil
 	case "customer.subscription.deleted":
 		var subscription stripeSubscription
 		if err := json.Unmarshal(event.Data.Object, &subscription); err != nil {
@@ -1491,6 +1542,13 @@ func (h *handler) handleStripeEventWithClient(ctx context.Context, client *strip
 		// those operations are idempotent across webhook retries.
 		if err := h.recordReferralPaidInvoiceWithClient(ctx, client, &invoice, sub, userID); err != nil {
 			return err
+		}
+		if strings.EqualFold(sub.Status, "active") {
+			if replaceID := strings.TrimSpace(sub.Metadata["replace_subscription_id"]); replaceID != "" && replaceID != sub.ID {
+				if err := h.retireReplacedSubscription(ctx, userID, sub.ID, resolvedProfile, replaceID, sub.Metadata["replace_stripe_profile"]); err != nil {
+					return err
+				}
+			}
 		}
 		h.publishBillingEvent(ctx, &store.BillingEvent{
 			Type: "invoice_paid", UserID: userID,
@@ -2189,26 +2247,38 @@ func (h *handler) upsertStripeSubscriptionWithClient(ctx context.Context, client
 	if resolvedProfile == "" {
 		resolvedProfile = h.defaultStripeProfile()
 	}
+	planID := strings.TrimSpace(source.Metadata["plan_id"])
+	var matchedPlan *store.BillingPlan
+	if plan, err := h.store.GetBillingPlanByPriceID(ctx, priceID); err == nil {
+		planID = plan.PlanID // Pending updates cannot change Stripe metadata.
+		matchedPlan = plan
+	} else if !errors.Is(err, store.ErrBillingPlanNotFound) {
+		return err
+	} else if planID != "" {
+		if plan, pErr := h.store.GetBillingPlan(ctx, planID); pErr == nil {
+			matchedPlan = plan
+		}
+	}
+	recMeta := h.planReconciliationMeta(matchedPlan, client)
 	metaFields := map[string]string{
-		"price_id":          priceID,
-		"customer_id":       firstNonEmpty(customerID, customerIDFromAny(source.Customer)),
-		"product_slug":      source.Metadata["product_slug"],
-		"user_email":        source.Metadata["user_email"],
-		"startsAt":          epochToRFC3339(source.CurrentPeriodStart),
-		"expiresAt":         epochToRFC3339(source.CurrentPeriodEnd),
-		"cancelAtPeriodEnd": strconv.FormatBool(source.CancelAtPeriodEnd),
-		"stripe_profile":    resolvedProfile,
+		"price_id":           priceID,
+		"customer_id":        firstNonEmpty(customerID, customerIDFromAny(source.Customer)),
+		"product_slug":       source.Metadata["product_slug"],
+		"user_email":         source.Metadata["user_email"],
+		"startsAt":           epochToRFC3339(source.CurrentPeriodStart),
+		"expiresAt":          epochToRFC3339(source.CurrentPeriodEnd),
+		"cancelAtPeriodEnd":  strconv.FormatBool(source.CancelAtPeriodEnd),
+		"stripe_profile":     resolvedProfile,
+		"business_line":      firstNonEmpty(source.Metadata["business_line"], recMeta.BusinessLine),
+		"reconciliation_tag": firstNonEmpty(source.Metadata["reconciliation_tag"], recMeta.ReconciliationTag),
+		"region_scope":       firstNonEmpty(source.Metadata["region_scope"], recMeta.RegionScope),
+		"merchant_entity":    firstNonEmpty(source.Metadata["merchant_entity"], recMeta.MerchantEntity),
+		"plan_family":        firstNonEmpty(source.Metadata["plan_family"], recMeta.PlanFamily),
 	}
 	if client != nil && strings.TrimSpace(client.accountID) != "" {
 		metaFields["stripe_account_id"] = strings.TrimSpace(client.accountID)
 	}
 	meta := buildStripeMeta(nil, metaFields)
-	planID := strings.TrimSpace(source.Metadata["plan_id"])
-	if plan, err := h.store.GetBillingPlanByPriceID(ctx, priceID); err == nil {
-		planID = plan.PlanID // Pending updates cannot change Stripe metadata.
-	} else if !errors.Is(err, store.ErrBillingPlanNotFound) {
-		return err
-	}
 	start, end := subscriptionPeriod(source)
 	if source.CurrentPeriodStart > 0 || (len(source.Items.Data) == 1 && source.Items.Data[0].CurrentPeriodStart > 0) {
 		meta["startsAt"] = start.Format(time.RFC3339)
@@ -2232,6 +2302,60 @@ func (h *handler) upsertStripeSubscriptionWithClient(ctx context.Context, client
 		subscription.CancelledAt = &cancelledAt
 	}
 	return h.store.UpsertSubscription(ctx, subscription)
+}
+
+func (h *handler) retireReplacedSubscription(ctx context.Context, userID, newSubID, newProfile, replaceSubID, replaceProfile string) error {
+	userID = strings.TrimSpace(userID)
+	replaceSubID = strings.TrimSpace(replaceSubID)
+	if userID == "" || replaceSubID == "" || replaceSubID == strings.TrimSpace(newSubID) {
+		return nil
+	}
+	subs, err := h.store.ListSubscriptionsByUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	var target *store.Subscription
+	for i := range subs {
+		if subs[i].Provider == "stripe" && subs[i].Kind == "subscription" && subs[i].ExternalID == replaceSubID {
+			target = &subs[i]
+			break
+		}
+	}
+	if target == nil {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(target.Status)) {
+	case "cancelled", "canceled", "refunded", "expired", "incomplete_expired":
+		return nil
+	}
+	oldProfile := firstNonEmpty(normalizeStripeProfile(replaceProfile), h.subscriptionStripeProfile(target))
+	oldClient, _ := h.stripeClientForProfile(oldProfile)
+	if oldClient == nil || !oldClient.enabled() {
+		return errors.New("previous stripe entity is unavailable to cancel replaced subscription")
+	}
+	remote, err := oldClient.fetchSubscription(ctx, replaceSubID)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(remote.Status, "canceled") {
+		if err := oldClient.cancelSubscription(ctx, replaceSubID); err != nil {
+			return err
+		}
+	}
+	now := time.Now().UTC()
+	updated := *target
+	updated.Status = "cancelled"
+	updated.CancelledAt = &now
+	metaCopy := make(map[string]any, len(target.Meta)+2)
+	for k, v := range target.Meta {
+		metaCopy[k] = v
+	}
+	metaCopy["replaced_by_subscription_id"] = strings.TrimSpace(newSubID)
+	if np := normalizeStripeProfile(newProfile); np != "" {
+		metaCopy["replaced_by_profile"] = np
+	}
+	updated.Meta = metaCopy
+	return h.store.UpsertSubscription(ctx, &updated)
 }
 
 func scheduledInvoiceMatchesSubscription(source *stripeSubscription, invoice *stripeInvoice) bool {

@@ -16,11 +16,19 @@ products:
         unit_amount: 2000            # ¥20.00 / 月 · 20 GB
         currency: cny
         recurring_interval: month
+        stripe_profile: hk
+        business_line: hk_apac_plus
+        reconciliation_tag: FIN-HK-PLUS-APAC
+        region_scope: JP,PH,APAC
       - key: plus-monthly-2026       # gitleaks:allow
         plan_id: PLUS-MONTHLY-2026
         unit_amount: 3000            # ¥30.00 / 月 · 30 GB
         currency: cny
         recurring_interval: month
+        stripe_profile: hk
+        business_line: hk_apac_plus
+        reconciliation_tag: FIN-HK-PLUS-APAC
+        region_scope: JP,PH,APAC
 
   - key: pro
     name: "Pro"
@@ -31,11 +39,19 @@ products:
         unit_amount: 5000            # ¥50.00 / 月
         currency: cny
         recurring_interval: month
+        stripe_profile: us
+        business_line: us_edge_pro
+        reconciliation_tag: FIN-US-PRO-EDGE
+        region_scope: US
       - key: pro-yearly-v2           # gitleaks:allow
         plan_id: PRO-YEARLY-V2
         unit_amount: 50000           # ¥500.00 / 年
         currency: cny
         recurring_interval: year
+        stripe_profile: us
+        business_line: us_edge_pro
+        reconciliation_tag: FIN-US-PRO-EDGE
+        region_scope: US
 
   - key: custom-node
     name: "定制节点"
@@ -46,6 +62,10 @@ products:
         unit_amount: 8000             # ¥80.00 / 月
         currency: cny
         recurring_interval: month
+        stripe_profile: us
+        business_line: us_edge_pro
+        reconciliation_tag: FIN-US-PRO-EDGE
+        region_scope: US
 
   - key: custom-ai-consult
     name: "开源解决方案/AI工具咨询"
@@ -55,6 +75,10 @@ products:
         plan_id: CUSTOM-AI-CONSULT-2026
         unit_amount: 10000           # ¥100.00 / 小时/次（一次性购买）
         currency: cny
+        stripe_profile: us
+        business_line: us_edge_pro
+        reconciliation_tag: FIN-US-PRO-EDGE
+        region_scope: US
 
 # Webhook URL/secret 由 Vault 和环境声明提供；脚本只验证已有端点，不输出 secret。
 webhook:
