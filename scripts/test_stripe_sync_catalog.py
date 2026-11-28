@@ -63,23 +63,32 @@ class SyncTest(unittest.TestCase):
     def test_test_catalog_receipt(self): self.run_sync()
     def test_conflicting_currency_stops_mapping(self): self.run_sync(mismatch=True)
 
-    def test_stripe_profile_filter_skips_unmatched_profile(self):
+    def test_stripe_profile_filters_split_hk_plus_and_us_pro_plus(self):
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                self.send_response(404 if '/products/' in self.path else 200)
+                path = urlsplit(self.path)
+                self.send_response(200)
                 self.end_headers()
-                if self.path == '/v1/account':
-                    self.wfile.write(b'{"id":"acct_us_fixture"}')
-                elif self.path.startswith('/v1/webhook_endpoints'):
-                    self.wfile.write(b'{"data":[{"id":"we_us","url":"https://fixture.invalid/api/billing/stripe/webhook/us","enabled_events":["checkout.session.completed","customer.subscription.created","customer.subscription.updated","customer.subscription.deleted","invoice.paid","invoice.payment_failed","charge.refunded","refund.created","refund.updated","charge.dispute.created","charge.dispute.updated","charge.dispute.closed"],"status":"enabled"}]}')
-                elif '/products/' not in self.path:
+                if path.path == '/v1/account':
+                    account_id = 'acct_us_fixture' if os.environ.get('EXPECT_US') else 'acct_fixture'
+                    self.wfile.write(json.dumps({'id': 'acct_us_fixture' if self.headers.get('Authorization') == 'Bearer sk_test_us' else 'acct_hk_fixture'}).encode())
+                elif path.path.startswith('/v1/products/'):
+                    self.wfile.write(json.dumps({'id': path.path.split('/')[-1]}).encode())
+                elif path.path == '/v1/prices':
+                    key = parse_qs(path.query)['lookup_keys[]'][0]
+                    p = PRICES[key]
+                    price = dict(id='price_' + key.replace('-', ''), product=p['product'], unit_amount=p['unit_amount'], currency=p['currency'])
+                    if p.get('recurring_interval'):
+                        price['recurring'] = dict(interval=p['recurring_interval'])
+                    self.wfile.write(json.dumps(dict(data=[price])).encode())
+                elif path.path == '/v1/webhook_endpoints':
+                    url = 'https://fixture.invalid/api/billing/stripe/webhook/' + ('us' if self.headers.get('Authorization') == 'Bearer sk_test_us' else 'hk')
+                    self.wfile.write(json.dumps(dict(data=[dict(id='we_split', url=url, enabled_events=CATALOG['webhook']['events'], status='enabled')])).encode())
+                else:
                     self.wfile.write(b'{"data":[]}')
             def do_POST(self):
-                from urllib.parse import parse_qs
-                body = parse_qs(self.rfile.read(int(self.headers['Content-Length'])).decode())
                 self.send_response(200); self.end_headers()
-                if self.path == '/v1/products':
-                    self.wfile.write(json.dumps({'id': body['id'][0]}).encode())
+                self.wfile.write(json.dumps({'id': self.path.split('/')[-1]}).encode())
             def log_message(self, *args): pass
 
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -87,13 +96,29 @@ class SyncTest(unittest.TestCase):
         worker.start()
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                output = Path(tmp) / 'us-map.json'
-                env = dict(os.environ, STRIPE_SECRET_KEY='sk_test_fixture', STRIPE_WEBHOOK_SECRET='whsec_fixture', STRIPE_WEBHOOK_URL='https://fixture.invalid/api/billing/stripe/webhook/us', STRIPE_API_BASE=f'http://127.0.0.1:{server.server_port}/v1')
-                result = subprocess.run(['bash', str(ROOT / 'stripe-sync-catalog.sh'), '--env', 'prod-v3', '--domain-base', 'svc.plus', '--expected-account', 'acct_us_fixture', '--stripe-profile', 'us', '--price-map-output', str(output)], env=env, capture_output=True, text=True, timeout=20)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                receipt = json.loads(output.read_text())
-                self.assertEqual(receipt['stripe_profile'], 'us')
-                self.assertEqual(len(receipt['prices']), 0)
+                hk_out = Path(tmp) / 'hk-map.json'
+                hk_env = dict(os.environ, STRIPE_SECRET_KEY='sk_test_hk', STRIPE_WEBHOOK_SECRET='whsec_hk', STRIPE_WEBHOOK_URL='https://fixture.invalid/api/billing/stripe/webhook/hk', STRIPE_API_BASE=f'http://127.0.0.1:{server.server_port}/v1')
+                hk_res = subprocess.run(['bash', str(ROOT / 'stripe-sync-catalog.sh'), '--env', 'prod-v3', '--domain-base', 'svc.plus', '--expected-account', 'acct_hk_fixture', '--stripe-profile', 'hk', '--price-map-output', str(hk_out)], env=hk_env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(hk_res.returncode, 0, hk_res.stderr)
+                hk_receipt = json.loads(hk_out.read_text())
+                self.assertEqual(hk_receipt['stripe_profile'], 'hk')
+                self.assertEqual([p['plan_id'] for p in hk_receipt['prices']], ['PLUS', 'PLUS-MONTHLY-2026'])
+                self.assertTrue(all(p['reconciliation_tag'] == 'FIN-HK-PLUS-APAC' for p in hk_receipt['prices']))
+
+                us_out = Path(tmp) / 'us-map.json'
+                us_env = dict(os.environ, STRIPE_SECRET_KEY='sk_test_us', STRIPE_WEBHOOK_SECRET='whsec_us', STRIPE_WEBHOOK_URL='https://fixture.invalid/api/billing/stripe/webhook/us', STRIPE_API_BASE=f'http://127.0.0.1:{server.server_port}/v1')
+                us_res = subprocess.run(['bash', str(ROOT / 'stripe-sync-catalog.sh'), '--env', 'prod-v3', '--domain-base', 'svc.plus', '--expected-account', 'acct_us_fixture', '--stripe-profile', 'us', '--price-map-output', str(us_out)], env=us_env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(us_res.returncode, 0, us_res.stderr)
+                us_receipt = json.loads(us_out.read_text())
+                self.assertEqual(us_receipt['stripe_profile'], 'us')
+                self.assertEqual([p['plan_id'] for p in us_receipt['prices']], ['PRO-MONTHLY-V2', 'PRO-YEARLY-V2', 'CUSTOM-NODE-MONTHLY-2026', 'CUSTOM-AI-CONSULT-2026'])
+                self.assertTrue(all(p['reconciliation_tag'] == 'FIN-US-PRO-EDGE' for p in us_receipt['prices']))
+
+                eu_out = Path(tmp) / 'eu-map.json'
+                eu_res = subprocess.run(['bash', str(ROOT / 'stripe-sync-catalog.sh'), '--env', 'prod-v3', '--domain-base', 'svc.plus', '--expected-account', 'acct_hk_fixture', '--stripe-profile', 'eu', '--price-map-output', str(eu_out)], env=hk_env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(eu_res.returncode, 0, eu_res.stderr)
+                eu_receipt = json.loads(eu_out.read_text())
+                self.assertEqual(len(eu_receipt['prices']), 0)
         finally:
             server.shutdown(); server.server_close(); worker.join()
 

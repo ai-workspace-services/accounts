@@ -97,15 +97,17 @@ ACCOUNTS_BASE_URL=https://accounts.svc.plus \
   scripts/stripe-sync-catalog.sh --env prod --stripe-profile us --domain-base svc.plus --write-catalog
 ```
 
-### 4.2 Ops 后台配置（Portal）
+### 4.2 Ops 后台配置（Portal）与财务对账
 
-进入 `https://console.svc.plus/panel/management` -> Plan 目录管理：
-- 页面顶部展示所有已配置的 `Stripe 收款主体` 状态摘要（主体 ID、商户名称、Merchant Entity、Live/Test 状态、Webhook 路径）。
-- 新增或编辑套餐时可指定：
-  - `stripeProfile`（例如 `hk` / `us`）
-  - `businessLine`（业务线标识，如 `global_hk`、`us_nodes`）
-  - `merchantEntity`（对应开票/收款公司名称）
-- 列表卡片会显示所属 `stripeProfile` 与 `businessLine` 徽章，支持 HKD 与 USD 币种显示。
+1. **套餐与主体路由矩阵（用户无感知）**：
+   - 公开接口 `GET /api/billing/plans` 自动剥离 `stripeProfile`、`businessLine`、`merchantEntity`、`reconciliationTag`、`regionScope`，终端用户在前台完全无感知。
+   - **Plus（JP / PH / APAC 订阅）** -> 路由到 `hk`（`businessLine=hk_apac_plus`、`reconciliationTag=FIN-HK-PLUS-APAC`、`regionScope=JP,PH,APAC`）。
+   - **Pro / Custom（美国边缘节点以上）** -> 路由到 `us`（`businessLine=us_edge_pro`、`reconciliationTag=FIN-US-PRO-EDGE`、`regionScope=US`）。
+   - 当用户从 HK 的 Plus 升级到 US 的 Pro+ 时，后端无缝在新主体创建订阅，并在新主体首期付款回调激活后自动取消 HK 原订阅（避免双重扣费），用户全程无报错或中断感知。
+
+2. **Stripe Metadata 与财务对账导出**：
+   - 每次 Checkout / 订阅 / PaymentIntent / Stripe Price 均自动写入 `stripe_profile`、`business_line`、`reconciliation_tag`、`region_scope`、`merchant_entity`。
+   - Ops 后台 `/panel/ops/billing/ledger` 调用 `GET /api/auth/admin/billing/reconciliation`，支持按 `stripeProfile`（`hk` / `us`）、`reconciliationTag`、`businessLine` 聚合净额并一键导出带 BOM 的 CSV（`?format=csv`）。
 
 ---
 

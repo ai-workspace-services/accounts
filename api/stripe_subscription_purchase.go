@@ -20,15 +20,17 @@ import (
 // A quote is user-bound and short-lived. Its proration timestamp is reused
 // both when checking the preview and updating Stripe's existing item.
 type subscriptionQuote struct {
-	UserID          string `json:"userId"`
-	PlanID          string `json:"planId"`
-	PriceID         string `json:"priceId"`
-	Action          string `json:"action"`
-	StripeProfile   string `json:"stripeProfile,omitempty"`
-	SubscriptionID  string `json:"subscriptionId,omitempty"`
-	ItemID          string `json:"itemId,omitempty"`
-	FromPriceID     string `json:"fromPriceId,omitempty"`
-	ProrationDate   int64  `json:"prorationDate"`
+	UserID                string `json:"userId"`
+	PlanID                string `json:"planId"`
+	PriceID               string `json:"priceId"`
+	Action                string `json:"action"`
+	StripeProfile         string `json:"stripeProfile,omitempty"`
+	SubscriptionID        string `json:"subscriptionId,omitempty"`
+	ItemID                string `json:"itemId,omitempty"`
+	FromPriceID           string `json:"fromPriceId,omitempty"`
+	ReplaceSubscriptionID string `json:"replaceSubscriptionId,omitempty"`
+	ReplaceStripeProfile  string `json:"replaceStripeProfile,omitempty"`
+	ProrationDate         int64  `json:"prorationDate"`
 	ExpiresAt       int64  `json:"expiresAt"`
 	AmountDue       int64  `json:"amountDue"`
 	Currency        string `json:"currency"`
@@ -199,62 +201,91 @@ func (h *handler) buildSubscriptionQuote(ctx context.Context, userID string, pla
 		if current.PlanID == plan.PlanID {
 			return q, errors.New("already subscribed to this plan")
 		}
-		if h.subscriptionStripeProfile(current) != targetProfile {
-			return q, errors.New("cannot upgrade subscription across different Stripe entities")
-		}
 		old, err := h.store.GetBillingPlan(ctx, current.PlanID)
 		if err != nil {
 			return q, err
 		}
-		if !canUpgradeSubscriptionPlan(old, plan) {
-			return q, errors.New("this plan change is not supported yet")
+		currentProfile := h.subscriptionStripeProfile(current)
+		if currentProfile != targetProfile {
+			// Seamless cross-entity upgrade (e.g. Plus on HK -> Pro+ on US):
+			// verify tier upgrade and source subscription hygiene on old entity, then preview as new subscription on target entity.
+			if planTierRank(plan) <= planTierRank(old) {
+				return q, errors.New("this plan change is not supported yet")
+			}
+			oldClient, _ := h.stripeClientForProfile(currentProfile)
+			if oldClient == nil || !oldClient.enabled() {
+				return q, errors.New("Stripe unavailable")
+			}
+			sub, err := oldClient.fetchSubscription(ctx, current.ExternalID)
+			if err != nil {
+				return q, err
+			}
+			if sub.Status != "active" || sub.Metadata["user_id"] != userID || sub.CancelAtPeriodEnd || hasPendingUpdate(sub) {
+				return q, errors.New("subscription is not eligible for upgrade")
+			}
+			if invoiceID := customerIDFromAny(sub.LatestInvoice); invoiceID != "" {
+				invoice, err := oldClient.fetchInvoice(ctx, invoiceID)
+				if err != nil {
+					return q, err
+				}
+				if invoice.Status != "paid" {
+					return q, errors.New("settle the existing invoice before upgrading")
+				}
+			}
+			q.Action = "subscribe"
+			q.ReplaceSubscriptionID = current.ExternalID
+			q.ReplaceStripeProfile = currentProfile
+		} else {
+			if !canUpgradeSubscriptionPlan(old, plan) {
+				return q, errors.New("this plan change is not supported yet")
+			}
+			if !strings.EqualFold(old.PriceUnit, "month") || !strings.EqualFold(plan.PriceUnit, "month") {
+				return q, errors.New("unsupported upgrade currency or period")
+			}
+			sub, err := client.fetchSubscription(ctx, current.ExternalID)
+			if err != nil {
+				return q, err
+			}
+			if sub.Status != "active" || sub.Metadata["user_id"] != userID || sub.CancelAtPeriodEnd || hasPendingUpdate(sub) || customerIDFromAny(sub.Schedule) != "" || sub.CollectionMethod != "charge_automatically" || len(sub.Items.Data) != 1 || sub.Items.Data[0].Quantity != 1 || sub.Items.Data[0].ID == "" || subscriptionPriceID(sub) != old.StripePriceID {
+				return q, errors.New("subscription is not eligible for a monthly upgrade")
+			}
+			invoiceID := customerIDFromAny(sub.LatestInvoice)
+			if invoiceID == "" {
+				return q, errors.New("paid source invoice required")
+			}
+			invoice, err := client.fetchInvoice(ctx, invoiceID)
+			if err != nil {
+				return q, err
+			}
+			if invoice.Status != "paid" {
+				return q, errors.New("settle the existing invoice before upgrading")
+			}
+			start, end := subscriptionPeriod(sub)
+			if (sub.CurrentPeriodStart <= 0 && sub.Items.Data[0].CurrentPeriodStart <= 0) || end.Unix() <= at || start.Unix() > at {
+				return q, errors.New("invalid active period")
+			}
+			profile, e := h.store.GetAccountBillingProfile(ctx, userID)
+			if e != nil {
+				return q, e
+			}
+			quota, e := h.store.GetAccountQuotaState(ctx, userID)
+			if e != nil {
+				return q, e
+			}
+			if profile == nil || profile.IncludedQuotaBytes != old.IncludedQuotaBytes || profile.HighSpeedQuotaBytes != old.HighSpeedQuotaBytes || quota == nil || quota.PeriodStart == nil || quota.PeriodEnd == nil || !quota.PeriodStart.Equal(start) || !quota.PeriodEnd.Equal(end) {
+				return q, errors.New("source allowance requires reconciliation")
+			}
+			q.Action = "upgrade"
+			q.SubscriptionID = sub.ID
+			q.ItemID = sub.Items.Data[0].ID
+			q.FromPriceID = subscriptionPriceID(sub)
+			q.PeriodStart = start.Unix()
+			q.RenewalAt = end.Unix()
+			form.Set("subscription", sub.ID)
+			form.Set("subscription_details[items][0][id]", q.ItemID)
+			form.Set("subscription_details[proration_behavior]", "always_invoice")
+			form.Set("subscription_details[proration_date]", strconv.FormatInt(at, 10))
 		}
-		if !strings.EqualFold(old.PriceUnit, "month") || !strings.EqualFold(plan.PriceUnit, "month") {
-			return q, errors.New("unsupported upgrade currency or period")
-		}
-		sub, err := client.fetchSubscription(ctx, current.ExternalID)
-		if err != nil {
-			return q, err
-		}
-		if sub.Status != "active" || sub.Metadata["user_id"] != userID || sub.CancelAtPeriodEnd || hasPendingUpdate(sub) || customerIDFromAny(sub.Schedule) != "" || sub.CollectionMethod != "charge_automatically" || len(sub.Items.Data) != 1 || sub.Items.Data[0].Quantity != 1 || sub.Items.Data[0].ID == "" || subscriptionPriceID(sub) != old.StripePriceID {
-			return q, errors.New("subscription is not eligible for a monthly upgrade")
-		}
-		invoiceID := customerIDFromAny(sub.LatestInvoice)
-		if invoiceID == "" {
-			return q, errors.New("paid source invoice required")
-		}
-		invoice, err := client.fetchInvoice(ctx, invoiceID)
-		if err != nil {
-			return q, err
-		}
-		if invoice.Status != "paid" {
-			return q, errors.New("settle the existing invoice before upgrading")
-		}
-		start, end := subscriptionPeriod(sub)
-		if (sub.CurrentPeriodStart <= 0 && sub.Items.Data[0].CurrentPeriodStart <= 0) || end.Unix() <= at || start.Unix() > at {
-			return q, errors.New("invalid active period")
-		}
-		profile, e := h.store.GetAccountBillingProfile(ctx, userID)
-		if e != nil {
-			return q, e
-		}
-		quota, e := h.store.GetAccountQuotaState(ctx, userID)
-		if e != nil {
-			return q, e
-		}
-		if profile == nil || profile.IncludedQuotaBytes != old.IncludedQuotaBytes || profile.HighSpeedQuotaBytes != old.HighSpeedQuotaBytes || quota == nil || quota.PeriodStart == nil || quota.PeriodEnd == nil || !quota.PeriodStart.Equal(start) || !quota.PeriodEnd.Equal(end) {
-			return q, errors.New("source allowance requires reconciliation")
-		}
-		q.Action = "upgrade"
-		q.SubscriptionID = sub.ID
-		q.ItemID = sub.Items.Data[0].ID
-		q.FromPriceID = subscriptionPriceID(sub)
-		q.PeriodStart = start.Unix()
-		q.RenewalAt = end.Unix()
-		form.Set("subscription", sub.ID)
-		form.Set("subscription_details[items][0][id]", q.ItemID)
-		form.Set("subscription_details[proration_behavior]", "always_invoice")
-		form.Set("subscription_details[proration_date]", strconv.FormatInt(at, 10))
 	}
 	var invoice stripeInvoice
 	if err = client.doForm(ctx, http.MethodPost, "/invoices/create_preview", form, &invoice); err != nil {
@@ -385,7 +416,10 @@ func (h *handler) executeSubscriptionPurchase(c *gin.Context, user *store.User, 
 	// Recheck local subscription state after obtaining the account reservation.
 	// A webhook might have completed between preview and reservation.
 	current, err := h.currentPurchaseSubscription(ctx, user.ID)
-	if err != nil || q.Action == "subscribe" && current != nil || q.Action == "upgrade" && (current == nil || current.ExternalID != q.SubscriptionID || current.PlanID == q.PlanID) {
+	crossEntityReplace := q.Action == "subscribe" && q.ReplaceSubscriptionID != ""
+	if err != nil ||
+		(q.Action == "subscribe" && ((!crossEntityReplace && current != nil) || (crossEntityReplace && (current == nil || current.ExternalID != q.ReplaceSubscriptionID)))) ||
+		(q.Action == "upgrade" && (current == nil || current.ExternalID != q.SubscriptionID || current.PlanID == q.PlanID)) {
 		_ = h.store.UpdateSubscriptionPurchase(ctx, op.ID, "", json.RawMessage(`{"outcome":"not_submitted"}`), true)
 		respondError(c, 409, "subscription_changed", "Refresh the subscription state")
 		return
@@ -429,7 +463,10 @@ func (h *handler) stripeSubscriptionRetry(c *gin.Context) {
 		return
 	}
 	current, err := h.currentPurchaseSubscription(c.Request.Context(), user.ID)
-	if err != nil || stored.Action == "subscribe" && current != nil || stored.Action == "upgrade" && (current == nil || current.ExternalID != stored.SubscriptionID || current.PlanID == stored.PlanID) {
+	crossEntityReplace := stored.Action == "subscribe" && stored.ReplaceSubscriptionID != ""
+	if err != nil ||
+		(stored.Action == "subscribe" && ((!crossEntityReplace && current != nil) || (crossEntityReplace && (current == nil || current.ExternalID != stored.ReplaceSubscriptionID)))) ||
+		(stored.Action == "upgrade" && (current == nil || current.ExternalID != stored.SubscriptionID || current.PlanID == stored.PlanID)) {
 		respondError(c, 409, "purchase_retry_unavailable", "Subscription state changed; reconcile the original payment")
 		return
 	}
@@ -460,7 +497,25 @@ func (h *handler) submitSubscriptionPurchase(c *gin.Context, user *store.User, o
 		respondError(c, 409, "purchase_retry_unavailable", "Payment authority changed; reconcile the original request")
 		return
 	}
-	req := stripeCheckoutRequest{PlanID: q.PlanID, StripePriceID: q.PriceID, Mode: "subscription", ProductSlug: "xconnect", SourcePath: stored.SourcePath, OperationKey: op.IdempotencyKey, SessionExpiresAt: op.CreatedAt.Add(time.Hour).Unix()}
+	req := stripeCheckoutRequest{
+		PlanID:                q.PlanID,
+		StripePriceID:         q.PriceID,
+		Mode:                  "subscription",
+		ProductSlug:           "xconnect",
+		SourcePath:            stored.SourcePath,
+		OperationKey:          op.IdempotencyKey,
+		SessionExpiresAt:      op.CreatedAt.Add(time.Hour).Unix(),
+		ReplaceSubscriptionID: q.ReplaceSubscriptionID,
+		ReplaceStripeProfile:  q.ReplaceStripeProfile,
+	}
+	if planObj, pErr := h.store.GetBillingPlan(ctx, q.PlanID); pErr == nil && planObj != nil {
+		recMeta := h.planReconciliationMeta(planObj, client)
+		req.BusinessLine = recMeta.BusinessLine
+		req.ReconciliationTag = recMeta.ReconciliationTag
+		req.RegionScope = recMeta.RegionScope
+		req.MerchantEntity = recMeta.MerchantEntity
+		req.PlanFamily = recMeta.PlanFamily
+	}
 	checkoutUser := *user
 	checkoutUser.Email = stored.CheckoutEmail
 	var err error

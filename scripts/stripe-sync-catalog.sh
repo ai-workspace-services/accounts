@@ -179,6 +179,9 @@ for ((pi = 0; pi < product_count; pi++)); do
     qkey="$(jq -r '.key' <<<"${price}")"
     plan_id="$(jq -r '.plan_id' <<<"${price}")"
     price_profile="$(jq -r '.stripe_profile // "hk" | ascii_downcase' <<<"${price}")"
+    price_business_line="$(jq -r '.business_line // ""' <<<"${price}")"
+    price_reconciliation_tag="$(jq -r '.reconciliation_tag // ""' <<<"${price}")"
+    price_region_scope="$(jq -r '.region_scope // ""' <<<"${price}")"
     if [[ -n "${STRIPE_PROFILE}" && "${price_profile}" != "${STRIPE_PROFILE}" ]]; then
       echo "price ${qkey}: skipping (stripe_profile=${price_profile}, filter=${STRIPE_PROFILE})"
       continue
@@ -212,7 +215,11 @@ for ((pi = 0; pi < product_count; pi++)); do
         args=(--data-urlencode "product=${pkey}"
               --data-urlencode "unit_amount=${amount}"
               --data-urlencode "currency=${currency}"
-              --data-urlencode "lookup_key=${qkey}")
+              --data-urlencode "lookup_key=${qkey}"
+              --data-urlencode "metadata[stripe_profile]=${price_profile}")
+        [[ -n "${price_business_line}" ]] && args+=(--data-urlencode "metadata[business_line]=${price_business_line}")
+        [[ -n "${price_reconciliation_tag}" ]] && args+=(--data-urlencode "metadata[reconciliation_tag]=${price_reconciliation_tag}")
+        [[ -n "${price_region_scope}" ]] && args+=(--data-urlencode "metadata[region_scope]=${price_region_scope}")
         [[ -n "${interval}" ]] && args+=(--data-urlencode "recurring[interval]=${interval}")
         created="$(stripe_post "/prices" "${args[@]}")"
         price_id="$(jq -r '.id // ""' <<<"${created}")"
@@ -228,7 +235,7 @@ for ((pi = 0; pi < product_count; pi++)); do
         price_id="(dry-run, not created)"
       fi
     fi
-    price_summary+=("${plan_id}|${price_id}|${actual_amount}|${actual_currency}|${actual_unit}|${price_profile}")
+    price_summary+=("${plan_id}|${price_id}|${actual_amount}|${actual_currency}|${actual_unit}|${price_profile}|${price_business_line}|${price_reconciliation_tag}|${price_region_scope}")
   done
 done
 
@@ -237,7 +244,7 @@ if [[ -n "${PRICE_MAP_OUTPUT}" && "${DRY_RUN}" == false ]]; then
   [[ "${STRIPE_SECRET_KEY}" != sk_test_* ]] || stripe_mode=test
   [[ ! -e "${PRICE_MAP_OUTPUT}" ]] || { echo 'refusing to overwrite price-map receipt' >&2; exit 1; }
   (umask 077; printf '%s\n' "${price_summary[@]}" | jq -Rn --arg environment "${ENV_NAME}" --arg account "${EXPECTED_ACCOUNT}" --arg mode "${stripe_mode}" --arg stripe_profile "${STRIPE_PROFILE:-hk}" \
-    '{environment:$environment, stripe_account:$account, stripe_mode:$mode, stripe_profile:$stripe_profile, prices:[inputs | select(length > 0) | split("|") | {plan_id:.[0],price_id:.[1],amount:(.[2]|tonumber),currency:(.[3]|ascii_upcase),unit:.[4],stripe_profile:(.[5]//"hk")}]}' >"${PRICE_MAP_OUTPUT}")
+    '{environment:$environment, stripe_account:$account, stripe_mode:$mode, stripe_profile:$stripe_profile, prices:[inputs | select(length > 0) | split("|") | {plan_id:.[0],price_id:.[1],amount:(.[2]|tonumber),currency:(.[3]|ascii_upcase),unit:.[4],stripe_profile:(.[5]//"hk"),business_line:(.[6]//""),reconciliation_tag:(.[7]//""),region_scope:(.[8]//"")}]}' >"${PRICE_MAP_OUTPUT}")
 fi
 
 # --- Webhook endpoint -----------------------------------------------------
@@ -290,10 +297,10 @@ if [[ "${WRITE_CATALOG}" == "true" ]]; then
   fi
 
   for row in "${price_summary[@]}"; do
-    IFS='|' read -r plan_id price_id amount price_currency price_unit price_profile <<<"${row}"
+    IFS='|' read -r plan_id price_id amount price_currency price_unit price_profile price_business_line price_reconciliation_tag price_region_scope <<<"${row}"
     [[ "${price_id}" != "(dry-run, not created)" ]] || continue
     if [[ "${DRY_RUN}" == "true" ]]; then
-      echo "dry-run: ${plan_id} -> ${price_id} (${amount} ${price_currency}/${price_unit}, profile=${price_profile})"
+      echo "dry-run: ${plan_id} -> ${price_id} (${amount} ${price_currency}/${price_unit}, profile=${price_profile}, tag=${price_reconciliation_tag})"
       continue
     fi
 
@@ -308,6 +315,9 @@ if [[ "${WRITE_CATALOG}" == "true" ]]; then
       --arg currency "$(tr '[:lower:]' '[:upper:]' <<<"${price_currency}")" \
       --arg unit "$(tr '[:upper:]' '[:lower:]' <<<"${price_unit}")" \
       --arg stripe_profile "${price_profile}" \
+      --arg business_line "${price_business_line}" \
+      --arg reconciliation_tag "${price_reconciliation_tag}" \
+      --arg region_scope "${price_region_scope}" \
       --argjson amount "${amount}" \
       --arg reason "stripe-sync-catalog.sh --env ${ENV_NAME}" \
       '.plans[] | select(.planId == $plan_id)
@@ -316,9 +326,12 @@ if [[ "${WRITE_CATALOG}" == "true" ]]; then
        | .priceCurrency = $currency
        | .priceUnit = $unit
        | .stripeProfile = $stripe_profile
+       | (if $business_line != "" then .businessLine = $business_line else . end)
+       | (if $reconciliation_tag != "" then .reconciliationTag = $reconciliation_tag else . end)
+       | (if $region_scope != "" then .regionScope = $region_scope else . end)
        | .reason = $reason' <<<"${plans_response}")"
     accounts_put_plan "${plan_id}" "${payload}" >/dev/null
-    echo "catalog ${plan_id}: ${price_id} (${amount} ${price_currency}/${price_unit}, profile=${price_profile})"
+    echo "catalog ${plan_id}: ${price_id} (${amount} ${price_currency}/${price_unit}, profile=${price_profile}, tag=${price_reconciliation_tag})"
   done
 fi
 
@@ -326,8 +339,8 @@ fi
 echo
 echo "== billing_plans.stripe_price_id to write =="
 for row in "${price_summary[@]}"; do
-  IFS='|' read -r plan_id pid amount price_currency price_unit price_profile <<<"${row}"
-  printf '  %-16s -> %s (%s %s/%s, profile=%s)\n' "${plan_id}" "${pid}" "${amount}" "${price_currency}" "${price_unit}" "${price_profile}"
+  IFS='|' read -r plan_id pid amount price_currency price_unit price_profile price_business_line price_reconciliation_tag price_region_scope <<<"${row}"
+  printf '  %-16s -> %s (%s %s/%s, profile=%s, tag=%s)\n' "${plan_id}" "${pid}" "${amount}" "${price_currency}" "${price_unit}" "${price_profile}" "${price_reconciliation_tag}"
 done
 echo
 if [[ "${WRITE_CATALOG}" == "true" ]]; then

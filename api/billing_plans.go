@@ -21,6 +21,8 @@ type billingPlanPayload struct {
 	StripeProfile       string             `json:"stripeProfile,omitempty"`
 	BusinessLine        string             `json:"businessLine,omitempty"`
 	MerchantEntity      string             `json:"merchantEntity,omitempty"`
+	ReconciliationTag   string             `json:"reconciliationTag,omitempty"`
+	RegionScope         string             `json:"regionScope,omitempty"`
 	DisplayName         string             `json:"displayName"`
 	Kind                string             `json:"kind"`
 	IncludedQuotaBytes  int64              `json:"includedQuotaBytes"`
@@ -49,6 +51,8 @@ type billingPlanUpsertRequest struct {
 	StripeProfile       *string            `json:"stripeProfile,omitempty"`
 	BusinessLine        *string            `json:"businessLine,omitempty"`
 	MerchantEntity      *string            `json:"merchantEntity,omitempty"`
+	ReconciliationTag   *string            `json:"reconciliationTag,omitempty"`
+	RegionScope         *string            `json:"regionScope,omitempty"`
 	DisplayName         string             `json:"displayName"`
 	Kind                string             `json:"kind"`
 	IncludedQuotaBytes  int64              `json:"includedQuotaBytes"`
@@ -226,6 +230,8 @@ func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
 		StripeProfile:       stripeProfile,
 		BusinessLine:        billingPlanStringFeature(plan, "business_line"),
 		MerchantEntity:      billingPlanStringFeature(plan, "merchant_entity"),
+		ReconciliationTag:   billingPlanStringFeature(plan, "reconciliation_tag"),
+		RegionScope:         billingPlanStringFeature(plan, "region_scope"),
 		DisplayName:         plan.DisplayName,
 		Kind:                plan.Kind,
 		IncludedQuotaBytes:  plan.IncludedQuotaBytes,
@@ -241,6 +247,27 @@ func billingPlanToPayload(plan *store.BillingPlan) billingPlanPayload {
 		Active:              plan.Active,
 		SortOrder:           plan.SortOrder,
 	}
+}
+
+func sanitizePublicBillingPlanPayload(item billingPlanPayload) billingPlanPayload {
+	item.StripeProfile = ""
+	item.BusinessLine = ""
+	item.MerchantEntity = ""
+	item.ReconciliationTag = ""
+	item.RegionScope = ""
+	if item.Features != nil {
+		cleaned := make(map[string]any, len(item.Features))
+		for k, v := range item.Features {
+			switch k {
+			case "stripe_profile", "business_line", "merchant_entity", "reconciliation_tag", "region_scope":
+				continue
+			default:
+				cleaned[k] = v
+			}
+		}
+		item.Features = cleaned
+	}
+	return item
 }
 
 // listPublicBillingPlans serves the active catalog for the pricing page.
@@ -260,7 +287,7 @@ func (h *handler) listPublicBillingPlans(c *gin.Context) {
 		if normalizePlanFamily(&plans[i]) == "" {
 			continue
 		}
-		payload = append(payload, billingPlanToPayload(&plans[i]))
+		payload = append(payload, sanitizePublicBillingPlanPayload(billingPlanToPayload(&plans[i])))
 	}
 	c.JSON(http.StatusOK, gin.H{"plans": payload})
 }
@@ -391,6 +418,26 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 			delete(plan.Features, "merchant_entity")
 		}
 	}
+	if req.ReconciliationTag != nil {
+		if plan.Features == nil {
+			plan.Features = map[string]any{}
+		}
+		if trimmed := strings.TrimSpace(*req.ReconciliationTag); trimmed != "" {
+			plan.Features["reconciliation_tag"] = trimmed
+		} else {
+			delete(plan.Features, "reconciliation_tag")
+		}
+	}
+	if req.RegionScope != nil {
+		if plan.Features == nil {
+			plan.Features = map[string]any{}
+		}
+		if trimmed := strings.TrimSpace(*req.RegionScope); trimmed != "" {
+			plan.Features["region_scope"] = trimmed
+		} else {
+			delete(plan.Features, "region_scope")
+		}
+	}
 	if kind == "whitelist_group" {
 		plan.PackageName = "whitelist"
 		if plan.Features == nil {
@@ -418,6 +465,8 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 			"stripe_profile":         billingPlanStringFeature(existing, "stripe_profile"),
 			"business_line":          billingPlanStringFeature(existing, "business_line"),
 			"merchant_entity":        billingPlanStringFeature(existing, "merchant_entity"),
+			"reconciliation_tag":     billingPlanStringFeature(existing, "reconciliation_tag"),
+			"region_scope":           billingPlanStringFeature(existing, "region_scope"),
 			"included_quota_bytes":   existing.IncludedQuotaBytes,
 			"high_speed_quota_bytes": existing.HighSpeedQuotaBytes,
 			"package_name":           existing.PackageName,
@@ -440,6 +489,8 @@ func (h *handler) adminUpsertBillingPlan(c *gin.Context) {
 		"stripe_profile":         billingPlanStringFeature(plan, "stripe_profile"),
 		"business_line":          billingPlanStringFeature(plan, "business_line"),
 		"merchant_entity":        billingPlanStringFeature(plan, "merchant_entity"),
+		"reconciliation_tag":     billingPlanStringFeature(plan, "reconciliation_tag"),
+		"region_scope":           billingPlanStringFeature(plan, "region_scope"),
 		"included_quota_bytes":   plan.IncludedQuotaBytes,
 		"high_speed_quota_bytes": plan.HighSpeedQuotaBytes,
 		"package_name":           plan.PackageName,
